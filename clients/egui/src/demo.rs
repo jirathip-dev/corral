@@ -112,15 +112,16 @@ mod tests {
             rev = delta.rev;
         }
 
-        // #354 L3 fixture contract: raw states only (no `done`, no claims),
-        // read_tail advertised on the recents-capable agents, and a recents
-        // tail exists for at least the featured agent.
+        // #354 L3 fixture contract: raw states only — the demo omits `done`
+        // rows (its U+2713 chip is KNOWN TOFU, #358), never invents
+        // wording, read_tail is advertised on the recents-capable agents,
+        // and a recents tail exists for at least the featured agent.
         let mut read_tail_agents = 0;
         for agent in demo.snapshot.agents.values() {
             assert_ne!(
                 agent.state.label(),
                 "done",
-                "the read-only fixture never shows a wire done"
+                "the demo fixture omits done rows (KNOWN TOFU chip, #358)"
             );
             assert!(
                 agent.state.label() == "working"

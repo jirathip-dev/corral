@@ -14,7 +14,10 @@ struct FleetNotifierApp: App {
 #if DEBUG
                     if CorralDemoLaunch.wantsDetail(arguments: CommandLine.arguments) {
                         model.enterDemo(detailAgentId: CorralDemoLaunch.detailAgentID)
-                    } else if CommandLine.arguments.contains("-demoMode") {
+                    } else if CorralDemoLaunch.wantsReopenEvidence(arguments: CommandLine.arguments)
+                                || CorralDemoLaunch.wantsFilterEvidence(arguments: CommandLine.arguments)
+                                || CorralDemoLaunch.wantsSettingsEvidence(arguments: CommandLine.arguments)
+                                || CommandLine.arguments.contains("-demoMode") {
                         model.enterDemo()
                     }
 #endif
@@ -46,8 +49,16 @@ struct FleetNotifierApp: App {
 /// route is opt-in and has no effect on normal Debug launches or any Release
 /// build. `-corralDemoDetail` seeds the demo fleet and opens the featured
 /// agent's recents sheet (simulator capture cannot inject the tap).
+/// `-corralDemoUXEvidence` / `-corralDemoFilterEvidence` seed the plain
+/// demo fleet and drive the #364 recorded evidence sequences (markers in
+/// Documents/ux-evidence that the host screenshot script observes).
+/// `-corralDemoSettingsEvidence` (#365) drives the board + Settings-sheet
+/// sequence behind the always-visible gear.
 enum CorralDemoLaunch {
     static let detailArgument = "-corralDemoDetail"
+    static let reopenEvidenceArgument = "-corralDemoUXEvidence"
+    static let filterEvidenceArgument = "-corralDemoFilterEvidence"
+    static let settingsEvidenceArgument = "-corralDemoSettingsEvidence"
 
     static var detailAgentID: String {
         DemoFleet.featuredAgentID
@@ -55,6 +66,18 @@ enum CorralDemoLaunch {
 
     static func wantsDetail(arguments: [String]) -> Bool {
         arguments.contains(detailArgument)
+    }
+
+    static func wantsReopenEvidence(arguments: [String]) -> Bool {
+        arguments.contains(reopenEvidenceArgument)
+    }
+
+    static func wantsFilterEvidence(arguments: [String]) -> Bool {
+        arguments.contains(filterEvidenceArgument)
+    }
+
+    static func wantsSettingsEvidence(arguments: [String]) -> Bool {
+        arguments.contains(settingsEvidenceArgument)
     }
 }
 #endif

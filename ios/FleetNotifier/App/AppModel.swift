@@ -116,6 +116,17 @@ private struct DriveActionKey: Hashable, Sendable {
     let identity: String
 }
 
+/// #364 C: a recents-sheet presentation request. Carries a monotonic id so
+/// every request — including a re-tap of the SAME agent — is a distinct
+/// value for the sheet's `.sheet(item:)` binding: after a dismissal the
+/// request is nil again, so the next open is a real nil → request
+/// transition SwiftUI always presents (the pre-#364 sticky latch compared
+/// equal and swallowed first taps after dismissal).
+struct RecentsRequest: Identifiable, Equatable, Sendable {
+    let id: UInt64
+    let agentId: String
+}
+
 /// App-level orchestration for the READ-ONLY client (#354 L2): identity,
 /// registration, live connection, state-change notification hooks, the
 /// signed read_tail drive shared by the recents sheet, and the deep link
@@ -214,14 +225,32 @@ final class AppModel: ObservableObject {
     @Published var keyId: String?
     @Published var hostURL: URL?
     @Published var keyStorageWarning: Bool = false
-    /// #354 L2: the deep-link target for a tapped notification — the board
-    /// presents this agent's recents sheet and clears it.
-    @Published var recentsAgentId: String?
+    /// #364 B: the board's repo-chip selection (nil = All). Model-owned so
+    /// the filter survives pull-to-refresh and tab/foreground refresh; the
+    /// board reconciles it against the current fleet via
+    /// `BoardModel.reconcile` (a vanished repo renders as All without
+    /// losing the user's last choice).
+    @Published var repoFilter: String?
+    /// #364 C: the recents-sheet presentation request. Model-owned so the
+    /// board's `.sheet(item:)` binds straight to it and every open request
+    /// — including a re-tap of the SAME agent after a dismissal — is a
+    /// brand-new value (nil → request). The previous design latched a
+    /// sticky `recentsAgentId` behind an equality-guarded onChange: SwiftUI
+    /// auto-cleared only the view's item binding on dismissal, so a repeat
+    /// request compared equal and the first tap after a dismissal was
+    /// swallowed (see `recentsSheetDismissed`).
+    @Published var recentsRequest: RecentsRequest?
     /// Global notifications on/off (Settings → Notifications pairing).
     @Published var notificationsEnabled: Bool
 
     var signer: DeviceSigner?
     private var notifier: LocalNotifier?
+    /// #364 A.2: one-shot selection haptic for discrete board actions (row
+    /// tap, Done close). Injectable so tests can count ticks; never called
+    /// from drag/scroll paths.
+    private let hapticTick: () -> Void
+    /// Monotonic counter backing `RecentsRequest.id`.
+    private var recentsSerial: UInt64 = 0
     /// #79 review F4: one-shot guard for the non-idempotent half of startLive().
     private var notificationsConfigured = false
     /// Every live read gets its own task handle. A mode/device boundary must
@@ -326,7 +355,8 @@ final class AppModel: ObservableObject {
          },
          wipeIdentity: @escaping @Sendable () -> Void = {
              DeviceKeyStore.wipe()
-         }) {
+         },
+         haptics: @escaping () -> Void = Haptics.selection) {
         self.session = session
         self.identityLifecycle = identityLifecycle
         self.defaults = defaults
@@ -334,6 +364,7 @@ final class AppModel: ObservableObject {
         self.loadMeta = loadMeta
         self.saveMeta = saveMeta
         self.wipeIdentity = wipeIdentity
+        self.hapticTick = haptics
         self.notificationsEnabled = defaults.object(forKey: Self.notificationsKey) as? Bool ?? true
         self.fleet = FleetStore(defaults: defaults)
         fleetChanges = fleet.objectWillChange.sink { [weak self] _ in
@@ -391,7 +422,16 @@ final class AppModel: ObservableObject {
             banner = .error("bad_host", "Host must be an http(s) URL or host:port")
             return
         }
+        // #365: an ALREADY-paired device re-pointing at a DIFFERENT host
+        // must drop the current host's SSE stream before the new pairing —
+        // FleetStore.connect() is a no-op while a stream runs, so without
+        // this the registration would claim the new host while the board
+        // kept streaming the old one forever.
+        let switchingHost = hostURL.map { $0.absoluteString != url.absoluteString } ?? false
         cancelLifecycleTasks()
+        if switchingHost {
+            stopLive()
+        }
         let baseContext = lifecycleContext()
         identityLifecycle.setCurrent(mode: .registering,
                                      hostURL: baseContext.hostURL,
@@ -466,6 +506,14 @@ final class AppModel: ObservableObject {
                         hostURL: baseContext.hostURL, keyId: baseContext.keyId,
                         signerPublicKeyB64: baseContext.signerPublicKeyB64)
                     self.banner = .error("register_failed", error.localizedDescription)
+                    // #365: a FAILED host switch must not leave a paired
+                    // board dead — mode and hostURL are still the
+                    // pre-registration values here, so restarting the OLD
+                    // host's stream (dropped above when the hosts differed)
+                    // keeps the last-known board live behind the banner.
+                    if baseContext.mode == .live {
+                        self.startLive()
+                    }
                 }
             }
             lifecycleTasks[taskId] = task
@@ -478,6 +526,11 @@ final class AppModel: ObservableObject {
                                          keyId: baseContext.keyId,
                                          signerPublicKeyB64: baseContext.signerPublicKeyB64)
             banner = .error("register_failed", error.localizedDescription)
+            // #365: same failure-restart contract as the request catch above
+            // (this path covers identity-loader failures).
+            if baseContext.mode == .live {
+                startLive()
+            }
         }
     }
 
@@ -661,14 +714,52 @@ final class AppModel: ObservableObject {
     }
 
     /// Deep link from a tapped notification: open the agent's row recents.
-    /// Live mode only — setup/demo states have no live agent to show.
+    /// Live mode only — setup/demo states have no live agent to show. A
+    /// deep link is not a row tap, so it plays no haptic.
     func openRecents(for agentId: String) {
         guard mode == .live else { return }
         guard fleet.agent(agentId) != nil else {
             banner = .info("This agent is no longer on the fleet — refresh the board.")
             return
         }
-        recentsAgentId = agentId
+        requestRecents(for: agentId, haptic: false)
+    }
+
+    // MARK: - Recents sheet request lifecycle (#364 C)
+
+    /// Every board/notification/demo open request funnels through here:
+    /// the request is ALWAYS a fresh value with a monotonic id, so a
+    /// re-request of the agent currently (or previously) shown is a real
+    /// nil → request transition for `.sheet(item:)` — the first tap after
+    /// any dismissal re-presents. `haptic: true` is reserved for real row
+    /// taps (one light selection tick); programmatic opens stay silent.
+    func requestRecents(for agentId: String, haptic: Bool) {
+        guard fleet.agent(agentId) != nil else { return }
+        if haptic { hapticTick() }
+        recentsSerial += 1
+        recentsRequest = RecentsRequest(id: recentsSerial, agentId: agentId)
+    }
+
+    /// The recents sheet finished dismissing (swipe-down or Done — the
+    /// board's `.sheet(item:onDismiss:)` calls this). SwiftUI already
+    /// wrote `recentsRequest` back to nil when the dismissal started; a
+    /// request that landed DURING the dismissal (SwiftUI drops
+    /// presentations issued while a dismissal transition is running) is
+    /// still pending here, so re-arm it with a fresh id and the completed
+    /// dismissal presents it immediately. With nothing pending the latch
+    /// stays nil — the next open, same agent included, is a brand-new
+    /// request that always presents.
+    func recentsSheetDismissed() {
+        guard let pending = recentsRequest else { return }
+        recentsSerial += 1
+        recentsRequest = RecentsRequest(id: recentsSerial, agentId: pending.agentId)
+    }
+
+    /// #364 A.2: the sheet's Done (close) control was tapped — one light
+    /// selection tick before the dismissal starts. Swipe-down dismissals
+    /// deliberately play nothing (drag gestures must never tick).
+    func closeRecentsButtonTapped() {
+        hapticTick()
     }
 
     // MARK: - Read drives (read_tail)

@@ -1,10 +1,11 @@
 #if DEBUG
 import Foundation
 
-/// Seeded Debug demo fleet: renders the #354 L2 READ-ONLY board — repo
-/// groups with raw herdr state chips (working / idle / blocked / unknown),
-/// blocked agents pinned on top, idle agents retained per repo — with no
-/// daemon reachable. No actions exist; the one demo drive is read_tail.
+/// Seeded Debug demo fleet: renders the #362 READ-ONLY board — raw herdr
+/// status sections (blocked / working / idle / unknown; working rows span
+/// different repos incl. an orphan with repo = nil), blocked agents
+/// visually first — with no daemon reachable. No actions exist; the one
+/// demo drive is read_tail.
 enum DemoFleet {
 
     /// The opt-in detail route used by the reproducible evidence gate.
@@ -32,26 +33,16 @@ enum DemoFleet {
                   displayName: displayName, title: nil)
         }
 
-        // Blocked agents: pinned top of the board, and first in their repo.
+        // Blocked agents: the blocked section is the board's first section,
+        // so this row leads the board without any cross-repo promotion.
         agents["herdr:demo-garden-blocked"] = agent(
             "herdr:demo-garden-blocked", tool: "claude", state: .blocked,
             reason: "waiting on human review of the catalog push",
             displayName: "demo-garden-agent", repo: "demo-garden", branch: "demo-catalog",
             seq: 9, tsOffset: 30, dirty: true, prNumber: 9026, paneRef: "w21:p1")
 
-        agents["herdr:demo-ledger-blocked"] = agent(
-            "herdr:demo-ledger-blocked", tool: "codex", state: .blocked,
-            reason: "awaiting a ship-or-hold decision",
-            displayName: "demo-ledger-agent", repo: "demo-ledger", branch: "demo-migration",
-            seq: 8, tsOffset: 90, dirty: true, prNumber: 9021, paneRef: "w22:p1")
-
-        // Working agents.
-        agents["herdr:demo-garden-working"] = agent(
-            "herdr:demo-garden-working", tool: "claude", state: .working,
-            reason: "running the test suite",
-            displayName: "demo-garden-worker", repo: "demo-garden", branch: "demo-sweep",
-            seq: 7, tsOffset: 12, paneRef: "w21:p2")
-
+        // Working agents across DIFFERENT repos (plus the orphan below):
+        // one status section, repo carried as row metadata only.
         agents["herdr:demo-orbit-working"] = agent(
             "herdr:demo-orbit-working", tool: "opencode", state: .working,
             reason: "streaming a segmented recent output",
@@ -64,23 +55,16 @@ enum DemoFleet {
             displayName: "demo-output", repo: "demo-atlas", branch: "demo-recent",
             seq: 10, tsOffset: 12, dirty: true, prNumber: 9005, paneRef: "w24:p1")
 
-        // Idle agents: retained per repo (finished panes fall back to idle).
+        // Idle agent: the idle section (finished panes fall back to idle;
+        // a row stays visible until the daemon replaces/deletes it).
         agents["herdr:demo-ledger-idle"] = agent(
             "herdr:demo-ledger-idle", tool: "codex", state: .idle,
             reason: nil, displayName: "demo-ledger-idle", repo: "demo-ledger", branch: "demo-embed",
             seq: 5, tsOffset: 1800, paneRef: "w22:p2")
 
-        agents["herdr:demo-orbit-idle"] = agent(
-            "herdr:demo-orbit-idle", tool: "claude", state: .idle,
-            reason: nil, displayName: "demo-orbit-idle", repo: "demo-orbit", branch: "demo-coverage",
-            seq: 4, tsOffset: 3600, paneRef: "w23:p2")
-
-        agents["herdr:demo-atlas-idle"] = agent(
-            "herdr:demo-atlas-idle", tool: "opencode", state: .idle,
-            reason: nil, displayName: "demo-atlas-idle", repo: "demo-atlas", branch: "demo-embed",
-            seq: 3, tsOffset: 7200, paneRef: "w24:p2")
-
-        // Unknown + orphan (no repo) agents exercise the tail buckets.
+        // Unknown + orphan (no repo) agents exercise the tail statuses: the
+        // orphan carries repo = nil but still lands in its status section
+        // (working) — repo is row metadata, never a grouping key.
         agents["herdr:demo-atlas-unknown"] = agent(
             "herdr:demo-atlas-unknown", tool: "claude", state: .unknown,
             reason: nil, displayName: "demo-atlas-unknown", repo: "demo-atlas", branch: nil,
@@ -132,12 +116,13 @@ enum DemoFleet {
         }
     }
 
-    /// Live-tail-only fixture: one stream of canonical blocks (user / agent
-    /// / tool / system / unknown), unpartitioned — recents v1 renders the
-    /// daemon's bounded tail as-is.
+    /// Live-tail fixture: one stream of canonical blocks (user / agent /
+    /// tool / system / unknown) in daemon order — recents renders the
+    /// bounded tail as ONE continuous chronological rail (#361).
     static func recentBlocks(for agent: Agent) -> [RecentBlock] {
-        // Divider + unprovenanced chrome blocks stay: the shared divider
-        // scrub renders them as rules/unknown activity.
+        // The divider-only system block below stays ON PURPOSE: the rail
+        // row model drops divider-only rows, so simulator evidence proves
+        // ZERO divider rows render.
         let file = "src/board_view.rs"
         let omitted = agent.seq > 0 ? UInt32(min(agent.seq * 10, 2_000)) : nil
         return [

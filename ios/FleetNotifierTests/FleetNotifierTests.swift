@@ -472,17 +472,23 @@ final class DemoSeedTests: XCTestCase {
         }
     }
 
-    func testSeedCoversPerRepoIdleRetentionRows() {
+    func testSeedCoversEveryStatusSection() {
         let seed = DemoFleet.seed()
-        let repos = Set(seed.values.compactMap(\.workspace.repo))
-        for repo in repos {
-            // Every repo keeps at least one row; demo-ledger/demo-orbit/
-            // demo-atlas additionally carry an idle (finished-fallback)
-            // agent so retention is observable in evidence.
-            XCTAssertTrue(seed.values.contains { $0.workspace.repo == repo })
+        // The evidence board must be able to show EVERY locked status
+        // section with rows, projected through the real model — no repo
+        // grouping anywhere.
+        let sections = BoardModel.sections(Array(seed.values))
+        XCTAssertEqual(sections.statuses.map(\.state),
+                       [.blocked, .working, .idle, .unknown],
+                       "the fixture must populate every locked status section")
+        for status in sections.statuses {
+            XCTAssertFalse(status.agents.isEmpty,
+                           "section \(status.header) must be non-empty for evidence")
         }
+        // The orphan (repo = nil) row stays in the fixture and lands in its
+        // status bucket — repo is row metadata, not a grouping key.
         XCTAssertTrue(seed.values.contains { $0.workspace.repo == nil },
-                      "the orphan bucket (no repo) must be exercised")
+                      "the orphan (no-repo) row must be exercised")
     }
 
     func testSeedPrivacyGateRejectsForbiddenThrowawayValue() {
@@ -505,6 +511,12 @@ final class DemoSeedTests: XCTestCase {
         XCTAssertFalse(blocks.isEmpty)
         XCTAssertFalse(DemoFleet.recentLines(from: blocks).isEmpty)
         XCTAssertTrue(blocks.contains { $0.kind == .user && $0.text.contains("verify the diff") })
+        // The fixture deliberately keeps a divider-only row so rail
+        // evidence proves #361 divider rows are dropped, not hidden.
+        XCTAssertTrue(blocks.contains { block in
+            RecentOutputRender.isDividerBlock(
+                TranscriptBlock(kind: block.kind, text: block.text))
+        }, "the recents fixture must keep its divider-only row for rail-drop evidence")
     }
 }
 
@@ -2177,7 +2189,7 @@ private final class DeterministicDriveURLProtocol: URLProtocol {
     }
 }
 
-// MARK: - #354 L2 read-only board projections
+// MARK: - #362 status-grouped board projections
 
 final class BoardModelReadOnlyTests: XCTestCase {
     private func agent(_ id: String, state: AgentState, repo: String?, branch: String? = nil,
@@ -2188,73 +2200,399 @@ final class BoardModelReadOnlyTests: XCTestCase {
               displayName: displayName ?? id)
     }
 
-    func testSectionsGroupByRepoAndPromoteBlocked() {
+    func testSectionsBucketByRawStatusInLockedOrder() {
         let sections = BoardModel.sections([
             agent("b1", state: .blocked, repo: "corral"),
-            agent("w1", state: .working, repo: "corral"),
+            agent("w1", state: .working, repo: "other"),
             agent("i1", state: .idle, repo: "corral"),
-            agent("u1", state: .unknown, repo: "other"),
+            agent("u1", state: .unknown, repo: nil),
         ])
-        XCTAssertEqual(sections.blocked.map(\.agentId), ["b1"])
-        XCTAssertEqual(sections.repos.map(\.repo), ["corral", "other"])
-        // Every repo agent is present in its repo section (retention: an
-        // idle finished agent stays until replaced).
-        let corral = sections.repos[0]
-        XCTAssertEqual(corral.agents.map(\.agentId), ["b1", "w1", "i1"])
+        // Locked order: Blocked → Working → Idle → Unknown. Repo is never
+        // a grouping key, so four agents across three repos still yield
+        // exactly four one-row status buckets.
+        XCTAssertEqual(sections.statuses.map(\.state),
+                       [.blocked, .working, .idle, .unknown])
+        XCTAssertEqual(sections.statuses.map(\.header),
+                       ["blocked (1)", "working (1)", "idle (1)", "unknown (1)"])
+        XCTAssertEqual(sections.statuses.map { $0.agents.map(\.agentId) },
+                       [["b1"], ["w1"], ["i1"], ["u1"]])
     }
 
-    func testRepoAttentionOrderIsBlockedWorkingIdleUnknown() {
+    func testRepoIsRowMetadataNeverTheGroupingKey() {
+        // Same status across DIFFERENT repos — including the orphan
+        // (repo = nil) — collapses into ONE working bucket; there is no
+        // repo section, no "no repo" orphan bucket.
         let sections = BoardModel.sections([
+            agent("in-corral", state: .working, repo: "corral", ts: 200),
+            agent("in-other", state: .working, repo: "other", ts: 150),
+            agent("orphan", state: .working, repo: nil, ts: 100),
+        ])
+        XCTAssertEqual(sections.statuses.count, 1)
+        XCTAssertEqual(sections.statuses[0].state, .working)
+        XCTAssertEqual(sections.statuses[0].agents.map(\.agentId),
+                       ["in-corral", "in-other", "orphan"],
+                       "repo must not partition a status bucket")
+        XCTAssertEqual(sections.statuses[0].header, "working (3)")
+    }
+
+    func testBlockedAgentsLeadTheBoardExactlyOnce() {
+        // Blocked is the FIRST section (attention-first); the old
+        // cross-repo promotion is gone — no agent is duplicated into a
+        // second bucket, blocked orphan or not.
+        let sections = BoardModel.sections([
+            agent("idle", state: .idle, repo: "corral", ts: 300),
+            agent("blocked-with-repo", state: .blocked, repo: "corral", ts: 200),
+            agent("blocked-orphan", state: .blocked, repo: nil, ts: 100),
+        ])
+        XCTAssertEqual(sections.statuses.map(\.state), [.blocked, .idle])
+        XCTAssertEqual(sections.statuses[0].agents.map(\.agentId),
+                       ["blocked-with-repo", "blocked-orphan"])
+        let allRows = sections.statuses.flatMap { $0.agents.map(\.agentId) }
+        XCTAssertEqual(allRows.count, Set(allRows).count,
+                       "every agent must appear in exactly one section")
+        XCTAssertEqual(Set(allRows), Set(["idle", "blocked-with-repo", "blocked-orphan"]))
+    }
+
+    func testDoneGetsItsOwnSectionOnlyWhenHerdrReportsIt() {
+        // herdr 0.8.2 finished panes fall back to idle: a done-less fleet
+        // (the live-board norm) has NO done section.
+        let noDone = BoardModel.sections([
+            agent("working", state: .working, repo: "r"),
             agent("idle", state: .idle, repo: "r"),
-            agent("working", state: .working, repo: "r"),
-            agent("unknown", state: .unknown, repo: "r"),
-            agent("blocked", state: .blocked, repo: "r"),
         ])
-        XCTAssertEqual(sections.repos[0].agents.map(\.agentId),
-                       ["blocked", "working", "idle", "unknown"])
-    }
+        XCTAssertEqual(noDone.statuses.map(\.state), [.working, .idle])
 
-    func testWireDoneRanksWithIdleInRepoSections() {
-        let sections = BoardModel.sections([
+        // When the daemon reports done, a "done (N)" section renders after
+        // idle (wire-done ranks WITH idle — state-token rank 2).
+        let withDone = BoardModel.sections([
             agent("working", state: .working, repo: "r"),
-            agent("done", state: .done, repo: "r", ts: 100),
             agent("idle", state: .idle, repo: "r", ts: 300),
+            agent("done", state: .done, repo: "r", ts: 100),
         ])
-        XCTAssertEqual(sections.repos[0].agents.map(\.agentId), ["working", "idle", "done"],
-                       "idle and done share the v2 rank; ts desc breaks the tie")
+        XCTAssertEqual(withDone.statuses.map(\.state),
+                       [.working, .idle, .done])
+        XCTAssertEqual(withDone.statuses[2].header, "done (1)")
+        XCTAssertEqual(withDone.statuses[2].agents.map(\.agentId), ["done"])
     }
 
-    func testWithinRankOrderingIsTsDescThenAgentId() {
+    func testDoneSectionPositionIsRankTieNotTimestampDriven() {
+        // Ordering determinism: done shares idle's rank (2), so its section
+        // sits AFTER the idle section even when the done agent is newer —
+        // section order must never re-sort by ts across buckets.
+        let sections = BoardModel.sections([
+            agent("older-idle", state: .idle, repo: "r", ts: 100),
+            agent("newer-done", state: .done, repo: "r", ts: 900),
+            agent("unknown", state: .unknown, repo: "r"),
+        ])
+        XCTAssertEqual(sections.statuses.map(\.state),
+                       [.idle, .done, .unknown])
+    }
+
+    func testWithinStatusOrderingIsTsDescThenAgentId() {
         let sections = BoardModel.sections([
             agent("older", state: .working, repo: "r", ts: 100),
             agent("newer", state: .working, repo: "r", ts: 200),
+            agent("tie-a", state: .working, repo: "r", ts: 200),
+            agent("tie-b", state: .working, repo: "r", ts: 200),
         ])
-        XCTAssertEqual(sections.repos[0].agents.map(\.agentId), ["newer", "older"])
+        XCTAssertEqual(sections.statuses[0].agents.map(\.agentId),
+                       ["newer", "tie-a", "tie-b", "older"],
+                       "ts desc, then agent id for determinism")
     }
 
-    func testOrphanBucketSortsLast() {
-        let sections = BoardModel.sections([
-            agent("orphan", state: .working, repo: nil),
-            agent("normal", state: .working, repo: "aaa"),
-        ])
-        XCTAssertEqual(sections.repos.map(\.repo), ["aaa", nil])
-        XCTAssertEqual(sections.repos[1].header, "no repo (1)")
-    }
-
-    func testBlockedPromotionIsNotAFilter() {
-        // The blocked agent appears pinned on top AND first in its repo.
-        let sections = BoardModel.sections([
-            agent("blocked", state: .blocked, repo: "corral"),
-            agent("idle", state: .idle, repo: "corral"),
-        ])
-        XCTAssertEqual(sections.blocked.map(\.agentId), ["blocked"])
-        XCTAssertEqual(sections.repos[0].agents.map(\.agentId), ["blocked", "idle"])
+    func testSectionOrderIsDeterministicRegardlessOfInputOrder() {
+        let fleet = [
+            agent("idle", state: .idle, repo: "r", ts: 300),
+            agent("blocked", state: .blocked, repo: "r", ts: 200),
+            agent("unknown", state: .unknown, repo: "r", ts: 100),
+        ]
+        let forward = BoardModel.sections(fleet)
+        let shuffled = BoardModel.sections(fleet.reversed())
+        XCTAssertEqual(forward.statuses.map(\.state), [.blocked, .idle, .unknown])
+        XCTAssertEqual(forward.statuses, shuffled.statuses)
     }
 
     func testEmptyBoardHasNoSections() {
         let sections = BoardModel.sections([])
-        XCTAssertTrue(sections.blocked.isEmpty)
-        XCTAssertTrue(sections.repos.isEmpty)
+        XCTAssertTrue(sections.statuses.isEmpty)
+    }
+}
+
+// MARK: - #364 B repo filter chip projections
+
+/// Focused regressions for the #364 repo filter chips. These bite: the
+/// chip set must be live per-repo counts (orphans never a chip), the
+/// filter must pick WHICH agents the #362 status sections bucket (never
+/// regroup them), and a vanished repo must reconcile back to All.
+final class RepoFilterChipProjectionTests: XCTestCase {
+    private func agent(_ id: String, repo: String?,
+                       state: AgentState = .working,
+                       ts: UInt64 = 100) -> Agent {
+        Agent(agentId: id, state: state, seq: 1, ts: ts,
+              capabilities: ["read_tail"],
+              workspace: Workspace(repo: repo,
+                                   branch: repo.map { "b-" + $0 }),
+              displayName: id)
+    }
+
+    func testChipsCountAgentsPerRepoAlphabeticallyAndSkipOrphans() {
+        let chips = BoardModel.repoFilters([
+            agent("a1", repo: "corral"),
+            agent("a2", repo: "corral"),
+            agent("b1", repo: "fleet-operations"),
+            agent("orphan", repo: nil),
+        ])
+        XCTAssertEqual(chips.map(\.repo), ["corral", "fleet-operations"])
+        XCTAssertEqual(chips.map(\.count), [2, 1])
+        XCTAssertEqual(chips.map(\.id), ["corral", "fleet-operations"])
+    }
+
+    func testDemoSeedChipsMatchTheFixtureBoard() {
+        // 6 seeded agents across 4 repos + 1 orphan: the orphan counts
+        // under All only, never as its own chip.
+        let agents = Array(DemoFleet.seed().values)
+        let chips = BoardModel.repoFilters(agents)
+        XCTAssertEqual(chips.map(\.repo),
+                       ["demo-atlas", "demo-garden", "demo-ledger", "demo-orbit"])
+        XCTAssertEqual(chips.map(\.count), [2, 1, 1, 1])
+        XCTAssertFalse(chips.contains { $0.repo == "demo-orphan" })
+        XCTAssertEqual(BoardModel.agents(agents, in: nil).count, 6,
+                       "All must include every agent, orphans included")
+    }
+
+    func testEmptyFleetHasNoChips() {
+        XCTAssertTrue(BoardModel.repoFilters([]).isEmpty)
+    }
+
+    func testFilterKeepsOnlyMatchingRepoAgents() {
+        let agents = [
+            agent("in-corral", repo: "corral"),
+            agent("other", repo: "fleet-operations"),
+            agent("orphan", repo: nil),
+        ]
+        XCTAssertEqual(BoardModel.agents(agents, in: "corral").map(\.agentId),
+                       ["in-corral"])
+        XCTAssertEqual(BoardModel.agents(agents, in: "corral").count, 1)
+        let all = BoardModel.agents(agents, in: nil)
+        XCTAssertEqual(Set(all.map(\.agentId)), Set(agents.map(\.agentId)),
+                       "nil filter must be the identity — All shows every agent")
+    }
+
+    func testFilteredSectionsKeepLockedOrderOverTheFilteredSet() {
+        // Demo board filtered to demo-atlas: working (featured) and
+        // unknown (atlas-unknown) sections in the locked order — the
+        // blocked demo-garden row is filtered out, sections never regroup.
+        let agents = Array(DemoFleet.seed().values)
+        let filtered = BoardModel.agents(agents, in: "demo-atlas")
+        let sections = BoardModel.sections(filtered)
+        XCTAssertEqual(sections.statuses.map(\.state), [.working, .unknown])
+        XCTAssertEqual(sections.statuses[0].header, "working (1)")
+        XCTAssertEqual(sections.statuses[0].agents.map(\.agentId),
+                       [DemoFleet.featuredAgentID])
+        XCTAssertEqual(sections.statuses[1].agents.map(\.agentId),
+                       ["herdr:demo-atlas-unknown"])
+
+        // Filtering never groups: three working agents across repos under
+        // a repo filter stay in ONE working bucket with their locked
+        // within-section order (ts desc, then id).
+        let mixed = [
+            agent("in-corral", repo: "corral", ts: 200),
+            agent("in-other", repo: "other", ts: 150),
+            agent("blocked-corral", repo: "corral", state: .blocked, ts: 900),
+        ]
+        let corralSections = BoardModel.sections(
+            BoardModel.agents(mixed, in: "corral"))
+        XCTAssertEqual(corralSections.statuses.map(\.state), [.blocked, .working])
+        XCTAssertEqual(corralSections.statuses[1].agents.map(\.agentId),
+                       ["in-corral"])
+    }
+
+    func testReconcileKeepsALiveRepoAndDropsAVanishedOne() {
+        let chips = [BoardModel.RepoFilterChip(repo: "corral", count: 2)]
+        XCTAssertEqual(BoardModel.reconcile("corral", against: chips), "corral")
+        XCTAssertNil(BoardModel.reconcile("gone", against: chips),
+                     "a repo that left the fleet must render as All")
+        XCTAssertNil(BoardModel.reconcile(nil, against: chips),
+                     "All stays All")
+        XCTAssertNil(BoardModel.reconcile("corral", against: []))
+    }
+}
+
+// MARK: - #364 C recents sheet request lifecycle
+
+/// Focused discriminating regressions for the reliable recents-sheet
+/// reopen. The pre-#364 code latched a sticky `recentsAgentId` behind an
+/// equality-guarded onChange: after a dismissal the latch was never
+/// cleared, so a re-request of the same agent compared equal and the
+/// first tap was swallowed. These tests pin the replacement contract —
+/// every request is a fresh monotonic value, and dismissal completion
+/// clears (clean close) or re-arms (a tap landed mid-dismissal) the
+/// request — and bite if any half of it regresses.
+@MainActor
+final class RecentsSheetLifecycleTests: XCTestCase {
+
+    private final class TickCounter {
+        var count = 0
+    }
+
+    /// Fresh demo-mode harness per test: an AppModel with an injected
+    /// haptic tick counter and a seeded demo fleet. `exitDemo()` restores
+    /// the shared identity lifecycle the way the demo-mode tests expect.
+    private func makeHarness() -> (model: AppModel, ticks: TickCounter) {
+        let ticks = TickCounter()
+        let model = AppModel(haptics: { [weak ticks] in ticks?.count += 1 })
+        model.enterDemo()
+        return (model, ticks)
+    }
+
+    private func agent(_ id: String, repo: String? = "corral") -> Agent {
+        Agent(agentId: id, state: .working, seq: 1, ts: 100,
+              capabilities: ["read_tail"],
+              workspace: Workspace(repo: repo, branch: repo.map { "b-" + $0 }),
+              displayName: id)
+    }
+
+    private func seedLive(_ model: AppModel, _ ids: [String]) {
+        model.mode = .live
+        model.fleet.apply(.snapshot(Snapshot(
+            schemaVersion: 3, rev: 10, generatedAt: 1,
+            agents: Dictionary(uniqueKeysWithValues: ids.map {
+                ($0, agent($0))
+            }))))
+    }
+
+    private func dismissalWrite(_ model: AppModel, _ request: RecentsRequest?) {
+        // What SwiftUI's `.sheet(item:)` binding does when a dismissal
+        // starts: it writes nil through the binding.
+        model.recentsRequest = nil
+        model.recentsSheetDismissed()
+    }
+
+    func testRowRequestAlwaysProducesAFreshMonotonicValue() throws {
+        let (model, _) = makeHarness()
+        defer { model.exitDemo() }
+        let a = DemoFleet.featuredAgentID
+        model.requestRecents(for: a, haptic: false)
+        let first = try XCTUnwrap(model.recentsRequest)
+        XCTAssertEqual(first.agentId, a)
+        model.requestRecents(for: a, haptic: false)
+        let second = try XCTUnwrap(model.recentsRequest)
+        XCTAssertEqual(second.agentId, a)
+        XCTAssertGreaterThan(second.id, first.id,
+                             "a same-agent re-request must be a NEW value, not an equal one")
+    }
+
+    func testSameAgentReopenAfterDismissalWorksOnTheFirstRequest() throws {
+        // #364 C2: the exact reported failure — reopen the SAME agent's
+        // sheet after dismissing. Three full cycles must each produce a
+        // fresh request (nil → request) with a strictly growing id.
+        let (model, _) = makeHarness()
+        defer { model.exitDemo() }
+        let a = DemoFleet.featuredAgentID
+        var previousID: UInt64 = 0
+        for _ in 0..<3 {
+            model.requestRecents(for: a, haptic: false)
+            let request = try XCTUnwrap(model.recentsRequest)
+            XCTAssertEqual(request.agentId, a)
+            XCTAssertGreaterThan(request.id, previousID,
+                                 "every reopen must be a new presentation value")
+            previousID = request.id
+            dismissalWrite(model, request)
+            XCTAssertNil(model.recentsRequest,
+                         "a clean dismissal must fully clear the request")
+        }
+    }
+
+    func testCleanDismissalLeavesNothingPending() throws {
+        let (model, _) = makeHarness()
+        defer { model.exitDemo() }
+        model.requestRecents(for: DemoFleet.featuredAgentID, haptic: false)
+        dismissalWrite(model, model.recentsRequest)
+        XCTAssertNil(model.recentsRequest)
+    }
+
+    func testRequestThatLandsDuringDismissalIsReArmed() throws {
+        // #364 C1: a tap that lands while the previous sheet is still
+        // dismissing is dropped by SwiftUI's presentation coordinator —
+        // the dismissal completion must re-arm it so the FIRST tap works.
+        let (model, _) = makeHarness()
+        defer { model.exitDemo() }
+        model.requestRecents(for: DemoFleet.featuredAgentID, haptic: false)
+        model.recentsRequest = nil          // dismissal starts
+        model.requestRecents(for: "herdr:demo-garden-blocked", haptic: false)
+        let pending = try XCTUnwrap(model.recentsRequest)
+        model.recentsSheetDismissed()       // dismissal completes
+        let rearmed = try XCTUnwrap(model.recentsRequest)
+        XCTAssertEqual(rearmed.agentId, "herdr:demo-garden-blocked",
+                       "the mid-dismissal request must survive dismissal completion")
+        XCTAssertGreaterThan(rearmed.id, pending.id,
+                             "the re-arm must be a fresh presentation value")
+    }
+
+    func testUnknownAgentRequestIsIgnoredWithoutHaptic() {
+        let (model, ticks) = makeHarness()
+        defer { model.exitDemo() }
+        model.requestRecents(for: "herdr:ghost", haptic: true)
+        XCTAssertNil(model.recentsRequest)
+        XCTAssertEqual(ticks.count, 0)
+    }
+
+    func testRowTapHapticDeepLinkAndDoneWiring() {
+        // #364 A.2: row taps tick once; deep links and auto-demo opens do
+        // not; the Done close control ticks once.
+        let (model, ticks) = makeHarness()
+        defer { model.exitDemo() }
+        let a = DemoFleet.featuredAgentID
+        model.requestRecents(for: a, haptic: true)
+        XCTAssertEqual(ticks.count, 1)
+        XCTAssertEqual(model.recentsRequest?.agentId, a)
+
+        model.recentsRequest = nil
+        model.recentsSheetDismissed()
+        model.requestRecents(for: "herdr:demo-garden-blocked", haptic: false)
+        XCTAssertEqual(ticks.count, 1, "programmatic opens must stay silent")
+
+        model.closeRecentsButtonTapped()
+        XCTAssertEqual(ticks.count, 2, "the Done close control ticks once")
+    }
+
+    func testDeepLinkIsLiveModeOnlyAndHapticFree() {
+        // openRecents (notification tap) keeps its live-mode + agent-exists
+        // guards and never plays a haptic (it is not a row tap).
+        let (model, ticks) = makeHarness()
+        defer { model.exitDemo() }
+        model.openRecents(for: DemoFleet.featuredAgentID)
+        XCTAssertNil(model.recentsRequest, "demo mode must ignore deep links")
+        XCTAssertEqual(ticks.count, 0)
+
+        seedLive(model, ["a1", "a2"])
+        model.openRecents(for: "a2")
+        XCTAssertEqual(model.recentsRequest?.agentId, "a2")
+        XCTAssertEqual(ticks.count, 0, "deep links never tick")
+
+        model.openRecents(for: "ghost")
+        XCTAssertEqual(model.recentsRequest?.agentId, "a2",
+                       "a missing agent must not displace the open request")
+        XCTAssertNotNil(model.banner)
+    }
+
+    func testRepoFilterSurvivesAFleetRefresh() {
+        // #364 B3: the chip choice lives on the model, so a foreground
+        // refresh (which replaces the fleet through the store) never
+        // resets it. The pure reconcile handles a vanished repo.
+        let (model, _) = makeHarness()
+        defer { model.exitDemo() }
+        seedLive(model, ["a1", "a2"])
+        model.repoFilter = "corral"
+        model.fleet.apply(.snapshot(Snapshot(
+            schemaVersion: 3, rev: 11, generatedAt: 1,
+            agents: ["a3": agent("a3"), "a4": agent("a4")])))
+        XCTAssertEqual(model.repoFilter, "corral",
+                       "refresh must not clear the filter")
+        XCTAssertEqual(BoardModel.reconcile(model.repoFilter,
+                                            against: BoardModel.repoFilters(
+                                                Array(model.fleet.agents.values))),
+                       "corral")
     }
 }
 
@@ -2330,13 +2668,149 @@ final class RecentOutputTailModelTests: XCTestCase {
     }
 }
 
+// MARK: - #361 continuous rail model
+
+/// Focused regressions for the #361 continuous rail. These bite: the row
+/// model must render ZERO divider-only rows, mark role ONLY as a shape at
+/// semantic transitions (never per row, never as role text), and keep the
+/// full stream in daemon chronological order. A change that re-introduces
+/// divider rows, per-row markers, or reordering fails here before any view
+/// code is involved.
+final class RecentRailModelTests: XCTestCase {
+    private func block(_ kind: TranscriptBlockKind, _ text: String) -> TranscriptBlock {
+        TranscriptBlock(kind: kind, text: text)
+    }
+
+    private func pane(_ blocks: [TranscriptBlock]) -> TailPane {
+        var pane = TailPane()
+        pane.apply(blocks, lines: [])
+        return pane
+    }
+
+    func testRailRowsDropDividerOnlyRowsEntirely() {
+        let rows = RecentOutputModel.railRows(from: pane([
+            block(.user, "hi"),
+            block(.system, "────────────────────────────────"),
+            block(.agent, "hello"),
+            block(.tool, "──"),
+            block(.agent, "again")
+        ]))
+        XCTAssertEqual(rows.map(\.block.kind), [.user, .agent, .agent])
+        XCTAssertEqual(rows.map(\.block.text), ["hi", "hello", "again"],
+                       "dropping a divider must never drop or reorder content")
+        XCTAssertTrue(rows.allSatisfy { !RecentOutputRender.isDividerBlock($0.block) },
+                      "the rail must render ZERO divider-only rows")
+        let plain = RecentOutputModel.tailRows(from: pane([
+            block(.system, "────────────────────────────────"),
+            block(.agent, "hello")
+        ]))
+        XCTAssertTrue(plain.allSatisfy { !RecentOutputRender.isDividerBlock($0) },
+                      "the tail row model itself must contain ZERO divider-only rows")
+    }
+
+    func testRailRowsDropLegacyDividerLines() {
+        var legacy = TailPane()
+        legacy.lines = ["raw one", "────────────────────────────────"]
+        let rows = RecentOutputModel.railRows(from: legacy)
+        XCTAssertEqual(rows.map(\.block.kind), [.unknown])
+        XCTAssertEqual(rows.map(\.block.text), ["raw one"],
+                       "a legacy divider line is raw furniture and must not render")
+    }
+
+    func testRailPreservesFullChronologicalOrder() {
+        let fixture = [
+            block(.agent, "first agent"),
+            block(.system, "────────────────────────────────"),
+            block(.user, "user input"),
+            block(.tool, "tool output"),
+            block(.agent, "second agent"),
+            block(.system, "diagnostic"),
+            block(.unknown, "raw pane line")
+        ]
+        let rows = RecentOutputModel.railRows(from: pane(fixture))
+        XCTAssertEqual(rows.map(\.block.text),
+                       ["first agent", "user input", "tool output",
+                        "second agent", "diagnostic", "raw pane line"],
+                       "the rail is ONE continuous stream in full chronological order")
+    }
+
+    func testTransitionMarkerOnlyAtRoleChanges() {
+        let rows = RecentOutputModel.railRows(from: pane([
+            block(.agent, "a1"),
+            block(.agent, "a2"),
+            block(.user, "u1"),
+            block(.user, "u2"),
+            block(.tool, "t1"),
+            block(.agent, "a3")
+        ]))
+        XCTAssertEqual(rows.map(\.showsTransitionMarker),
+                       [true, false, true, false, true, true],
+                       "markers appear ONLY at semantic role transitions, never per row")
+    }
+
+    func testContinuationAfterDroppedDividerCarriesNoMarker() {
+        let rows = RecentOutputModel.railRows(from: pane([
+            block(.agent, "a"),
+            block(.system, "──────"),
+            block(.agent, "b")
+        ]))
+        XCTAssertEqual(rows.map(\.block.kind), [.agent, .agent])
+        XCTAssertEqual(rows.map(\.showsTransitionMarker), [true, false],
+                       "the divider drops out of the sequence, so b continues the same role run")
+    }
+
+    func testDividerNeverRidesInsideMergedContentRow() {
+        let rows = RecentOutputModel.railRows(from: pane([
+            block(.system, "read_tail page truncated to the newest 200 lines."),
+            block(.system, "────────────────────────────────"),
+            block(.agent, "hello")
+        ]))
+        XCTAssertEqual(rows.map(\.block.kind), [.system, .agent])
+        XCTAssertEqual(rows[0].block.text,
+                       "read_tail page truncated to the newest 200 lines.",
+                       "a divider-only row must drop BEFORE merging so it never rides inside a content row")
+        XCTAssertFalse(rows[0].block.text.contains("─"),
+                       "no divider furniture may survive inside a merged content row")
+    }
+
+    func testSystemAndUnknownRowsNeverCarryMarkers() {
+        let rows = RecentOutputModel.railRows(from: pane([
+            block(.agent, "a"),
+            block(.system, "diagnostic"),
+            block(.agent, "b"),
+            block(.unknown, "raw pane line"),
+            block(.agent, "c")
+        ]))
+        XCTAssertEqual(rows.map(\.showsTransitionMarker), [true, false, true, false, true],
+                       "system/unknown rows are raw output, never role markers")
+    }
+
+    func testRoleMarkersAreLockedPerRole() {
+        XCTAssertEqual(RecentOutputModel.marker(for: .user), .diamond)
+        XCTAssertEqual(RecentOutputModel.marker(for: .agent), .circle)
+        XCTAssertEqual(RecentOutputModel.marker(for: .tool), .square)
+        XCTAssertNil(RecentOutputModel.marker(for: .system))
+        XCTAssertNil(RecentOutputModel.marker(for: .unknown))
+    }
+
+    func testRailRowIdentitiesNeverCollide() {
+        let rows = RecentOutputModel.railRows(from: pane([
+            block(.agent, "same"),
+            block(.agent, "same")
+        ]))
+        XCTAssertEqual(rows.count, 2)
+        XCTAssertNotEqual(rows[0].id, rows[1].id)
+    }
+}
+
 // MARK: - Read-only surface wiring (FleetViews source bundle)
 
 /// Decoy-resistant source-wiring regression: the recents sheet must be fed
 /// by the LIVE read_tail drive seam (not a cached/demo-only projection), and
-/// the board must project through `BoardModel.sections` (repo groups +
-/// blocked promo). Production source rides in the test bundle as
-/// `FleetViews.swift.txt` via the test target's preBuildScript.
+/// the board must project through `BoardModel.sections` (raw status sections
+/// — blocked first, repo never a grouping key). Production source rides in
+/// the test bundle as `FleetViews.swift.txt` via the test target's
+/// preBuildScript.
 final class ReadOnlySurfaceWiringTests: XCTestCase {
 
     private func bundledSource() throws -> String {
@@ -2356,26 +2830,148 @@ final class ReadOnlySurfaceWiringTests: XCTestCase {
         guard let sheetStart = source.range(of: sheetMarker) else {
             return XCTFail("RecentOutputSheet declaration not found")
         }
-        let nextDecl = source.range(of: "\n// MARK: - Block renderer")
-            ?? source.range(of: "\nprivate struct RecentBlockRow")
-            ?? source.endIndex..<source.endIndex
-        let slice = String(source[sheetStart.lowerBound..<nextDecl.lowerBound])
+        let nextDecl = source.range(of: "\n// MARK: - Rail row renderer")
+            ?? source.range(of: "\nprivate struct RecentRailRowView")
+        let sliceEnd = try XCTUnwrap(nextDecl?.lowerBound,
+                                     "the recents rail renderer declaration must exist in the sheet source")
+        let slice = String(source[sheetStart.lowerBound..<sliceEnd])
         XCTAssertTrue(slice.contains("model.driveReadTail(agent: agent, driveClient: driveClient, silent: true)"),
                       "the recents sheet must auto-refresh through the live read_tail drive")
         XCTAssertTrue(slice.contains("RecentOutputModel.phase(for: tail)"),
                       "the recents sheet must render the tail pane's four-state machine")
+        XCTAssertTrue(slice.contains("RecentOutputModel.railRows(from: tail)"),
+                      "the recents sheet must render the continuous rail row model")
+        XCTAssertTrue(slice.contains("RecentRailSpine()"),
+                      "the recents sheet must ride ONE continuous spine behind the rail rows (#361 R1)")
+        // The rail renders ZERO divider rules, cards, and role labels: the
+        // V3-era chrome vocabulary must not exist inside the sheet (a decoy
+        // elsewhere in FleetViews cannot satisfy a slice-scoped assertion).
+        for chrome in ["speakerRail", "roleLabel", "showSpeaker",
+                       "DisclosureGroup", "RecentBlockRow", "userTint"] {
+            XCTAssertFalse(slice.contains(chrome),
+                           "role/card chrome \(chrome) must not be wired in the recents sheet")
+        }
     }
 
-    func testBoardProjectsThroughRepoSections() throws {
+    func testRailSpineIsOneContinuousSpan() throws {
         let source = try bundledSource()
-        // The FleetView board must be the read-only repo-group projection
-        // (blocked pinned top + repos), not the old status hierarchy.
-        XCTAssertTrue(source.contains("BoardModel.sections(agents)"), "board must project through BoardModel.sections")
-        XCTAssertTrue(source.contains("sections.blocked"), "blocked promotion section must render")
-        XCTAssertTrue(source.contains("ForEach(repo.agents)"), "repo sections must render every repo agent")
-        // Row taps open recents through the model-owned deep-link target.
-        XCTAssertTrue(source.contains("model.recentsAgentId = agent.agentId"))
-        XCTAssertTrue(source.contains("RecentOutputSheet(agentId: target.agentId, model: model)"))
+        let start = source.range(of: "\nprivate struct RecentRailSpine")
+        let end = source.range(of: "\nprivate struct RecentCodeLineView")
+        let startIndex = try XCTUnwrap(start?.lowerBound,
+                                       "the continuous spine primitive must exist")
+        let endIndex = try XCTUnwrap(end?.lowerBound,
+                                     "the code line view declaration must exist")
+        let slice = String(source[startIndex..<endIndex])
+        XCTAssertTrue(slice.contains("Rectangle()"),
+                      "the spine must be a single drawn line, not per-row segments")
+        XCTAssertTrue(slice.contains(".frame(width: 1.5)"),
+                      "the spine must be one thin vertical line")
+        XCTAssertTrue(slice.contains("maxHeight: .infinity"),
+                      "the spine must span the whole rail stack continuously")
+        XCTAssertTrue(slice.contains("RecentOutputPalette.railLine"),
+                      "the spine must use the locked rail-line token")
+    }
+
+    func testRecentsRailRendererUsesTransitionMarkersOnly() throws {
+        let source = try bundledSource()
+        let start = source.range(of: "\nprivate struct RecentRailRowView: View {")
+        let end = source.range(of: "\nprivate struct RecentCodeLineView")
+        let startIndex = try XCTUnwrap(start?.lowerBound,
+                                       "the rail renderer declaration must exist")
+        let endIndex = try XCTUnwrap(end?.lowerBound,
+                                     "the code line view declaration must exist")
+        let slice = String(source[startIndex..<endIndex])
+        XCTAssertTrue(slice.contains("row.showsTransitionMarker"),
+                      "the rail renderer must gate its gutter marker on the model transition flag")
+        XCTAssertTrue(slice.contains("RecentOutputModel.marker(for: block.kind)"),
+                      "the rail renderer must draw the locked role marker")
+        // Zero role text / cards / per-row chrome inside the renderer.
+        for chrome in ["roleLabel", "speakerRail", "DisclosureGroup",
+                       "userTint", "toolSummary", "role text"] {
+            XCTAssertFalse(slice.contains(chrome),
+                           "chrome \(chrome) must not be in the rail renderer")
+        }
+    }
+
+    func testBoardProjectsThroughStatusSections() throws {
+        let source = try bundledSource()
+        // The FleetView board must be the status-section projection
+        // (locked order, repo never a grouping key), not repo groups. The
+        // #364 B chips filter WHICH agents the sections bucket through the
+        // pure BoardModel projections.
+        XCTAssertTrue(source.contains("let chips = BoardModel.repoFilters(agents)"),
+                      "board must project the #364 B chip set from the fleet")
+        XCTAssertTrue(source.contains("BoardModel.reconcile(model.repoFilter,"),
+                      "board must reconcile the chip choice against the live fleet")
+        XCTAssertTrue(source.contains("BoardModel.agents(agents, in: activeRepoFilter)"),
+                      "board must filter agents through the pure projection")
+        XCTAssertTrue(source.contains("BoardModel.sections(\n            BoardModel.agents"),
+                      "board must bucket the FILTERED agents into the locked status sections")
+        // Scope to the board renderer so an unrelated helper cannot satisfy
+        // the search (decoy-resistant: unique declaration marker).
+        let boardMarker = "private func boardSections(sections: BoardModel.Sections)"
+        XCTAssertEqual(source.components(separatedBy: boardMarker).count - 1, 1,
+                       "exactly one boardSections renderer must exist")
+        guard let boardStart = source.range(of: boardMarker) else {
+            return XCTFail("boardSections declaration not found")
+        }
+        let sliceEnd = try XCTUnwrap(source.range(of: "\n    @ViewBuilder\n    private func agentRow")?.lowerBound,
+                                     "agentRow declaration must follow boardSections")
+        let slice = String(source[boardStart.lowerBound..<sliceEnd])
+        // Renders one section per status bucket, header = status + count.
+        XCTAssertTrue(slice.contains("ForEach(sections.statuses)"),
+                      "the board must render the status-section projection")
+        XCTAssertTrue(slice.contains("ForEach(status.agents)"),
+                      "every agent of a status bucket must render")
+        XCTAssertTrue(slice.contains("status.header"),
+                      "section headers must show the raw status name + count")
+        // No repo grouping, no blocked promotion in the renderer.
+        for repoChrome in ["sections.repos", "sections.blocked", "repo.header", "ForEach(repo.agents)"] {
+            XCTAssertFalse(slice.contains(repoChrome),
+                           "repo chrome \(repoChrome) must not be wired into the status board")
+        }
+        // Row taps open recents through the model-owned request (the same
+        // funnel deep links and the demo route use), and the sheet is fed
+        // straight from that request.
+        XCTAssertTrue(source.contains("model.requestRecents(for: agent.agentId, haptic: true)"))
+        XCTAssertTrue(source.contains(".sheet(item: $model.recentsRequest,"))
+        XCTAssertTrue(source.contains("RecentOutputSheet(agentId: request.agentId, model: model)"))
+        XCTAssertTrue(source.contains("onDismiss: { model.recentsSheetDismissed() })"),
+                      "dismissal must run the request-lifecycle reconciler")
+    }
+
+    /// #364 wiring pin: touch feedback, haptics, chips, and the reopen
+    /// lifecycle must all be wired in FleetViews (visual feel stays a
+    /// device-side claim; this pins the surface + call sites).
+    func test364BoardUXSurfacesAreWired() throws {
+        let source = try bundledSource()
+        // A.1 pressed-state style exists and rows/chips/banner use it.
+        XCTAssertEqual(source.components(separatedBy: "struct BoardPressStyle:").count - 1, 1,
+                       "exactly one press style must exist")
+        XCTAssertTrue(source.contains("configuration.isPressed"),
+                      "the press style must key off touch-down state")
+        XCTAssertGreaterThanOrEqual(
+            source.components(separatedBy: ".buttonStyle(BoardPressStyle())").count - 1, 3,
+            "rows, chips, and the banner close must use the press style")
+        // A.2 haptic seam: one selection generator call site, discrete
+        // actions only (row tap + Done close).
+        XCTAssertEqual(source.components(separatedBy: "UISelectionFeedbackGenerator().selectionChanged()").count - 1, 1,
+                       "exactly one haptic call site must exist")
+        XCTAssertTrue(source.contains("model.closeRecentsButtonTapped()"),
+                      "the sheet Done control must tick on close")
+        // A.3: chip hit targets stay >= 44 pt.
+        XCTAssertTrue(source.contains(".frame(minHeight: 44)"),
+                      "chip hit targets must be >= 44 pt")
+        // B: chip row surfaces with the model-owned filter and selected
+        // state + VoiceOver selected trait.
+        XCTAssertTrue(source.contains("repoChipsRow(chips: chips,"))
+        XCTAssertTrue(source.contains("model.repoFilter = chip.repo"))
+        XCTAssertTrue(source.contains("accessibilityAddTraits(isSelected ? [.isSelected] : [])"))
+        // C: dismissal reconciles the request (reopen lifecycle) — the
+        // reconciler itself lives on the model and is pinned by
+        // RecentsSheetLifecycleTests; here we pin the view call site.
+        XCTAssertTrue(source.contains("onDismiss: { model.recentsSheetDismissed() })"),
+                      "the sheet dismissal must run the model reconciler")
     }
 
     func testRemovedSurfacesAreAbsentFromTheBoardSource() throws {
@@ -2383,9 +2979,410 @@ final class ReadOnlySurfaceWiringTests: XCTestCase {
         for removed in ["AgentDiffSheet", "IssuesBrowserView", "DevicesGrantsView",
                         "AnswerPromptSheet", "TerminalAttachView", "PromptDrafts",
                         "RecentOutputSections", "filterChipRow", "FleetSearchable",
-                        "swipeActions", "CannedButtons", "ClaimCard"] {
+                        "swipeActions", "CannedButtons", "ClaimCard",
+                        "RecentBlockRow", "speakerRail", "roleLabel"] {
             XCTAssertFalse(source.contains(removed),
                            "removed surface \(removed) must not be wired in FleetViews")
         }
+    }
+}
+
+// MARK: - #365 Settings gear (source wiring: always-visible top-bar control)
+
+/// #365: Settings must be an ALWAYS-VISIBLE top-bar gear Button (plain
+/// Button, system gear shape, >=44 pt, VoiceOver label) that opens the
+/// Settings sheet with the connection pairing surface — NOT a second-class
+/// entry hidden inside the DEBUG demo overflow menu. Pins the bundled
+/// FleetViews.swift.txt exactly like the #316/#364 wiring tests; a gear
+/// moved back into the menu, made DEBUG-only, or losing its label/target
+/// size goes RED here.
+final class SettingsAccessWiringTests: XCTestCase {
+
+    private func bundledSource() throws -> String {
+        let bundle = Bundle(for: SettingsAccessWiringTests.self)
+        let url = try XCTUnwrap(bundle.url(forResource: "FleetViews",
+                                           withExtension: "swift.txt"))
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    /// 1-based line numbers of every line whose `#if DEBUG` nesting makes
+    /// it DEBUG-active. FleetViews uses flat, non-nested `#if DEBUG` /
+    /// `#endif` pairs (no `#else`), so a depth scan is exact.
+    private func debugActiveLines(_ source: String) -> Set<Int> {
+        var active: Set<Int> = []
+        var depth = 0
+        for (index, line) in source.split(separator: "\n",
+                                          omittingEmptySubsequences: false)
+            .enumerated() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("#if DEBUG") {
+                depth += 1
+            } else if trimmed.hasPrefix("#endif") {
+                depth = max(0, depth - 1)
+            }
+            if depth > 0 { active.insert(index + 1) }
+        }
+        return active
+    }
+
+    private func lineNumbers(of needle: String, in text: String) -> [Int] {
+        text.split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+            .filter { $0.element.contains(needle) }
+            .map { $0.offset + 1 }
+    }
+
+    func testSettingsGearIsAReleaseActiveTopBarButton() throws {
+        let source = try bundledSource()
+        let debug = debugActiveLines(source)
+
+        // The gear is a plain Button whose DIRECT action opens the sheet.
+        // (The DEBUG-only settings evidence driver may open the same sheet —
+        // release-active occurrences are what the board depends on.)
+        let allActionLines = lineNumbers(of: "showSettings = true", in: source)
+        let releaseActionLines = allActionLines.filter { !debug.contains($0) }
+        XCTAssertEqual(releaseActionLines.count, 1,
+                       "exactly one RELEASE-active settings-open action must exist")
+        let gearLines = lineNumbers(of: "gearshape", in: source)
+        XCTAssertEqual(gearLines.count, 1,
+                       "the board must have exactly one system gear shape")
+        XCTAssertGreaterThan(gearLines[0], releaseActionLines[0],
+                             "the gear must sit in the Button LABEL after its action "
+                             + "(a 'Button(\"Settings\", systemImage: \"gearshape\") { showSettings = true }' "
+                             + "menu-item spelling is the removed surface)")
+
+        // >=44 pt target + VoiceOver label on the gear.
+        XCTAssertEqual(lineNumbers(of: ".accessibilityLabel(\"Settings\")",
+                                   in: source).count, 1,
+                       "the gear must carry a VoiceOver label")
+        XCTAssertEqual(lineNumbers(of: ".frame(minWidth: 44, minHeight: 44)",
+                                   in: source).count, 1,
+                       "the gear must keep a >=44 pt hit target")
+
+        // RELEASE-active: a DEBUG-gated gear would leave Release builds with
+        // NO Settings access at all, so every gear line must sit OUTSIDE the
+        // debug-active regions.
+        for needle in ["gearshape",
+                       ".accessibilityLabel(\"Settings\")",
+                       ".frame(minWidth: 44, minHeight: 44)"] {
+            let lines = lineNumbers(of: needle, in: source)
+            XCTAssertEqual(lines.count, 1, "\(needle) must appear exactly once")
+            guard lines.count == 1 else { continue }
+            XCTAssertFalse(debug.contains(lines[0]),
+                           "\(needle) must be release-active (gear on the board in Release)")
+        }
+        // The sheet-open action: one release-active (the gear) + one
+        // DEBUG-active (the #365 evidence driver); both required, neither
+        // release-gated.
+        XCTAssertEqual(releaseActionLines.count, 1,
+                       "the gear must be the ONLY release-active settings opener")
+        XCTAssertEqual(allActionLines.count - releaseActionLines.count, 1,
+                       "the DEBUG settings evidence driver must be the only debug-gated opener")
+    }
+
+    func testDemoOverflowMenuIsDebugOnlyAndNoLongerHidesSettings() throws {
+        let source = try bundledSource()
+        let debug = debugActiveLines(source)
+
+        let toolbarStart = try XCTUnwrap(source.range(of: ".toolbar {"),
+                                         "the board toolbar must exist")
+        let sheetMarker = try XCTUnwrap(source.range(of: ".sheet(isPresented: $showSettings)"),
+                                        "the settings sheet must be bound right after the toolbar")
+        let toolbarSlice = String(source[toolbarStart.lowerBound..<sheetMarker.lowerBound])
+
+        // Exactly ONE Menu in the board toolbar: the DEBUG demo overflow.
+        XCTAssertEqual(toolbarSlice.components(separatedBy: "Menu {").count - 1, 1,
+                       "the board toolbar must keep exactly one Menu (demo overflow only)")
+        guard let menuStart = toolbarSlice.range(of: "Menu {"),
+              let menuClose = toolbarSlice.range(of: "} label:") else {
+            return XCTFail("the demo Menu must have a label")
+        }
+        let menuSlice = String(toolbarSlice[menuStart.lowerBound..<menuClose.lowerBound])
+        XCTAssertFalse(menuSlice.contains("showSettings"),
+                       "Settings must NOT hide inside the demo overflow menu (#365)")
+        XCTAssertTrue(menuSlice.contains("sparkles"),
+                      "the overflow menu's remaining entry is the DEBUG demo toggle")
+        XCTAssertTrue(menuSlice.contains("enterDemo") || menuSlice.contains("exitDemo"),
+                      "the overflow menu must carry the demo toggle")
+
+        // The overflow chrome + demo strings are DEBUG-only; the gear beside
+        // them is release-active (asserted in the sibling test).
+        let sliderLines = lineNumbers(of: "slider.horizontal.3", in: source)
+        XCTAssertEqual(sliderLines.count, 1,
+                       "the slider overflow icon must appear exactly once")
+        XCTAssertTrue(debug.contains(sliderLines[0]),
+                      "the overflow menu (slider icon) must be DEBUG-gated")
+        for demoNeedle in ["Demo mode", "Exit demo"] {
+            for line in lineNumbers(of: demoNeedle, in: source) {
+                XCTAssertTrue(debug.contains(line),
+                              "\(demoNeedle) must stay inside #if DEBUG")
+            }
+        }
+    }
+
+    func testBoardRendersInsideANavigationStackShell() throws {
+        let source = try bundledSource()
+        // #365: .toolbar only renders inside a navigation shell. The #354
+        // cut deleted the board's NavigationStack, orphaning
+        // .navigationTitle/.toolbar — the top bar (and with it Settings)
+        // never appeared on the board. FleetView must own a stack again.
+        let boardMarker = "\nstruct FleetView: View {"
+        let boardStart = try XCTUnwrap(source.range(of: boardMarker),
+                                       "FleetView declaration must exist")
+        let boardEnd = try XCTUnwrap(source.range(of: "\n// MARK: - Banner"),
+                                     "the banner section must follow FleetView")
+        let slice = String(source[boardStart.lowerBound..<boardEnd.lowerBound])
+        XCTAssertEqual(slice.components(separatedBy: "NavigationStack {").count - 1, 1,
+                       "FleetView must wrap its board in exactly one NavigationStack")
+
+        let stackLine = try XCTUnwrap(lineNumbers(of: "NavigationStack {", in: slice).first)
+        let titleLine = try XCTUnwrap(lineNumbers(of: ".navigationTitle(\"Fleet\")", in: slice).first)
+        let toolbarLine = try XCTUnwrap(lineNumbers(of: ".toolbar {", in: slice).first)
+        let sheetLine = try XCTUnwrap(lineNumbers(of: ".sheet(isPresented: $showSettings)", in: slice).first)
+        XCTAssertLessThan(stackLine, titleLine,
+                          "the stack must open before the navigation chrome")
+        XCTAssertLessThan(titleLine, toolbarLine,
+                          "the toolbar must be configured inside the stack")
+        XCTAssertLessThan(toolbarLine, sheetLine,
+                          "the settings sheet binding must follow the toolbar")
+    }
+
+    func testSettingsSheetExposesConnectionPairingAndNotifications() throws {
+        let source = try bundledSource()
+        let start = try XCTUnwrap(source.range(of: "\nstruct SettingsView: View {"),
+                                  "SettingsView declaration must exist")
+        let nextMark = try XCTUnwrap(source.range(of: "\n// MARK: - Recents"),
+                                     "a section mark must follow SettingsView")
+        let slice = String(source[start.lowerBound..<nextMark.lowerBound])
+
+        // Connection pairing surface: host field + registration token +
+        // register action with the same enable rules as the connect section.
+        XCTAssertTrue(slice.contains("TextField(\"Host (Tailscale host or loopback)\""),
+                      "the Settings sheet must expose the connection host field (#365)")
+        XCTAssertTrue(slice.contains("SecureField(\"Registration token\""),
+                      "the Settings sheet must expose device pairing")
+        XCTAssertTrue(slice.contains("await model.register(host: host, token: token)"),
+                      "the Settings register action must route through the real registration flow")
+        XCTAssertTrue(slice.contains("host.isEmpty || token.isEmpty || registering"),
+                      "the Settings register action must disable on empty host/token")
+        XCTAssertTrue(slice.contains("model.hostURL?.absoluteString"),
+                      "the host field must pre-fill from the ACTIVE host on a paired device")
+        // Notifications pairing + reset (retained #354 surfaces).
+        XCTAssertTrue(slice.contains("Toggle(\"State-change notifications\""))
+        XCTAssertTrue(slice.contains("model.setNotificationsEnabled("))
+        XCTAssertTrue(slice.contains("Button(\"Reset device identity\""))
+        XCTAssertTrue(slice.contains("model.resetDevice()"))
+        // The sheet is a plain form — no overflow-menu / demo chrome inside.
+        XCTAssertEqual(slice.components(separatedBy: "NavigationStack {").count - 1, 1,
+                       "the sheet must own exactly one navigation shell")
+        for hidden in ["enterDemo", "exitDemo", "Demo mode", "Try demo fleet",
+                       "slider.horizontal.3", "Menu {"] {
+            XCTAssertFalse(slice.contains(hidden),
+                           "\(hidden) must not be wired into the Settings sheet")
+        }
+    }
+}
+
+// MARK: - #365 Settings host switch (register-while-live stream semantics)
+
+/// URL-keyed protocol for the #365 host-switch regressions. `/events`
+/// streams are served and then held OPEN (a live SSE connection); ordinary
+/// endpoints (e.g. `/register`) finish after their body. Every request URL
+/// is recorded so tests can prove which host the stream connected to.
+private final class HostSwitchURLProtocol: URLProtocol {
+    private static let lock = NSLock()
+    private static var scriptStorage: [URL: (statusCode: Int, body: Data, holdOpen: Bool)] = [:]
+    private static var requestsStorage: [URLRequest] = []
+
+    static func setScript(_ script: [URL: (statusCode: Int, body: Data, holdOpen: Bool)]) {
+        lock.lock()
+        scriptStorage = script
+        requestsStorage = []
+        lock.unlock()
+    }
+
+    static var requests: [URLRequest] {
+        lock.lock()
+        defer { lock.unlock() }
+        return requestsStorage
+    }
+
+    static func clearScript() {
+        setScript([:])
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.lock.lock()
+        Self.requestsStorage.append(request)
+        // SAFETY: URLProtocol requests always carry a URL.
+        let scripted = Self.scriptStorage[request.url!]
+        Self.lock.unlock()
+        guard let (statusCode, body, holdOpen) = scripted else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        // SAFETY: fixed valid HTTP response construction from a scripted URL.
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: statusCode, httpVersion: "HTTP/1.1",
+            headerFields: holdOpen
+                ? ["Content-Type": "text/event-stream"]
+                : ["Content-Type": "application/json"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        if !body.isEmpty {
+            client?.urlProtocol(self, didLoad: body)
+        }
+        if !holdOpen {
+            client?.urlProtocolDidFinishLoading(self)
+        }
+        // holdOpen: keep the connection alive like a real SSE stream — the
+        // stream task must be torn down by disconnect(), not by EOF.
+    }
+
+    override func stopLoading() {}
+}
+
+/// #365 host change: registration is the pairing path for re-pointing an
+/// already-paired device at a DIFFERENT host. `register()` must drop the
+/// current host's live SSE stream before the new pairing (FleetStore.connect
+/// no-ops while a stream runs — otherwise the board keeps streaming the OLD
+/// host forever) and must restart the old host's stream when the switch
+/// FAILS (otherwise the paired board dies behind the error banner).
+@MainActor
+final class SettingsHostSwitchTests: XCTestCase {
+
+    private var session: URLSession?
+    private var suiteName = ""
+    private var model: AppModel?
+
+    // SAFETY: fixed valid URL literals.
+    private let hostA = URL(string: "http://host-a")!
+    private let hostB = URL(string: "http://host-b")!
+    private let eventsA = URL(string: "http://host-a/events")!
+    private let eventsB = URL(string: "http://host-b/events")!
+    private let registerB = URL(string: "http://host-b/register")!
+
+    private func makeLiveFixture() -> AppModel {
+        suiteName = "corral.hostswitch.\(UUID().uuidString)"
+        // SAFETY: a fresh UUID-based suite name is always a valid suite.
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let model = AppModel(session: session!,
+                             identityLifecycle: IdentityLifecycle(),
+                             defaults: defaults,
+                             identityLoader: {
+                                 (DeviceSigner(key: Curve25519.Signing.PrivateKey()),
+                                  .insecureFallback)
+                             },
+                             loadMeta: { nil }, saveMeta: { _ in }, wipeIdentity: {})
+        model.mode = .live
+        model.hostURL = hostA
+        return model
+    }
+
+    private func scriptedSession(script: [URL: (Int, Data, Bool)]) -> URLSession {
+        HostSwitchURLProtocol.setScript(script)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [HostSwitchURLProtocol.self]
+        return URLSession(configuration: config)
+    }
+
+    private func waitForRequest(to url: URL, atLeast count: Int = 1,
+                                within timeout: TimeInterval = 5) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while HostSwitchURLProtocol.requests
+            .filter({ $0.url?.absoluteString == url.absoluteString }).count < count,
+              Date() < deadline {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+        XCTAssertGreaterThanOrEqual(
+            HostSwitchURLProtocol.requests
+                .filter({ $0.url?.absoluteString == url.absoluteString }).count,
+            count,
+            "expected >= \(count) request(s) to \(url.absoluteString) within \(timeout)s")
+    }
+
+    private func requestCount(to url: URL) -> Int {
+        HostSwitchURLProtocol.requests
+            .filter { $0.url?.absoluteString == url.absoluteString }.count
+    }
+
+    override func tearDown() {
+        model?.stopLive()
+        model = nil
+        session?.invalidateAndCancel()
+        session = nil
+        HostSwitchURLProtocol.clearScript()
+        if !suiteName.isEmpty {
+            // SAFETY: suiteName was freshly minted per test above.
+            UserDefaults(suiteName: suiteName)!
+                .removePersistentDomain(forName: suiteName)
+            suiteName = ""
+        }
+        super.tearDown()
+    }
+
+    /// #365 AC3 the reconnect half: registering a DIFFERENT host while a
+    /// live stream runs must end the OLD host stream and start the NEW
+    /// host's stream. RED on the unfixed code: `register()` never drops the
+    /// old stream, FleetStore.connect() no-ops on its live streamTask, and
+    /// no /events request to the new host ever appears.
+    func testRegisteringADifferentHostWhileLiveReconnectsTheStreamToIt() async throws {
+        let session = scriptedSession(script: [
+            eventsA: (200, Data(), true),
+            eventsB: (200, Data(), true),
+            registerB: (200, Data(#"{"key_id":"dev_switched","grants":[],"expiry_ts":1800000000,"revoked":false}"#.utf8), false),
+        ])
+        self.session = session
+        let model = makeLiveFixture()
+        self.model = model
+
+        // A REAL running SSE task against the CURRENT host (FleetStore
+        // connect() is a no-op while one is alive).
+        model.fleet.connect(client: CorraldClient(host: hostA, session: session))
+        await waitForRequest(to: eventsA)
+
+        await model.register(host: "http://host-b", token: "pair-token")
+
+        XCTAssertEqual(model.hostURL?.absoluteString, "http://host-b",
+                       "the model must point at the newly registered host")
+        XCTAssertEqual(model.mode, .live)
+        await waitForRequest(to: registerB)
+        // The discriminator: the NEW host's SSE stream must start (only
+        // possible if the old stream was dropped first).
+        await waitForRequest(to: eventsB)
+        XCTAssertEqual(requestCount(to: eventsA), 1,
+                       "the OLD host stream must be disconnected exactly once, never re-requested")
+    }
+
+    /// #365 failure half: a host switch that FAILS (bad token / unreachable
+    /// host) must keep the paired board on the OLD host — the dropped old
+    /// stream is restarted behind the register_failed banner. RED on the
+    /// unfixed code: the old stream is never restarted, so the board dies
+    /// with no live connection and no way to recover.
+    func testFailedHostSwitchRestartsTheOldHostStream() async throws {
+        let session = scriptedSession(script: [
+            eventsA: (200, Data(), true),
+            registerB: (500, Data(#"{"kind":"register_failed","message":"token rejected"}"#.utf8), false),
+        ])
+        self.session = session
+        let model = makeLiveFixture()
+        self.model = model
+
+        model.fleet.connect(client: CorraldClient(host: hostA, session: session))
+        await waitForRequest(to: eventsA)
+
+        await model.register(host: "http://host-b", token: "wrong-token")
+
+        XCTAssertEqual(model.mode, .live,
+                       "a failed switch must not change the mode")
+        XCTAssertEqual(model.hostURL?.absoluteString, "http://host-a",
+                       "a failed switch must keep the OLD host")
+        XCTAssertEqual(model.banner?.kind, "register_failed",
+                       "the failure must surface in the board banner")
+        // The dropped old-host stream must be RESTARTED (a second /events
+        // request to the old host), or the paired board stays dead.
+        await waitForRequest(to: eventsA, atLeast: 2)
     }
 }

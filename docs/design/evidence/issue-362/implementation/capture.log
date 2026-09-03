@@ -1,0 +1,46 @@
+#362 iOS status-section board — capture log
+
+Native iOS build (this branch, g362-ios-status-sections @ local head):
+  HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild build -project
+  ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination
+  'generic/platform=iOS Simulator' -derivedDataPath /tmp/g362-dd build
+  EXIT=0; BUILD SUCCEEDED
+
+Full iOS suite (simulator 59DDC0C5-891E-4EC0-91AF-4F50DF68D793, iPhone 16 /
+iOS 26.5):
+  HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project
+  ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination
+  "platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793"
+  -derivedDataPath /tmp/g362-dd -only-testing:FleetNotifierTests
+  EXIT=0; Executed 111 tests, with 0 failures ("All tests passed")
+
+Focused discriminating BoardModel tests (same command with
+  -only-testing:FleetNotifierTests/BoardModelReadOnlyTests):
+  EXIT=0; 8 tests (raw status buckets, repo-never-a-key, blocked-first-
+  exactly-once, done-only-when-reported, rank-tie position, ts/id
+  determinism) — all passed.
+
+Native iOS capture (fresh simulator to avoid the notification-permission
+alert race; no keychain identity):
+  xcrun simctl create g362-status-evidence "iPhone 16"
+    com.apple.CoreSimulator.SimRuntime.iOS-26-5
+  EXIT=0
+  xcrun simctl boot <created>; xcrun simctl bootstatus <created> -b
+  EXIT=0 (fresh boot ~2.5 min, data-migration plugins)
+  xcrun simctl install <created> /tmp/g362-dd/Build/Products/
+    Debug-iphonesimulator/FleetNotifier.app
+  EXIT=0
+  xcrun simctl launch <created> com.corral.fleetnotifier -demoMode
+  EXIT=0; pid logged
+  sleep 7
+  xcrun simctl io <created> screenshot ios-status-sections-raw.png
+  EXIT=0; PNG 1179x2556 (iPhone 16 @3x)
+  sips -z 844 390 ios-status-sections-raw.png --out
+    ios-status-sections-390x844.png
+  EXIT=0; resized 390x844 (0.18 % aspect distortion from 393x852 pt
+  native; same standard as docs/design/evidence/issue-316)
+  xcrun simctl shutdown <created>; xcrun simctl delete <created>
+  EXIT=0
+
+Synthetic-only: DEBUG -demoMode board over DemoFleet.seed() (fictional
+repos/agents). No live daemon, no physical device, no TestFlight claim.

@@ -49,8 +49,9 @@ pub(crate) fn now_millis() -> u64 {
 // ---------------------------------------------------------------------------
 
 /// v2 attention rank for one state: blocked(0) > working(1) > idle(2) >
-/// unknown(3). A wire `done` ranks WITH idle (its herdr 0.8.2 fallback —
-/// finished Hermes panes read as idle until replaced).
+/// unknown(3). A wire `done` ranks WITH idle: the board treats `done` as
+/// finished (ranked/rendered with idle, never active/working — the wire
+/// can carry `done` per the #324 live probe).
 pub fn state_rank(state: AgentState) -> u8 {
     theme::AgentStateLike::from(state).rank()
 }
@@ -73,7 +74,7 @@ impl RepoSection {
 /// The v2 board shape: every blocked agent pinned to the top (a PROMOTION,
 /// not a filter — the same agents also appear in their repo section), then
 /// one repo section per workspace repo holding every agent of that repo in
-/// attention order. A finished (idle-fallback) agent therefore STAYS in its
+/// attention order. A finished (`done`/idle) agent therefore STAYS in its
 /// repo section until the daemon replaces/deletes it: the last-done-per-repo
 /// retention rule. No collapsed cross-repo bucket, no search, no filters.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -751,7 +752,7 @@ mod tests {
         assert_eq!(
             state_rank(AgentState::Done),
             2,
-            "wire done ranks with idle (herdr fallback)"
+            "wire done ranks with idle (treated as finished)"
         );
         assert_eq!(state_rank(AgentState::Unknown), 3);
     }
@@ -784,7 +785,7 @@ mod tests {
         assert_eq!(board.repos[1].header(), "zeta (3)");
         assert_eq!(board.repos[2].header(), "no repo (1)");
         // zeta's attention order: blocked first, then working, then the
-        // idle (finished-fallback) agent stays in its repo — retention.
+        // idle (finished-rank) agent stays in its repo — retention.
         assert_eq!(
             board.repos[1].agent_ids,
             vec![

@@ -101,7 +101,32 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # revisions (the single-value decoder prefers Int64) — re-pinned.
     # #354 L2 gate fix: demo route hooks fully DEBUG-gated in FleetViews —
     # re-pinned.
-    "0dd3d2485c5ffb8df3fc00541e615c26eba1fb628e936b2150b4976375d2b364"
+    # #361: recents became one continuous chronological rail — divider-only
+    # rows dropped from the row model (RecentOutputModel), V3-era card/role
+    # chrome removed and transition markers added (FleetViews), and the demo
+    # divider fixture retained as rail-drop evidence (DemoFleet) — re-pinned.
+    # #361 fix: divider-only rows drop BEFORE adjacent tool/system merging so
+    # furniture never rides inside a merged content row — re-pinned.
+    # #361 R1: the continuous spine primitive (RecentRailSpine + railLine
+    # token) added to the recents renderer — re-pinned.
+    # #361 R1 fix: spine width anchored leading (no maxWidth expansion) and
+    # railLine derived from accent at low opacity (#271 V2 teal hairline) —
+    # re-pinned.
+    # #362: the board flipped from repo groups to raw status sections
+    # (BoardModel status buckets + FleetViews status-section renderer +
+    # demo seed trimmed to one evidence row per status) — re-pinned over
+    # the new Release source set.
+    # 2026-09-03 (#364 source set): board/recents UX — pressed-state style
+    # + haptics seam, repo filter chip projections (BoardModel), and the
+    # model-owned recents-request lifecycle (AppModel/FleetViews) updated
+    # the Release sources; digest re-pinned to the #364 head source set.
+    # 2026-09-03 (#365): board chrome restored — NavigationStack shell back
+    # around the board (the #354 cut had orphaned .toolbar), always-visible
+    # Settings gear Button (demo moved to a DEBUG-only overflow menu), and
+    # the Settings Connection section (host + pairing) updated FleetViews;
+    # AppModel register() gained the host-switch stream semantics; digest
+    # re-pinned to the #365 head source set.
+    "a88f05b806e49132b7d869687b3ee03fd3d5cb2dc7488ff83164f525b5ebd982"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #332 R4: pin the focused grant fixture independently from the Release
@@ -111,7 +136,24 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # #354 L2: the test suite was rebuilt for the read-only client
     # (removed action/issue/diff/terminal/admin classes; added board,
     # transition, payload, recents-tail, and wiring tests) — re-pinned.
-    "99b787553d9bfb2877a0069cf1889502f1c4975f4155bf57f380589810e9c302"
+    # #361: RecentRailModelTests + rail-wiring regressions (zero divider
+    # rows, zero role text, chronological order, transition-only markers)
+    # were added to the suite — re-pinned.
+    # #361 fix: merged-content divider regression added — re-pinned.
+    # #361 R1: continuous-spine source pins (sheet rides RecentRailSpine;
+    # the spine primitive spans the whole stack) — re-pinned.
+    # #362: BoardModelReadOnlyTests rewritten to the discriminating raw
+    # status-bucket semantics + the status-section wiring test — re-pinned.
+    # 2026-09-03 (#364 source set): RepoFilterChipProjectionTests and
+    # RecentsSheetLifecycleTests added (chip filter/counts, sheet-reopen
+    # first-tap lifecycle, haptics wiring) and the source-wiring tests
+    # updated to the model-owned recents request — re-pinned.
+    # 2026-09-03 (#365): SettingsAccessWiringTests (gear release-active
+    # top-bar Button, demo overflow menu DEBUG-only, NavigationStack shell,
+    # Settings Connection surface) and SettingsHostSwitchTests (register
+    # while live: host switch drops/restarts the SSE stream) added —
+    # re-pinned.
+    "b0cbecf3143f23709c978b36fff31fd1c076bd90649d5ba10c907efe8a5dcb25"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(
@@ -177,7 +219,11 @@ RELEASE_SOURCE_REQUIRED: dict[str, tuple[str, ...]] = {
     ),
     "ios/FleetNotifier/UI/FleetViews.swift": (
         "model.driveReadTail(",
-        "model.recentsAgentId",
+        # 2026-09-03 (#364 source set): row taps open recents through the
+        # model-owned request funnel (requestRecents replaced the old
+        # recentsAgentId assignment); the marker follows the new
+        # release-active call spelling.
+        "model.requestRecents(for: agent.agentId",
         "RecentOutputSheet",
     ),
 }

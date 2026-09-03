@@ -140,7 +140,19 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # 2026-09-03 (#372 R1): state colors collapsed into ONE shared mapping
     # (ThemeStore.stateToken(for:)) consumed by BOTH stateColor(for:) and
     # stateHex(for:) — no parallel switch; digest re-pinned.
-    "e1e0eba879509e9b215f9445937bfb3476c59a5ca88cc2fbf257b84c134689e6"
+    # 2026-09-03 (#371): the board-v2 renderer landed — BoardModel groups
+    # every status section into always-open repo subgroups (alphabetical +
+    # Other last), FleetViews renders subgroup bands + tinted state chips +
+    # repo label chips + the working-motion glyph (Reduce Motion static
+    # dot), AppTheme gained the locked chip/band/ink mixes (half-even
+    # quantization matching the approved color-mix render), DemoFleet
+    # reseeded to the board-v2 evidence shape (two blocked repos, working
+    # split across repos + orphan, one done row), FleetNotifierApp gained
+    # the DEBUG -corralDemoReduceMotion provider override, and the #364
+    # filter-evidence driver gained the same cancellation-abort pacing as
+    # the #372 theme driver (a raced driver cannot corrupt the recorded
+    # filter phases); digest re-pinned to the #371 head source set.
+    "414b4b8760e712449864d602c113cc030478710d1f1b8b7b20310ab18f5c848f"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #332 R4: pin the focused grant fixture independently from the Release
@@ -171,7 +183,13 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # theme tokens, ThemeWiringTests + LegacyHexAuditTests were added (in
     # FleetNotifierTests.swift), and the #372 theme-evidence driver added a
     # second DEBUG-gated settings opener — re-pinned.
-    "551970b04889dd65c3dc195ea3fa6c5fdf7e38e2eccbf868e0ac39355eaf843b"
+    # 2026-09-03 (#371): BoardModelReadOnlyTests became BoardModelBoardV2Tests
+    # (subgroup alpha + Other-last + section totals + filter-keeps-sections),
+    # WorkingMotionTests + BoardV2WiringTests (working glyph, tinted chip via
+    # the shared state mapping, subgroup/row hue pins) were added, and the
+    # demo seed tests now carry the done row; BoardV2ChipMixTests lives in
+    # ThemeTests.swift (not a pinned file) — re-pinned.
+    "c39c0714436003d47cf7813802954a294f996b32e05fbf684672dfa1bdc54ac4"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

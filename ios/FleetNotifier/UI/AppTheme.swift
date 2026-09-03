@@ -395,6 +395,107 @@ extension ThemeStore {
         color(repoHue(for: repo, among: repos))
     }
 
+    // MARK: #371 board-v2 chip surfaces (derived mixes, single palette source)
+    //
+    // The approved board renders repo/state hues on TINTED chip surfaces.
+    // The design round derives every tint/ink as an sRGB mix of a VERBATIM
+    // palette hue over a palette surface (tune.py in the approved
+    // 371-372 board-theming bundle):
+    //   repo label chip fill = mix(hue 15 %, base);  border = mix(hue 38 %, base)
+    //   repo subgroup band   = mix(hue  9 %, mantle)
+    //   state chip fill      = mix(state 17 %, base); border = mix(state 34 %, base)
+    // Label ink = mix(hue X %, text) with X per flavor — Latte 29 %,
+    // Frappé 76 %, Macchiato/Mocha 100 % — the strongest hue share whose
+    // worst-case contrast still clears 4.5:1 on the chip fill for every
+    // accent-ring hue (derived by tune.py, not guessed). `Other`
+    // (surface2) can never reach AA mixed into its own tint, so its ink is
+    // subtext1 verbatim (design lock) — all resolved from the SAME palette
+    // tables, never a parallel hex set.
+
+    /// The locked per-flavor label-ink mix ratio (hue share of the mix).
+    private static let repoInkMixRatio: [CatppuccinFlavor: Double] = [
+        .latte: 0.29, .frappe: 0.76, .macchiato: 1.0, .mocha: 1.0,
+    ]
+
+    /// The repo/subgroup label ink for one hue token: the hue mixed toward
+    /// the flavor's text token at the locked ratio; `Other` (surface2)
+    /// falls back to subtext1 (design lock — gray can never clear AA
+    /// mixed, so it stays a neutral tier).
+    func repoInk(for hue: CatppuccinToken) -> Color {
+        if hue == .surface2 { return color(.subtext1) }
+        let ratio = Self.repoInkMixRatio[flavor] ?? 1.0
+        return Color(uiColor: UIColor(
+            catppuccinHex: Self.mixedHex(palette.hex(hue),
+                                         at: ratio,
+                                         over: palette.hex(.text))))
+    }
+
+    /// The tinted chip surfaces of one state (working=teal, blocked=red,
+    /// done=green, idle=subtext0, unknown=surface2 — the SAME single
+    /// state mapping `stateColor(for:)` uses, never a parallel switch).
+    func stateChipFill(for state: AgentState) -> Color {
+        mixed(Self.stateToken(for: state), at: 0.17, over: .base)
+    }
+
+    func stateChipBorder(for state: AgentState) -> Color {
+        mixed(Self.stateToken(for: state), at: 0.34, over: .base)
+    }
+
+    /// The repo subgroup header band (hue 9 % over mantle) — the full-width
+    /// tinted strip under the status header.
+    func repoBand(for hue: CatppuccinToken) -> Color {
+        mixed(hue, at: 0.09, over: .mantle)
+    }
+
+    /// The repo label chip fill/border (hue over base) on agent rows.
+    func repoChipFill(for hue: CatppuccinToken) -> Color {
+        mixed(hue, at: 0.15, over: .base)
+    }
+
+    func repoChipBorder(for hue: CatppuccinToken) -> Color {
+        mixed(hue, at: 0.38, over: .base)
+    }
+
+    /// One sRGB mix of two palette tokens: `hueFraction` of the hue token
+    /// over the surface token (0…1).
+    func mixed(_ hue: CatppuccinToken, at hueFraction: Double,
+               over surface: CatppuccinToken) -> Color {
+        Color(uiColor: UIColor(
+            catppuccinHex: Self.mixedHex(palette.hex(hue),
+                                         at: hueFraction,
+                                         over: palette.hex(surface))))
+    }
+
+    /// `#RRGGBB` × `#RRGGBB` sRGB linear mix (component-wise lerp),
+    /// returning the `#rrggbb` hex — palette-token hexes only.
+    ///
+    /// Quantization lock: half-boundary components round to EVEN
+    /// (`.toNearestOrEven`), matching the approved prototype's CSS
+    /// `color-mix(in srgb, …)` render — pixel-sampled in the design round
+    /// (e.g. Mocha blue-15 %-over-base = #2e344d, never #2e354d). A plain
+    /// half-away-from-zero `.rounded()` diverges at exact x.5 channels.
+    private static func mixedHex(_ hexA: String, at hueFraction: Double,
+                                 over hexB: String) -> String {
+        let (ar, ag, ab) = rgbComponents(hexA)
+        let (br, bg, bb) = rgbComponents(hexB)
+        let t = min(max(hueFraction, 0), 1)
+        func lerp(_ a: Double, _ b: Double) -> Int {
+            Int((a * t + b * (1 - t)).rounded(.toNearestOrEven))
+        }
+        return String(format: "#%02x%02x%02x", lerp(ar, br), lerp(ag, bg),
+                      lerp(ab, bb))
+    }
+
+    /// `#RRGGBB` → sRGB components (0…255).
+    private static func rgbComponents(_ hex: String) -> (Double, Double, Double) {
+        let body = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
+        var value: UInt64 = 0
+        Scanner(string: body).scanHexInt64(&value)
+        return (Double((value >> 16) & 0xFF),
+                Double((value >> 8) & 0xFF),
+                Double(value & 0xFF))
+    }
+
     // MARK: Recents tail tokens
     //
     // The REAL recents tail is themed: text/subtext tokens + ANSI remap to

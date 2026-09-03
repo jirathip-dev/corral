@@ -6,8 +6,18 @@ struct FleetNotifierApp: App {
     @StateObject private var model = AppModel()
     // #372: the app-wide theme (flavor + Reduce Motion). Owned here so the
     // flavor's color scheme/tint reach every sheet and the picker's choice
-    // persists across launches.
-    @StateObject private var theme = ThemeStore()
+    // persists across launches. #371: the DEBUG-only launch argument
+    // `-corralDemoReduceMotion` forces the Reduce-Motion provider so the
+    // simulator evidence can capture the static working dot — simctl cannot
+    // toggle the system Reduce Motion setting.
+    @StateObject private var theme = ThemeStore(reduceMotionProvider: {
+#if DEBUG
+        if CommandLine.arguments.contains("-corralDemoReduceMotion") {
+            return true
+        }
+#endif
+        return UIAccessibility.isReduceMotionEnabled
+    })
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {

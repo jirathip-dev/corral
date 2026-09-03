@@ -1,24 +1,28 @@
 import SwiftUI
 import Combine
 
-// MARK: - #354 L2 read-only FleetNotifier
+// MARK: - #354/#371 L2 read-only FleetNotifier
 //
 // Surfaces after the client cut:
 // - Board (home): raw-herdr-status sections in the locked attention order
-//   (blocked → working → idle → unknown; done only when herdr reports it);
-//   repo is row metadata, never a grouping key. Row = agent name · state ·
-//   time-in-state · repo · branch + small pane ref. NO search, NO filters,
-//   NO actions.
+//   (blocked → working → idle → unknown; done only when herdr reports it),
+//   each section grouping its rows into always-open REPO SUBGROUPS (#371:
+//   alphabetical, Other last). Row = agent name · state chip · time-in-state
+//   · repo chip · branch + small pane ref. NO search, NO actions.
 // - Recents: tap a row → bottom sheet with the LIVE tail (auto-scroll,
 //   ≤200-line daemon cap). No load-earlier, no Conversation/Harness
 //   partition, no composer.
-// - Settings: connection + notification pairing only.
+// - Settings: connection + notification pairing + Appearance only.
 // Removed: Issues browser, Terminal, Diff, approval/prompt/attach/kill
 // controls, device/grant admin.
 //
 // #372: every color below resolves through the environment `ThemeStore`
 // (Catppuccin tokens). NO legacy GitHub-dark hex literals exist in this
 // layer (audit gate in the #372 report).
+// #371: state chips are tinted per state through the shared stateColor
+// mapping; the working chip breathes three 4 pt squares (Reduce Motion =
+// static teal dot); repo hues come from the shared RepoHue fnv1a32 % 8
+// function on the filter-chip repo set.
 
 // MARK: - Row state chrome
 
@@ -65,16 +69,134 @@ private struct TimeInStateLabel: View {
     }
 }
 
-/// The board row (#354 L2): raw state chip + time-in-state, agent name,
-/// repo · branch line, and the small pane reference (debug aid). The whole
-/// row is a read-only tap target that opens the agent's recents sheet —
-/// there are no action controls anywhere.
+// MARK: - #371 working-motion glyph + repo label chip
+
+/// The approved working heartbeat as pure math: three 4 pt squares breathe
+/// on a 1.2 s cycle — opacity 0.34 → 1 and scale 0.78 → 1, peaking at
+/// 42 % of the cycle, then easing back — staggered 160 ms per square (the
+/// prototype's `@keyframes breathe` verbatim). No rotation, translation,
+/// or color change: a heartbeat, never a spinner. Testable in isolation so
+/// the stagger + cycle cannot regress silently behind the view.
+enum WorkingMotion {
+    static let cycle: TimeInterval = 1.2
+    static let stagger: TimeInterval = 0.16
+    static let squareCount = 3
+    /// Fraction of the cycle at the peak (0.42 in the design's keyframes).
+    static let peakPhase = 0.42
+    static let minOpacity = 0.34
+    static let minScale: CGFloat = 0.78
+
+    static func delay(for square: Int) -> TimeInterval {
+        Double(square) * stagger
+    }
+
+    /// Normalized progress (0…<1) of one square's own cycle at `time`.
+    static func phase(at time: TimeInterval, square: Int) -> Double {
+        let shifted = time - delay(for: square)
+        let wrapped = shifted.truncatingRemainder(dividingBy: cycle)
+        return (wrapped >= 0 ? wrapped : wrapped + cycle) / cycle
+    }
+
+    /// The shared up-down ramp: 0 at rest, 1 at the cycle peak (42 %),
+    /// 0 again at cycle end.
+    static func ramp(at time: TimeInterval, square: Int) -> Double {
+        let p = phase(at: time, square: square)
+        return p <= peakPhase ? p / peakPhase : (1 - p) / (1 - peakPhase)
+    }
+
+    static func opacity(at time: TimeInterval, square: Int) -> Double {
+        minOpacity + (1 - minOpacity) * ramp(at: time, square: square)
+    }
+
+    static func scale(at time: TimeInterval, square: Int) -> CGFloat {
+        minScale + (1 - minScale) * CGFloat(ramp(at: time, square: square))
+    }
+}
+
+/// The working-state chip glyph: three tiny squares breathing in stagger
+/// (~1.2 s cycle) — or the static teal dot when Reduce Motion is on
+/// (design lock: the squares are REMOVED, not paused, and no spinner
+/// anywhere on the board).
+struct WorkingMotionGlyph: View {
+    let reduceMotion: Bool
+    @EnvironmentObject private var theme: ThemeStore
+
+    var body: some View {
+        if reduceMotion {
+            Circle()
+                .fill(theme.stateColor(for: .working))
+                .frame(width: 7, height: 7)
+        } else {
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+                let t = timeline.date.timeIntervalSinceReferenceDate
+                HStack(spacing: 3) {
+                    ForEach(0..<WorkingMotion.squareCount, id: \.self) { index in
+                        RoundedRectangle(cornerRadius: 1)
+                            .fill(theme.stateColor(for: .working))
+                            .frame(width: 4, height: 4)
+                            .opacity(WorkingMotion.opacity(at: t, square: index))
+                            .scaleEffect(WorkingMotion.scale(at: t, square: index))
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The row's repo label chip (#371): a small capsule whose dot + border
+/// echo the repo's deterministic hue (subgroup header uses the same hue),
+/// with the repo name ALWAYS present (color is never the only channel).
+/// The `Other` subgroup's rows carry an Other chip in the surface2 gray.
+struct RepoLabelChip: View {
+    /// `nil` renders the Other chip (no repo / unknown repo).
+    let repo: String?
+    /// The fleet repo set for deterministic hue assignment (the same list
+    /// the filter chips and subgroup headers resolve against).
+    var repos: [String] = []
+    @EnvironmentObject private var theme: ThemeStore
+
+    var body: some View {
+        let name = repo ?? BoardModel.otherRepoLabel
+        // An empty key is never in the fleet repo set, so the Other chip
+        // resolves through the surface2 fallback — never an accent ring
+        // hue (Other = gray, design lock).
+        let hue = theme.repoHue(for: repo ?? "", among: repos)
+        HStack(spacing: 5) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(theme.color(hue))
+                .frame(width: 6, height: 6)
+                .accessibilityHidden(true)
+            Text(name)
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(theme.repoInk(for: hue))
+                .lineLimit(1)
+        }
+        .padding(.leading, 5)
+        .padding(.trailing, 7)
+        .padding(.vertical, 2)
+        .background(theme.repoChipFill(for: hue), in: Capsule())
+        .overlay(Capsule().stroke(theme.repoChipBorder(for: hue), lineWidth: 1))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(name)
+    }
+}
+
+
+/// The board row (#354 L2, #371 board v2): a tinted per-state chip with the
+/// raw state token + time-in-state, the agent name, the trailing small pane
+/// reference + tool chip, and the repo · branch · basename line under it
+/// (the repo renders as a colored label chip echoing its subgroup hue).
+/// The whole row is a read-only tap target that opens the agent's recents
+/// sheet — there are no action controls anywhere.
 struct AgentRow: View {
     let agent: Agent
     /// #166 review F2: client-side state-entered wall clock, passed down
     /// from `FleetStore.stateEnteredAt` so a reason/title churn does not
     /// reset the duration. `nil` falls back to `agent.ts`.
     var stateEnteredAt: UInt64? = nil
+    /// #371: the fleet repo set for deterministic row-chip hues (same list
+    /// the filter chips + subgroup headers resolve against).
+    var repos: [String] = []
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ScaledMetric(relativeTo: .caption) private var badgeMinWidth: CGFloat = 84
     @EnvironmentObject private var theme: ThemeStore
@@ -85,22 +207,20 @@ struct AgentRow: View {
                 // Dynamic Type: stack the trailing chips under the title.
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 6) {
-                        statusDot
-                        stateBadge
+                        stateChip
                         titleText
                     }
                     trailingChips
                 }
             } else {
                 HStack(spacing: 6) {
-                    statusDot
-                    stateBadge
+                    stateChip
                     titleText
                     Spacer(minLength: 0)
                     trailingChips
                 }
             }
-            WorkspaceLine(agent: agent)
+            WorkspaceLine(agent: agent, repos: repos)
         }
         .padding(.vertical, 2)
         .opacity(agent.state == .idle ? 0.65 : 1)
@@ -109,27 +229,16 @@ struct AgentRow: View {
 
     // MARK: - Row subviews
 
+    /// #371: the tinted per-state chip (#354 state chip — raw token glyph +
+    /// label + time-in-state — now on the state's chip fill/border mix:
+    /// working=teal, blocked=red, done=green, idle=subtext0,
+    /// unknown=surface2 through the shared `stateColor` mapping; the chip
+    /// surfaces resolve through the same single mapping).
     @ViewBuilder
-    private var statusDot: some View {
-        let stateColor = theme.stateColor(for: agent.state)
-        Circle()
-            .fill(stateStyle.isRing ? Color.clear : stateColor)
-            .overlay(Circle().stroke(stateColor, lineWidth: 1))
-            .frame(width: 12, height: 12)
-            .accessibilityHidden(true)
-    }
-
-    /// Fixed-width state badge: raw herdr token + duration. A real
-    /// `minWidth` keeps the badges in one column even as durations roll
-    /// over; `.lineLimit(1)` preserves the no-mid-word-wrap rule.
-    @ViewBuilder
-    private var stateBadge: some View {
+    private var stateChip: some View {
         let stateColor = theme.stateColor(for: agent.state)
         HStack(spacing: 3) {
-            Text(stateStyle.glyph)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(stateColor)
-                .accessibilityHidden(true)
+            stateGlyph(stateColor: stateColor)
             Text(stateStyle.label)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(stateColor)
@@ -137,9 +246,30 @@ struct AgentRow: View {
             TimeInStateLabel(agent: agent, stateEnteredAt: stateEnteredAt)
         }
         .lineLimit(1)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
         .frame(minWidth: badgeMinWidth, alignment: .leading)
+        .background(theme.stateChipFill(for: agent.state),
+                    in: RoundedRectangle(cornerRadius: 7))
+        .overlay(RoundedRectangle(cornerRadius: 7)
+            .stroke(theme.stateChipBorder(for: agent.state), lineWidth: 1))
         .fixedSize(horizontal: true, vertical: false)
         .layoutPriority(2)
+    }
+
+    /// The chip glyph: the shared raw-state mark for every state EXCEPT
+    /// working, which shows the #371 heartbeat (three breathing squares, or
+    /// the static teal dot under Reduce Motion — never a spinner).
+    @ViewBuilder
+    private func stateGlyph(stateColor: Color) -> some View {
+        switch agent.state {
+        case .working:
+            WorkingMotionGlyph(reduceMotion: theme.reduceMotion)
+        default:
+            Text(stateStyle.glyph)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(stateColor)
+        }
     }
 
     @ViewBuilder
@@ -221,6 +351,11 @@ private func rowSummary(_ agent: Agent) -> String {
 /// `…` stub (G100).
 struct WorkspaceLine: View {
     let agent: Agent
+    /// #371: the fleet repo set for deterministic hue assignment (the same
+    /// list the filter chips + subgroup headers resolve against). The repo
+    /// renders as a colored label chip on the line; orphan agents (repo
+    /// nil) show the gray Other chip.
+    var repos: [String] = []
     @EnvironmentObject private var theme: ThemeStore
 
     /// Per-segment truncation + compression policy (G100).
@@ -248,17 +383,13 @@ struct WorkspaceLine: View {
     var body: some View {
         let w = agent.workspace
         HStack(spacing: 4) {
-            if let repo = w.repo {
-                Text(repo)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(theme.subtext1)
-                    .lineLimit(1)
-                    .layoutPriority(SegmentPolicy.priority(for: .repo))
-            }
+            // #371: the repo is a colored label chip (hue dot + name,
+            // echoing the subgroup header); orphans carry the Other chip —
+            // the repo identity is never color-only.
+            RepoLabelChip(repo: w.repo, repos: repos)
+                .layoutPriority(SegmentPolicy.priority(for: .repo))
             if let branch = w.branch {
-                if w.repo != nil {
-                    Text("·").font(.caption2).foregroundStyle(theme.subtext1)
-                }
+                Text("·").font(.caption2).foregroundStyle(theme.subtext1)
                 Text(branch)
                     .font(.caption2.monospaced())
                     .foregroundStyle(theme.subtext1)
@@ -274,9 +405,6 @@ struct WorkspaceLine: View {
                     .lineLimit(1)
                     .truncationMode(SegmentPolicy.truncationMode(for: .basename))
                     .layoutPriority(SegmentPolicy.priority(for: .basename))
-            }
-            if w.repo == nil && w.branch == nil && Self.worktreeBasename(w) == nil {
-                Text("—").font(.caption2).foregroundStyle(theme.subtext1)
             }
             Spacer(minLength: 4)
             if let pr = w.prNumber {
@@ -404,8 +532,13 @@ struct FleetView: View {
         let chips = BoardModel.repoFilters(agents)
         let activeRepoFilter = BoardModel.reconcile(model.repoFilter,
                                                     against: chips)
+        // #371: the deterministic repo-hue set is the filter-chip repo
+        // list — chips, subgroup headers, and row chips all resolve the
+        // same fnv1a32 % 8 assignment (RepoHue, consumed via ThemeStore).
+        let repos = chips.map(\.repo)
         // #364 B2: the chips choose WHICH agents the #362 status sections
-        // bucket; sections keep their locked order over the filtered set.
+        // bucket; sections keep their locked order over the filtered set,
+        // and #371 splits each section into repo subgroups.
         let sections = BoardModel.sections(
             BoardModel.agents(agents, in: activeRepoFilter))
         // #365: the top-bar chrome (.navigationTitle/.toolbar — the Settings
@@ -446,10 +579,10 @@ struct FleetView: View {
                     RegistrationView(model: model)
 #if DEBUG
                 case .demo:
-                    boardSections(sections: sections)
+                    boardSections(sections: sections, repos: repos)
 #endif
                 case .live:
-                    boardSections(sections: sections)
+                    boardSections(sections: sections, repos: repos)
                 }
             }
             .listStyle(.plain)
@@ -616,43 +749,106 @@ struct FleetView: View {
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 
-    /// The #362 board: one section per raw herdr status in the locked
-    /// attention order (blocked → working → idle → unknown; a done section
-    /// renders only when herdr reports it). Blocked agents are first overall
-    /// because their section is first — no cross-repo promotion, no repo
-    /// grouping (repo is row metadata). Every agent of a status appears in
-    /// exactly that one section. `sections` arrives ALREADY filtered by the
-    /// #364 B chip selection.
+    /// The #371 board v2 renderer: one section per raw herdr status in the
+    /// locked attention order (blocked → working → idle → unknown; a done
+    /// section renders only when herdr reports it), each section split into
+    /// always-open REPO SUBGROUPS (alphabetical, Other last) rendered as a
+    /// tinted header band + its agent rows. Subgroups are NOT collapsible —
+    /// no disclosure controls anywhere. `sections` arrives ALREADY filtered
+    /// by the #364 B chip selection; `repos` is the fleet-wide repo set so
+    /// subgroup + row hues match the filter chips' fnv1a32 % 8 assignment.
     @ViewBuilder
-    private func boardSections(sections: BoardModel.Sections) -> some View {
+    private func boardSections(sections: BoardModel.Sections,
+                               repos: [String]) -> some View {
         ForEach(sections.statuses) { status in
             Section {
-                ForEach(status.agents) { agent in
-                    agentRow(agent)
-                        // #372: iOS 26 plain lists paint their own row
-                        // background unless each row opts into the token
-                        // surface (a List-level `.listRowBackground` is not
-                        // honored); rows ride the flavor's base.
-                        .listRowBackground(theme.base)
+                ForEach(status.subgroups) { subgroup in
+                    repoSubgroupHeader(subgroup, repos: repos)
+                    ForEach(subgroup.agents) { agent in
+                        agentRow(agent, repos: repos)
+                            // #372: iOS 26 plain lists paint their own row
+                            // background unless each row opts into the token
+                            // surface (a List-level `.listRowBackground` is not
+                            // honored); rows ride the flavor's base.
+                            .listRowBackground(theme.base)
+                    }
                 }
             } header: {
                 PinnedHeader {
-                    Text(status.header)
-                        .accessibilityLabel(status.header)
+                    statusSectionHeader(status)
                 }
             }
         }
     }
 
+    /// The pinned status header: state-colored mark + raw status name +
+    /// TOTAL count across the section's subgroups (#371: the total is the
+    /// section's own count — it rescopes with the #364 B chip filter).
     @ViewBuilder
-    private func agentRow(_ agent: Agent) -> some View {
+    private func statusSectionHeader(
+        _ status: BoardModel.StatusSection) -> some View {
+        HStack(spacing: 7) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(theme.stateColor(for: status.state))
+                .frame(width: 8, height: 8)
+                .accessibilityHidden(true)
+            Text(status.header)
+                .accessibilityLabel(status.header)
+        }
+    }
+
+    /// One always-open repo subgroup band (#371): 2 pt hue rail + hue dot +
+    /// repo name (label ink) + the subgroup's agent count. Renders as a
+    /// plain non-collapsible row on the hue 9 %-over-mantle band; Other
+    /// (gray surface2) sits last by construction in BoardModel.
+    @ViewBuilder
+    private func repoSubgroupHeader(_ subgroup: BoardModel.RepoSubgroup,
+                                    repos: [String]) -> some View {
+        // An empty lookup key is never in the fleet repo set, so the Other
+        // subgroup resolves through the surface2 fallback (gray, design
+        // lock) — never an accent-ring hue.
+        let hue = theme.repoHue(for: subgroup.repo ?? "", among: repos)
+        HStack(spacing: 7) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(theme.color(hue))
+                .frame(width: 8, height: 8)
+                .accessibilityHidden(true)
+            Text(subgroup.displayName)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(theme.repoInk(for: hue))
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            Text("\(subgroup.agents.count)")
+                .font(.caption.weight(.semibold))
+                .monospacedDigit()
+                .foregroundStyle(theme.subtext1)
+                .accessibilityHidden(true)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(theme.color(hue))
+                .frame(width: 2)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(subgroup.header)
+        .listRowInsets(EdgeInsets())
+        .listRowBackground(theme.repoBand(for: hue))
+        .listRowSeparator(.hidden)
+    }
+
+    @ViewBuilder
+    private func agentRow(_ agent: Agent, repos: [String]) -> some View {
         Button {
             // #364 A.2: a real row tap is a discrete action — one light
             // selection tick (drags that cancel never reach the action).
             model.requestRecents(for: agent.agentId, haptic: true)
         } label: {
             AgentRow(agent: agent,
-                     stateEnteredAt: model.fleet.stateEnteredAt[agent.agentId])
+                     stateEnteredAt: model.fleet.stateEnteredAt[agent.agentId],
+                     repos: repos)
         }
         .buttonStyle(BoardPressStyle())
         .accessibilityElement(children: .combine)
@@ -804,15 +1000,15 @@ struct FleetView: View {
     private func runFilterSequence() async {
         guard model.mode == .demo else { return }
         EvidenceMarkers.write("phase-1-all")
-        try? await Task.sleep(for: .milliseconds(1500))
+        guard await themePause(1500) else { return }
         model.repoFilter = "demo-atlas"
-        try? await Task.sleep(for: .milliseconds(700))
+        guard await themePause(700) else { return }
         EvidenceMarkers.write("phase-2-filtered-atlas")
-        try? await Task.sleep(for: .milliseconds(1500))
+        guard await themePause(1500) else { return }
         model.repoFilter = nil
-        try? await Task.sleep(for: .milliseconds(700))
+        guard await themePause(700) else { return }
         EvidenceMarkers.write("phase-3-back-to-all")
-        try? await Task.sleep(for: .milliseconds(1500))
+        guard await themePause(1500) else { return }
         EvidenceMarkers.write("phase-4-done")
     }
 

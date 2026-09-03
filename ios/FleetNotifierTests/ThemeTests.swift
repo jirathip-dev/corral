@@ -282,3 +282,93 @@ extension Color {
         return String(format: "#%02x%02x%02x", r, g, b)
     }
 }
+
+// MARK: - #371 board-v2 chip surfaces (derived mixes)
+
+/// Locks the board-v2 chip/ink mix tokens against the approved design
+/// round's tune.py recipe (sRGB lerp of a VERBATIM palette hue over a
+/// palette surface). Expected hexes are DERIVED from the design's locked
+/// palette + mix ratios (see AppTheme.swift, #371 mix MARK) — not recreated
+/// from the implementation. A flipped ratio, over-token, or flavor arm goes
+/// RED here.
+@MainActor
+final class BoardV2ChipMixTests: XCTestCase {
+
+    private func store(_ flavor: CatppuccinFlavor) -> ThemeStore {
+        let name = "board-v2-mix-\(flavor.rawValue)-\(UUID().uuidString)"
+        // SAFETY: a fresh UUID-based suite name is always a valid suite.
+        let defaults = UserDefaults(suiteName: name)!
+        let store = ThemeStore(defaults: defaults, reduceMotionProvider: { false })
+        store.setFlavor(flavor)
+        return store
+    }
+
+    func testRepoInkMatchesTheLockedPerFlavorMixVectors() {
+        // ink = mix(hue X %, text): Latte 29 % (darkest arm — hues must be
+        // pulled most of the way toward text to clear 4.5:1 on their own
+        // tint), Frappé 76 %, Macchiato/Mocha 100 % (pastels need no help).
+        XCTAssertEqual(store(.latte).repoInk(for: .teal).hexDescription, "#3d6277",
+                       "Latte teal label ink = mix(teal 29 %, text)")
+        XCTAssertEqual(store(.frappe).repoInk(for: .blue).hexDescription, "#9ab3f0",
+                       "Frappé blue label ink = mix(blue 76 %, text)")
+        XCTAssertEqual(store(.mocha).repoInk(for: .teal).hexDescription, "#94e2d5",
+                       "Mocha label ink stays the verbatim hue (100 % mix)")
+        XCTAssertEqual(store(.mocha).repoInk(for: .blue).hexDescription, "#89b4fa",
+                       "Macchiato/Mocha need no mix toward text")
+    }
+
+    func testOtherInkFallsBackToSubtext1PerFlavor() {
+        // Other (surface2) can never clear AA mixed into its own tint —
+        // design lock: neutral subtext1 ink instead of a mixed gray.
+        XCTAssertEqual(store(.latte).repoInk(for: .surface2).hexDescription, "#5c5f77")
+        XCTAssertEqual(store(.mocha).repoInk(for: .surface2).hexDescription, "#bac2de")
+    }
+
+    func testStateChipSurfacesResolveThroughTheSharedStateMapping() {
+        // state chip fill = mix(state 17 %, base), border = mix(state 34 %,
+        // base) — the SAME single state mapping stateColor(for:) uses.
+        let mocha = store(.mocha)
+        XCTAssertEqual(mocha.stateChipFill(for: .working).hexDescription, "#323f4a",
+                       "mocha working fill = mix(teal 17 %, base)")
+        XCTAssertEqual(mocha.stateChipBorder(for: .working).hexDescription, "#466167",
+                       "mocha working border = mix(teal 34 %, base)")
+        XCTAssertEqual(mocha.stateChipFill(for: .blocked).hexDescription, "#423143",
+                       "mocha blocked fill = mix(red 17 %, base)")
+        XCTAssertEqual(mocha.stateChipFill(for: .done).hexDescription, "#353f42",
+                       "mocha done fill = mix(green 17 %, base)")
+        XCTAssertEqual(mocha.stateChipFill(for: .idle).hexDescription, "#353648",
+                       "mocha idle fill = mix(subtext0 17 %, base)")
+        XCTAssertEqual(mocha.stateChipFill(for: .unknown).hexDescription, "#282839",
+                       "mocha unknown fill = mix(surface2 17 %, base)")
+
+        let latte = store(.latte)
+        XCTAssertEqual(latte.stateChipFill(for: .working).hexDescription, "#cae1e5",
+                       "latte working fill = mix(teal 17 %, base)")
+        XCTAssertEqual(latte.stateChipBorder(for: .working).hexDescription, "#a6d1d6",
+                       "latte working border = mix(teal 34 %, base)")
+        XCTAssertEqual(latte.stateChipFill(for: .idle).hexDescription, "#d9dbe2",
+                       "latte idle fill = mix(subtext0 17 %, base)")
+    }
+
+    func testRepoChipSurfacesMatchTheDesignTints() {
+        // repo chip fill = mix(hue 15 %, base); border = mix(hue 38 %,
+        // base); subgroup band = mix(hue 9 %, mantle).
+        let mocha = store(.mocha)
+        XCTAssertEqual(mocha.repoChipFill(for: .blue).hexDescription, "#2e344d",
+                       "mocha repo chip fill = mix(blue 15 %, base)")
+        XCTAssertEqual(mocha.repoChipBorder(for: .blue).hexDescription, "#47577c",
+                       "mocha repo chip border = mix(blue 38 %, base)")
+        XCTAssertEqual(mocha.repoBand(for: .yellow).hexDescription, "#2c2a31",
+                       "mocha subgroup band = mix(yellow 9 %, mantle)")
+        XCTAssertEqual(mocha.repoBand(for: .teal).hexDescription, "#232a35",
+                       "mocha subgroup band = mix(teal 9 %, mantle)")
+        XCTAssertEqual(store(.latte).repoBand(for: .teal).hexDescription, "#d3e1e7",
+                       "latte subgroup band = mix(teal 9 %, mantle)")
+
+        // Other renders gray: surface2 mixes over the same surfaces.
+        XCTAssertEqual(mocha.repoChipFill(for: .surface2).hexDescription, "#272738",
+                       "Other chip fill = mix(surface2 15 %, base)")
+        XCTAssertEqual(mocha.repoBand(for: .surface2).hexDescription, "#1e1e2c",
+                       "Other band = mix(surface2 9 %, mantle)")
+    }
+}

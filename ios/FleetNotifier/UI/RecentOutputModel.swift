@@ -1,17 +1,18 @@
 import Foundation
 
-// MARK: - Recent output surface (#205 → #354 L2 recents v1 → #361 rail)
+// MARK: - Recent output surface (#205 → #354 L2 recents v1 → #373 block-per-run)
 //
 // Recents is LIVE TAIL ONLY: the daemon's bounded read_tail result
-// (≤200 lines) renders as ONE continuous chronological rail of raw output
-// with auto-scroll. #361 removed the V3-era grouping chrome — divider-only
-// rows, role-grouped card chrome, section headers, and per-row role labels —
-// so role appears ONLY as a transition marker (shape + role token color) at
-// semantic role changes. This file keeps the display contract (pure block /
-// rail helpers) rather than SwiftUI, so the expensive pure work stays
-// unit-testable.
+// (≤200 lines) renders as a transcript of RUNS, one block per semantic
+// role run (#373). A role change (You / Assistant / Tool run / Status)
+// starts a new block; consecutive same-role material stays ONE block, and
+// a tool run renders one COMPACT line per invocation with the command
+// output inline on a subtle tinted panel. #361's continuous rail (one
+// undivided stream) was REJECTED in the design round and is gone. This
+// file keeps the display contract (pure block helpers) rather than
+// SwiftUI, so the expensive pure work stays unit-testable.
 
-/// A bounded tail pane mapped to the row sequence the sheet renders.
+/// A bounded tail pane mapped to the block sequence the sheet renders.
 enum RecentOutputModel {
     static let liveTailFreshness: TimeInterval = 15
 
@@ -32,16 +33,91 @@ enum RecentOutputModel {
         isLiveMode && hasFreshNonErrorTail
     }
 
-    /// The canonical rows the sheet renders from a pane: the daemon's
-    /// blocks when present, else legacy raw lines mapped to honest unknown
-    /// content (never reclassified). Empty/whitespace-only blocks are
-    /// dropped, divider-only rows are dropped BEFORE adjacent tool/system
-    /// merging (#361: the rail renders ZERO divider rows — a divider is
-    /// never an event card and never rides inside a merged content row;
-    /// content that merely CONTAINS a run stays text), and adjacent
-    /// tool/system blocks are merged exactly like the pre-cut renderer, so
-    /// the stream stays compact and stable across fetches.
-    static func tailRows(from pane: TailPane?) -> [TranscriptBlock] {
+    // MARK: #373 block-per-run display model
+    //
+    // The sheet renders display blocks. Each block is one ROLE RUN: role
+    // changes start a block (You / Assistant / Tool run / Status), and
+    // consecutive same-role canonical blocks merge into ONE run so a
+    // growing live tail appends INTO the current semantic block instead of
+    // stacking duplicates. Divider-only and empty material is dropped
+    // before runs form (the #253/#361 furniture rule). The daemon wire
+    // carries kind + text only — tool identity is not on the wire, so a
+    // tool run's invocations are classified from its text (documented
+    // below) and its icon is the best-effort shape-derived kind with a
+    // generic fallback.
+
+    /// The row vocabulary INSIDE a display block. Every row is exactly one
+    /// line of the canonical block stream (except `.waiting`, which is a
+    /// placeholder row, not stream content).
+    enum BlockRowKind: String, Equatable, Sendable {
+        /// User/assistant body copy — sans, on the block surface.
+        case prose
+        /// Status material — quiet muted mono.
+        case meta
+        /// ONE tool invocation line (compact; the tool name lives here).
+        case call
+        /// Tool output / raw terminal line — mono, tinted panel inside a
+        /// tool block.
+        case output
+        /// "waiting for output…" placeholder on a run that has started but
+        /// produced no output yet (never its own block).
+        case waiting
+    }
+
+    struct BlockRow: Equatable, Sendable {
+        let kind: BlockRowKind
+        let text: String
+
+        init(_ kind: BlockRowKind, _ text: String) {
+            self.kind = kind
+            self.text = text
+        }
+    }
+
+    /// The tool icon vocabulary (design lock): terminal / doc (read_file) /
+    /// code (edit) / search + a generic fallback for shapes we cannot
+    /// classify. Because tool identity is absent from the wire, the kind is
+    /// derived from the first call line's command word (see
+    /// `toolKind(forCallLine:)`) — documented best-effort, deterministic
+    /// for tests, honest (generic) for unrecognized shapes.
+    enum ToolKind: String, Equatable, Sendable {
+        case terminal, doc, code, search, generic
+    }
+
+    /// One rendered block: a role run plus its content rows and the
+    /// shape-derived tool icon (tool runs only; nil for other roles).
+    struct DisplayBlock: Equatable, Sendable, Identifiable {
+        let id: String
+        let kind: TranscriptBlockKind
+        let tool: ToolKind?
+        let rows: [BlockRow]
+
+        /// The block's full text (used for append-scroll change detection).
+        var text: String { rows.map(\.text).joined(separator: "\n") }
+
+        /// The first content row — the collapsed header preview line
+        /// (never a role word; for a tool run this is the invocation).
+        var firstLine: String { rows.first?.text ?? "" }
+
+        /// Rows hidden by the per-block line cap (0 when at/below it).
+        var cappedLineCount: Int { max(0, rows.count - RecentOutputModel.lineCap) }
+    }
+
+    /// Locked: a block body shows at most 20 LINES, then a "Show all"
+    /// control reveals the rest inline (design round, #373).
+    static let lineCap = 20
+
+    /// The muted inline placeholder for a run that has started but has no
+    /// output yet (spec: NO block of its own).
+    static let waitingRowText = "waiting for output…"
+
+    /// The canonical display blocks the sheet renders from a pane: the
+    /// daemon's blocks when present, else legacy raw lines mapped to honest
+    /// unknown content (never reclassified). Role runs form over the
+    /// RENDERED sequence (empty + divider-only material already dropped),
+    /// so a role change starts a block and same-role adjacency — including
+    /// across fetches as a live tail grows — stays ONE block.
+    static func displayBlocks(from pane: TailPane?) -> [DisplayBlock] {
         let pane = pane ?? TailPane()
         let raw: [TranscriptBlock]
         if !pane.blocks.isEmpty {
@@ -49,7 +125,7 @@ enum RecentOutputModel {
         } else {
             raw = pane.lines.map { TranscriptBlock(kind: .unknown, text: $0) }
         }
-        var rows: [TranscriptBlock] = []
+        var runs: [TranscriptBlock] = []
         for block in raw {
             let lines = RecentOutputRender.messageLines(block.text)
             guard lines.contains(where: {
@@ -59,84 +135,107 @@ enum RecentOutputModel {
             }
             var visible = block
             visible.text = lines.joined(separator: "\n")
-            if !RecentOutputRender.isDividerBlock(visible) {
-                rows.append(visible)
-            }
-        }
-        var grouped: [TranscriptBlock] = []
-        for block in rows {
-            if let last = grouped.last,
-               (last.kind == .tool || last.kind == .system),
-               last.kind == block.kind {
-                grouped[grouped.count - 1].text += "\n" + block.text
+            // Divider-only material is presentation furniture — it never
+            // starts or rides inside a run.
+            guard !RecentOutputRender.isDividerBlock(visible) else { continue }
+            if let last = runs.last, last.kind == visible.kind {
+                runs[runs.count - 1].text += "\n" + visible.text
             } else {
-                grouped.append(block)
+                runs.append(visible)
             }
         }
-        return grouped
+        var blocks = runs.enumerated().map { index, run in
+            let rows = rows(for: run)
+            let tool = run.kind == .tool
+                ? rows.first(where: { $0.kind == .call })
+                    .map { toolKind(forCallLine: $0.text) } ?? .generic
+                : nil
+            return DisplayBlock(id: "rb-\(index)", kind: run.kind,
+                                tool: tool, rows: rows)
+        }
+        // A TRAILING tool run that has started (at least one invocation)
+        // but produced no output yet shows the muted inline waiting line —
+        // appended into the run's block, never a block of its own.
+        if let last = blocks.last,
+           last.kind == .tool,
+           last.rows.contains(where: { $0.kind == .call }),
+           !last.rows.contains(where: { $0.kind == .output }) {
+            blocks[blocks.count - 1] = DisplayBlock(
+                id: last.id, kind: last.kind, tool: last.tool,
+                rows: last.rows + [BlockRow(.waiting, waitingRowText)])
+        }
+        return blocks
     }
 
-    struct IdentifiedBlock: Equatable, Sendable, Identifiable {
-        let id: String
-        let block: TranscriptBlock
-    }
-
-    /// Occurrence-suffixed identities so equal blocks never collide in a
-    /// `ForEach` (mirrors the pre-cut row identity discipline).
-    static func identifiedBlocks(_ blocks: [TranscriptBlock]) -> [IdentifiedBlock] {
-        var occurrences: [String: Int] = [:]
-        return blocks.map { block in
-            let content = "block|\(block.kind.rawValue)|\(block.at ?? 0)|\(block.text)"
-            let occurrence = occurrences[content, default: 0]
-            occurrences[content] = occurrence + 1
-            return IdentifiedBlock(id: "\(content)|occurrence:\(occurrence)", block: block)
+    /// Content rows for one role run.
+    static func rows(for run: TranscriptBlock) -> [BlockRow] {
+        switch run.kind {
+        case .user, .agent:
+            return nonEmptyLines(run.text).map { BlockRow(.prose, $0) }
+        case .system:
+            return nonEmptyLines(run.text).map { BlockRow(.meta, $0) }
+        case .tool:
+            return toolRows(run.text)
+        case .unknown:
+            return nonEmptyLines(run.text).map { BlockRow(.output, $0) }
         }
     }
 
-    /// The rail marker vocabulary (#361 DESIGN LOCK; #316 RATIONALE V1):
-    /// Assistant = circle, You = diamond, Tool = square. A marker appears
-    /// ONLY at a semantic role transition — never repeated per row, and
-    /// never as role text.
-    enum RailMarker: Equatable, Sendable {
-        case circle
-        case diamond
-        case square
-    }
-
-    /// The locked shape for one block kind. `system`/`unknown` rows are
-    /// raw output with no known role, so they never receive a marker.
-    static func marker(for kind: TranscriptBlockKind) -> RailMarker? {
-        switch kind {
-        case .user: return .diamond
-        case .agent: return .circle
-        case .tool: return .square
-        case .system, .unknown: return nil
+    /// A tool run's invocation/output rows. Invocations ("call lines") are
+    /// shell echoes (`$ cmd`) or — only as the run's FIRST content line —
+    /// a bare tool invocation whose first word is a known tool verb
+    /// (structured tool runs have no shell-prompt echo). Every other line
+    /// is output, kept verbatim (leading/trailing blanks trimmed, interior
+    /// blanks kept as output spacing).
+    static func toolRows(_ text: String) -> [BlockRow] {
+        var lines = RecentOutputRender.messageLines(text)
+        while lines.first.map({ $0.trimmingCharacters(in: .whitespaces).isEmpty }) == true {
+            lines.removeFirst()
         }
+        while lines.last.map({ $0.trimmingCharacters(in: .whitespaces).isEmpty }) == true {
+            lines.removeLast()
+        }
+        var rows: [BlockRow] = []
+        for (index, line) in lines.enumerated() {
+            if isCallLine(line, firstContentLine: index == 0) {
+                rows.append(BlockRow(.call,
+                                     line.trimmingCharacters(in: .whitespaces)))
+            } else {
+                rows.append(BlockRow(.output, line))
+            }
+        }
+        return rows
     }
 
-    /// One rendered rail row: a canonical block plus whether THIS row is
-    /// the first row of a role run (its kind differs from the previous
-    /// rendered row) and therefore shows the role transition marker.
-    /// Continuation rows carry no marker and no label.
-    struct RailRow: Equatable, Sendable, Identifiable {
-        let id: String
-        let block: TranscriptBlock
-        let showsTransitionMarker: Bool
+    /// Whether one tool line is an invocation: a shell echo (`$ cmd`), or
+    /// the run's first content line when it starts with a known tool verb.
+    static func isCallLine(_ line: String, firstContentLine: Bool) -> Bool {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        if trimmed == "$" || trimmed.hasPrefix("$ ") { return true }
+        guard firstContentLine else { return false }
+        return Self.bareToolVerbs.contains(firstWord(of: trimmed))
     }
 
-    /// The continuous chronological rail the sheet renders: `tailRows` in
-    /// daemon order with transition markers computed over the RENDERED
-    /// sequence (divider rows already dropped), so a marker appears exactly
-    /// where the visible role changes.
-    static func railRows(from pane: TailPane?) -> [RailRow] {
-        let identified = identifiedBlocks(tailRows(from: pane))
-        var previousKind: TranscriptBlockKind?
-        return identified.map { item in
-            let kind = item.block.kind
-            let showsMarker = marker(for: kind) != nil && kind != previousKind
-            previousKind = kind
-            return RailRow(id: item.id, block: item.block,
-                           showsTransitionMarker: showsMarker)
+    /// The locked icon-kind vocabulary for one call line: the first command
+    /// word decides (read_file → doc, edit → code, grep family → search,
+    /// anything else that actually invoked → terminal). Only a run with NO
+    /// recognizable invocation falls back to `.generic`.
+    static func toolKind(forCallLine line: String) -> ToolKind {
+        var command = line.trimmingCharacters(in: .whitespaces)
+        if command.hasPrefix("$") {
+            command = command.dropFirst().trimmingCharacters(in: .whitespaces)
+        }
+        switch firstWord(of: command) {
+        case "read_file", "write_file", "view":
+            return .doc
+        case "edit", "apply_patch", "patch":
+            return .code
+        case "grep", "rg", "ag", "ack", "find", "search_files":
+            return .search
+        case let verb where !verb.isEmpty:
+            return .terminal
+        default:
+            return .generic
         }
     }
 
@@ -161,7 +260,31 @@ enum RecentOutputModel {
         case error(TranscriptFailure)
         case loaded
     }
+
+    // MARK: Private row-building helpers
+
+    /// Tool verbs that may open a bare (no `$`) invocation line — the same
+    /// vocabulary `toolKind(forCallLine:)` classifies, so a bare first line
+    /// is a call only when its icon kind is knowable.
+    private static let bareToolVerbs: Set<String> = [
+        "read_file", "write_file", "view",
+        "edit", "apply_patch", "patch",
+        "grep", "rg", "ag", "ack", "find", "search_files",
+    ]
+
+    private static func firstWord(of line: String) -> String {
+        line.split(whereSeparator: { $0.isWhitespace }).first.map(String.init)?
+            .lowercased() ?? ""
+    }
+
+    private static func nonEmptyLines(_ text: String) -> [String] {
+        RecentOutputRender.messageLines(text).filter {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
 }
+
+// MARK: - Code/diff highlighting (pure block-rendering helpers)
 
 enum RecentCodeSegmentKind: Equatable, Sendable {
     case plain
@@ -177,54 +300,20 @@ struct RecentCodeSegment: Equatable, Sendable {
     let kind: RecentCodeSegmentKind
 }
 
-struct RecentCodeLine: Equatable, Sendable {
-    let number: Int?
-    let text: String
-    let segments: [RecentCodeSegment]
-    let isHighlighted: Bool
-}
-
-/// Pure block-rendering helpers (code/diff highlighting, divider
-/// classification, accessibility labels). The rail drops divider-only rows
-/// and shows no timestamps or per-row chrome (#361).
+/// Pure block-rendering helpers (code/diff line classification, divider
+/// classification, line splitting). The block renderer consumes these; no
+/// SwiftUI lives here.
 enum RecentOutputRender {
     static func messageLines(_ text: String) -> [String] {
         text.components(separatedBy: .newlines)
-    }
-
-    /// Accessible role naming is locked (`You said…`, `Assistant`, `Tool`,
-    /// `Diagnostic`, `Unknown activity`). Visible role text is banned on
-    /// the rail (#361); the accessible layer keeps the roles attributable.
-    static func accessibilityLabel(_ block: TranscriptBlock) -> String {
-        switch block.kind {
-        case .user: return "You said: \(block.text)"
-        case .agent: return "Assistant: \(block.text)"
-        case .tool: return "Tool: \(block.text)"
-        case .system: return "Diagnostic: \(block.text)"
-        case .unknown: return "Unknown activity: \(block.text)"
-        }
     }
 
     static func isBoundary(previous: TranscriptBlock?, current: TranscriptBlock) -> Bool {
         previous?.kind != current.kind
     }
 
-    /// Highlight only a tool block that clearly contains source or diff
+    /// Highlight only a tool run that clearly contains source or diff
     /// syntax. Prose and ordinary command output stay plain monospace text.
-    static func codeLines(for block: TranscriptBlock) -> [RecentCodeLine] {
-        let lines = messageLines(block.text)
-        let highlighted = isCodeOrDiff(block.text)
-        return lines.enumerated().map { index, line in
-            RecentCodeLine(
-                number: highlighted ? index + 1 : nil,
-                text: line,
-                segments: highlighted ? highlight(line) : [
-                    RecentCodeSegment(text: line, kind: .plain)
-                ],
-                isHighlighted: highlighted)
-        }
-    }
-
     static func isCodeOrDiff(_ text: String) -> Bool {
         let lines = messageLines(text)
         var hasGitHeader = false
@@ -267,7 +356,10 @@ enum RecentOutputRender {
         return hasFence || hasDiffEvidence || hasCodeSignal
     }
 
-    private static func highlight(_ line: String) -> [RecentCodeSegment] {
+    /// One line's syntax segments (keywords, strings, diff marks,
+    /// comments). Public so the block renderer can color output lines with
+    /// the theme's ANSI-slot segment colors.
+    static func highlightSegments(in line: String) -> [RecentCodeSegment] {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
         if trimmed.hasPrefix("+") && !trimmed.hasPrefix("+++") {
             return [RecentCodeSegment(text: line, kind: .addition)]
@@ -362,7 +454,7 @@ enum RecentOutputRender {
 
     /// The ONE divider-vs-content classification seam shared by every
     /// render path — a divider-only block is a presentation separator,
-    /// never an event card.
+    /// never content inside a run.
     static func isDividerBlock(_ block: TranscriptBlock) -> Bool {
         isDividerRun(block.text)
     }

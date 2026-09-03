@@ -1351,18 +1351,64 @@ private struct FlavorSwatchStrip: View {
     }
 }
 
-// MARK: - Recents bottom sheet (#354 L2 recents v1)
+// MARK: - Recents bottom sheet (#354 L2 recents v1 → #373 block-per-run)
+
+/// Per-sheet-session collapse/reveal state (#373): a manual collapse is a
+/// per-block toggle and lasts ONLY this sheet session — the sheet owns this
+/// object, so dismissal destroys it (no persistence). Every block DEFAULTS
+/// EXPANDED: a fresh session has an empty `collapsed` set. "Show all"
+/// reveals a capped block's remaining lines inline once per session.
+@MainActor
+final class RecentsSheetSession: ObservableObject {
+    @Published private(set) var collapsed: Set<String> = []
+    @Published private(set) var revealed: Set<String> = []
+
+    func toggleCollapsed(_ id: String) {
+        if collapsed.contains(id) {
+            collapsed.remove(id)
+        } else {
+            collapsed.insert(id)
+        }
+    }
+
+    func reveal(_ id: String) {
+        revealed.insert(id)
+    }
+
+    func reset() {
+        collapsed = []
+        revealed = []
+    }
+}
+
+#if DEBUG
+/// #373 evidence launch argument: forces the recents sheet to the LARGE
+/// detent and drives the deterministic block-per-run phase sequence (marker
+/// files under Documents/ux-evidence that the host screenshot script
+/// observes). Present in Debug builds only; Release never contains it.
+enum RecentsBlocksEvidence {
+    static let argument = "-corralDemoRecentsBlocksEvidence"
+}
+#endif
 
 /// Read-only recents: LIVE TAIL ONLY. The sheet auto-loads the agent's
 /// bounded tail (≤200 lines, daemon cap), auto-refreshes while open, and
-/// auto-scrolls to the newest row. Renders ONE continuous chronological
-/// rail of raw output (#361): no load-earlier paging, no partition, no
-/// composer, and no divider/card/role-label chrome.
+/// auto-scrolls to the newest content. Renders the tail as ROLE-RUN BLOCKS
+/// (#373): a role change starts a block (You / Assistant / Tool run /
+/// Status), blocks default EXPANDED, the whole header toggles a
+/// session-scoped collapse, giant blocks cap at 20 lines with an inline
+/// "Show all" reveal, and live appends land inside the current semantic
+/// block. No load-earlier paging, no partition, no composer.
 struct RecentOutputSheet: View {
     let agentId: String
     @ObservedObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var theme: ThemeStore
+    @StateObject private var session = RecentsSheetSession()
+    // The live ScrollViewProxy — held so the DEBUG evidence driver can
+    // re-anchor the view to the newest content after a phase change
+    // (simctl cannot scroll; Release never touches it).
+    @State private var recentsProxy: ScrollViewProxy?
 
     private var agent: Agent? { model.fleet.agent(agentId) }
     private var tail: TailPane? { model.fleet.tailPane(for: agentId) }
@@ -1399,12 +1445,36 @@ struct RecentOutputSheet: View {
                     refresh()
                 }
             }
+#if DEBUG
+            // #373 evidence: deterministic block-per-run phase sequence
+            // (markers under Documents/ux-evidence). Launch-gated; never
+            // runs without the evidence argument.
+            .task {
+                await runRecentsBlocksEvidenceIfNeeded()
+            }
+#endif
         }
         // #372: scheme forced at the SHEET level (covers the nav bar +
         // drag chrome of the presented stack).
         .preferredColorScheme(theme.flavor.isLight ? .light : .dark)
-        .presentationDetents([.medium, .large])
+        .presentationDetents(detents)
         .presentationDragIndicator(.visible)
+        // #373: the sheet's own session object rides the environment so
+        // every block shares one per-session collapse/reveal state.
+        .environmentObject(session)
+    }
+
+    /// The sheet's detents. #373 evidence: the deterministic capture runs
+    /// at the LARGE detent (matching the approved 390x844 comp; simctl
+    /// cannot drag the sheet), so the evidence argument forces it. Release
+    /// and ordinary Debug launches keep the standard medium/large sheet.
+    private var detents: Set<PresentationDetent> {
+#if DEBUG
+        if CommandLine.arguments.contains(RecentsBlocksEvidence.argument) {
+            return [.large]
+        }
+#endif
+        return [.medium, .large]
     }
 
     @ViewBuilder
@@ -1460,7 +1530,7 @@ struct RecentOutputSheet: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
-        .background(theme.tailBackground)
+        .background(theme.base)
     }
 
     private var showLiveIndicator: Bool {
@@ -1506,46 +1576,59 @@ struct RecentOutputSheet: View {
                 .padding(16)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             case .loaded:
-                tailStream
+                blocksStream
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(theme.tailBackground)
+        .background(theme.base)
     }
 
-    /// The live tail: ONE continuous chronological rail of the agent's raw
-    /// output (#361), auto-scrolled to the newest row. The row model
-    /// already dropped divider-only rows and only marks semantic role
-    /// transitions, so the stack renders plain rows — no divider rules, no
-    /// cards, no role text. A single continuous spine (RecentRailSpine)
-    /// runs behind ALL rows (#361 R1 / #271 V2): transition markers sit on
-    /// it and continuation rows ride it without a marker of their own.
-    private var tailStream: some View {
-        let rows = RecentOutputModel.railRows(from: tail)
+    /// The live tail as ROLE-RUN BLOCKS (#373): each block is one semantic
+    /// role run (You / Assistant / Tool run / Status) that defaults
+    /// EXPANDED and can be collapsed by tapping its whole header; a giant
+    /// block caps at `lineCap` lines with an inline "Show all" reveal. The
+    /// display model merges same-role material, so a growing live tail
+    /// appends INTO the current semantic block; the stack auto-scrolls to
+    /// the newest content whenever that block grows or a new one starts.
+    /// Collapsing a block above never triggers a scroll (the change
+    /// detector keys on the LAST block's text only), so the view never
+    /// jumps.
+    private var blocksStream: some View {
+        let blocks = RecentOutputModel.displayBlocks(from: tail)
         return ScrollViewReader { proxy in
             ScrollView(.vertical) {
-                LazyVStack(alignment: .leading, spacing: 8) {
-                    ForEach(rows) { row in
-                        RecentRailRowView(row: row)
+                // Plain VStack (not lazy): the bounded tail is ≤200 lines,
+                // and a LazyVStack + programmatic anchors misbehaves when
+                // collapse toggles shrink the content below the viewport
+                // (stale offsets rendered a blank sheet).
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(blocks) { block in
+                        RecentRunBlockView(block: block)
                     }
                     Color.clear
                         .frame(height: 1)
                         .id("recents-bottom")
                 }
-                .background(alignment: .topLeading) {
-                    // The one uninterrupted spine behind the row stack; the
-                    // 3.75 inset centers it under the 9pt gutter markers.
-                    RecentRailSpine()
-                        .padding(.leading, 3.75)
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 6)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
             }
             .onAppear {
+                recentsProxy = proxy
                 scrollToBottom(proxy)
             }
-            .onChange(of: rows.last?.block.text) { _, _ in
+            .onChange(of: blocks.last?.text) { _, _ in
                 scrollToBottom(proxy)
+            }
+            // #373: a collapse/expand toggle shrinks/grows content ABOVE
+            // the anchor. SwiftUI keeps the stale contentOffset when the
+            // content shrinks, which can leave the pinned view looking
+            // blank; re-anchor to the newest content on any toggle so the
+            // live pinned position never shows empty space (collapsing
+            // while pinned at the bottom is therefore visually stable).
+            .onChange(of: session.collapsed) { _, _ in
+                DispatchQueue.main.async {
+                    proxy.scrollTo("recents-bottom", anchor: .bottom)
+                }
             }
         }
     }
@@ -1576,167 +1659,487 @@ struct RecentOutputSheet: View {
 #endif
         model.driveReadTail(agent: agent, driveClient: driveClient, silent: true)
     }
-}
 
-// MARK: - Rail row renderer (recents sheet rows)
+#if DEBUG
+    /// #373 evidence: deterministic recents BLOCK-PER-RUN capture phases
+    /// (single launch; the host screenshot script polls the markers under
+    /// Documents/ux-evidence): Mocha default-expanded (cap + Show all +
+    /// waiting line visible) → Mocha collapsed (every block's icon-only
+    /// header + preview + rotated chevron) → Mocha Show-all reveal →
+    /// Latte default-expanded (recessed panels + remapped ANSI colors) →
+    /// Latte collapsed. The driver toggles the same session state the
+    /// header taps set and the same theme state the Settings picker sets —
+    /// simctl cannot inject taps, so this is the synthetic stand-in
+    /// (established #364/#372 pattern). Cancellation-aborts like the board
+    /// drivers, so a raced task can never corrupt the recorded sequence.
+    private func runRecentsBlocksEvidenceIfNeeded() async {
+        guard CommandLine.arguments.contains(RecentsBlocksEvidence.argument) else { return }
+        guard await evidencePause(2000) else { return }
+        guard await evidenceWaitForLoaded() else { return }
+        theme.setFlavor(.mocha)
+        // Phase 1: default-expanded at the newest content (bottom-anchored
+        // by the sheet's auto-scroll): cap + Show all, ANSI-colored runs,
+        // and the waiting line are all in this frame.
+        EvidenceMarkers.write("phase-1-recents-mocha-expanded")
+        guard await evidencePause(5000) else { return }
 
-/// One recents rail row (#361): raw output text in a continuous,
-/// chrome-free stream — no divider rules, no cards, no role labels. A role
-/// transition marker (circle / diamond / square in the role's locked token
-/// color) appears in the left gutter ONLY on the first row of a role run;
-/// continuation rows carry no marker and no label. Attributed content stays
-/// attributable via the row's accessibility label.
-private struct RecentRailRowView: View {
-    let row: RecentOutputModel.RailRow
-    @EnvironmentObject private var theme: ThemeStore
+        // Phase 2: every block collapsed — the icon/role map, previews and
+        // rotated chevrons (content shrinks to the headers; the view is at
+        // the top).
+        let ids = currentDisplayBlockIDs()
+        for id in ids { session.toggleCollapsed(id) }
+        guard await evidencePause(1500) else { return }
+        EvidenceMarkers.write("phase-2-recents-mocha-collapsed")
+        guard await evidencePause(5000) else { return }
 
-    private var block: TranscriptBlock { row.block }
+        // Phase 3: expand everything and reveal the capped block (Show
+        // all) — the cap's hidden rows now render and the button is gone.
+        // Re-anchor to the newest content so the reveal is visible next to
+        // the ANSI-colored runs.
+        for id in ids { session.toggleCollapsed(id) }
+        revealCappedBlock()
+        await evidenceReanchorToBottom()
+        guard await evidencePause(1500) else { return }
+        EvidenceMarkers.write("phase-3-recents-mocha-showall")
+        guard await evidencePause(5000) else { return }
 
-    var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            markerGutter
-            content
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(RecentOutputRender.accessibilityLabel(block))
+        // Phase 4: fresh session (all expanded again) on Latte — the same
+        // bottom view proves the remapped ANSI hues, the recessed panels,
+        // and the waiting line on the light theme.
+        session.reset()
+        theme.setFlavor(.latte)
+        await evidenceReanchorToBottom()
+        guard await evidencePause(1500) else { return }
+        EvidenceMarkers.write("phase-4-recents-latte-expanded")
+        guard await evidencePause(5000) else { return }
+
+        // Phase 5: Latte collapsed headers (parity + quiet status chrome).
+        for id in currentDisplayBlockIDs() { session.toggleCollapsed(id) }
+        guard await evidencePause(1500) else { return }
+        EvidenceMarkers.write("phase-5-recents-latte-collapsed")
+        guard await evidencePause(5000) else { return }
+        EvidenceMarkers.write("phase-6-done")
+        _ = await evidencePause(5000)
     }
 
-    private var markerGutter: some View {
-        Group {
-            if row.showsTransitionMarker {
-                transitionMarker
-                    .frame(width: 9, height: 9)
-                    // Mask the continuous spine behind the hollow marker so
-                    // the rail appears to touch each node (#361 R1).
-                    .background(Circle().fill(theme.tailBackground))
-            } else {
-                Color.clear
+    /// Re-anchor the scroll to the newest content (the same call the live
+    /// tail uses) — simctl cannot scroll, so the evidence driver uses the
+    /// sheet's live proxy.
+    private func evidenceReanchorToBottom() async {
+        guard await evidencePause(400) else { return }
+        if let proxy = recentsProxy {
+            scrollToBottom(proxy)
+        }
+    }
+
+    /// Reveal (Show all) the one block that exceeds the 20-line cap.
+    private func revealCappedBlock() {
+        for block in RecentOutputModel.displayBlocks(from: tail)
+        where block.cappedLineCount > 0 {
+            session.reveal(block.id)
+        }
+    }
+
+    /// The current display block ids (ordinal ids — stable while the tail
+    /// only grows, so the driver collapses exactly what the sheet renders).
+    private func currentDisplayBlockIDs() -> [String] {
+        RecentOutputModel.displayBlocks(from: tail).map(\.id)
+    }
+
+    private func evidenceWaitForLoaded() async -> Bool {
+        for _ in 0..<40 {
+            if RecentOutputModel.phase(for: tail) == .loaded { return true }
+            guard await evidencePause(250) else { return false }
+        }
+        return RecentOutputModel.phase(for: tail) == .loaded
+    }
+
+    private func evidencePause(_ milliseconds: Int64) async -> Bool {
+        do {
+            try await Task.sleep(for: .milliseconds(milliseconds))
+            return true
+        } catch {
+            return false
+        }
+    }
+#endif
+}
+
+
+// MARK: - Recents block renderer (#373 block-per-run)
+
+/// Role presentation metadata for the block header. Headers are ICON-ONLY
+/// (design lock: no role words visible — the tool name lives in the line
+/// text; the role name stays in the accessible label). Role accents:
+/// user = blue, assistant = mauve (the UI accent), tool = peach, status =
+/// overlay0 (quiet). All tokens come from the #372 theme — never legacy
+/// hexes.
+enum RecentBlockStyle {
+    static func iconName(for block: RecentOutputModel.DisplayBlock) -> String {
+        switch block.kind {
+        case .user:
+            return "person.crop.circle"
+        case .agent:
+            return "sparkles"
+        case .tool:
+            switch block.tool ?? .generic {
+            case .terminal: return "terminal"
+            case .doc: return "doc.text"
+            case .code: return "chevron.left.forwardslash.chevron.right"
+            case .search: return "magnifyingglass"
+            case .generic: return "ellipsis.rectangle"
+            }
+        case .system:
+            return "info.circle"
+        case .unknown:
+            return "questionmark.circle"
+        }
+    }
+
+    static func accentToken(for kind: TranscriptBlockKind) -> CatppuccinToken {
+        switch kind {
+        case .user: return .blue
+        case .agent: return .mauve
+        case .tool: return .peach
+        case .system, .unknown: return .overlay0
+        }
+    }
+
+    static func roleName(for kind: TranscriptBlockKind) -> String {
+        switch kind {
+        case .user: return "You"
+        case .agent: return "Assistant"
+        case .tool: return "Tool run"
+        case .system: return "Status"
+        case .unknown: return "Unknown activity"
+        }
+    }
+}
+
+/// One role-run block (#373): rounded block chrome on the theme's surface0
+/// with a thin left accent per role, an icon-only header whose WHOLE width
+/// toggles collapse (chevron rotates; a collapsed block shows a one-line
+/// preview of its first content), and the run's content. Every block
+/// defaults EXPANDED. Content rows never flex-squash: the stack sizes rows
+/// to their natural height (`.fixedSize(vertical:)` on text rows), so a
+/// 390x844 sheet cannot crush a block's content.
+private struct RecentRunBlockView: View {
+    let block: RecentOutputModel.DisplayBlock
+    @EnvironmentObject private var theme: ThemeStore
+    @EnvironmentObject private var session: RecentsSheetSession
+
+    private var isCollapsed: Bool { session.collapsed.contains(block.id) }
+    private var isRevealed: Bool { session.revealed.contains(block.id) }
+    private var showsOutputPanel: Bool { block.kind == .tool }
+    private var isHighlightedRun: Bool {
+        RecentOutputRender.isCodeOrDiff(block.text)
+    }
+    private var accent: Color {
+        theme.color(RecentBlockStyle.accentToken(for: block.kind))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            if !isCollapsed {
+                bodyContent
             }
         }
-        .frame(width: 18, alignment: .topLeading)
-        .padding(.top, 4)
-        .accessibilityHidden(true)
+        .background(blockBackground,
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(accent)
+                .frame(width: 2)
+                .accessibilityHidden(true)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .textSelection(.enabled)
+        .accessibilityElement(children: .contain)
+    }
+
+    /// Block chrome: surface0 for content roles; Status (and unattributed
+    /// raw) material is QUIET — its block recesses toward base (the
+    /// design round's quiet status treatment, resolved from palette
+    /// tokens only).
+    private var blockBackground: Color {
+        if block.kind == .system || block.kind == .unknown {
+            return theme.mixed(.surface0, at: 0.55, over: .base)
+        }
+        return theme.surface0
+    }
+
+    // MARK: Header (icon-only; whole-header tap toggles collapse)
+
+    private var header: some View {
+        Button {
+            session.toggleCollapsed(block.id)
+        } label: {
+            HStack(spacing: 8) {
+                iconChip
+                if isCollapsed {
+                    previewLine
+                }
+                Spacer(minLength: 0)
+                chevron
+            }
+            .padding(.leading, 10)
+            .padding(.trailing, 8)
+            .padding(.vertical, 5)
+            .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(headerLabel)
+    }
+
+    private var headerLabel: String {
+        let role = RecentBlockStyle.roleName(for: block.kind)
+        guard isCollapsed else {
+            return role + ", expanded"
+        }
+        let preview = block.firstLine
+        let clipped = preview.count <= 46
+            ? preview
+            : String(preview.prefix(45)) + "…"
+        return clipped.isEmpty
+            ? role + ", collapsed"
+            : role + ", collapsed: " + clipped
+    }
+
+    /// The SF Symbol chip in the role's accent (tint = 16 % accent over
+    /// surface0 — the design round's icon-chip mix).
+    private var iconChip: some View {
+        Image(systemName: RecentBlockStyle.iconName(for: block))
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(accent)
+            .frame(width: 22, height: 22)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(theme.mixed(RecentBlockStyle.accentToken(for: block.kind),
+                                      at: 0.16, over: .surface0))
+            )
+            .accessibilityHidden(true)
+    }
+
+    /// Collapsed preview: the block's first content line, mono, one line
+    /// (never a role word — for a tool run this is the invocation).
+    private var previewLine: some View {
+        Text(block.firstLine)
+            .font(.caption.monospaced())
+            .foregroundStyle(theme.overlay1)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .accessibilityHidden(true)
+    }
+
+    private var chevron: some View {
+        Image(systemName: "chevron.down")
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(theme.subtext0)
+            .rotationEffect(.degrees(isCollapsed ? -90 : 0))
+            .animation(theme.reduceMotion ? nil : .easeOut(duration: 0.18),
+                       value: isCollapsed)
+            .accessibilityHidden(true)
+    }
+
+    // MARK: Body (default expanded; 20-line cap + Show all)
+
+    @ViewBuilder
+    private var bodyContent: some View {
+        let chunks = contentChunks
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(chunks) { chunk in
+                chunkView(chunk)
+            }
+            if !isRevealed && block.cappedLineCount > 0 {
+                showAllButton
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.top, 1)
+        .padding(.bottom, 9)
+    }
+
+    /// Rows are chunked into output runs so each run renders inside ONE
+    /// tinted panel; every other row renders alone.
+    private var contentChunks: [BodyChunk] {
+        let rows = isRevealed
+            ? block.rows
+            : Array(block.rows.prefix(RecentOutputModel.lineCap))
+        var chunks: [BodyChunk] = []
+        var index = 0
+        var i = 0
+        while i < rows.count {
+            if rows[i].kind == .output {
+                var end = i
+                while end + 1 < rows.count && rows[end + 1].kind == .output {
+                    end += 1
+                }
+                chunks.append(BodyChunk(id: index, rows: Array(rows[i...end])))
+                i = end + 1
+            } else {
+                chunks.append(BodyChunk(id: index, rows: [rows[i]]))
+                i += 1
+            }
+            index += 1
+        }
+        return chunks
     }
 
     @ViewBuilder
-    private var transitionMarker: some View {
-        // `railRows` only marks rows whose kind has a locked marker, so the
-        // nil arm is unreachable in practice.
-        switch RecentOutputModel.marker(for: block.kind) {
-        case .circle: Circle().stroke(roleColor, lineWidth: 1.5)
-        case .diamond: RecentDiamond().stroke(roleColor, lineWidth: 1.5)
-        case .square: Rectangle().stroke(roleColor, lineWidth: 1.5)
-        case nil: Color.clear
-        }
-    }
-
-    /// #372 role token colors (the #361 lock remapped onto the active
-    /// flavor): Agent = accent (mauve), You = blue, Tool = peach — the
-    /// design round's role mapping; never legacy hexes, and the marker
-    /// shapes carry no accompanying role words.
-    private var roleColor: Color {
-        theme.roleColor(for: block.kind)
-    }
-
-    /// The block's raw output. Code/diff lines keep their inline syntax
-    /// colors and numbered gutters; the card container is gone (#361).
-    private var content: some View {
-        Group {
-            if rendersHighlighted {
-                codeContent
+    private func chunkView(_ chunk: BodyChunk) -> some View {
+        if chunk.rows.first?.kind == .output {
+            if showsOutputPanel {
+                outputPanel(chunk.rows)
             } else {
-                proseContent
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(chunk.rows.enumerated()), id: \.offset) { _, row in
+                        RecentOutputLineView(line: row.text,
+                                             highlighted: isHighlightedRun)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
+        } else {
+            rowView(chunk.rows[0])
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .textSelection(.enabled)
     }
 
-    private var rendersHighlighted: Bool {
-        RecentOutputRender.codeLines(for: block).contains { $0.isHighlighted }
-    }
-
-    private var codeContent: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            ForEach(Array(RecentOutputRender.codeLines(for: block).enumerated()),
-                    id: \.offset) { item in
-                RecentCodeLineView(line: item.element)
-            }
+    @ViewBuilder
+    private func rowView(_ row: RecentOutputModel.BlockRow) -> some View {
+        switch row.kind {
+        case .prose:
+            Text(row.text)
+                .font(.subheadline)
+                .foregroundStyle(theme.text)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+        case .meta:
+            Text(row.text)
+                .font(.caption.monospaced())
+                .foregroundStyle(theme.tailMuted)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+        case .call:
+            callRow(row.text)
+        case .waiting:
+            // No-output run: muted inline placeholder — never its own block.
+            Text(row.text)
+                .font(.caption2.monospaced().italic())
+                .foregroundStyle(theme.tailQuiet)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.leading, 12)
+        case .output:
+            RecentOutputLineView(line: row.text, highlighted: isHighlightedRun)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var proseContent: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            ForEach(Array(RecentOutputRender.messageLines(block.text).enumerated()),
-                    id: \.offset) { item in
-                Text(item.element)
-                    .font(.subheadline)
-                    .foregroundStyle(theme.tailInk)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+    /// One tool invocation: compact mono line. A shell echo keeps its `$`
+    /// sigil in the block's role accent; a bare tool call has no sigil.
+    private func callRow(_ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            if text.hasPrefix("$") {
+                Text("$")
+                    .font(.caption.monospaced().weight(.bold))
+                    .foregroundStyle(accent)
             }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-/// Diamond outline: the You transition marker (#361). Drawn as a path so
-/// the stroke stays uniform.
-private struct RecentDiamond: Shape {
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.midY))
-        path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
-        path.addLine(to: CGPoint(x: rect.minX, y: rect.midY))
-        path.closeSubpath()
-        return path
-    }
-}
-
-/// The rail's continuous vertical spine (#361 R1, #271 V2): ONE
-/// uninterrupted line behind every row of the recents sheet. Transition
-/// markers sit ON the spine; continuation rows ride it with no marker of
-/// their own. The max-height infinity span makes the rail continuous over
-/// the whole stack — never per-row segments. Width is fixed and leading,
-/// so the line stays in the gutter (no maxWidth expansion).
-private struct RecentRailSpine: View {
-    @EnvironmentObject private var theme: ThemeStore
-
-    var body: some View {
-        Rectangle()
-            .fill(theme.tailLine)
-            .frame(width: 1.5)
-            .frame(maxHeight: .infinity, alignment: .top)
-    }
-}
-
-private struct RecentCodeLineView: View {
-    let line: RecentCodeLine
-    @EnvironmentObject private var theme: ThemeStore
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            if let number = line.number {
-                Text("\(number)")
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(theme.tailQuiet)
-                    .frame(width: 24, alignment: .trailing)
-                    .accessibilityHidden(true)
-            }
-            highlightedText
-                .font(.caption2.monospaced())
-                .foregroundStyle(theme.tailInk)
+            Text(strippedCallText(text))
+                .font(.caption.monospaced())
+                .foregroundStyle(theme.text)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var highlightedText: Text {
-        line.segments.reduce(Text("")) { partial, segment in
-            partial + Text(segment.text)
-                .foregroundStyle(theme.segmentColor(for: segment.kind))
+    private func strippedCallText(_ text: String) -> String {
+        if text.hasPrefix("$ ") {
+            return String(text.dropFirst(2))
+        }
+        return text == "$" ? "" : text
+    }
+
+    /// One output run rendered INLINE inside the tool block on a subtle
+    /// tint: the theme's accepted output-panel token (#372 recess rule) —
+    /// mantle on the dark flavors, BASE on Latte (a light theme recesses
+    /// toward base, NOT mantle, so the ANSI hues keep contrast; the three
+    /// Latte ANSI exception slots are documented in AppTheme).
+    private func outputPanel(_ rows: [RecentOutputModel.BlockRow]) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                RecentOutputLineView(line: row.text,
+                                     highlighted: isHighlightedRun)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(theme.tailBackground,
+                    in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+    }
+
+    private var showAllButton: some View {
+        Button {
+            session.reveal(block.id)
+        } label: {
+            HStack(spacing: 6) {
+                Text("Show all")
+                Text("+\(block.cappedLineCount) lines")
+                    .foregroundStyle(theme.tailQuiet)
+            }
+            .font(.caption.monospaced().weight(.semibold))
+            .foregroundStyle(accent)
+        }
+        .buttonStyle(.plain)
+        .padding(.top, 2)
+        .accessibilityLabel("Show all \(block.cappedLineCount) more lines")
+    }
+
+    private struct BodyChunk: Identifiable {
+        let id: Int
+        let rows: [RecentOutputModel.BlockRow]
+    }
+}
+
+/// One output line inside a block: mono, muted, ANSI-remapped syntax marks
+/// when the run is code/diff (the theme's segment colors resolve through
+/// the ACTIVE flavor's ANSI slots — #372 remap, no legacy hexes).
+private struct RecentOutputLineView: View {
+    let line: String
+    let highlighted: Bool
+    @EnvironmentObject private var theme: ThemeStore
+
+    var body: some View {
+        Group {
+            if highlighted, !line.isEmpty {
+                segmented
+            } else {
+                Text(line.isEmpty ? " " : line)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(theme.tailMuted)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var segmented: Text {
+        RecentOutputRender.highlightSegments(in: line)
+            .reduce(Text("")) { partial, segment in
+                partial + Text(segment.text)
+                    .foregroundStyle(segmentColor(segment.kind))
+            }
+    }
+
+    /// Plain output lines sit in the muted output tier; syntax marks
+    /// (keywords, strings, +/-, comments) use the ANSI-slot segment colors.
+    private func segmentColor(_ kind: RecentCodeSegmentKind) -> Color {
+        switch kind {
+        case .plain:
+            return theme.tailMuted
+        case .keyword, .string, .addition, .deletion, .comment:
+            return theme.segmentColor(for: kind)
         }
     }
 }

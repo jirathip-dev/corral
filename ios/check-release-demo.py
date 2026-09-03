@@ -152,7 +152,14 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # filter-evidence driver gained the same cancellation-abort pacing as
     # the #372 theme driver (a raced driver cannot corrupt the recorded
     # filter phases); digest re-pinned to the #371 head source set.
-    "414b4b8760e712449864d602c113cc030478710d1f1b8b7b20310ab18f5c848f"
+    # 2026-09-04 (#373): recents became block-per-run — the #361 continuous
+    # rail model was replaced by the role-run display model
+    # (RecentOutputModel), the recents sheet + block renderer landed in
+    # FleetViews (icon-only headers, session collapse, 20-line cap + Show
+    # all, Latte recess panels, DEBUG recents-evidence driver), and the demo
+    # seed was rebuilt to the block-per-run evidence shape (DemoFleet) —
+    # re-pinned.
+    "272e75b7448dfe446ca7d538d041c9616e7cb30e050dbd06f7d45b60329ed9ed"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #332 R4: pin the focused grant fixture independently from the Release
@@ -189,7 +196,13 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # the shared state mapping, subgroup/row hue pins) were added, and the
     # demo seed tests now carry the done row; BoardV2ChipMixTests lives in
     # ThemeTests.swift (not a pinned file) — re-pinned.
-    "c39c0714436003d47cf7813802954a294f996b32e05fbf684672dfa1bdc54ac4"
+    # 2026-09-04 (#373): the rail-era model classes became RecentBlockModelTests
+    # (role-boundary, same-tool grouping, call/output split, waiting-line
+    # scope, 20-line cap, live append into the open block) +
+    # RecentsBlockSessionTests (default-expanded, toggle, reveal, reset), the
+    # demo fixture pin asserts the block-per-run treatments, and the
+    # wiring/theme pins moved onto the block renderer — re-pinned.
+    "808c2699ee40a28ef3039fb647c513a45b787acd694b6d8c250e10465ffcea26"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

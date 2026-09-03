@@ -4,11 +4,16 @@ import SwiftUI
 struct FleetNotifierApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model = AppModel()
+    // #372: the app-wide theme (flavor + Reduce Motion). Owned here so the
+    // flavor's color scheme/tint reach every sheet and the picker's choice
+    // persists across launches.
+    @StateObject private var theme = ThemeStore()
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
             RootView(model: model)
+                .environmentObject(theme)
                 .task {
                     // Dev-only launch-arg harnesses (Debug only).
 #if DEBUG
@@ -17,6 +22,7 @@ struct FleetNotifierApp: App {
                     } else if CorralDemoLaunch.wantsReopenEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsFilterEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsSettingsEvidence(arguments: CommandLine.arguments)
+                                || CorralDemoLaunch.wantsThemeEvidence(arguments: CommandLine.arguments)
                                 || CommandLine.arguments.contains("-demoMode") {
                         model.enterDemo()
                     }
@@ -53,12 +59,14 @@ struct FleetNotifierApp: App {
 /// demo fleet and drive the #364 recorded evidence sequences (markers in
 /// Documents/ux-evidence that the host screenshot script observes).
 /// `-corralDemoSettingsEvidence` (#365) drives the board + Settings-sheet
-/// sequence behind the always-visible gear.
+/// sequence behind the always-visible gear. `-corralDemoThemeEvidence`
+/// (#372) drives the Mocha → Appearance → Latte board/recents sequence.
 enum CorralDemoLaunch {
     static let detailArgument = "-corralDemoDetail"
     static let reopenEvidenceArgument = "-corralDemoUXEvidence"
     static let filterEvidenceArgument = "-corralDemoFilterEvidence"
     static let settingsEvidenceArgument = "-corralDemoSettingsEvidence"
+    static let themeEvidenceArgument = "-corralDemoThemeEvidence"
 
     static var detailAgentID: String {
         DemoFleet.featuredAgentID
@@ -78,6 +86,10 @@ enum CorralDemoLaunch {
 
     static func wantsSettingsEvidence(arguments: [String]) -> Bool {
         arguments.contains(settingsEvidenceArgument)
+    }
+
+    static func wantsThemeEvidence(arguments: [String]) -> Bool {
+        arguments.contains(themeEvidenceArgument)
     }
 }
 #endif

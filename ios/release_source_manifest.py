@@ -18,6 +18,7 @@ RELEASE_SOURCE_FILES = (
     "ios/FleetNotifier/Notifications/AppDelegate.swift",
     "ios/FleetNotifier/Notifications/LocalNotifier.swift",
     "ios/FleetNotifier/Notifications/PushPayload.swift",
+    "ios/FleetNotifier/UI/AppTheme.swift",
     "ios/FleetNotifier/UI/BoardModel.swift",
     "ios/FleetNotifier/UI/FleetViews.swift",
     "ios/FleetNotifier/UI/RecentOutputModel.swift",

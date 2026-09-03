@@ -15,6 +15,10 @@ import Combine
 // - Settings: connection + notification pairing only.
 // Removed: Issues browser, Terminal, Diff, approval/prompt/attach/kill
 // controls, device/grant admin.
+//
+// #372: every color below resolves through the environment `ThemeStore`
+// (Catppuccin tokens). NO legacy GitHub-dark hex literals exist in this
+// layer (audit gate in the #372 report).
 
 // MARK: - Row state chrome
 
@@ -24,12 +28,13 @@ private struct TimeInStateLabel: View {
     let agent: Agent
     var stateEnteredAt: UInt64? = nil
     @State private var now: UInt64 = UInt64(Date().timeIntervalSince1970 * 1000)
+    @EnvironmentObject private var theme: ThemeStore
 
     var body: some View {
         if let durationText {
             Text("· \(durationText)")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(theme.subtext1)
                 .accessibilityHidden(true)
                 .task(id: tickInterval) {
                     while !Task.isCancelled {
@@ -72,6 +77,7 @@ struct AgentRow: View {
     var stateEnteredAt: UInt64? = nil
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ScaledMetric(relativeTo: .caption) private var badgeMinWidth: CGFloat = 84
+    @EnvironmentObject private var theme: ThemeStore
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -105,9 +111,10 @@ struct AgentRow: View {
 
     @ViewBuilder
     private var statusDot: some View {
+        let stateColor = theme.stateColor(for: agent.state)
         Circle()
-            .fill(stateStyle.isRing ? Color.clear : stateStyle.color)
-            .overlay(Circle().stroke(stateStyle.color, lineWidth: 1))
+            .fill(stateStyle.isRing ? Color.clear : stateColor)
+            .overlay(Circle().stroke(stateColor, lineWidth: 1))
             .frame(width: 12, height: 12)
             .accessibilityHidden(true)
     }
@@ -117,14 +124,15 @@ struct AgentRow: View {
     /// over; `.lineLimit(1)` preserves the no-mid-word-wrap rule.
     @ViewBuilder
     private var stateBadge: some View {
+        let stateColor = theme.stateColor(for: agent.state)
         HStack(spacing: 3) {
             Text(stateStyle.glyph)
                 .font(.caption.weight(.bold))
-                .foregroundStyle(stateStyle.color)
+                .foregroundStyle(stateColor)
                 .accessibilityHidden(true)
             Text(stateStyle.label)
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(stateStyle.color)
+                .foregroundStyle(stateColor)
                 .accessibilityLabel(stateStyle.accessibilityLabel)
             TimeInStateLabel(agent: agent, stateEnteredAt: stateEnteredAt)
         }
@@ -138,6 +146,7 @@ struct AgentRow: View {
     private var titleText: some View {
         Text(agent.title ?? agent.displayName ?? agent.agentId)
             .font(.subheadline.weight(.semibold))
+            .foregroundStyle(theme.text)
             .lineLimit(1)
             .layoutPriority(1)
     }
@@ -149,18 +158,20 @@ struct AgentRow: View {
             if let reference = paneReference {
                 Text(reference)
                     .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(theme.subtext1)
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
                     .accessibilityLabel("Pane \(reference)")
             }
             Text(agent.tool)
                 .font(.caption2.monospaced())
+                .foregroundStyle(theme.subtext1)
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
-                .background(.quaternary, in: RoundedRectangle(cornerRadius: 4))
+                .background(theme.surface1.opacity(0.65),
+                            in: RoundedRectangle(cornerRadius: 4))
         }
     }
 
@@ -210,6 +221,7 @@ private func rowSummary(_ agent: Agent) -> String {
 /// `…` stub (G100).
 struct WorkspaceLine: View {
     let agent: Agent
+    @EnvironmentObject private var theme: ThemeStore
 
     /// Per-segment truncation + compression policy (G100).
     enum SegmentPolicy {
@@ -239,49 +251,49 @@ struct WorkspaceLine: View {
             if let repo = w.repo {
                 Text(repo)
                     .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(theme.subtext1)
                     .lineLimit(1)
                     .layoutPriority(SegmentPolicy.priority(for: .repo))
             }
             if let branch = w.branch {
                 if w.repo != nil {
-                    Text("·").font(.caption2).foregroundStyle(.secondary)
+                    Text("·").font(.caption2).foregroundStyle(theme.subtext1)
                 }
                 Text(branch)
                     .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(theme.subtext1)
                     .lineLimit(1)
                     .truncationMode(SegmentPolicy.truncationMode(for: .branch))
                     .layoutPriority(SegmentPolicy.priority(for: .branch))
             }
             if let basename = Self.worktreeBasename(w) {
-                Text("·").font(.caption2).foregroundStyle(.secondary)
+                Text("·").font(.caption2).foregroundStyle(theme.subtext1)
                 Text(basename)
                     .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(theme.subtext1)
                     .lineLimit(1)
                     .truncationMode(SegmentPolicy.truncationMode(for: .basename))
                     .layoutPriority(SegmentPolicy.priority(for: .basename))
             }
             if w.repo == nil && w.branch == nil && Self.worktreeBasename(w) == nil {
-                Text("—").font(.caption2).foregroundStyle(.secondary)
+                Text("—").font(.caption2).foregroundStyle(theme.subtext1)
             }
             Spacer(minLength: 4)
             if let pr = w.prNumber {
                 Text("#\(pr)")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(theme.subtext1)
                     .layoutPriority(SegmentPolicy.priority(for: .badge))
             }
             if w.dirty {
                 Text("dirty").font(.caption2.weight(.semibold))
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(theme.peach)
                     .layoutPriority(SegmentPolicy.priority(for: .badge))
             }
             if w.ahead > 0 || w.behind > 0 {
                 Text("↑\(w.ahead)↓\(w.behind)")
                     .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(theme.subtext1)
                     .layoutPriority(SegmentPolicy.priority(for: .badge))
             }
         }
@@ -331,13 +343,14 @@ struct BoardPressStyle: ButtonStyle {
 
 // MARK: - Pinned section header (R2-A)
 
-/// The backing every pinned `.plain`-list section header gets. `.bar` is a
-/// translucent Material, deliberately: it stays legible over cards while
-/// keeping the scroll context visible. `listRowInsets` is zeroed so the
-/// backing spans the full row.
+/// The backing every pinned `.plain`-list section header gets. The chrome
+/// strips are the palette's mantle step (#372 — token-backed, so pinned
+/// headers follow the active Catppuccin flavor instead of a system
+/// material). `listRowInsets` is zeroed so the backing spans the full row.
 struct PinnedHeader<Content: View>: View {
     let fillsInteractiveWidth: Bool
     @ViewBuilder var content: () -> Content
+    @EnvironmentObject private var theme: ThemeStore
 
     init(fillsInteractiveWidth: Bool = false,
          @ViewBuilder content: @escaping () -> Content) {
@@ -345,21 +358,26 @@ struct PinnedHeader<Content: View>: View {
         self.content = content
     }
 
+    /// #372: pinned chrome strips use the palette's mantle step (the
+    /// design's nav/chips chrome) instead of a system material, so the
+    /// board chrome + section headers follow the active Catppuccin flavor.
     @ViewBuilder
     var body: some View {
         if fillsInteractiveWidth {
             content()
                 .font(.subheadline.weight(.semibold))
+                .foregroundStyle(theme.subtext1)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.bar, ignoresSafeAreaEdges: [])
+                .background(theme.mantle, ignoresSafeAreaEdges: [])
                 .listRowInsets(EdgeInsets())
         } else {
             content()
                 .font(.subheadline.weight(.semibold))
+                .foregroundStyle(theme.subtext1)
                 .padding(.horizontal, 20)
                 .padding(.vertical, 3)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.bar, ignoresSafeAreaEdges: [])
+                .background(theme.mantle, ignoresSafeAreaEdges: [])
                 .listRowInsets(EdgeInsets())
         }
     }
@@ -369,9 +387,16 @@ struct PinnedHeader<Content: View>: View {
 
 struct FleetView: View {
     @ObservedObject var model: AppModel
+    @EnvironmentObject private var theme: ThemeStore
     @State private var showSettings = false
 
     var body: some View {
+        // #372: UI accent = the active flavor's mauve; the system color
+        // scheme follows the flavor's light/dark axis so native chrome
+        // rides the same axis as the palette. Applied INSIDE FleetView (not
+        // on the app scene) so a live flavor flip re-evaluates this view
+        // instead of tearing down the hosting tree — the recorded-evidence
+        // driver's `.task` must survive a flavor change mid-sequence.
         let agents = Array(model.fleet.agents.values)
         // #364 B: chip set + effective filter are pure projections of the
         // CURRENT fleet — live counts, and a repo that vanished renders as
@@ -429,6 +454,15 @@ struct FleetView: View {
             }
             .listStyle(.plain)
             .listSectionSpacing(.compact)
+            // #372: the board surface is the active flavor's base token —
+            // rows ride transparent over it while the chrome strips use
+            // mantle (PinnedHeader), matching the approved palette layering.
+            // `.listRowBackground` keeps iOS 26 plain rows on the token
+            // surface (system rows would paint white/black cards in the
+            // forced light/dark scheme).
+            .scrollContentBackground(.hidden)
+            .background(theme.base)
+            .listRowBackground(theme.base)
             // Issue #219: native pull-to-refresh on the one physical scroll
             // surface. `refreshFleet` is coalesced and never touches the SSE
             // stream task.
@@ -495,6 +529,8 @@ struct FleetView: View {
             }
 #endif
         }
+        .tint(theme.accent)
+        .preferredColorScheme(theme.flavor.isLight ? .light : .dark)
     }
 
     /// #364 B: the horizontal repo filter chip row ('All' + one chip per
@@ -507,7 +543,8 @@ struct FleetView: View {
     private func repoChipsRow(chips: [BoardModel.RepoFilterChip],
                               total: Int,
                               selection: String?) -> some View {
-        Section {
+        let repos = chips.map(\.repo)
+        return Section {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     repoChipButton(label: "All", count: total,
@@ -516,7 +553,8 @@ struct FleetView: View {
                     }
                     ForEach(chips) { chip in
                         repoChipButton(label: chip.repo, count: chip.count,
-                                       isSelected: selection == chip.repo) {
+                                       isSelected: selection == chip.repo,
+                                       repo: chip.repo, repos: repos) {
                             model.repoFilter = chip.repo
                         }
                     }
@@ -532,38 +570,49 @@ struct FleetView: View {
 
     /// One filter chip: repo/All label + count badge, ≥44 pt hit target
     /// (#364 A3), visible selected state, VoiceOver label/value/selected
-    /// trait. Press feedback comes from `BoardPressStyle`.
+    /// trait. Press feedback comes from `BoardPressStyle`. #372 tokens: the
+    /// selected chip fills with the palette accent (mauve) — never teal —
+    /// and unselected chips carry the repo hue dot + surface-token chrome.
     private func repoChipButton(label: String, count: Int,
                                 isSelected: Bool,
+                                repo: String? = nil,
+                                repos: [String] = [],
                                 action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 5) {
+                if label != "All", let repo {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(theme.repoHueColor(for: repo, among: repos))
+                        .frame(width: 7, height: 7)
+                        .accessibilityHidden(true)
+                }
                 Text(label)
                     .lineLimit(1)
                 Text("\(count)")
                     .font(.caption.weight(.semibold))
                     .padding(.horizontal, 5)
                     .padding(.vertical, 1)
-                    .background(isSelected ? Color.white.opacity(0.25)
-                                           : Color.secondary.opacity(0.14),
+                    .background(isSelected ? theme.crust.opacity(0.22)
+                                           : theme.surface2.opacity(0.30),
                                 in: Capsule())
                     .accessibilityHidden(true)
             }
             .font(.subheadline.weight(.medium))
-            .foregroundStyle(isSelected ? Color.white : Color.primary)
+            .foregroundStyle(isSelected ? theme.crust : theme.subtext1)
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
-            .background(isSelected ? Color.accentColor
-                                   : Color(.secondarySystemBackground),
+            .background(isSelected ? theme.accent : theme.base,
                         in: Capsule())
+            .overlay(Capsule().stroke(
+                isSelected ? theme.accent : theme.surface1, lineWidth: 1))
             .frame(minHeight: 44)
         }
         .buttonStyle(BoardPressStyle())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(label == "All" ? "All agents"
-                                           : "Filter \\(label)")
-        .accessibilityValue(count == 1 ? "\\(count) agent"
-                                       : "\\(count) agents")
+                                           : "Filter \(label)")
+        .accessibilityValue(count == 1 ? "\(count) agent"
+                                       : "\(count) agents")
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 
@@ -580,6 +629,11 @@ struct FleetView: View {
             Section {
                 ForEach(status.agents) { agent in
                     agentRow(agent)
+                        // #372: iOS 26 plain lists paint their own row
+                        // background unless each row opts into the token
+                        // surface (a List-level `.listRowBackground` is not
+                        // honored); rows ride the flavor's base.
+                        .listRowBackground(theme.base)
                 }
             } header: {
                 PinnedHeader {
@@ -617,11 +671,11 @@ struct FleetView: View {
             HStack(spacing: 4) {
                 Image(systemName: "arrow.down")
                     .font(.caption2.weight(.semibold))
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(theme.accent)
                     .accessibilityHidden(true)
                 Text("pull to refresh · updates stream in automatically")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(theme.subtext1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 20)
@@ -647,14 +701,14 @@ struct FleetView: View {
                 ProgressView().controlSize(.mini)
                 Text("connecting")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(theme.subtext1)
             }
             .padding(.horizontal, 20)
             .padding(.top, 4)
         case .offline:
             Label("daemon offline — showing last-known board", systemImage: "wifi.slash")
                 .font(.caption2)
-                .foregroundStyle(.orange)
+                .foregroundStyle(theme.peach)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 20)
                 .padding(.top, 4)
@@ -662,7 +716,7 @@ struct FleetView: View {
         case .error(let message):
             Text("⚠ \(message)")
                 .font(.caption2)
-                .foregroundStyle(.orange)
+                .foregroundStyle(theme.peach)
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 20)
@@ -697,6 +751,8 @@ struct FleetView: View {
             await runFilterSequence()
         } else if CorralDemoLaunch.wantsSettingsEvidence(arguments: CommandLine.arguments) {
             await runSettingsSequence()
+        } else if CorralDemoLaunch.wantsThemeEvidence(arguments: CommandLine.arguments) {
+            await runThemeSequence()
         }
     }
 
@@ -777,6 +833,56 @@ struct FleetView: View {
         EvidenceMarkers.write("phase-3-done")
         try? await Task.sleep(for: .milliseconds(1500))
     }
+
+    /// #372 evidence: Mocha default board → Settings (Appearance section)
+    /// → flavor flips to Latte LIVE (sheet + board + rail all re-theme) →
+    /// Latte board → Latte recents rail with the themed code/diff colors.
+    /// The driver flips the same state the gear and the Appearance rows
+    /// set — simctl cannot inject taps, so this is the synthetic stand-in.
+    /// Holds are long so the host screenshot script lands INSIDE each
+    /// phase (simulator frames can lag the marker stream on cold boots).
+    private func runThemeSequence() async {
+        guard model.mode == .demo else { return }
+        // Cancellation-abort: if this task is ever cancelled mid-sequence
+        // (scene teardown, demo exit), STOP instead of racing through the
+        // remaining phases (a raced driver would flip the flavor and write
+        // every marker instantly, corrupting the recorded evidence).
+        guard await themePause(0) else { return }
+        theme.setFlavor(.mocha)
+        EvidenceMarkers.write("phase-1-board-mocha")
+        guard await themePause(5000) else { return }
+        showSettings = true
+        guard await themePause(5000) else { return }
+        EvidenceMarkers.write("phase-2-settings-mocha")
+        guard await themePause(5000) else { return }
+        theme.setFlavor(.latte)
+        guard await themePause(5000) else { return }
+        EvidenceMarkers.write("phase-3-settings-latte")
+        guard await themePause(5000) else { return }
+        showSettings = false
+        guard await themePause(5000) else { return }
+        EvidenceMarkers.write("phase-4-board-latte")
+        guard await themePause(5000) else { return }
+        model.requestRecents(for: DemoFleet.featuredAgentID, haptic: false)
+        guard await themePause(5000) else { return }
+        EvidenceMarkers.write("phase-5-recents-latte")
+        guard await themePause(5000) else { return }
+        model.recentsRequest = nil
+        guard await themePause(3000) else { return }
+        EvidenceMarkers.write("phase-6-done")
+        _ = await themePause(5000)
+    }
+
+    /// Sleep that reports cancellation: `false` (and stops the caller) when
+    /// the surrounding task was cancelled.
+    private func themePause(_ milliseconds: Int64) async -> Bool {
+        do {
+            try await Task.sleep(for: .milliseconds(milliseconds))
+            return true
+        } catch {
+            return false
+        }
+    }
 #endif
 }
 
@@ -802,11 +908,12 @@ enum EvidenceMarkers {
 struct BannerView: View {
     let banner: DriveBanner
     var dismiss: () -> Void
+    @EnvironmentObject private var theme: ThemeStore
 
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: banner.isError ? "exclamationmark.triangle.fill" : "info.circle.fill")
-                .foregroundStyle(banner.isError ? Color.red : Color.blue)
+                .foregroundStyle(banner.isError ? theme.red : theme.blue)
             Text("[\(banner.kind)] \(banner.message)")
                 .font(.caption)
                 .textSelection(.enabled)
@@ -815,11 +922,11 @@ struct BannerView: View {
                 Image(systemName: "xmark.circle.fill")
             }
             .buttonStyle(BoardPressStyle())
-            .foregroundStyle(.secondary)
+            .foregroundStyle(theme.subtext1)
             .accessibilityLabel("Dismiss banner")
         }
         .padding(8)
-        .background(banner.isError ? Color.red.opacity(0.12) : Color.blue.opacity(0.12),
+        .background(banner.isError ? theme.red.opacity(0.12) : theme.blue.opacity(0.12),
                     in: RoundedRectangle(cornerRadius: 8))
     }
 }
@@ -828,6 +935,7 @@ struct BannerView: View {
 
 struct RegistrationView: View {
     @ObservedObject var model: AppModel
+    @EnvironmentObject private var theme: ThemeStore
 
     @State private var host = "127.0.0.1:8474"
     @State private var token = ""
@@ -857,12 +965,12 @@ struct RegistrationView: View {
             .disabled(host.isEmpty || token.isEmpty || registering)
             Text("The device signs every read with its own Ed25519 key. Registration grants NOTHING: the host provisions the read_tail grant out-of-band.")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(theme.subtext1)
             if model.keyStorageWarning {
                 Label("Keychain unavailable — the device key is stored in the plaintext in-app store. Use a device with Keychain support for production.",
                       systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(theme.peach)
             }
         } header: {
             PinnedHeader { Text("Connect") }
@@ -875,7 +983,7 @@ struct RegistrationView: View {
             .font(.subheadline)
             Text("Seeded fake read-only fleet for local Debug/simulator testing only.")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(theme.subtext1)
         } header: {
             PinnedHeader { Text("Demo") }
         }
@@ -883,7 +991,7 @@ struct RegistrationView: View {
     }
 }
 
-// MARK: - Settings (connection + notification pairing)
+// MARK: - Settings (connection + notification pairing + Appearance)
 
 /// #365: the surface behind the board's always-visible gear. The first
 /// section is the CONNECTION pairing — host field + registration token —
@@ -891,9 +999,15 @@ struct RegistrationView: View {
 /// already-paired device re-pointing at a different host. Below it sit the
 /// retained #354 read-out (device identity), the global notification
 /// pairing toggle, and the destructive device reset.
+///
+/// #372: the FIRST section is Appearance — the ONLY theme control in the
+/// whole app (placement lock: no picker on the board toolbar, the recents
+/// header, or any tail top-right). Four Catppuccin flavor rows with the
+/// locked swatch strips; selection persists through `ThemeStore`.
 struct SettingsView: View {
     @ObservedObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var theme: ThemeStore
 
     @State private var host: String
     @State private var token = ""
@@ -912,6 +1026,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                appearanceSection
                 Section("Connection") {
                     TextField("Host (Tailscale host or loopback)", text: $host)
                         .textFieldStyle(.roundedBorder)
@@ -935,7 +1050,7 @@ struct SettingsView: View {
                     .disabled(host.isEmpty || token.isEmpty || registering)
                     Text("The device signs every read with its own Ed25519 key. Registration grants NOTHING: the host provisions the read_tail grant out-of-band.")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(theme.subtext1)
                 }
                 Section("Device") {
                     LabeledContent("Key id", value: String((model.keyId ?? "—").prefix(16)))
@@ -952,7 +1067,7 @@ struct SettingsView: View {
                             set: { model.setNotificationsEnabled($0) }))
                     Text("Alerts when an agent starts, blocks, or finishes. No badges or catch-up.")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(theme.subtext1)
                 }
                 Section("Reset") {
                     Button("Reset device identity", role: .destructive) {
@@ -962,7 +1077,81 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Settings")
+            // #372: the form surface follows the active flavor's base token
+            // (native cells still provide the grouped chrome), and the
+            // scheme is forced INSIDE the sheet so a live flavor flip
+            // re-traits the presented form's system chrome too (an
+            // app-level scheme change does not reach presented sheets).
+            .scrollContentBackground(.hidden)
+            .background(theme.base)
+            .preferredColorScheme(theme.flavor.isLight ? .light : .dark)
         }
+    }
+
+    /// #372 Appearance: the ONLY theme picker (Settings-only placement
+    /// lock). One row per Catppuccin flavor, locked order + swatch strips
+    /// (base / surface1 / mauve / teal / red of THAT flavor), checkmark on
+    /// the active row; selection persists.
+    private var appearanceSection: some View {
+        Section {
+            ForEach(CatppuccinFlavor.allCases, id: \.self) { flavor in
+                let selected = flavor == theme.flavor
+                Button {
+                    theme.setFlavor(flavor)
+                } label: {
+                    HStack(spacing: 12) {
+                        FlavorSwatchStrip(flavor: flavor)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(flavor.displayName)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(selected ? theme.accent
+                                                          : theme.text)
+                            Text(flavor.meta)
+                                .font(.caption)
+                                .foregroundStyle(theme.subtext1)
+                        }
+                        Spacer()
+                        if selected {
+                            Image(systemName: "checkmark")
+                                .font(.subheadline.weight(.bold))
+                                .foregroundStyle(theme.accent)
+                                .accessibilityHidden(true)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("\(flavor.displayName), \(flavor.meta)")
+                .accessibilityAddTraits(selected ? [.isSelected] : [])
+            }
+        } header: {
+            Text("Appearance")
+        } footer: {
+            Text("Applies to the whole app — board, sheets, rail and settings.")
+                .foregroundStyle(theme.subtext1)
+        }
+    }
+}
+
+/// The five-swatch flavor preview from the approved Appearance frame: the
+/// flavor's base, surface1, accent (mauve), teal, and red — real tokens of
+/// that palette, never fixed hexes. The strip previews a DIFFERENT flavor
+/// than the active one, so it resolves that flavor's palette directly.
+private struct FlavorSwatchStrip: View {
+    let flavor: CatppuccinFlavor
+
+    var body: some View {
+        let palette = CatppuccinPalette.palette(for: flavor)
+        HStack(spacing: 3) {
+            ForEach([CatppuccinToken.base, .surface1, .mauve, .teal, .red],
+                    id: \.self) { token in
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(palette.color(token))
+                    .frame(width: 14, height: 24)
+            }
+        }
+        .accessibilityHidden(true)
     }
 }
 
@@ -977,6 +1166,7 @@ struct RecentOutputSheet: View {
     let agentId: String
     @ObservedObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var theme: ThemeStore
 
     private var agent: Agent? { model.fleet.agent(agentId) }
     private var tail: TailPane? { model.fleet.tailPane(for: agentId) }
@@ -1002,6 +1192,9 @@ struct RecentOutputSheet: View {
                     }
                 }
             }
+            // #372: the sheet's own chrome follows the active flavor (a
+            // scene-level scheme change does not re-trait presented
+            // sheets' system surfaces live).
             .task {
                 refresh()
                 while !Task.isCancelled {
@@ -1011,6 +1204,9 @@ struct RecentOutputSheet: View {
                 }
             }
         }
+        // #372: scheme forced at the SHEET level (covers the nav bar +
+        // drag chrome of the presented stack).
+        .preferredColorScheme(theme.flavor.isLight ? .light : .dark)
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
     }
@@ -1020,25 +1216,26 @@ struct RecentOutputSheet: View {
         VStack(alignment: .leading, spacing: 4) {
             if let agent {
                 let style = StateStyle.style(for: agent.state)
+                let stateColor = theme.stateColor(for: agent.state)
                 HStack(spacing: 6) {
                     Circle()
-                        .fill(style.isRing ? Color.clear : style.color)
-                        .overlay(Circle().stroke(style.color, lineWidth: 1))
+                        .fill(style.isRing ? Color.clear : stateColor)
+                        .overlay(Circle().stroke(stateColor, lineWidth: 1))
                         .frame(width: 10, height: 10)
                         .accessibilityHidden(true)
                     Text(style.label)
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(style.color)
+                        .foregroundStyle(stateColor)
                         .accessibilityLabel(style.accessibilityLabel)
                     if let repo = agent.workspace.repo {
                         Text(repo)
                             .font(.caption2.monospaced())
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(theme.tailMuted)
                     }
                     if let branch = agent.workspace.branch {
                         Text(branch)
                             .font(.caption2.monospaced())
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(theme.tailMuted)
                             .lineLimit(1)
                             .truncationMode(.middle)
                     }
@@ -1046,29 +1243,28 @@ struct RecentOutputSheet: View {
                     if let reference = agent.attachment?.reference {
                         Text(reference)
                             .font(.caption2.monospaced())
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(theme.tailQuiet)
                             .accessibilityLabel("Pane \(reference)")
                     }
                     if showLiveIndicator {
                         Circle()
-                            .fill(RecentOutputPalette.accent)
+                            .fill(theme.accent)
                             .frame(width: 6, height: 6)
                             .accessibilityHidden(true)
                         Text("live")
                             .font(.caption2.weight(.bold))
-                            .foregroundStyle(RecentOutputPalette.accent)
+                            .foregroundStyle(theme.accent)
                     }
                 }
             } else {
                 Label("Agent no longer available", systemImage: "exclamationmark.triangle")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(theme.tailMuted)
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
-        .background(RecentOutputPalette.bg)
-        .environment(\.colorScheme, .dark)
+        .background(theme.tailBackground)
     }
 
     private var showLiveIndicator: Bool {
@@ -1085,30 +1281,30 @@ struct RecentOutputSheet: View {
                 HStack(spacing: 8) {
                     ProgressView()
                         .controlSize(.small)
-                        .tint(RecentOutputPalette.accent)
+                        .tint(theme.accent)
                     Text("Loading recent output…")
                         .font(.caption)
-                        .foregroundStyle(RecentOutputPalette.muted)
+                        .foregroundStyle(theme.tailMuted)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .padding(16)
             case .empty:
                 Text("No output yet.")
                     .font(.caption)
-                    .foregroundStyle(RecentOutputPalette.muted)
+                    .foregroundStyle(theme.tailMuted)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .padding(16)
             case .error(let failure):
                 VStack(alignment: .leading, spacing: 8) {
                     Label(TranscriptText.errorText(failure), systemImage: "exclamationmark.triangle")
                         .font(.caption)
-                        .foregroundStyle(RecentOutputPalette.diffDel)
+                        .foregroundStyle(theme.codeDeletion)
                         .accessibilityLabel(TranscriptText.errorText(failure))
                     Button("Retry") {
                         refresh()
                     }
                     .buttonStyle(.bordered)
-                    .tint(RecentOutputPalette.accent)
+                    .tint(theme.accent)
                     .accessibilityLabel("Retry recent output")
                 }
                 .padding(16)
@@ -1118,8 +1314,7 @@ struct RecentOutputSheet: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(RecentOutputPalette.bg)
-        .environment(\.colorScheme, .dark)
+        .background(theme.tailBackground)
     }
 
     /// The live tail: ONE continuous chronological rail of the agent's raw
@@ -1159,10 +1354,18 @@ struct RecentOutputSheet: View {
         }
     }
 
+    /// Auto-scroll to the newest row. #372 Reduce Motion: the scroll lands
+    /// instantly (no animation) when the system Reduce Motion setting is
+    /// on — the theme layer's plumbing, consumed by the #371 motion chip
+    /// later.
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
         DispatchQueue.main.async {
-            withAnimation {
+            if theme.reduceMotion {
                 proxy.scrollTo("recents-bottom", anchor: .bottom)
+            } else {
+                withAnimation {
+                    proxy.scrollTo("recents-bottom", anchor: .bottom)
+                }
             }
         }
     }
@@ -1189,6 +1392,7 @@ struct RecentOutputSheet: View {
 /// attributable via the row's accessibility label.
 private struct RecentRailRowView: View {
     let row: RecentOutputModel.RailRow
+    @EnvironmentObject private var theme: ThemeStore
 
     private var block: TranscriptBlock { row.block }
 
@@ -1209,7 +1413,7 @@ private struct RecentRailRowView: View {
                     .frame(width: 9, height: 9)
                     // Mask the continuous spine behind the hollow marker so
                     // the rail appears to touch each node (#361 R1).
-                    .background(Circle().fill(RecentOutputPalette.bg))
+                    .background(Circle().fill(theme.tailBackground))
             } else {
                 Color.clear
             }
@@ -1231,13 +1435,12 @@ private struct RecentRailRowView: View {
         }
     }
 
+    /// #372 role token colors (the #361 lock remapped onto the active
+    /// flavor): Agent = accent (mauve), You = blue, Tool = peach — the
+    /// design round's role mapping; never legacy hexes, and the marker
+    /// shapes carry no accompanying role words.
     private var roleColor: Color {
-        switch block.kind {
-        case .user: return RecentOutputPalette.workingBlue
-        case .agent: return RecentOutputPalette.accent
-        case .tool: return RecentOutputPalette.toolGold
-        case .system, .unknown: return RecentOutputPalette.muted
-        }
+        theme.roleColor(for: block.kind)
     }
 
     /// The block's raw output. Code/diff lines keep their inline syntax
@@ -1274,7 +1477,7 @@ private struct RecentRailRowView: View {
                     id: \.offset) { item in
                 Text(item.element)
                     .font(.subheadline)
-                    .foregroundStyle(RecentOutputPalette.ink)
+                    .foregroundStyle(theme.tailInk)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
@@ -1303,9 +1506,11 @@ private struct RecentDiamond: Shape {
 /// the whole stack — never per-row segments. Width is fixed and leading,
 /// so the line stays in the gutter (no maxWidth expansion).
 private struct RecentRailSpine: View {
+    @EnvironmentObject private var theme: ThemeStore
+
     var body: some View {
         Rectangle()
-            .fill(RecentOutputPalette.railLine)
+            .fill(theme.tailLine)
             .frame(width: 1.5)
             .frame(maxHeight: .infinity, alignment: .top)
     }
@@ -1313,19 +1518,20 @@ private struct RecentRailSpine: View {
 
 private struct RecentCodeLineView: View {
     let line: RecentCodeLine
+    @EnvironmentObject private var theme: ThemeStore
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             if let number = line.number {
                 Text("\(number)")
                     .font(.caption2.monospaced())
-                    .foregroundStyle(RecentOutputPalette.muted)
+                    .foregroundStyle(theme.tailQuiet)
                     .frame(width: 24, alignment: .trailing)
                     .accessibilityHidden(true)
             }
             highlightedText
                 .font(.caption2.monospaced())
-                .foregroundStyle(RecentOutputPalette.ink)
+                .foregroundStyle(theme.tailInk)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1334,42 +1540,7 @@ private struct RecentCodeLineView: View {
     private var highlightedText: Text {
         line.segments.reduce(Text("")) { partial, segment in
             partial + Text(segment.text)
-                .foregroundStyle(color(for: segment.kind))
+                .foregroundStyle(theme.segmentColor(for: segment.kind))
         }
     }
-
-    private func color(for kind: RecentCodeSegmentKind) -> Color {
-        switch kind {
-        case .plain: return RecentOutputPalette.ink
-        case .keyword: return RecentOutputPalette.keyword
-        case .string: return RecentOutputPalette.string
-        case .addition: return RecentOutputPalette.diffAdd
-        case .deletion: return RecentOutputPalette.diffDel
-        case .comment: return RecentOutputPalette.comment
-        }
-    }
-}
-
-// MARK: - Recent-output palette (dark, prototype-locked)
-
-enum RecentOutputPalette {
-    static let panelCornerRadius: CGFloat = 8
-    static let bg = Color(red: 13 / 255, green: 17 / 255, blue: 23 / 255)
-    static let ink = Color(red: 230 / 255, green: 237 / 255, blue: 243 / 255)
-    static let muted = Color(red: 139 / 255, green: 148 / 255, blue: 158 / 255)
-    static let accent = Color(red: 45 / 255, green: 212 / 255, blue: 191 / 255)
-    // #361 DESIGN LOCK role tokens (the #316 evidence palette): Assistant =
-    // accent, You = working blue, Tool = gold. Used ONLY by the transition
-    // markers — never repeated per row and never as role text.
-    static let workingBlue = Color(red: 88 / 255, green: 166 / 255, blue: 255 / 255)
-    static let toolGold = Color(red: 210 / 255, green: 153 / 255, blue: 34 / 255)
-    // #361 R1: the continuous spine line behind the rail rows — the #271 V2
-    // reference rail is a dark TEAL-tinted hairline, so this derives from
-    // the accent token at low opacity instead of a neutral gray.
-    static let railLine = RecentOutputPalette.accent.opacity(0.18)
-    static let diffAdd = Color(red: 63 / 255, green: 185 / 255, blue: 80 / 255)
-    static let diffDel = Color(red: 248 / 255, green: 81 / 255, blue: 73 / 255)
-    static let string = Color(red: 165 / 255, green: 214 / 255, blue: 255 / 255)
-    static let keyword = Color(red: 255 / 255, green: 123 / 255, blue: 114 / 255)
-    static let comment = Color(red: 139 / 255, green: 148 / 255, blue: 158 / 255)
 }

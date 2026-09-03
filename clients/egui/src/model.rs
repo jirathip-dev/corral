@@ -33,9 +33,11 @@ pub enum AgentState {
 }
 
 impl AgentState {
-    /// Raw herdr state token, verbatim (#354 amendment 09-02: herdr 0.8.2
-    /// has NO `done`; finished Hermes panes fall back to idle and the board
-    /// never invents Needs-you / Supervising / Finished wording).
+    /// Raw herdr state token, verbatim. The wire CAN carry `done` (the
+    /// #324 live probe records agent_status `done` from herdr 0.8.2); the
+    /// board treats `done` as finished — ranked/rendered with idle, never
+    /// active/working — and never invents Needs-you / Supervising /
+    /// Finished wording.
     pub fn label(self) -> &'static str {
         match self {
             Self::Idle => "idle",

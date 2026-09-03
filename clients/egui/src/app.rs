@@ -2192,6 +2192,11 @@ impl CorralApp {
 }
 
 fn configure_fonts(ctx: &egui::Context) {
+    // #358: the proportional default trio lacks the board's mark glyphs
+    // (idle U+25E6 rendered as tofu U+25A1); board_font_definitions appends
+    // the built-in Hack fallback. WebCorralApp::new installs the same
+    // definitions on the wasm surface.
+    ctx.set_fonts(theme::board_font_definitions());
     let mut style = (*ctx.style_of(egui::Theme::Dark)).clone();
     style.spacing.item_spacing = egui::vec2(6.0, 4.0);
     style.spacing.button_padding = egui::vec2(8.0, 3.0);
@@ -3123,6 +3128,59 @@ mod tests {
         assert_eq!(active, Tab::Settings);
         assert!(text_rect(&output, "Issues").is_none());
         assert!(text_rect(&output, "Audit").is_none());
+    }
+
+    /// #358: every board state-chip mark glyph must resolve from the fonts
+    /// the app configures (configure_fonts over the egui defaults). RED at
+    /// the post-#354 base: idle U+25E6 has no glyph in the proportional
+    /// chain (Ubuntu-Light/NotoEmoji-Regular/emoji-icon-font), so epaint
+    /// paints the tofu replacement U+25A1 (pixel-verified in the L3 review
+    /// evidence).
+    ///
+    /// `Done` is deliberately absent from the assertions: done IS
+    /// wire-reachable (the #324 live probe records agent_status `done`
+    /// from live herdr 0.8.2), but its U+2713 mark exists in no
+    /// toolkit-default font, so a done chip would tofu — recorded here as
+    /// KNOWN TOFU pending a follow-up. Asserting it would require
+    /// re-adding the bundled-font machinery the #354 cut retired. The
+    /// four asserted states are the ones this fix renders tofu-free.
+    #[test]
+    fn state_chip_mark_glyphs_resolve_from_configured_fonts() {
+        // Idle first: the #358 regression is the idle chip (U+25E6), and
+        // the failing assertion must name it before any sibling mark.
+        let likes = [
+            theme::AgentStateLike::Idle,
+            theme::AgentStateLike::Blocked,
+            theme::AgentStateLike::Working,
+            theme::AgentStateLike::Unknown,
+        ];
+        // The exact text the board paints: mark glyph + raw state token
+        // (board.rs state_chip_text) in the chip's proportional font.
+        let font = egui::FontId::proportional(11.0);
+
+        // Both boards must resolve every chip mark glyph: the desktop app
+        // (configure_fonts in CorralApp::new) and the wasm demo board
+        // (WebCorralApp::new installs the same board_font_definitions).
+        let mut surfaces: Vec<(&str, egui::Context)> = Vec::new();
+        let desktop = egui::Context::default();
+        configure_fonts(&desktop);
+        surfaces.push(("configure_fonts (desktop)", desktop));
+        let wasm = egui::Context::default();
+        wasm.set_fonts(theme::board_font_definitions());
+        surfaces.push(("board_font_definitions (wasm)", wasm));
+
+        for (surface, ctx) in surfaces {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                for like in likes {
+                    let chip = format!("{} {}", like.mark_glyph(), like.label());
+                    assert!(
+                        ui.fonts_mut(|fonts| fonts.has_glyphs(&font, &chip)),
+                        "{surface}: state chip {chip:?} has no usable glyph in the configured fonts",
+                    );
+                }
+            });
+            output.textures_delta.clear();
+        }
     }
 
     // ------------------------------------------------------------------

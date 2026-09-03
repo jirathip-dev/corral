@@ -441,13 +441,15 @@ final class DeltaApplyTests: XCTestCase {
 // MARK: - Demo seed integrity (#354 L2 read-only fixture)
 
 final class DemoSeedTests: XCTestCase {
-    func testSeedCoversRawBoardStatesWithoutDone() {
+    func testSeedCoversRawBoardStatesIncludingDone() {
         let seed = DemoFleet.seed()
         let states = Set(seed.values.map(\.state))
-        XCTAssertEqual(states, Set([.working, .idle, .blocked, .unknown]),
-                       "the read-only fixture uses herdr's raw vocabulary; done is gone")
+        XCTAssertEqual(states, Set([.working, .idle, .blocked, .done, .unknown]),
+                       "the read-only fixture uses herdr's raw vocabulary — a "
+                       + "done row proves the Done section renders when present")
         XCTAssertTrue(seed.values.contains { $0.isBlocked })
         XCTAssertTrue(seed.values.contains { $0.state == .idle })
+        XCTAssertTrue(seed.values.contains { $0.state == .done })
         XCTAssertTrue(seed.values.contains { $0.state == .unknown })
     }
 
@@ -475,18 +477,18 @@ final class DemoSeedTests: XCTestCase {
     func testSeedCoversEveryStatusSection() {
         let seed = DemoFleet.seed()
         // The evidence board must be able to show EVERY locked status
-        // section with rows, projected through the real model — no repo
-        // grouping anywhere.
+        // section with rows — incl. Done (only-when-present is a BoardModel
+        // behavior; the demo carries one done row so the section renders).
         let sections = BoardModel.sections(Array(seed.values))
         XCTAssertEqual(sections.statuses.map(\.state),
-                       [.blocked, .working, .idle, .unknown],
+                       [.blocked, .working, .idle, .done, .unknown],
                        "the fixture must populate every locked status section")
         for status in sections.statuses {
-            XCTAssertFalse(status.agents.isEmpty,
+            XCTAssertFalse(status.subgroups.isEmpty,
                            "section \(status.header) must be non-empty for evidence")
         }
         // The orphan (repo = nil) row stays in the fixture and lands in its
-        // status bucket — repo is row metadata, not a grouping key.
+        // status bucket's Other subgroup (#371).
         XCTAssertTrue(seed.values.contains { $0.workspace.repo == nil },
                       "the orphan (no-repo) row must be exercised")
     }
@@ -2191,13 +2193,21 @@ private final class DeterministicDriveURLProtocol: URLProtocol {
 
 // MARK: - #362 status-grouped board projections
 
-final class BoardModelReadOnlyTests: XCTestCase {
+final class BoardModelBoardV2Tests: XCTestCase {
     private func agent(_ id: String, state: AgentState, repo: String?, branch: String? = nil,
                        ts: UInt64 = 100, displayName: String? = nil) -> Agent {
         Agent(agentId: id, state: state, seq: 1, ts: ts,
               capabilities: ["read_tail"],
               workspace: Workspace(repo: repo, branch: branch),
               displayName: displayName ?? id)
+    }
+
+    private func subgroupNames(_ status: BoardModel.StatusSection) -> [String] {
+        status.subgroups.map(\.displayName)
+    }
+
+    private func subgroupRows(_ status: BoardModel.StatusSection) -> [String] {
+        status.subgroups.flatMap { $0.agents.map(\.agentId) }
     }
 
     func testSectionsBucketByRawStatusInLockedOrder() {
@@ -2207,49 +2217,64 @@ final class BoardModelReadOnlyTests: XCTestCase {
             agent("i1", state: .idle, repo: "corral"),
             agent("u1", state: .unknown, repo: nil),
         ])
-        // Locked order: Blocked → Working → Idle → Unknown. Repo is never
-        // a grouping key, so four agents across three repos still yield
-        // exactly four one-row status buckets.
+        // Locked order: Blocked → Working → Idle → Unknown; section headers
+        // carry the raw status name + the TOTAL across its subgroups.
         XCTAssertEqual(sections.statuses.map(\.state),
                        [.blocked, .working, .idle, .unknown])
         XCTAssertEqual(sections.statuses.map(\.header),
                        ["blocked (1)", "working (1)", "idle (1)", "unknown (1)"])
-        XCTAssertEqual(sections.statuses.map { $0.agents.map(\.agentId) },
-                       [["b1"], ["w1"], ["i1"], ["u1"]])
+        XCTAssertEqual(sections.statuses.map(\.total), [1, 1, 1, 1])
+        // A one-row section still renders its repo subgroup (uniformity).
+        XCTAssertEqual(subgroupNames(sections.statuses[0]), ["corral"])
+        XCTAssertEqual(sections.statuses[0].subgroups[0].header, "corral (1)")
     }
 
-    func testRepoIsRowMetadataNeverTheGroupingKey() {
-        // Same status across DIFFERENT repos — including the orphan
-        // (repo = nil) — collapses into ONE working bucket; there is no
-        // repo section, no "no repo" orphan bucket.
+    func testEverySectionGroupsRowsIntoRepoSubgroupsAlphabeticalOtherLast() {
+        // #371: same status across DIFFERENT repos — including the orphan
+        // (repo = nil) — splits the section into repo subgroups: named
+        // repos ALPHABETICAL first, the Other subgroup LAST; each subgroup
+        // keeps the section's within-bucket order (ts desc, then id).
         let sections = BoardModel.sections([
-            agent("in-corral", state: .working, repo: "corral", ts: 200),
+            agent("z-orphan", state: .working, repo: nil, ts: 50),
             agent("in-other", state: .working, repo: "other", ts: 150),
-            agent("orphan", state: .working, repo: nil, ts: 100),
+            agent("in-corral", state: .working, repo: "corral", ts: 200),
+            agent("corral-old", state: .working, repo: "corral", ts: 100),
         ])
         XCTAssertEqual(sections.statuses.count, 1)
-        XCTAssertEqual(sections.statuses[0].state, .working)
-        XCTAssertEqual(sections.statuses[0].agents.map(\.agentId),
-                       ["in-corral", "in-other", "orphan"],
-                       "repo must not partition a status bucket")
-        XCTAssertEqual(sections.statuses[0].header, "working (3)")
+        let working = sections.statuses[0]
+        XCTAssertEqual(working.state, .working)
+        XCTAssertEqual(subgroupNames(working), ["corral", "other", "Other"],
+                       "named repos alphabetical, Other LAST")
+        XCTAssertEqual(working.subgroups[0].header, "corral (2)")
+        XCTAssertEqual(working.subgroups[1].header, "other (1)")
+        XCTAssertEqual(working.subgroups[2].header, "Other (1)")
+        XCTAssertEqual(working.subgroups[2].repo, nil)
+        XCTAssertEqual(working.subgroups[0].agents.map(\.agentId),
+                       ["in-corral", "corral-old"],
+                       "subgroups preserve the bucket's ts-desc order")
+        XCTAssertEqual(working.header, "working (4)",
+                       "the section total sums every subgroup")
+        XCTAssertEqual(subgroupRows(working),
+                       ["in-corral", "corral-old", "in-other", "z-orphan"],
+                       "subgrouping is a stable partition of the ordered bucket")
     }
 
-    func testBlockedAgentsLeadTheBoardExactlyOnce() {
-        // Blocked is the FIRST section (attention-first); the old
-        // cross-repo promotion is gone — no agent is duplicated into a
-        // second bucket, blocked orphan or not.
+    func testBlockedSectionIsGroupedUniformlyLikeEveryOtherSection() {
+        // #371: EVERY section incl. Blocked gets repo subgroups — blocked
+        // rows across repos render under their repo bands, blocked first
+        // overall because the section is first; no agent duplicated.
         let sections = BoardModel.sections([
             agent("idle", state: .idle, repo: "corral", ts: 300),
             agent("blocked-with-repo", state: .blocked, repo: "corral", ts: 200),
             agent("blocked-orphan", state: .blocked, repo: nil, ts: 100),
         ])
         XCTAssertEqual(sections.statuses.map(\.state), [.blocked, .idle])
-        XCTAssertEqual(sections.statuses[0].agents.map(\.agentId),
+        XCTAssertEqual(subgroupNames(sections.statuses[0]), ["corral", "Other"])
+        XCTAssertEqual(subgroupRows(sections.statuses[0]),
                        ["blocked-with-repo", "blocked-orphan"])
-        let allRows = sections.statuses.flatMap { $0.agents.map(\.agentId) }
+        let allRows = sections.statuses.flatMap(subgroupRows)
         XCTAssertEqual(allRows.count, Set(allRows).count,
-                       "every agent must appear in exactly one section")
+                       "every agent must appear in exactly one section/subgroup")
         XCTAssertEqual(Set(allRows), Set(["idle", "blocked-with-repo", "blocked-orphan"]))
     }
 
@@ -2272,7 +2297,7 @@ final class BoardModelReadOnlyTests: XCTestCase {
         XCTAssertEqual(withDone.statuses.map(\.state),
                        [.working, .idle, .done])
         XCTAssertEqual(withDone.statuses[2].header, "done (1)")
-        XCTAssertEqual(withDone.statuses[2].agents.map(\.agentId), ["done"])
+        XCTAssertEqual(subgroupRows(withDone.statuses[2]), ["done"])
     }
 
     func testDoneSectionPositionIsRankTieNotTimestampDriven() {
@@ -2295,9 +2320,33 @@ final class BoardModelReadOnlyTests: XCTestCase {
             agent("tie-a", state: .working, repo: "r", ts: 200),
             agent("tie-b", state: .working, repo: "r", ts: 200),
         ])
-        XCTAssertEqual(sections.statuses[0].agents.map(\.agentId),
+        XCTAssertEqual(subgroupRows(sections.statuses[0]),
                        ["newer", "tie-a", "tie-b", "older"],
                        "ts desc, then agent id for determinism")
+    }
+
+    func testEmptyAndUnknownRepoStringsFoldIntoTheOtherSubgroup() {
+        // A repo key of "" or the literal Other label is not a real repo
+        // identity — it folds into the Other bucket so subgroup ids can
+        // never collide with the orphan subgroup.
+        let sections = BoardModel.sections([
+            agent("empty-repo", state: .working, repo: "", ts: 200),
+            agent("literal-other", state: .working, repo: "Other", ts: 150),
+            agent("orphan", state: .working, repo: nil, ts: 100),
+        ])
+        XCTAssertEqual(subgroupNames(sections.statuses[0]), ["Other"])
+        XCTAssertEqual(subgroupRows(sections.statuses[0]),
+                       ["empty-repo", "literal-other", "orphan"],
+                       "the Other bucket keeps the section's within-bucket order")
+    }
+
+    func testOrphanOnlySectionRendersASingleOtherSubgroup() {
+        let sections = BoardModel.sections([
+            agent("o1", state: .unknown, repo: nil, ts: 200),
+            agent("o2", state: .unknown, repo: nil, ts: 100),
+        ])
+        XCTAssertEqual(subgroupNames(sections.statuses[0]), ["Other"])
+        XCTAssertEqual(sections.statuses[0].header, "unknown (2)")
     }
 
     func testSectionOrderIsDeterministicRegardlessOfInputOrder() {
@@ -2309,12 +2358,98 @@ final class BoardModelReadOnlyTests: XCTestCase {
         let forward = BoardModel.sections(fleet)
         let shuffled = BoardModel.sections(fleet.reversed())
         XCTAssertEqual(forward.statuses.map(\.state), [.blocked, .idle, .unknown])
-        XCTAssertEqual(forward.statuses, shuffled.statuses)
+        XCTAssertEqual(forward.statuses, shuffled.statuses,
+                       "subgroup bucketing must be input-order independent")
+    }
+
+    func testRepoFilterKeepsSectionsAndOnlyTheSelectedReposSubgroup() {
+        // #371: selecting a repo chip keeps EVERY status section, showing
+        // only that repo's subgroup per status; orphans never match a chip,
+        // so no Other subgroup appears under a repo filter.
+        let fleet = [
+            agent("b-corral", state: .blocked, repo: "corral", ts: 500),
+            agent("b-other", state: .blocked, repo: "other", ts: 400),
+            agent("b-orphan", state: .blocked, repo: nil, ts: 300),
+            agent("w-corral", state: .working, repo: "corral", ts: 200),
+            agent("w-orphan", state: .working, repo: nil, ts: 100),
+        ]
+        let filtered = BoardModel.agents(fleet, in: "corral")
+        let sections = BoardModel.sections(filtered)
+        XCTAssertEqual(sections.statuses.map(\.state), [.blocked, .working])
+        XCTAssertEqual(sections.statuses.map(\.header), ["blocked (1)", "working (1)"],
+                       "section totals rescope to the filtered set")
+        for status in sections.statuses {
+            XCTAssertEqual(subgroupNames(status), ["corral"],
+                           "a repo filter shows only that repo's subgroup in every section")
+        }
     }
 
     func testEmptyBoardHasNoSections() {
         let sections = BoardModel.sections([])
         XCTAssertTrue(sections.statuses.isEmpty)
+    }
+}
+
+// MARK: - #371 working-motion math (pure, view-independent)
+
+/// Locks the breathing-heartbeat math (the approved 1.2 s cycle, 160 ms
+/// stagger, opacity 0.34 → 1 / scale 0.78 → 1 peaking at 42 %). These bite:
+/// a flattened (non-staggered) animation, a wrong cycle, or a broken wrap
+/// all go RED here before any view code is involved.
+final class WorkingMotionTests: XCTestCase {
+
+    func testStaggeredSquaresShareOneShiftedCurve() {
+        // Square n's curve == square 0's curve delayed by n × 160 ms.
+        for t in stride(from: 0.0, through: 1.2, by: 0.05) {
+            XCTAssertEqual(WorkingMotion.opacity(at: t, square: 0),
+                           WorkingMotion.opacity(at: t + WorkingMotion.stagger,
+                                                 square: 1),
+                           accuracy: 1e-9)
+            XCTAssertEqual(WorkingMotion.opacity(at: t, square: 0),
+                           WorkingMotion.opacity(at: t + 2 * WorkingMotion.stagger,
+                                                 square: 2),
+                           accuracy: 1e-9)
+            XCTAssertEqual(WorkingMotion.scale(at: t, square: 0),
+                           WorkingMotion.scale(at: t + WorkingMotion.stagger,
+                                               square: 1),
+                           accuracy: 1e-9)
+        }
+    }
+
+    func testSquaresAreVisiblyOutOfPhaseAtRest() {
+        // At t = 0 the three squares are mid-cycle at DIFFERENT opacities —
+        // a flattened animation (all three identical) fails this.
+        let opacities = (0..<WorkingMotion.squareCount)
+            .map { WorkingMotion.opacity(at: 0, square: $0) }
+        XCTAssertEqual(Set(opacities).count, WorkingMotion.squareCount,
+                       "every square must sit on a different phase of the cycle")
+        XCTAssertEqual(opacities[0], WorkingMotion.minOpacity, accuracy: 1e-9,
+                       "square 0 starts the cycle at its rest opacity")
+        XCTAssertTrue(opacities.allSatisfy { $0 >= WorkingMotion.minOpacity - 1e-9
+                                             && $0 <= 1 + 1e-9 })
+    }
+
+    func testBreathingBoundsAndPeak() {
+        // Opacity ramps 0.34 → 1 and back; scale 0.78 → 1 and back; the
+        // peak sits at 42 % of the 1.2 s cycle.
+        XCTAssertEqual(WorkingMotion.cycle, 1.2, accuracy: 1e-9)
+        XCTAssertEqual(WorkingMotion.opacity(at: 0, square: 0),
+                       WorkingMotion.minOpacity, accuracy: 1e-9)
+        let peak = WorkingMotion.peakPhase * WorkingMotion.cycle
+        XCTAssertEqual(WorkingMotion.opacity(at: peak, square: 0), 1.0,
+                       accuracy: 1e-9)
+        XCTAssertEqual(WorkingMotion.scale(at: peak, square: 0), 1.0,
+                       accuracy: 1e-9)
+        XCTAssertEqual(WorkingMotion.scale(at: 0, square: 0),
+                       WorkingMotion.minScale, accuracy: 1e-9)
+        // The cycle repeats: the value at t + 1.2 s equals the value at t.
+        for t in [0.0, 0.3, 0.504, 1.1] {
+            XCTAssertEqual(WorkingMotion.opacity(at: t, square: 1),
+                           WorkingMotion.opacity(at: t + WorkingMotion.cycle,
+                                                 square: 1),
+                           accuracy: 1e-9,
+                           "the heartbeat must repeat on its 1.2 s cycle")
+        }
     }
 }
 
@@ -2348,15 +2483,15 @@ final class RepoFilterChipProjectionTests: XCTestCase {
     }
 
     func testDemoSeedChipsMatchTheFixtureBoard() {
-        // 6 seeded agents across 4 repos + 1 orphan: the orphan counts
+        // 8 seeded agents across 4 repos + 1 orphan: the orphan counts
         // under All only, never as its own chip.
         let agents = Array(DemoFleet.seed().values)
         let chips = BoardModel.repoFilters(agents)
         XCTAssertEqual(chips.map(\.repo),
                        ["demo-atlas", "demo-garden", "demo-ledger", "demo-orbit"])
-        XCTAssertEqual(chips.map(\.count), [2, 1, 1, 1])
+        XCTAssertEqual(chips.map(\.count), [2, 2, 1, 2])
         XCTAssertFalse(chips.contains { $0.repo == "demo-orphan" })
-        XCTAssertEqual(BoardModel.agents(agents, in: nil).count, 6,
+        XCTAssertEqual(BoardModel.agents(agents, in: nil).count, 8,
                        "All must include every agent, orphans included")
     }
 
@@ -2381,20 +2516,23 @@ final class RepoFilterChipProjectionTests: XCTestCase {
     func testFilteredSectionsKeepLockedOrderOverTheFilteredSet() {
         // Demo board filtered to demo-atlas: working (featured) and
         // unknown (atlas-unknown) sections in the locked order — the
-        // blocked demo-garden row is filtered out, sections never regroup.
+        // blocked demo-garden row is filtered out, sections never regroup,
+        // and each section shows ONLY the demo-atlas subgroup (#371).
         let agents = Array(DemoFleet.seed().values)
         let filtered = BoardModel.agents(agents, in: "demo-atlas")
         let sections = BoardModel.sections(filtered)
         XCTAssertEqual(sections.statuses.map(\.state), [.working, .unknown])
         XCTAssertEqual(sections.statuses[0].header, "working (1)")
-        XCTAssertEqual(sections.statuses[0].agents.map(\.agentId),
+        XCTAssertEqual(sections.statuses[0].subgroups.map(\.displayName),
+                       ["demo-atlas"])
+        XCTAssertEqual(sections.statuses[0].subgroups[0].agents.map(\.agentId),
                        [DemoFleet.featuredAgentID])
-        XCTAssertEqual(sections.statuses[1].agents.map(\.agentId),
+        XCTAssertEqual(sections.statuses[1].subgroups[0].agents.map(\.agentId),
                        ["herdr:demo-atlas-unknown"])
 
-        // Filtering never groups: three working agents across repos under
-        // a repo filter stay in ONE working bucket with their locked
-        // within-section order (ts desc, then id).
+        // Filtering never regroups: three working agents across repos under
+        // a repo filter keep their locked within-section order inside the
+        // selected repo's subgroup.
         let mixed = [
             agent("in-corral", repo: "corral", ts: 200),
             agent("in-other", repo: "other", ts: 150),
@@ -2403,7 +2541,9 @@ final class RepoFilterChipProjectionTests: XCTestCase {
         let corralSections = BoardModel.sections(
             BoardModel.agents(mixed, in: "corral"))
         XCTAssertEqual(corralSections.statuses.map(\.state), [.blocked, .working])
-        XCTAssertEqual(corralSections.statuses[1].agents.map(\.agentId),
+        XCTAssertEqual(corralSections.statuses[0].subgroups.map(\.displayName),
+                       ["corral"])
+        XCTAssertEqual(corralSections.statuses[1].subgroups[0].agents.map(\.agentId),
                        ["in-corral"])
     }
 
@@ -2897,12 +3037,13 @@ final class ReadOnlySurfaceWiringTests: XCTestCase {
         }
     }
 
-    func testBoardProjectsThroughStatusSections() throws {
+    func testBoardProjectsThroughRepoSubgroupSections() throws {
         let source = try bundledSource()
-        // The FleetView board must be the status-section projection
-        // (locked order, repo never a grouping key), not repo groups. The
-        // #364 B chips filter WHICH agents the sections bucket through the
-        // pure BoardModel projections.
+        // The FleetView board must be the #371 board-v2 projection: locked
+        // status sections whose rows live in always-open repo subgroups.
+        // The #364 B chips filter WHICH agents the sections bucket through
+        // the pure BoardModel projections; #371 splits each bucket into
+        // repo subgroups.
         XCTAssertTrue(source.contains("let chips = BoardModel.repoFilters(agents)"),
                       "board must project the #364 B chip set from the fleet")
         XCTAssertTrue(source.contains("BoardModel.reconcile(model.repoFilter,"),
@@ -2913,7 +3054,7 @@ final class ReadOnlySurfaceWiringTests: XCTestCase {
                       "board must bucket the FILTERED agents into the locked status sections")
         // Scope to the board renderer so an unrelated helper cannot satisfy
         // the search (decoy-resistant: unique declaration marker).
-        let boardMarker = "private func boardSections(sections: BoardModel.Sections)"
+        let boardMarker = "private func boardSections(sections: BoardModel.Sections"
         XCTAssertEqual(source.components(separatedBy: boardMarker).count - 1, 1,
                        "exactly one boardSections renderer must exist")
         guard let boardStart = source.range(of: boardMarker) else {
@@ -2922,25 +3063,31 @@ final class ReadOnlySurfaceWiringTests: XCTestCase {
         let sliceEnd = try XCTUnwrap(source.range(of: "\n    @ViewBuilder\n    private func agentRow")?.lowerBound,
                                      "agentRow declaration must follow boardSections")
         let slice = String(source[boardStart.lowerBound..<sliceEnd])
-        // Renders one section per status bucket, header = status + count.
+        // Renders one section per status bucket, then per-subgroup bands
+        // and their rows — no flat per-status row list remains.
         XCTAssertTrue(slice.contains("ForEach(sections.statuses)"),
                       "the board must render the status-section projection")
-        XCTAssertTrue(slice.contains("ForEach(status.agents)"),
-                      "every agent of a status bucket must render")
-        XCTAssertTrue(slice.contains("status.header"),
-                      "section headers must show the raw status name + count")
-        // No repo grouping, no blocked promotion in the renderer.
-        for repoChrome in ["sections.repos", "sections.blocked", "repo.header", "ForEach(repo.agents)"] {
-            XCTAssertFalse(slice.contains(repoChrome),
-                           "repo chrome \(repoChrome) must not be wired into the status board")
-        }
+        XCTAssertTrue(slice.contains("ForEach(status.subgroups)"),
+                      "every status section must render its repo subgroups")
+        XCTAssertTrue(slice.contains("ForEach(subgroup.agents)"),
+                      "every subgroup must render its agent rows")
+        XCTAssertFalse(slice.contains("ForEach(status.agents)"),
+                       "the flat per-status row loop is gone — #371 groups by repo")
+        XCTAssertEqual(slice.components(separatedBy: "repoSubgroupHeader(subgroup, repos: repos)").count - 1, 1,
+                       "the subgroup band must be wired into every status section")
+        // Status headers carry the raw name + TOTAL count through the
+        // shared state-color mapping (mark square, never color-only).
+        XCTAssertTrue(slice.contains("Text(status.header)"),
+                      "section headers must show the raw status name + total")
+        XCTAssertTrue(slice.contains("theme.stateColor(for: status.state)"),
+                      "section header marks must consume the shared state mapping")
         // Row taps open recents through the model-owned request (the same
         // funnel deep links and the demo route use), and the sheet is fed
         // straight from that request.
         XCTAssertTrue(source.contains("model.requestRecents(for: agent.agentId, haptic: true)"))
         XCTAssertTrue(source.contains(".sheet(item: $model.recentsRequest,"))
         XCTAssertTrue(source.contains("RecentOutputSheet(agentId: request.agentId, model: model)"))
-        XCTAssertTrue(source.contains("onDismiss: { model.recentsSheetDismissed() })"),
+        XCTAssertTrue(source.contains("onDismiss: { model.recentsSheetDismissed() }"),
                       "dismissal must run the request-lifecycle reconciler")
     }
 
@@ -2988,6 +3135,135 @@ final class ReadOnlySurfaceWiringTests: XCTestCase {
             XCTAssertFalse(source.contains(removed),
                            "removed surface \(removed) must not be wired in FleetViews")
         }
+    }
+}
+
+// MARK: - #371 board-v2 wiring (subgroup bands, row chips, working motion)
+
+/// Pins the board-v2 SURFACE WIRING in the bundled FleetViews source (the
+/// #316 decoy-resistant mechanism): the tinted state chip consuming the
+/// shared state mapping, the working heartbeat + Reduce Motion static dot
+/// inside that chip (never a spinner), the repo subgroup bands + row repo
+/// chips resolving hues from the shared RepoHue function, and the section
+/// headers carrying status + TOTAL. A compile-capable bypass of any of
+/// those call sites goes RED here.
+final class BoardV2WiringTests: XCTestCase {
+
+    private func bundledSource() throws -> String {
+        let bundle = Bundle(for: BoardV2WiringTests.self)
+        let url = try XCTUnwrap(bundle.url(forResource: "FleetViews",
+                                           withExtension: "swift.txt"))
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    private func slice(from startMarker: String, to endMarker: String,
+                       in source: String) throws -> String {
+        let start = try XCTUnwrap(source.range(of: startMarker),
+                                  "marker not found: \(startMarker)")
+        let end = try XCTUnwrap(source.range(of: endMarker),
+                                "end marker not found: \(endMarker)")
+        return String(source[start.lowerBound..<end.lowerBound])
+    }
+
+    func testWorkingChipBreathesThreeSquaresOrShowsTheStaticDot() throws {
+        let source = try bundledSource()
+        // The glyph view: Reduce Motion removes the squares and shows a
+        // static teal dot; otherwise three squares breathe in stagger on a
+        // TimelineView(.animation) schedule.
+        let glyph = try slice(from: "struct WorkingMotionGlyph: View {",
+                              to: "struct RepoLabelChip: View {",
+                              in: source)
+        XCTAssertTrue(glyph.contains("let reduceMotion: Bool"),
+                      "the working glyph must take the Reduce Motion flag")
+        XCTAssertTrue(glyph.contains("Circle()"),
+                      "the Reduce Motion fallback must be a STATIC dot")
+        XCTAssertTrue(glyph.contains("theme.stateColor(for: .working)"),
+                      "the dot/squares must use the shared state color (teal)")
+        XCTAssertTrue(glyph.contains("TimelineView(.animation(minimumInterval: 1.0 / 30.0))"),
+                      "the squares must animate on a visible timeline")
+        XCTAssertTrue(glyph.contains("WorkingMotion.opacity(at: t, square: index)"),
+                      "square opacity must ride the shared breathing math")
+        XCTAssertTrue(glyph.contains("WorkingMotion.scale(at: t, square: index)"),
+                      "square scale must ride the shared breathing math")
+        XCTAssertTrue(glyph.contains("ForEach(0..<WorkingMotion.squareCount"),
+                      "the working glyph must render exactly the three squares")
+        XCTAssertFalse(glyph.contains("ProgressView"),
+                       "no spinner may be used for the working state")
+        // AgentRow wires the glyph into the working chip branch only.
+        let row = try slice(from: "struct AgentRow: View {",
+                            to: "// MARK: - Row accessibility",
+                            in: source)
+        XCTAssertEqual(row.components(separatedBy: "WorkingMotionGlyph(reduceMotion: theme.reduceMotion)").count - 1, 1,
+                       "the working chip must consume the motion glyph once")
+        XCTAssertTrue(row.contains("case .working:"),
+                      "the glyph swap must branch on the working state")
+        XCTAssertFalse(row.contains("ProgressView"),
+                       "agent rows carry no spinner anywhere")
+    }
+
+    func testStateChipIsTintedThroughTheSingleSharedMapping() throws {
+        let source = try bundledSource()
+        let row = try slice(from: "struct AgentRow: View {",
+                            to: "// MARK: - Row accessibility",
+                            in: source)
+        XCTAssertTrue(row.contains("theme.stateColor(for: agent.state)"),
+                      "chip glyph/label ink must consume the shared state mapping")
+        XCTAssertTrue(row.contains("theme.stateChipFill(for: agent.state)"),
+                      "the chip fill must resolve through the state mapping")
+        XCTAssertTrue(row.contains("theme.stateChipBorder(for: agent.state)"),
+                      "the chip border must resolve through the state mapping")
+        XCTAssertTrue(row.contains("TimeInStateLabel(agent: agent, stateEnteredAt: stateEnteredAt)"),
+                      "the row keeps time-in-state inside the state chip")
+    }
+
+    func testRepoSubgroupsAndRowChipsConsumeTheSharedRepoHue() throws {
+        let source = try bundledSource()
+        // Subgroup band: hue resolved from the SAME fleet repo set the
+        // chips row uses, rendered with the band/ink/rail tokens.
+        let renderer = try slice(from: "private func statusSectionHeader(",
+                                 to: "\n    @ViewBuilder\n    private func agentRow",
+                                 in: source)
+        XCTAssertEqual(renderer.components(separatedBy: "private func repoSubgroupHeader(").count - 1, 1,
+                       "exactly one subgroup band builder must exist")
+        XCTAssertTrue(renderer.contains("theme.repoHue(for: subgroup.repo"),
+                      "subgroup bands must consume the shared RepoHue function")
+        XCTAssertTrue(renderer.contains("theme.repoBand(for: hue)"),
+                      "subgroup bands must use the hue-over-mantle band token")
+        XCTAssertTrue(renderer.contains("theme.repoInk(for: hue)"),
+                      "subgroup names must use the locked label ink")
+        XCTAssertTrue(renderer.contains("subgroup.agents.count"),
+                      "subgroup headers must carry their count")
+        XCTAssertTrue(renderer.contains("subgroup.displayName"),
+                      "repo identity is never color-only — the name always renders")
+        XCTAssertFalse(renderer.contains("DisclosureGroup"),
+                       "subgroups are always open — never collapsible")
+        XCTAssertFalse(renderer.contains("isExpanded"),
+                       "no expand/collapse state may exist on the board")
+        XCTAssertFalse(renderer.contains("chevron"),
+                       "no chevron affordance may hint at collapsibility")
+
+        // Row chip: WorkspaceLine renders the repo as a colored label chip
+        // (Other for orphans) with the SAME hue + ink helpers.
+        let chip = try slice(from: "struct RepoLabelChip: View {",
+                             to: "struct AgentRow: View {",
+                             in: source)
+        XCTAssertTrue(chip.contains("let hue = theme.repoHue(for: repo ?? \"\", among: repos)"),
+                      "the row repo chip must consume the shared RepoHue function")
+        XCTAssertTrue(chip.contains("theme.repoChipFill(for: hue)"),
+                      "the repo chip fill must use the hue-over-base tint")
+        XCTAssertTrue(chip.contains("theme.repoChipBorder(for: hue)"),
+                      "the repo chip border must use the hue-over-base tint")
+        XCTAssertTrue(chip.contains("theme.repoInk(for: hue)"),
+                      "the repo name ink must use the locked label ink")
+        XCTAssertTrue(chip.contains("BoardModel.otherRepoLabel"),
+                      "orphan rows must carry the Other chip, never vanish")
+        let line = try slice(from: "struct WorkspaceLine: View {",
+                             to: "// MARK: - #364 A touch feedback",
+                             in: source)
+        XCTAssertEqual(line.components(separatedBy: "RepoLabelChip(repo: w.repo, repos: repos)").count - 1, 1,
+                       "the row's workspace line must render exactly one repo chip")
+        XCTAssertTrue(line.contains("let w = agent.workspace"),
+                      "the workspace line must keep its per-segment layout")
     }
 }
 

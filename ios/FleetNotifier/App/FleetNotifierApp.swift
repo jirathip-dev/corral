@@ -3,7 +3,12 @@ import SwiftUI
 @main
 struct FleetNotifierApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var model = AppModel()
+    // #399: the production app always configures the host-profile store —
+    // legacy single-host data migrates into it on the first upgraded
+    // launch and every pairing (Add Host or legacy Connection) mirrors
+    // into the ordered profile list.
+    @StateObject private var model = AppModel(profileStore: HostProfileStore(
+        directory: HostProfileStore.defaultDirectory()))
     // #372: the app-wide theme (flavor + Reduce Motion). Owned here so the
     // flavor's color scheme/tint reach every sheet and the picker's choice
     // persists across launches. #371: the DEBUG-only launch argument

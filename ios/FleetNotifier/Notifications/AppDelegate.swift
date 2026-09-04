@@ -195,6 +195,13 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                   lifecycle.isCurrent(context) else { return }
             await beforeUpload()
             guard !Task.isCancelled, lifecycle.isCurrent(context) else { return }
+            // #399 B4: never enroll an APNs token with a host whose
+            // pinned identity is unverified or mismatched — a token is a
+            // write to the daemon and must not reach a replacement
+            // identity. The gate defaults to allow (legacy flows/tests);
+            // AppModel installs the continuity predicate when pinned.
+            guard await KeyContinuityGate.allowsPushRegistration() else { return }
+            guard !Task.isCancelled, lifecycle.isCurrent(context) else { return }
             let client = DriveClient(host: hostURL, session: session)
             // Keep the identity check adjacent to the request. Reset/demo
             // can invalidate the context while the preflight boundary was

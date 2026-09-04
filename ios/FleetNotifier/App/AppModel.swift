@@ -2,6 +2,7 @@ import Combine
 import Foundation
 import SwiftUI
 import UIKit
+import os
 
 /// Thread-safe identity boundary shared by the main model and the APNs
 /// delegate. The delegate is not a child of `AppModel`, so reset/demo cannot
@@ -141,6 +142,28 @@ final class AppModel: ObservableObject {
 #endif
     }
 
+    /// #399 B4: key-continuity posture of the ACTIVE pinned profile.
+    /// `.pending` = `/host-key` must be re-checked before any live work;
+    /// `.verified` = checked and matched since launch/foreground;
+    /// `.mismatch` = the host presented a different key — everything
+    /// fails closed until Remove Host + fresh pairing. `.notPinned`
+    /// covers legacy single-host flows (no pin = no continuity gate).
+    enum KeyContinuityState: Equatable, Sendable {
+        case notPinned
+        case pending
+        case verified
+        case mismatch
+    }
+
+    /// #399 B6/B3: the sheet request that pauses a host profile on the
+    /// fingerprint confirmation. Presented by the board until answered.
+    struct FingerprintConfirmationRequest: Identifiable, Equatable, Sendable {
+        /// Sheet identity — a fresh value per presentation.
+        let id: UUID
+        let profileID: UUID
+        let profileName: String
+    }
+
     /// Captures the identity a lifecycle-sensitive async operation is
     /// allowed to use. Generation handles explicit boundaries; the remaining
     /// fields catch a host/key/mode replacement that happens without a
@@ -248,6 +271,18 @@ final class AppModel: ObservableObject {
     /// blocked permission shows the why + 'Open iOS Settings' guidance
     /// instead of the enable toggle silently failing.
     @Published var notificationPermission: NotificationPermissionState = .notDetermined
+    /// #399: ordered host profiles (B1) — the multi-host STORE alongside
+    /// the single-host state. Empty until the profile store is configured
+    /// (production app always configures it; unit fixtures may not).
+    @Published private(set) var profiles: [HostProfile] = []
+    /// #399: the profile the single-host runtime is currently bound to
+    /// (V1: exactly one live stream; #400 consumes the store for N).
+    @Published private(set) var activeProfileID: UUID?
+    /// #399 B4: continuity posture of the active pinned profile.
+    @Published private(set) var keyContinuityState: KeyContinuityState = .notPinned
+    /// #399 B6: non-nil while a profile is paused awaiting fingerprint
+    /// confirmation (legacy migration) — the board presents the sheet.
+    @Published var fingerprintConfirmation: FingerprintConfirmationRequest?
 
     var signer: DeviceSigner?
     private var notifier: LocalNotifier?
@@ -284,6 +319,14 @@ final class AppModel: ObservableObject {
     private let loadMeta: @Sendable () -> DeviceKeyStore.DeviceMeta?
     private let saveMeta: @Sendable (DeviceKeyStore.DeviceMeta) -> Void
     private let wipeIdentity: @Sendable () -> Void
+    /// #399 B6: consumes the legacy registration metadata after a
+    /// successful migration into the profile store.
+    private let removeMeta: @Sendable () -> Void
+    /// #399: the host-profile store (nil = legacy single-host-only
+    /// fixtures; the production app always configures one).
+    private let profileStore: HostProfileStore?
+
+    private static let activeProfileKey = "fleetnotifier.activeHostProfileID"
 
     /// #93: `fleet` is a NESTED `ObservableObject`. `@Published` fires only
     /// when the REFERENCE is reassigned — it does not forward the child's
@@ -295,6 +338,7 @@ final class AppModel: ObservableObject {
     private var fleetChanges: AnyCancellable?
 
     static let notificationsKey = "fleetnotifier.notificationsEnabled"
+    private static let log = Logger(subsystem: "com.corral.fleetnotifier", category: "host-profiles")
 
     /// The device's current read grant set, decoded from the daemon's
     /// register/grants-read responses. Demo mode (Debug only) treats the
@@ -373,6 +417,10 @@ final class AppModel: ObservableObject {
          wipeIdentity: @escaping @Sendable () -> Void = {
              DeviceKeyStore.wipe()
          },
+         removeMeta: @escaping @Sendable () -> Void = {
+             DeviceKeyStore.removeRegistrationMetadata()
+         },
+         profileStore: HostProfileStore? = nil,
          haptics: @escaping () -> Void = Haptics.selection,
          notificationPermissionProvider: NotificationPermissionProviding = SystemNotificationPermissionProvider()) {
         self.session = session
@@ -383,19 +431,330 @@ final class AppModel: ObservableObject {
         self.loadMeta = loadMeta
         self.saveMeta = saveMeta
         self.wipeIdentity = wipeIdentity
+        self.removeMeta = removeMeta
+        self.profileStore = profileStore
         self.hapticTick = haptics
         self.notificationsEnabled = defaults.object(forKey: Self.notificationsKey) as? Bool ?? true
         self.fleet = FleetStore(defaults: defaults)
         fleetChanges = fleet.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
-        // Restore a previous registration so relaunch skips setup.
-        if let identity = persistedLiveIdentity() {
+        // #399 B4: the APNs upload path consults the app-wide continuity
+        // gate; install the model predicate only when a profile store is
+        // configured (legacy-only fixtures keep the default allow).
+        if profileStore != nil {
+            KeyContinuityGate.setPushPredicate { [weak self] in
+                guard let self else { return true }
+                return await MainActor.run { self.keyContinuityAllowsLiveWork }
+            }
+        }
+        // #399 B6: when the profile store is configured, the store is the
+        // source of truth for host pairing. The FIRST upgraded launch
+        // migrates the legacy single-host identity into the first ordered
+        // profile and pauses for fingerprint confirmation (no stream).
+        // Legacy-only fixtures (profileStore == nil) keep the pre-#399
+        // restore path byte-for-byte.
+        if let profileStore {
+            restoreProfilesFromStore(profileStore)
+        } else if let identity = persistedLiveIdentity() {
             applyLiveIdentity(identity)
         } else {
             identityLifecycle.setCurrent(mode: .needsSetup, hostURL: nil,
                                          keyId: nil, signerPublicKeyB64: nil)
         }
+    }
+
+    // MARK: - #399 host profiles (B1-B7)
+
+    /// Ordered profiles mirror of the store.
+    private func reloadProfiles(from store: HostProfileStore) {
+        profiles = store.orderedProfiles
+    }
+
+    /// The profile the single-host runtime is bound to: the persisted
+    /// active id when it still exists, else the first ordered profile.
+    var activeProfile: HostProfile? {
+        if let activeProfileID,
+           let profile = profiles.first(where: { $0.id == activeProfileID }) {
+            return profile
+        }
+        return profiles.first
+    }
+
+    /// Whether the host-profile surface is active (production app always;
+    /// legacy-only fixtures not). Settings renders the Hosts section only
+    /// when this is true.
+    var hostProfilesConfigured: Bool {
+        profileStore != nil || !profiles.isEmpty
+    }
+
+    private func persistActiveProfileID(_ id: UUID?) {
+        activeProfileID = id
+        if let id {
+            defaults.set(id.uuidString, forKey: Self.activeProfileKey)
+        } else {
+            defaults.removeObject(forKey: Self.activeProfileKey)
+        }
+    }
+
+    /// Launch-time store restore: migrate legacy data when the store is
+    /// empty (B6), then bind the active profile and pause on the
+    /// fingerprint confirmation when the host key is not yet pinned.
+    /// Never starts a stream here — the RootView task calls startLive(),
+    /// which honors the profile's paused state.
+    private func restoreProfilesFromStore(_ store: HostProfileStore) {
+        reloadProfiles(from: store)
+        // B6: first upgraded launch — migrate the legacy single-host
+        // identity into the first profile. No token, no /register; the
+        // key_id/grants/expiry ride along verbatim.
+        if profiles.isEmpty,
+           let legacy = loadMeta(),
+           !legacy.keyId.isEmpty,
+           let host = defaults.string(forKey: "fleetnotifier.host"),
+           host == legacy.host {
+            if store.migrateLegacy(host: legacy.host,
+                                   keyId: legacy.keyId,
+                                   grants: legacy.grants,
+                                   expiryTs: legacy.expiryTs,
+                                   registeredAt: legacy.registeredAt) != nil {
+                // Consumed: legacy + profile records can never both be
+                // active (B6). Removal happens only after the profile
+                // document write succeeded (rollback-safe).
+                removeMeta()
+                defaults.removeObject(forKey: "fleetnotifier.host")
+                reloadProfiles(from: store)
+            }
+        }
+        // Bind the previously active profile (or the first ordered one)
+        // and let startLive() decide whether the stream may open.
+        let storedID = defaults.string(forKey: Self.activeProfileKey)
+            .flatMap(UUID.init(uuidString:))
+        let target = store.profile(id: storedID ?? UUID()) ?? store.orderedProfiles.first
+        guard let profile = target else {
+            // A clean store with no legacy data behaves like a fresh
+            // install: needsSetup, nothing restored.
+            mode = .needsSetup
+            identityLifecycle.setCurrent(mode: .needsSetup, hostURL: nil,
+                                         keyId: nil, signerPublicKeyB64: nil)
+            return
+        }
+        persistActiveProfileID(profile.id)
+        bindActiveProfile(profile)
+    }
+
+    /// Bind the single-host runtime fields to a profile (host/key/grants/
+    /// cursor mirror) and pause when the profile is awaiting fingerprint
+    /// confirmation (migration) — no live work happens in the paused
+    /// state because startLive() checks it.
+    private func bindActiveProfile(_ profile: HostProfile) {
+        guard let url = URL(string: profile.urlString),
+              let (signer, storage) = try? identityLoader() else {
+            return
+        }
+        self.signer = signer
+        keyId = profile.keyId
+        grants = profile.grants
+        hostURL = url
+        keyStorageWarning = (storage == .insecureFallback)
+        mode = .live
+        identityLifecycle.setCurrent(mode: .live, hostURL: url,
+                                     keyId: profile.keyId,
+                                     signerPublicKeyB64: signer.publicKeyB64)
+        // Per-host cursor mirror: the active profile's cursor is the
+        // single-host cursor while it is bound.
+        fleet.restoreCursor()
+        if let rev = fleet.lastEventId {
+            profileStore?.setCursor(rev, for: profile.id)
+        }
+        if profile.connectionState == .awaitingFingerprintConfirmation {
+            // Legacy migration pause (B6): fetch + confirm the host key
+            // before any stream may open.
+            keyContinuityState = .pending
+            fingerprintConfirmation = FingerprintConfirmationRequest(
+                id: UUID(), profileID: profile.id, profileName: profile.displayName)
+        } else if profile.hostKeyB64 != nil {
+            // Pinned: re-verify `/host-key` before the stream opens (B4).
+            keyContinuityState = .pending
+        } else {
+            // Legacy single-host pairing without a pin: no continuity
+            // gate (parity with the pre-#399 Connection flow).
+            keyContinuityState = .notPinned
+        }
+    }
+
+    /// #399 B4: fail-closed gate for every live read/write route. A
+    /// profile paused on fingerprint confirmation (B6) denies everything;
+    /// a PINNED profile must be `.verified` since launch/reconnect;
+    /// legacy unpinned hosts (parity) and unpinned flows pass.
+    private var keyContinuityAllowsLiveWork: Bool {
+        guard let profile = activeProfile else { return true }
+        if profile.connectionState == .awaitingFingerprintConfirmation {
+            return false
+        }
+        guard profile.hostKeyB64 != nil else { return true }
+        return keyContinuityState == .verified
+    }
+
+    private func keyContinuityDeniedBanner() -> Bool {
+        guard let profile = activeProfile, profile.hostKeyB64 != nil,
+              keyContinuityState == .mismatch else { return false }
+        banner = .error("host_key_mismatch",
+                        "\(profile.displayName)'s host key changed — the board is paused. Remove the host and pair it again; Corral never auto-accepts a new key.")
+        return true
+    }
+
+    /// B4: re-check `/host-key` before opening the live stream after
+    /// launch/reconnect. On match: connect. On mismatch: fail closed —
+    /// no stream/fetch/push-register/Recent Output reaches the
+    /// replacement identity and the last safe snapshot stays stale.
+    private func beginKeyContinuityCheck(for profile: HostProfile) {
+        guard keyContinuityState != .mismatch else { return }
+        let context = lifecycleContext()
+        keyContinuityState = .pending
+        guard let url = URL(string: profile.urlString),
+              let pinned = profile.hostKeyB64 else { return }
+        let client = CorraldClient(host: url, session: session)
+        let taskId = UUID()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.lifecycleTasks.removeValue(forKey: taskId) }
+            guard !Task.isCancelled, self.isCurrent(context) else { return }
+            do {
+                let response = try await client.fetchHostKey()
+                guard !Task.isCancelled, self.isCurrent(context) else { return }
+                if HostKeyTrust.matches(response, pinnedKeyB64: pinned) {
+                    self.keyContinuityState = .verified
+                    self.profileStore?.noteLastSuccessfulConnection(id: profile.id)
+                    self.startLive()
+                } else {
+                    self.failKeyContinuity(profile)
+                }
+            } catch {
+                guard !Task.isCancelled, self.isCurrent(context) else { return }
+                // Could not reach the host to verify identity: the stream
+                // stays closed (never unverified-open). The next
+                // launch/foreground startLive() retries the check.
+                self.banner = .error("host_key_unverified",
+                                     "Could not verify \(profile.displayName)'s host key — the board stays paused until the host is reachable.")
+            }
+        }
+        lifecycleTasks[taskId] = task
+    }
+
+    /// Fail closed on a host-key mismatch (B4): no stream, no push, no
+    /// reads; the retained metadata snapshot stays stale; the profile
+    /// records the mismatch. Only Remove Host + fresh pairing recovers.
+    private func failKeyContinuity(_ profile: HostProfile) {
+        keyContinuityState = .mismatch
+        profileStore?.noteConnectionState(id: profile.id, .keyMismatch)
+        fleet.acceptedHostIdentity = nil
+        fleet.disconnect()
+        banner = .error("host_key_mismatch",
+                        "\(profile.displayName) presented a different host key than the one you paired. The board is paused and stale — Remove the host, then pair it again with a fresh token. Corral never auto-accepts a rotated key.")
+    }
+
+    /// Remove Host (B7, local unlink): purge the profile, its cursor, its
+    /// durable cache and in-memory tails. The shared phone signing key and
+    /// every other profile stay intact. The daemon's registry entry
+    /// remains until the host removes it. If the removed profile was the
+    /// active one, the next ordered profile activates (or the app returns
+    /// to setup when none remains).
+    func removeHost(profileID: UUID) {
+        guard let store = profileStore else { return }
+        let wasActive = activeProfile?.id == profileID
+        cancelLifecycleTasks()
+        stopLive()
+        store.removeProfile(id: profileID)
+        reloadProfiles(from: store)
+        if wasActive {
+            fleet.acceptedHostIdentity = nil
+            keyContinuityState = .notPinned
+            fingerprintConfirmation = nil
+            // B7: the removed host's in-memory rows/tails go with it.
+            fleet.reset()
+            if let next = store.orderedProfiles.first {
+                persistActiveProfileID(next.id)
+                bindActiveProfile(next)
+                startLive()
+            } else {
+                persistActiveProfileID(nil)
+                fleet.reset()
+                // B7: the shared phone signing key STAYS (only the host's
+                // local state is unlinked); keyId/grants are this host's
+                // registration metadata and go with the record.
+                keyId = nil
+                grants = []
+                hostURL = nil
+                keyStorageWarning = false
+                notificationsConfigured = false
+                mode = .needsSetup
+                identityLifecycle.setCurrent(mode: .needsSetup, hostURL: nil,
+                                             keyId: nil, signerPublicKeyB64: nil)
+            }
+        }
+    }
+
+    /// Confirm the paused profile's fingerprint (B6/B3): pins the fetched
+    /// host key and lets the stream open. Never auto-accepts — this is
+    /// the single explicit confirmation point.
+    func confirmFingerprint(profileID: UUID, hostKeyB64: String, fingerprint: String) {
+        guard let store = profileStore,
+              store.profile(id: profileID) != nil else { return }
+        do {
+            try store.confirmFingerprint(id: profileID,
+                                         hostKeyB64: hostKeyB64,
+                                         fingerprint: fingerprint)
+        } catch {
+            banner = .error("host_key_conflict", error.localizedDescription)
+            return
+        }
+        fingerprintConfirmation = nil
+        reloadProfiles(from: store)
+        if activeProfile?.id == profileID {
+            fleet.acceptedHostIdentity = hostKeyB64
+            keyContinuityState = .verified
+            startLive()
+        }
+    }
+
+    /// Fetch the host key for the paused profile's confirmation sheet
+    /// (B6): the sheet shows the fingerprint and only passes a
+    /// user-confirmed pin to `confirmFingerprint`.
+    func fetchHostKey(profileID: UUID) async throws -> HostKeyResponse {
+        guard let store = profileStore,
+              let profile = store.profile(id: profileID),
+              let url = URL(string: profile.urlString) else {
+            throw HostProfileError.profileNotFound
+        }
+        let client = CorraldClient(host: url, session: session)
+        return try await client.fetchHostKey()
+    }
+
+    /// #399: fetches the paused profile's host key for review from the
+    /// Settings row (re-presents the confirmation sheet after a dismiss).
+    func requestFingerprintReview(profileID: UUID) {
+        guard let store = profileStore,
+              let profile = store.profile(id: profileID) else { return }
+        fingerprintConfirmation = FingerprintConfirmationRequest(
+            id: UUID(), profileID: profileID, profileName: profile.displayName)
+    }
+
+    /// Decline/dismiss the paused confirmation: the profile stays paused
+    /// (no stream) and can be reviewed again from Settings.
+    func deferFingerprintConfirmation() {
+        fingerprintConfirmation = nil
+    }
+
+    /// #399 C5: persist the ACTIVE host's allowlisted board-metadata
+    /// cache. Called on connection success and when the app backgrounds —
+    /// never on read_tail content, which this DTO cannot hold.
+    func persistBoardMetadata() {
+        guard let store = profileStore, let profile = activeProfile else { return }
+        let rows = BoardCacheDTO.snapshot(hostProfileID: profile.id,
+                                          agents: fleet.agents,
+                                          stateEnteredAt: fleet.stateEnteredAt,
+                                          now: UInt64(Date().timeIntervalSince1970 * 1000))
+        store.boardCache.save(rows, for: profile.id)
     }
 
     /// Load only a complete, internally consistent persisted identity. The
@@ -507,6 +866,40 @@ final class AppModel: ObservableObject {
                         mode: .live, hostURL: registrationContext.requestedHostURL,
                         keyId: response.keyId,
                         signerPublicKeyB64: candidateSigner.publicKeyB64)
+                    // #399: keep the profile store as the source of truth
+                    // when configured. The legacy single-host registration
+                    // mirrors into a fresh ACTIVE profile record; the
+                    // previous active record is removed first (URL change =
+                    // remove-and-re-pair, B5; other profiles untouched).
+                    // Legacy flow carries NO pinned key — fingerprint
+                    // pairing is the new Add Host path.
+                    if let store = self.profileStore {
+                        do {
+                            if let oldActive = self.activeProfile {
+                                store.removeProfile(id: oldActive.id)
+                            }
+                            let profile = try store.commitActivePairing(
+                                displayName: HostURLForm.displayNameCandidate(
+                                    for: registrationContext.requestedHostURL.absoluteString),
+                                urlString: registrationContext.requestedHostURL.absoluteString,
+                                hostKeyB64: nil,
+                                fingerprint: nil,
+                                keyId: response.keyId,
+                                grants: response.grants,
+                                expiryTs: response.expiryTs,
+                                registeredAt: UInt64(Date().timeIntervalSince1970))
+                            self.reloadProfiles(from: store)
+                            self.persistActiveProfileID(profile.id)
+                            self.keyContinuityState = .notPinned
+                            self.fleet.acceptedHostIdentity = nil
+                        } catch {
+                            // Mirroring failure is best-effort on the
+                            // legacy path — the daemon registration itself
+                            // already succeeded; the store stays empty and
+                            // the next launch repeats the legacy restore.
+                            Self.log.error("host profile mirror failed: \(error.localizedDescription)")
+                        }
+                    }
                     // #79 defect 1: registration used to leave .live with NO
                     // stream — the only startLive() call sites were the
                     // .active scene transition (already fired) and the demo
@@ -553,6 +946,175 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // MARK: - Add Host (#399 B3, fingerprint-verified pairing)
+
+    /// Prepared Add Host pairing (B3 phase 1 result): name + normalized
+    /// URL + the fetched host key response + derived fingerprint. Nothing
+    /// is persisted and no token is sent at this point.
+    struct PreparedHostPairing: Equatable, Sendable {
+        var displayName: String
+        var urlString: String
+        var hostKey: HostKeyResponse
+        var fingerprint: String
+    }
+
+    /// B3 phase 1: validate name/URL and fetch `/host-key`, validating the
+    /// X25519 key form. The caller shows the derived fingerprint for
+    /// explicit confirmation BEFORE any registration token is accepted.
+    func prepareHostPairing(displayName: String, rawURL: String) async throws -> PreparedHostPairing {
+        guard let store = profileStore else {
+            throw HostProfileError.invalidURL
+        }
+        try store.validateCandidate(displayName: displayName, urlString: rawURL)
+        guard let normalized = HostURLForm.normalized(rawURL),
+              let url = URL(string: normalized) else {
+            throw HostProfileError.invalidURL
+        }
+        let client = CorraldClient(host: url, session: session)
+        let response = try await client.fetchHostKey()
+        guard HostKeyTrust.isWellFormed(response),
+              let fingerprint = HostKeyTrust.fingerprint(forBase64: response.publicKey) else {
+            throw HostProfileError.invalidHostKeyForm
+        }
+        // Duplicate pinned host identity check (B3): the same key must
+        // not pair twice under another URL/name.
+        try store.validateCandidateIdentity(hostKeyB64: response.publicKey)
+        return PreparedHostPairing(
+            displayName: displayName.trimmingCharacters(in: .whitespacesAndNewlines),
+            urlString: normalized,
+            hostKey: response,
+            fingerprint: fingerprint)
+    }
+
+    /// B3 phase 2: the user CONFIRMED the fingerprint. Register with the
+    /// existing phone Ed25519 key, persist the FULL pinned key + returned
+    /// grants/expiry as the ACTIVE profile record (URL change = remove-
+    /// and-re-pair), then open the live stream. The key was verified
+    /// moments ago, so no second `/host-key` fetch runs before the first
+    /// stream; every later launch/foreground re-checks (B4).
+    func completeAddHost(_ prepared: PreparedHostPairing, token: String) async {
+        guard registrationTaskId == nil else {
+            banner = .info("Registration is already in progress.")
+            return
+        }
+        guard let store = profileStore else { return }
+        guard let url = URL(string: prepared.urlString) else {
+            banner = .error("bad_host", "Host must be an http(s) URL or host:port")
+            return
+        }
+        do {
+            try store.validateCandidate(displayName: prepared.displayName,
+                                        urlString: prepared.urlString)
+            try store.validateCandidateIdentity(hostKeyB64: prepared.hostKey.publicKey)
+        } catch {
+            banner = .error("host_conflict", error.localizedDescription)
+            return
+        }
+        // Re-validate against the ACTIVE profile before switching (same
+        // host-switch semantics as the legacy register flow, #365).
+        let switchingHost = activeProfile.map { $0.urlString != prepared.urlString } ?? false
+        cancelLifecycleTasks()
+        if switchingHost {
+            stopLive()
+        }
+        let baseContext = lifecycleContext()
+        identityLifecycle.setCurrent(mode: .registering,
+                                     hostURL: baseContext.hostURL,
+                                     keyId: baseContext.keyId,
+                                     signerPublicKeyB64: baseContext.signerPublicKeyB64)
+        let sharedRegistrationContext = identityLifecycle.current()
+        do {
+            let (candidateSigner, storage) = try identityLoader()
+            guard isCurrent(baseContext), identityLifecycle.isCurrent(sharedRegistrationContext) else { return }
+            let taskId = UUID()
+            registrationTaskId = taskId
+            let task = Task { @MainActor [weak self] in
+                guard let self else { return }
+                defer {
+                    self.lifecycleTasks.removeValue(forKey: taskId)
+                    if self.registrationTaskId == taskId {
+                        self.registrationTaskId = nil
+                    }
+                }
+                guard self.isCurrent(baseContext),
+                      self.identityLifecycle.isCurrent(sharedRegistrationContext),
+                      !Task.isCancelled else { return }
+                do {
+                    let client = DriveClient(host: url, session: self.session)
+                    let response = try await client.register(token: token, signer: candidateSigner,
+                                                             name: UIDevice.current.name)
+                    guard !Task.isCancelled,
+                          self.isCurrent(baseContext),
+                          self.identityLifecycle.isCurrent(sharedRegistrationContext) else { return }
+                    // Persist the fingerprint-confirmed pairing (B3/B5);
+                    // the previous active record goes first (URL change =
+                    // remove-and-re-pair).
+                    let now = UInt64(Date().timeIntervalSince1970)
+                    if let oldActive = self.activeProfile {
+                        store.removeProfile(id: oldActive.id)
+                    }
+                    let profile = try store.commitActivePairing(
+                        displayName: prepared.displayName,
+                        urlString: prepared.urlString,
+                        hostKeyB64: prepared.hostKey.publicKey,
+                        fingerprint: prepared.fingerprint,
+                        keyId: response.keyId,
+                        grants: response.grants,
+                        expiryTs: response.expiryTs,
+                        registeredAt: now)
+                    self.signer = candidateSigner
+                    self.keyStorageWarning = (storage == .insecureFallback)
+                    self.keyId = response.keyId
+                    self.grants = response.grants
+                    self.hostURL = url
+                    self.saveMeta(DeviceKeyStore.DeviceMeta(
+                        keyId: response.keyId, host: url.absoluteString,
+                        grants: response.grants, expiryTs: response.expiryTs,
+                        registeredAt: now))
+                    self.defaults.set(url.absoluteString, forKey: "fleetnotifier.host")
+                    self.reloadProfiles(from: store)
+                    self.persistActiveProfileID(profile.id)
+                    self.mode = .live
+                    self.identityLifecycle.setCurrent(
+                        mode: .live, hostURL: url, keyId: response.keyId,
+                        signerPublicKeyB64: candidateSigner.publicKeyB64)
+                    self.keyContinuityState = .verified
+                    self.fleet.acceptedHostIdentity = profile.hostKeyB64
+                    self.fleet.restoreCursor()
+                    self.startLive()
+                    self.banner = .info("Paired \(profile.displayName) · fingerprint confirmed")
+                } catch is CancellationError {
+                    return
+                } catch {
+                    guard !Task.isCancelled,
+                          self.isCurrent(baseContext),
+                          self.identityLifecycle.isCurrent(sharedRegistrationContext) else { return }
+                    self.identityLifecycle.setCurrent(
+                        mode: self.sharedMode(for: baseContext.mode),
+                        hostURL: baseContext.hostURL, keyId: baseContext.keyId,
+                        signerPublicKeyB64: baseContext.signerPublicKeyB64)
+                    self.banner = .error("add_host_failed", error.localizedDescription)
+                    if baseContext.mode == .live {
+                        self.startLive()
+                    }
+                }
+            }
+            lifecycleTasks[taskId] = task
+            await task.value
+        } catch {
+            guard !Task.isCancelled, isCurrent(baseContext),
+                  identityLifecycle.isCurrent(sharedRegistrationContext) else { return }
+            identityLifecycle.setCurrent(mode: sharedMode(for: baseContext.mode),
+                                         hostURL: baseContext.hostURL,
+                                         keyId: baseContext.keyId,
+                                         signerPublicKeyB64: baseContext.signerPublicKeyB64)
+            banner = .error("add_host_failed", error.localizedDescription)
+            if baseContext.mode == .live {
+                startLive()
+            }
+        }
+    }
+
     // MARK: - Grants refresh (#101)
 
     /// Signed self-service grants read: re-fetches THIS key's CURRENT
@@ -571,6 +1133,9 @@ final class AppModel: ObservableObject {
               let keyId = context.keyId else {
             return
         }
+        // #399 B4: never sign a request toward a host whose pinned
+        // identity is unverified or mismatched (no grants-refresh either).
+        guard keyContinuityAllowsLiveWork else { return }
         let taskId = UUID()
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -609,6 +1174,29 @@ final class AppModel: ObservableObject {
 
     func startLive() {
         guard let hostURL else { return }
+        // #399 B6: a profile paused on fingerprint confirmation never
+        // opens a stream — the board presents the confirmation sheet and
+        // only confirmFingerprint() releases it.
+        if let profile = activeProfile {
+            if profile.connectionState == .awaitingFingerprintConfirmation {
+                // Migration pause: surface the confirmation request.
+                if fingerprintConfirmation == nil {
+                    fingerprintConfirmation = FingerprintConfirmationRequest(
+                        id: UUID(), profileID: profile.id, profileName: profile.displayName)
+                }
+                return
+            }
+            if profile.hostKeyB64 != nil && keyContinuityState != .verified {
+                if keyContinuityState == .mismatch {
+                    _ = keyContinuityDeniedBanner()
+                    return
+                }
+                // B4: pinned but not yet re-verified since launch —
+                // re-check /host-key before opening the stream.
+                beginKeyContinuityCheck(for: profile)
+                return
+            }
+        }
         let client = CorraldClient(host: hostURL, session: session)
         // #354 L2: state-change notification hooks (started / blocked /
         // finished), fired by FleetStore on SSE deltas.
@@ -635,14 +1223,32 @@ final class AppModel: ObservableObject {
         fleet.onConnectionError = { [weak self] reason in
             self?.banner = .error("stream_connection", reason)
         }
+        // #399 B4: a frame stamped with a DIFFERENT host identity than
+        // the pinned one was rejected by the store — fail the stream
+        // closed here (the stale snapshot stays untouched).
+        fleet.onHostIntegrityMismatch = { [weak self] in
+            guard let self, let profile = self.activeProfile else { return }
+            self.failKeyContinuity(profile)
+        }
         // Review F2: once the stream re-establishes a 200 the connection is
         // healthy again — drop a stale stream_connection banner (an idle
         // fleet emits no frames, so apply() alone would never clear it).
+        // #399 C6: stamp last-successful-connection + persist the
+        // allowlisted board metadata cache on connection success.
         fleet.onConnected = { [weak self] in
-            if self?.banner?.kind == "stream_connection" {
-                self?.banner = nil
+            guard let self else { return }
+            if self.banner?.kind == "stream_connection" {
+                self.banner = nil
+            }
+            if let profile = self.activeProfile {
+                self.profileStore?.noteLastSuccessfulConnection(id: profile.id)
+                self.persistBoardMetadata()
             }
         }
+        // #399 B4/C1: only accept frames stamped with the pinned host
+        // identity once a key is pinned (host-less records from a
+        // transitional daemon still pass).
+        fleet.acceptedHostIdentity = activeProfile?.hostKeyB64
         fleet.connect(client: client)
         // APNs upload/retry is independent from one-time local notification
         // setup. A token callback can arrive during demo; retry it now that
@@ -681,6 +1287,19 @@ final class AppModel: ObservableObject {
     func stopLive() {
         fleet.disconnect()
         fleet.persistCursor()
+        // #399: mirror the active profile's cursor into the profile store
+        // and persist the allowlisted board metadata cache (background/
+        // host-switch boundaries).
+        if let profile = activeProfile, let rev = fleet.lastEventId {
+            profileStore?.setCursor(rev, for: profile.id)
+        }
+        persistBoardMetadata()
+        // #399 B4: a background/foreground cycle is a reconnect boundary —
+        // the pinned key must be re-checked before the next stream opens.
+        // A confirmed mismatch stays failed closed (Remove Host only).
+        if activeProfile?.hostKeyB64 != nil, keyContinuityState != .mismatch {
+            keyContinuityState = .pending
+        }
     }
 
     // MARK: - Fleet refresh (#219)
@@ -696,6 +1315,14 @@ final class AppModel: ObservableObject {
     /// (`isRefreshingFleet` is cleared in `defer`).
     func refreshFleet() async {
         guard mode == .live, let hostURL else { return }
+        // #399 B4: no fetch may reach a host whose pinned identity is
+        // unverified or mismatched — the pull stays silent while the
+        // continuity check runs and surfaces the mismatch banner when
+        // the host key changed.
+        guard keyContinuityAllowsLiveWork else {
+            _ = keyContinuityDeniedBanner()
+            return
+        }
         guard !isRefreshingFleet else { return }
         isRefreshingFleet = true
         defer { isRefreshingFleet = false }
@@ -705,6 +1332,7 @@ final class AppModel: ObservableObject {
             let snapshot = try await client.fetchSnapshot()
             guard !Task.isCancelled, isCurrent(context) else { return }
             fleet.applyRefresh(snapshot)
+            persistBoardMetadata()
         } catch {
             guard !Task.isCancelled, isCurrent(context) else { return }
             banner = .error("fleet_refresh",
@@ -812,6 +1440,12 @@ final class AppModel: ObservableObject {
     /// taps (one light selection tick); programmatic opens stay silent.
     func requestRecents(for agentId: String, haptic: Bool) {
         guard fleet.agent(agentId) != nil else { return }
+        // #399 B4: no Recent Output route while the pinned host identity
+        // is unverified or mismatched — the sheet stays closed.
+        guard keyContinuityAllowsLiveWork else {
+            _ = keyContinuityDeniedBanner()
+            return
+        }
         if haptic { hapticTick() }
         recentsSerial += 1
         recentsRequest = RecentsRequest(id: recentsSerial, agentId: agentId)
@@ -848,6 +1482,12 @@ final class AppModel: ObservableObject {
     func driveReadTail(agent: Agent, driveClient: DriveClient, silent: Bool = false,
                        lines: UInt32 = 200) {
         guard let live = fleet.agent(agent.agentId) else { return }
+        // #399 B4: no signed read may reach a host whose pinned identity
+        // is unverified or mismatched (Recent Output route fails closed).
+        guard keyContinuityAllowsLiveWork else {
+            if !silent { _ = keyContinuityDeniedBanner() }
+            return
+        }
         guard let signer, let keyId else {
             if !silent { banner = .error("unregistered", "Device is not registered.") }
             return
@@ -1058,6 +1698,9 @@ final class AppModel: ObservableObject {
         banner = .error("stale_agent", "\(message) — refreshing the fleet.")
         let context = lifecycleContext()
         guard context.mode == .live, let hostURL = context.hostURL else { return }
+        // #399 B4: the reconciliation fetch is a live read — same
+        // fail-closed gate as every other fetch.
+        guard keyContinuityAllowsLiveWork else { return }
         let client = CorraldClient(host: hostURL, session: session)
         let taskId = UUID()
         let task = Task { @MainActor [weak self] in
@@ -1083,6 +1726,9 @@ final class AppModel: ObservableObject {
         fleet.seedDemo(agents: DemoFleet.seed(), rev: 1)
         mode = .demo
         demoDetailAgentId = detailAgentId
+        // #399: demo has no host-key confirmation flow — a paused
+        // migration confirmation is deferred until live mode restores.
+        fingerprintConfirmation = nil
         identityLifecycle.setCurrent(mode: .demo, hostURL: hostURL,
                                     keyId: keyId,
                                     signerPublicKeyB64: signer?.publicKeyB64)
@@ -1096,6 +1742,19 @@ final class AppModel: ObservableObject {
         cancelLifecycleTasks()
         fleet.reset()
         demoDetailAgentId = nil
+
+        // #399: restore the profile store's active profile when one
+        // exists (migration consumed the legacy keys, so the legacy path
+        // below would otherwise see nothing and drop to setup).
+        if let store = profileStore, let profile = store.orderedProfiles.first {
+            fleet.acceptedHostIdentity = nil
+            keyContinuityState = .notPinned
+            fingerprintConfirmation = nil
+            persistActiveProfileID(profile.id)
+            bindActiveProfile(profile)
+            startLive()
+            return
+        }
 
         guard let identity = persistedLiveIdentity() else {
             signer = nil
@@ -1138,6 +1797,15 @@ final class AppModel: ObservableObject {
         stopLive()
         wipeIdentity()
         defaults.removeObject(forKey: "fleetnotifier.host")
+        defaults.removeObject(forKey: Self.activeProfileKey)
+        // #399: Remove device removes the shared phone identity — every
+        // host profile's LOCAL state (profile/cursor/cache) goes with it.
+        profileStore?.removeAll()
+        profiles = []
+        activeProfileID = nil
+        keyContinuityState = .notPinned
+        fingerprintConfirmation = nil
+        fleet.acceptedHostIdentity = nil
         fleet.reset()
         signer = nil
         keyId = nil

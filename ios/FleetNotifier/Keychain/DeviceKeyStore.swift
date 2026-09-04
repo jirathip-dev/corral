@@ -141,4 +141,12 @@ enum DeviceKeyStore {
         guard let data = defaults.data(forKey: metaKey) else { return nil }
         return try? JSONDecoder().decode(DeviceMeta.self, from: data)
     }
+
+    /// #399 B6: consume the legacy registration metadata after it
+    /// migrates into a host profile. The device KEY stays in the
+    /// Keychain — only the legacy convenience metadata is removed, so
+    /// legacy and profile records can never both be active.
+    static func removeRegistrationMetadata() {
+        defaults.removeObject(forKey: metaKey)
+    }
 }

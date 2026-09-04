@@ -217,7 +217,16 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # action + the #389 evidence driver, AppDelegate's failure comment was
     # refreshed for the aps-environment entitlement, and the manifest gained
     # NotificationPermission.swift (Release app source) — re-pinned.
-    "5a8c91903f5d975b1aa10014691d3abfc29a9ae0a49526df9f2b1ad2756c8d81"
+    # 399: host profiles V1 — the Profiles/ layer (HostProfile model +
+    # HostProfileStore with legacy migration + remove-host purge,
+    # HostKeyTrust X25519 validation/fingerprints, BoardCache allowlisted
+    # DTO store, KeyContinuityGate) joined the Release source set, and
+    # AppModel (profile restore/migration/Add-Host/key-continuity gates),
+    # FleetStore (pinned feed acceptance), CorraldClient (fetchHostKey),
+    # AppDelegate (push gate), FleetViews (Hosts section + AddHostSheet +
+    # FingerprintConfirmationSheet) and FleetNotifierApp (profile-store
+    # wiring) changed — re-pinned over the new 25-file Release source set.
+    "8ab13c700fdc1bac785c53ff0076754f0f8d2fafd49f42aa40eb2275c90b1e76"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #332 R4: pin the focused grant fixture independently from the Release
@@ -308,7 +317,14 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # 389 r1: the first DeviceTokenUploadTests token fixture became a
     # deterministic String(repeating:) composition (the 64-hex literal
     # tripped hosted CI gitleaks generic-api-key) — re-pinned.
-    "697ba8e411a8951b97a7422e44608a3aa809153b44077bc2c374cd316445f62b"
+    # 399: the #399 suite (HostKeyTrustTests, HostURLFormTests,
+    # HostProfileStoreTests, HostProfileMigrationModelTests,
+    # HostKeyContinuityModelTests, PinnedFeedIntegrityTests,
+    # BoardMetadataCacheTests, HostProfileWiringTests) added to
+    # FleetNotifierTests.swift — re-pinned.
+    # 399 r1: SAFETY comments added above the new fixture force-unwraps
+    # (anti-slop advisory) — re-pinned.
+    "6bb07704389da2680a9dff3b2061d20a76a5b251100e09a89cb91f0f98ae44dd"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

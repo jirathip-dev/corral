@@ -3716,12 +3716,12 @@ final class SettingsAccessWiringTests: XCTestCase {
         }
         // The sheet-open action: one release-active (the gear) + the
         // DEBUG-only recorded-evidence drivers (#365 settings, #372 theme,
-        // #379 connect and #385 glass sequences all open the same sheet);
-        // all required, none release-gated.
+        // #379 connect, #385 glass and #388 connection-inputs sequences all
+        // open the same sheet); all required, none release-gated.
         XCTAssertEqual(releaseActionLines.count, 1,
                        "the gear must be the ONLY release-active settings opener")
-        XCTAssertEqual(allActionLines.count - releaseActionLines.count, 4,
-                       "the #365, #372, #379 and #385 DEBUG evidence drivers are the only debug-gated openers")
+        XCTAssertEqual(allActionLines.count - releaseActionLines.count, 5,
+                       "the #365, #372, #379, #385 and #388 DEBUG evidence drivers are the only debug-gated openers")
     }
 
     func testDemoOverflowMenuIsDebugOnlyAndNoLongerHidesSettings() throws {
@@ -3810,11 +3810,12 @@ final class SettingsAccessWiringTests: XCTestCase {
         let slice = String(source[start.lowerBound..<nextMark.lowerBound])
 
         // Connection pairing surface: host field + registration token +
-        // register action with the same enable rules as the connect section.
-        XCTAssertTrue(slice.contains("TextField(\"Host (Tailscale host or loopback)\""),
-                      "the Settings sheet must expose the connection host field (#365)")
-        XCTAssertTrue(slice.contains("SecureField(\"Registration token\""),
-                      "the Settings sheet must expose device pairing")
+        // register action with the same enable rules as the connect section
+        // (both inputs render through the #388 themed ConnectionField).
+        XCTAssertTrue(slice.contains("ConnectionField(title: \"Host (Tailscale host or loopback)\""),
+                      "the Settings sheet must expose the connection host field (#365/#388)")
+        XCTAssertTrue(slice.contains("ConnectionField(title: \"Registration token\""),
+                      "the Settings sheet must expose device pairing (#388)")
         XCTAssertTrue(slice.contains("await model.register(host: host, token: token)"),
                       "the Settings register action must route through the real registration flow")
         XCTAssertTrue(slice.contains("host.isEmpty || token.isEmpty || registering"),
@@ -4818,6 +4819,230 @@ final class RepoRowLabelWiringTests: XCTestCase {
                       "the echo must keep the label chip's vertical padding footprint")
         XCTAssertTrue(echo.contains(".accessibilityHidden(true)"),
                       "the pure-color echo must not add VoiceOver noise")
+    }
+}
+
+// MARK: - #388 Settings Connection inputs: themed fields + paired-state switching
+
+/// Model-level pins for the #388 registration-state predicate the Settings
+/// Connection section reads: the device is registered once it holds an
+/// identity key (set by a successful registration / restored live identity,
+/// cleared by Remove device) — the token field is pointless exactly when
+/// this is true.
+@MainActor
+final class ConnectionRegistrationModelTests: XCTestCase {
+
+    private func makeModel() -> AppModel {
+        // SAFETY: a fresh UUID-based suite name is always a valid suite.
+        let defaults = UserDefaults(suiteName: "corral.connregistration.\(UUID().uuidString)")!
+        return AppModel(identityLifecycle: IdentityLifecycle(),
+                        defaults: defaults,
+                        identityLoader: {
+                            (DeviceSigner(key: Curve25519.Signing.PrivateKey()),
+                             .insecureFallback)
+                        },
+                        loadMeta: { nil }, saveMeta: { _ in }, wipeIdentity: {})
+    }
+
+    func testIsRegisteredTracksTheIdentityKey() {
+        let model = makeModel()
+        // A fresh device (no restored identity) is NOT registered.
+        XCTAssertFalse(model.isRegistered,
+                       "a device without an identity key must not be registered")
+        // Successful registration stores the daemon-issued key id.
+        model.keyId = "dev_388a1b2c3d4e5f60"
+        XCTAssertTrue(model.isRegistered,
+                      "holding the daemon-issued key id IS the registered state")
+        // Remove device (and the unpaired fallback) clears it again.
+        model.keyId = nil
+        XCTAssertFalse(model.isRegistered,
+                       "clearing the key id must return the unpaired state")
+    }
+}
+
+/// Decoy-resistant #388 source wiring over the bundled FleetViews source
+/// (the #316 mechanism): the Settings Connection section hides the
+/// Registration-token field while the device is REGISTERED — the host
+/// field stays (still editable, still themed), a registration status row +
+/// a small Re-register action replace the token/Register rows, and
+/// Re-register reveals the token field again. Both inputs render through
+/// the shared ConnectionField surface (surface1 fill, text ink, subtext0
+/// placeholder, 10 pt radius, hairline surface2 border tinting to the
+/// accent while focused — tokens only, no hex literals, no default
+/// rounded-border boxes). A compile-capable bypass of any hop goes RED.
+final class ConnectionSectionWiringTests: XCTestCase {
+
+    private func bundledSource() throws -> String {
+        let bundle = Bundle(for: ConnectionSectionWiringTests.self)
+        let url = try XCTUnwrap(bundle.url(forResource: "FleetViews",
+                                           withExtension: "swift.txt"))
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    private func lineNumbers(of needle: String, in text: String) -> [Int] {
+        text.split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+            .filter { $0.element.contains(needle) }
+            .map { $0.offset + 1 }
+    }
+
+    /// The Settings sheet's own region: SettingsView → How-to-connect MARK.
+    private func settingsSlice(_ source: String) throws -> String {
+        let start = try XCTUnwrap(source.range(of: "\nstruct SettingsView: View {"),
+                                  "SettingsView declaration must exist")
+        let end = try XCTUnwrap(source.range(of: "\n// MARK: - How to connect"),
+                                "the How-to-connect MARK must follow SettingsView")
+        return String(source[start.lowerBound..<end.lowerBound])
+    }
+
+    /// The shared themed input component's own region: ConnectionField →
+    /// the SettingsView doc comment that follows it.
+    private func fieldSlice(_ source: String) throws -> String {
+        let start = try XCTUnwrap(source.range(of: "\nprivate struct ConnectionField: View {"),
+                                  "ConnectionField declaration must exist")
+        let end = try XCTUnwrap(source.range(
+            of: "\n/// #365: the surface behind the board's always-visible gear"),
+                                "the SettingsView doc comment must follow ConnectionField")
+        return String(source[start.lowerBound..<end.lowerBound])
+    }
+
+    func testRegisteredDeviceHidesTheTokenFieldAndShowsTheStatusRow() throws {
+        let slice = try settingsSlice(try bundledSource())
+        // The paired branch is the positive gate on the model predicate
+        // PLUS the local reveal override — exactly once (a decoy gate
+        // elsewhere in the sheet goes RED on the count).
+        let gate = try XCTUnwrap(slice.range(of: "if model.isRegistered && !revealTokenField {"),
+                                 "the Connection section must gate on the registered state")
+        XCTAssertEqual(slice.components(separatedBy:
+            "if model.isRegistered && !revealTokenField {").count - 1, 1,
+            "exactly one registered-state gate may exist in the Settings sheet")
+
+        // The paired branch (gate → its `} else {`) carries the status row
+        // + Re-register and NO input fields, NO pairing action.
+        let afterGate = slice[gate.lowerBound...]
+        let elseRange = try XCTUnwrap(afterGate.range(of: "} else {"),
+                                      "the registered branch must have an else")
+        let paired = String(afterGate[..<elseRange.lowerBound])
+        let statusLines = lineNumbers(of: "Device registered · Key ID ", in: paired)
+        XCTAssertEqual(statusLines.count, 1,
+                       "the paired section must show exactly one registration status row")
+        guard let statusLine = statusLines.first else { return }
+        let statusRow = String(paired.split(separator: "\n",
+                                            omittingEmptySubsequences: false)[statusLine - 1])
+        XCTAssertTrue(statusRow.contains("read-only signed"),
+                      "the status copy must live on ONE row with the key id")
+        XCTAssertTrue(paired.contains("deviceKeyID"),
+                      "the status row must interpolate the device key id")
+        XCTAssertTrue(paired.contains("Button(\"Re-register\")"),
+                      "the paired section must offer the Re-register action")
+        XCTAssertTrue(paired.contains("revealTokenField = true"),
+                      "Re-register must reveal the token field")
+        XCTAssertFalse(paired.contains("ConnectionField"),
+                       "the paired section must render NO input fields")
+        XCTAssertFalse(paired.contains("model.register("),
+                       "the paired section must not show the Register action")
+
+        // The unpaired/revealed branch keeps the themed token field + the
+        // real Register action + the enable rules.
+        let unpaired = String(afterGate[elseRange.upperBound...])
+        XCTAssertTrue(unpaired.contains("ConnectionField(title: \"Registration token\""),
+                      "the token field must return in the unpaired/revealed state")
+        XCTAssertTrue(unpaired.contains("model.register(host: host, token: token)"),
+                      "the Register action must route through the real registration flow")
+        XCTAssertTrue(unpaired.contains("host.isEmpty || token.isEmpty || registering"),
+                      "the Register action must disable on empty host/token")
+    }
+
+    func testHostFieldStaysEditableAheadOfTheStateGate() throws {
+        let slice = try settingsSlice(try bundledSource())
+        // The host field renders unconditionally and comes FIRST — a
+        // paired device can re-point without retyping the active host.
+        let hostLines = lineNumbers(
+            of: "ConnectionField(title: \"Host (Tailscale host or loopback)\"", in: slice)
+        XCTAssertEqual(hostLines.count, 1,
+                       "exactly one host field may exist in the Settings sheet")
+        let gateLine = try XCTUnwrap(lineNumbers(
+            of: "if model.isRegistered && !revealTokenField {", in: slice).first)
+        XCTAssertLessThan(hostLines[0], gateLine,
+                          "the host field must precede the paired-state gate")
+        // The reveal override is sheet-local state that starts false.
+        XCTAssertEqual(lineNumbers(of: "@State private var revealTokenField = false",
+                                   in: slice).count, 1,
+                       "the reveal override must be sheet-local state")
+    }
+
+    func testConnectionFieldsConsumeThemeTokensNotDefaultRoundedBorders() throws {
+        let source = try bundledSource()
+        let slice = try settingsSlice(source)
+        // The Settings Connection inputs no longer use the default
+        // rounded-border chrome (the observed square near-black boxes).
+        XCTAssertEqual(lineNumbers(of: ".textFieldStyle(.roundedBorder)", in: slice).count, 0,
+                       "the Settings Connection inputs must not use .roundedBorder (#388)")
+
+        let field = try fieldSlice(source)
+        // Surface + ink + placeholder tokens, 10 pt continuous radius,
+        // hairline border, focus accent.
+        XCTAssertTrue(field.contains(".background(theme.surface1,"),
+                      "the field surface must be the surface1 token")
+        XCTAssertEqual(lineNumbers(of: "cornerRadius: 10, style: .continuous)",
+                                   in: field).count, 2,
+                       "fill AND border must share the 10 pt continuous radius")
+        XCTAssertTrue(field.contains(".strokeBorder(focused ? theme.accent : theme.surface2,"),
+                      "the hairline border must be surface2, accent while focused")
+        XCTAssertTrue(field.contains("lineWidth: 1"),
+                      "the border must be a 1 pt hairline")
+        // Focus drives the accent border through per-field focus state.
+        XCTAssertEqual(lineNumbers(of: "@FocusState private var focused: Bool",
+                                   in: field).count, 1,
+                       "the field must own per-field focus state")
+        XCTAssertEqual(lineNumbers(of: ".focused($focused)", in: field).count, 2,
+                       "both the text and the secure variants must observe focus")
+        // Ink: theme.text; placeholder: subtext0 drawn only while empty.
+        XCTAssertEqual(lineNumbers(of: ".foregroundStyle(theme.text)", in: field).count, 2,
+                       "both field variants must render text ink")
+        let emptyLine = try XCTUnwrap(lineNumbers(of: "if text.isEmpty {", in: field).first)
+        let titleLine = try XCTUnwrap(lineNumbers(of: "Text(title)", in: field).first)
+        let placeholderLine = try XCTUnwrap(lineNumbers(
+            of: ".foregroundStyle(theme.subtext0)", in: field).first)
+        XCTAssertLessThan(emptyLine, titleLine,
+                          "the placeholder must render only when the field is empty")
+        XCTAssertLessThan(titleLine, placeholderLine,
+                          "the placeholder text must take the subtext0 token")
+        XCTAssertEqual(lineNumbers(of: ".tint(theme.accent)", in: field).count, 2,
+                       "the caret/selection tint must ride the accent token")
+        XCTAssertTrue(field.contains("SecureField(\"\""),
+                      "the secure variant must exist for the token field")
+        XCTAssertTrue(field.contains("TextField(\"\""),
+                      "the text variant must exist for the host field")
+        // Token-only rule: no hex literals, no raw color literals in the
+        // component's CODE lines (doc comments may reference the issue).
+        let codeLines = field.split(separator: "\n").filter { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            return !trimmed.hasPrefix("//")
+        }
+        for line in codeLines where line.contains("#") {
+            XCTFail("ConnectionField must not carry literal colors: \(line)")
+        }
+    }
+
+    func testConnectionInputsEvidenceDriverRecordsBothStatesAcrossPalettes() throws {
+        let source = try bundledSource()
+        // Six deterministic phases: unpaired + paired on Macchiato, Mocha,
+        // and Latte, each behind its own marker.
+        for marker in ["phase-1-settings-macchiato-unpaired",
+                       "phase-2-settings-mocha-unpaired",
+                       "phase-3-settings-latte-unpaired",
+                       "phase-4-settings-latte-paired",
+                       "phase-5-settings-mocha-paired",
+                       "phase-6-settings-macchiato-paired"] {
+            XCTAssertEqual(lineNumbers(of: marker, in: source).count, 1,
+                           "the \(marker) evidence marker must be written exactly once")
+        }
+        // The paired phases seed the registration key id the section gates
+        // on (no daemon on the sim) — exactly one seed.
+        XCTAssertEqual(lineNumbers(of: "model.keyId = \"dev_3f88a1b2c3d4e5f6\"",
+                                   in: source).count, 1,
+                       "the driver must seed the demo registration key id exactly once")
     }
 }
 

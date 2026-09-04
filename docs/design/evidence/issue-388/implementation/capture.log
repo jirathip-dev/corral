@@ -1,0 +1,49 @@
+# 388 capture log v2 — 2026-09-04 19:24:17 +0700
+[19:24:19] installed
+com.corral.fleetnotifier: 41953
+[19:24:20] launched pid above
+[19:24:28] marker dir: /Users/jirathip/Library/Developer/CoreSimulator/Devices/52ABAACE-35EA-4028-B490-B271E710579D/data/Containers/Data/Application/07D80A77-3BA0-45E8-9CD0-974BAB32830E/Documents/ux-evidence
+[19:24:28] shooting phase-1-settings-macchiato-unpaired
+Detected file type from extension: PNG
+Note: No display specified. Defaulting to display: 265B7828-4B92-4257-90C2-31B5EE785060 (screenID: 1, name: LCD)
+Wrote screenshot to: /tmp/388-evidence/out2/phase-1-settings-macchiato-unpaired-raw.png
+[19:24:28] shot phase-1-settings-macchiato-unpaired
+captured phase-1-settings-macchiato-unpaired
+[19:24:39] shooting phase-2-settings-mocha-unpaired
+Detected file type from extension: PNG
+Note: No display specified. Defaulting to display: 265B7828-4B92-4257-90C2-31B5EE785060 (screenID: 1, name: LCD)
+Wrote screenshot to: /tmp/388-evidence/out2/phase-2-settings-mocha-unpaired-raw.png
+[19:24:40] shot phase-2-settings-mocha-unpaired
+captured phase-2-settings-mocha-unpaired
+[19:24:51] shooting phase-3-settings-latte-unpaired
+Detected file type from extension: PNG
+Note: No display specified. Defaulting to display: 265B7828-4B92-4257-90C2-31B5EE785060 (screenID: 1, name: LCD)
+Wrote screenshot to: /tmp/388-evidence/out2/phase-3-settings-latte-unpaired-raw.png
+[19:24:52] shot phase-3-settings-latte-unpaired
+captured phase-3-settings-latte-unpaired
+[19:25:03] shooting phase-4-settings-latte-paired
+Detected file type from extension: PNG
+Note: No display specified. Defaulting to display: 265B7828-4B92-4257-90C2-31B5EE785060 (screenID: 1, name: LCD)
+Wrote screenshot to: /tmp/388-evidence/out2/phase-4-settings-latte-paired-raw.png
+[19:25:03] shot phase-4-settings-latte-paired
+captured phase-4-settings-latte-paired
+[19:25:15] shooting phase-5-settings-mocha-paired
+Detected file type from extension: PNG
+Note: No display specified. Defaulting to display: 265B7828-4B92-4257-90C2-31B5EE785060 (screenID: 1, name: LCD)
+Wrote screenshot to: /tmp/388-evidence/out2/phase-5-settings-mocha-paired-raw.png
+[19:25:16] shot phase-5-settings-mocha-paired
+captured phase-5-settings-mocha-paired
+[19:25:27] shooting phase-6-settings-macchiato-paired
+Detected file type from extension: PNG
+Note: No display specified. Defaulting to display: 265B7828-4B92-4257-90C2-31B5EE785060 (screenID: 1, name: LCD)
+Wrote screenshot to: /tmp/388-evidence/out2/phase-6-settings-macchiato-paired-raw.png
+[19:25:28] shot phase-6-settings-macchiato-paired
+captured phase-6-settings-macchiato-paired
+Detected file type from extension: PNG
+Note: No display specified. Defaulting to display: 265B7828-4B92-4257-90C2-31B5EE785060 (screenID: 1, name: LCD)
+Wrote screenshot to: /tmp/388-evidence/out2/phase-7-done-raw.png
+captured phase-7-done
+DONE
+
+# phase-7-done re-shot after the driver's final rest (the v2 in-sequence frame duplicated phase-6: it landed inside phase-6's 9 s hold).
+# 2026-09-04 19:28:01 +0700 xcrun simctl io  screenshot + sips -z 844 390

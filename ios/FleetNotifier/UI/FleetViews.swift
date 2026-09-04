@@ -1166,6 +1166,8 @@ struct FleetView: View {
             await runCollapseSequence()
         } else if CorralDemoLaunch.wantsTitleEvidence(arguments: CommandLine.arguments) {
             await runTitleSequence()
+        } else if CorralDemoLaunch.wantsConnectionInputsEvidence(arguments: CommandLine.arguments) {
+            await runConnectionInputsSequence()
         }
     }
 
@@ -1498,6 +1500,66 @@ struct FleetView: View {
         EvidenceMarkers.write("phase-5-done")
         _ = await themePause(1500)
     }
+
+    /// #388 evidence: the Settings Connection section — UNPAIRED (host +
+    /// token + Register on the themed surface1 fields) and PAIRED (host +
+    /// registration status row, NO token field) — across Macchiato, Mocha,
+    /// and Latte. The driver seeds the demo registration key id for the
+    /// paired phases (the sim has no daemon to register against; the
+    /// published key id is exactly what the section reads) and flips the
+    /// same flavor state the Appearance rows set — simctl cannot inject
+    /// taps or type, so this is the synthetic stand-in. Cancellation-aborts
+    /// like the other drivers, so a raced task can never corrupt the
+    /// recorded sequence.
+    ///
+    /// Each phase writes its marker AFTER the state settles (2.5 s) and
+    /// then HOLDS 9 s so the host capture script — whose simctl screenshot
+    /// can lag several seconds on a cold sim — always lands inside the
+    /// phase it names (a 4 s window raced the capture and the frame
+    /// drifted into the NEXT phase's flavor).
+    private func runConnectionInputsSequence() async {
+        guard model.mode == .demo else { return }
+        guard await themePause(0) else { return }
+        // Unpaired phases — a fresh demo holds no key id, so the section
+        // renders host + token + Register on every palette.
+        theme.setFlavor(.macchiato)
+        guard await themePause(2500) else { return }
+        showSettings = true
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("phase-1-settings-macchiato-unpaired")
+        guard await themePause(9000) else { return }
+        theme.setFlavor(.mocha)
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("phase-2-settings-mocha-unpaired")
+        guard await themePause(9000) else { return }
+        theme.setFlavor(.latte)
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("phase-3-settings-latte-unpaired")
+        guard await themePause(9000) else { return }
+        // Paired phases: seed the registered identity the way a successful
+        // register() stores it (DEBUG driver only — no daemon is involved,
+        // so nothing else reacts to the key id; mode stays .demo, so no
+        // live networking starts). The section now shows the status row
+        // and hides the token field.
+        // SAFETY: fixed literal demo device key id — DEBUG evidence driver
+        // only; the real daemon derives ids as dev_<hex(sha256(pubkey)[..16])>.
+        model.keyId = "dev_3f88a1b2c3d4e5f6"
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("phase-4-settings-latte-paired")
+        guard await themePause(9000) else { return }
+        theme.setFlavor(.mocha)
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("phase-5-settings-mocha-paired")
+        guard await themePause(9000) else { return }
+        theme.setFlavor(.macchiato)
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("phase-6-settings-macchiato-paired")
+        guard await themePause(9000) else { return }
+        showSettings = false
+        guard await themePause(2000) else { return }
+        EvidenceMarkers.write("phase-7-done")
+        _ = await themePause(2000)
+    }
 #endif
 }
 
@@ -1677,6 +1739,62 @@ extension View {
 
 // MARK: - Settings (Appearance, connection pairing, device identity, notifications, help)
 
+/// #388: ONE themed input surface shared by the Settings Connection
+/// fields (Host + Registration token). The old `.roundedBorder` default
+/// rendered SQUARE, near-black boxes under the forced dark scheme; every
+/// color here is a Catppuccin token — surface1 fill (never near-black),
+/// text ink, subtext0 placeholder, a 10 pt continuous corner radius (no
+/// squares), and a hairline surface2 border that turns accent while the
+/// field is focused — so the fields follow the active flavor on all four
+/// palettes, Latte light included.
+///
+/// The placeholder is drawn by the view itself (hidden while text is
+/// present): SwiftUI exposes no public placeholder-color API, so a system
+/// placeholder would ignore the palette tokens.
+private struct ConnectionField: View {
+    @EnvironmentObject private var theme: ThemeStore
+    let title: String
+    let secure: Bool
+    @Binding var text: String
+
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        ZStack(alignment: .leading) {
+            if text.isEmpty {
+                Text(title)
+                    .foregroundStyle(theme.subtext0)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+            if secure {
+                SecureField("", text: $text)
+                    .focused($focused)
+                    .foregroundStyle(theme.text)
+                    .tint(theme.accent)
+                    .accessibilityLabel(title)
+            } else {
+                TextField("", text: $text)
+                    .focused($focused)
+                    .foregroundStyle(theme.text)
+                    .tint(theme.accent)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .accessibilityLabel(title)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(theme.surface1,
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(focused ? theme.accent : theme.surface2,
+                              lineWidth: 1)
+        }
+    }
+}
+
 /// #365: the surface behind the board's always-visible gear. The first
 /// section is the CONNECTION pairing — host field + registration token —
 /// which serves BOTH a fresh board (pair through Settings) and an
@@ -1695,6 +1813,12 @@ extension View {
 /// `read_tail`, out-of-band). The sheet's nav-bar '?' opens the shared
 /// How-to-connect sheet (the same content the unpaired first launch
 /// auto-presents over the board).
+///
+/// #388: once the device is REGISTERED the Connection section hides the
+/// Registration-token field — the host stays editable, a status row + a
+/// small Re-register action replace the pairing rows, and Re-register
+/// reveals the token field again. Remove device returns the unpaired
+/// form naturally.
 struct SettingsView: View {
     @ObservedObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
@@ -1703,6 +1827,12 @@ struct SettingsView: View {
     @State private var host: String
     @State private var token = ""
     @State private var registering = false
+    /// #388: the paired section's small 'Re-register' action sets this —
+    /// revealing the Registration-token field + Register button again so a
+    /// registered device can re-point at a new host. Unpaired devices see
+    /// the token field unconditionally; Remove device (Device section)
+    /// clears the identity and the sheet reopens in the unpaired state.
+    @State private var revealTokenField = false
     /// #379: the Settings-header '?' Help entry — presents the SAME shared
     /// HowToConnectSheet the unpaired-launch auto-present shows over the
     /// board (each presentation site owns its binding; they are never both
@@ -1719,42 +1849,66 @@ struct SettingsView: View {
                                   ?? "127.0.0.1:8474")
     }
 
+    /// #388: the compact key-id spelling shared by the Device read-out row
+    /// and the paired Connection status row (first 16 characters).
+    private var deviceKeyID: String {
+        String((model.keyId ?? "—").prefix(16))
+    }
+
     var body: some View {
         NavigationStack {
             ScrollViewReader { proxy in
                 Form {
                     appearanceSection
                     Section("Connection") {
-                        TextField("Host (Tailscale host or loopback)", text: $host)
-                            .textFieldStyle(.roundedBorder)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                        SecureField("Registration token", text: $token)
-                            .textFieldStyle(.roundedBorder)
-                        Button {
-                            registering = true
-                            Task {
-                                await model.register(host: host, token: token)
-                                registering = false
+                        ConnectionField(title: "Host (Tailscale host or loopback)",
+                                        secure: false,
+                                        text: $host)
+                        // #388: once the device is REGISTERED the
+                        // Registration-token field is pointless — the
+                        // section shows the host (still editable so a
+                        // paired device can re-point) + the registration
+                        // status row + a small Re-register action that
+                        // reveals the token field again. Remove device in
+                        // the Device section clears the identity and the
+                        // unpaired form below returns naturally.
+                        if model.isRegistered && !revealTokenField {
+                            Text("Device registered · Key ID \(deviceKeyID) · read-only signed")
+                                .font(.caption)
+                                .foregroundStyle(theme.subtext1)
+                            Button("Re-register") {
+                                revealTokenField = true
                             }
-                        } label: {
-                            if registering {
-                                ProgressView().controlSize(.small)
-                            } else {
-                                Text("Register device (read-only)")
+                            .font(.subheadline)
+                        } else {
+                            ConnectionField(title: "Registration token",
+                                            secure: true,
+                                            text: $token)
+                            Button {
+                                registering = true
+                                Task {
+                                    await model.register(host: host, token: token)
+                                    registering = false
+                                }
+                            } label: {
+                                if registering {
+                                    ProgressView().controlSize(.small)
+                                } else {
+                                    Text("Register device (read-only)")
+                                }
                             }
+                            .disabled(host.isEmpty || token.isEmpty || registering)
+                            Text("The device signs every read with its own Ed25519 key. Registration grants NOTHING: the host provisions the read_tail grant out-of-band.")
+                                .font(.caption)
+                                .foregroundStyle(theme.subtext1)
                         }
-                        .disabled(host.isEmpty || token.isEmpty || registering)
-                        Text("The device signs every read with its own Ed25519 key. Registration grants NOTHING: the host provisions the read_tail grant out-of-band.")
-                            .font(.caption)
-                            .foregroundStyle(theme.subtext1)
                     }
                     Section {
                         // #379 evidence: the connect-evidence Settings
                         // frame scrolls this anchor into view (the Device
                         // read-out sits below Appearance + Connection and
                         // simctl cannot scroll the form).
-                        LabeledContent("Key ID", value: String((model.keyId ?? "—").prefix(16)))
+                        LabeledContent("Key ID", value: deviceKeyID)
                             .id("settings.device")
                         LabeledContent("Key storage",
                                        value: DeviceKeyStore.storageLocation == .keychain

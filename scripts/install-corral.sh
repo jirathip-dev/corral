@@ -2,10 +2,10 @@
 # install-corral.sh — install the prebuilt macOS Corral release (no Rust).
 #
 # Resolves a GitHub Release (latest by default), verifies the release bundle
-# against its published .sha256, then installs corrald under launchd and the
-# egui board through scripts/setup-corrald.sh --from-release. The bundle is
-# kept under ~/.local/share/corral so the launchd/update agents keep stable
-# paths. User config and keys in $CORRAL_CONFIG_DIR are never touched.
+# against its published .sha256, then installs corrald under launchd through
+# scripts/setup-corrald.sh --from-release. The bundle is kept under
+# ~/.local/share/corral so the launchd/update agents keep stable paths. User
+# config and keys in $CORRAL_CONFIG_DIR are never touched.
 #
 # Usage:
 #   bash scripts/install-corral.sh
@@ -15,7 +15,7 @@
 #   bash scripts/install-corral.sh --self-test
 #
 # Env overrides: RELEASE_TAG/--release, RELEASE_URL/--url, CORRAL_RELEASE_REPO,
-# CORRAL_INSTALL_DIR, CORRAL_CONFIG_DIR, CORRAL_MACOS_APP_DEST.
+# CORRAL_INSTALL_DIR, CORRAL_CONFIG_DIR.
 set -euo pipefail
 
 RELEASE_TAG="${RELEASE_TAG:-}"
@@ -24,7 +24,6 @@ RELEASE_REPO="${CORRAL_RELEASE_REPO:-jirathip-dev/corral}"
 INSTALL_ROOT="${CORRAL_INSTALL_DIR:-$HOME/.local/share/corral}"
 RELEASE_DIR="$INSTALL_ROOT/release"
 CONFIG_DIR="${CORRAL_CONFIG_DIR:-$HOME/.config/corral}"
-APP_DEST="${CORRAL_MACOS_APP_DEST:-/Applications/Corral.app}"
 BIND="127.0.0.1"
 PORT="8474"
 UNINSTALL=0
@@ -145,8 +144,8 @@ run_self_test() {
   local bad
   local label
   local safe_root
-  for bad in "$HOME/.." "$HOME/../foo" "$HOME/foo/.." "$HOME" "/" "$CONFIG_DIR" "/Applications"; do
-    for label in app "app uninstall" "install root" "release directory"; do
+  for bad in "$HOME/.." "$HOME/../foo" "$HOME/foo/.." "$HOME" "/" "$CONFIG_DIR"; do
+    for label in "install root" "release directory"; do
       if assert_payload_path "$bad" "$label" >/dev/null 2>&1; then
         echo "!! self-test failure: accepted unsafe $label path: $bad" >&2
         return 1
@@ -154,10 +153,6 @@ run_self_test() {
     done
   done
   safe_root="${TMPDIR:-/tmp}/corral-self-test"
-  if ! assert_payload_path "$safe_root/Corral.app" "app" >/dev/null 2>&1; then
-    echo "!! self-test failure: rejected safe app path" >&2
-    return 1
-  fi
   if ! assert_payload_path "$safe_root/install" "install root" >/dev/null 2>&1; then
     echo "!! self-test failure: rejected safe install root path" >&2
     return 1
@@ -227,23 +222,16 @@ if [[ "$UNINSTALL" == "1" ]]; then
   PLIST="$HOME/Library/LaunchAgents/com.corral.corrald.plist"
   UPDATE_PLIST="$HOME/Library/LaunchAgents/com.corral.corrald-update.plist"
   LAUNCH_UID="gui/$(id -u)"
-  assert_payload_path "$APP_DEST" "app uninstall" || exit 1
   assert_payload_path "$INSTALL_ROOT" "install root" || exit 1
   assert_payload_path "$RELEASE_DIR" "release directory" || exit 1
   CONFIG_DIR="$(normalize_path "$CONFIG_DIR")"
   INSTALL_ROOT="$(normalize_path "$INSTALL_ROOT")"
   RELEASE_DIR="$INSTALL_ROOT/release"
-  APP_DEST="$(normalize_path "$APP_DEST")"
 
   echo ">> Uninstalling Corral launchd agents"
   launchctl bootout "$LAUNCH_UID" "$PLIST" 2>/dev/null || true
   launchctl bootout "$LAUNCH_UID" "$UPDATE_PLIST" 2>/dev/null || true
   rm -f "$PLIST" "$UPDATE_PLIST"
-  if [[ -d "$APP_DEST" || -L "$APP_DEST" ]]; then
-    echo ">> Removing $APP_DEST"
-    pkill -f "$APP_DEST/Contents/MacOS/corrald-ui" 2>/dev/null || true
-    rm -rf -- "$APP_DEST"
-  fi
 
   if [[ -e "$RELEASE_DIR" || -L "$RELEASE_DIR" ]]; then
     echo ">> Removing downloaded release files: $RELEASE_DIR"
@@ -257,12 +245,10 @@ if [[ "$UNINSTALL" == "1" ]]; then
   exit 0
 fi
 
-assert_payload_path "$APP_DEST" "app" || exit 1
 assert_payload_path "$INSTALL_ROOT" "install root" || exit 1
 assert_payload_path "$RELEASE_DIR" "release directory" || exit 1
 INSTALL_ROOT="$(normalize_path "$INSTALL_ROOT")"
 RELEASE_DIR="$INSTALL_ROOT/release"
-APP_DEST="$(normalize_path "$APP_DEST")"
 
 validate_bind
 validate_port
@@ -375,20 +361,17 @@ fi
 
 required=(
   "$STAGE_DIR/corrald"
-  "$STAGE_DIR/corrald-ui"
   "$STAGE_DIR/scripts/setup-corrald.sh"
-  "$STAGE_DIR/scripts/install-corral-ui.sh"
+  "$STAGE_DIR/scripts/install-corral.sh"
   "$STAGE_DIR/scripts/update-corral.sh"
   "$STAGE_DIR/scripts/lib-corral-update-path.sh"
   "$STAGE_DIR/scripts/rotate-corral-logs.sh"
-  "$STAGE_DIR/assets/icon/corral-icon-macos.png"
-  "$STAGE_DIR/assets/icon/corral-icon-256.png"
 )
 for path in "${required[@]}"; do
   [[ -e "$path" ]] || { echo "!! release bundle is missing $path" >&2; exit 1; }
 done
-[[ -x "$STAGE_DIR/corrald" && -x "$STAGE_DIR/corrald-ui" ]] || {
-  echo "!! release bundle binaries are not executable" >&2
+[[ -x "$STAGE_DIR/corrald" ]] || {
+  echo "!! release bundle daemon binary is not executable" >&2
   exit 1
 }
 
@@ -407,7 +390,7 @@ if ! mv -- "$STAGE_DIR" "$RELEASE_DIR"; then
 fi
 STAGE_CLEANED=1
 
-echo ">> Installing prebuilt corrald + egui board"
+echo ">> Installing prebuilt corrald"
 if ! bash "$RELEASE_DIR/scripts/setup-corrald.sh" \
   --from-release "$RELEASE_DIR/corrald" \
   --bind "$BIND" \
@@ -428,6 +411,5 @@ rm -rf -- "$RELEASE_DIR.previous"
 echo
 echo ">> Installed Corral $ASSET_NAME"
 echo "   daemon:  launchctl print gui/$(id -u)/com.corral.corrald"
-echo "   board:   $APP_DEST"
 echo "   config:  $CONFIG_DIR"
 echo "   re-run:  $0 --uninstall"

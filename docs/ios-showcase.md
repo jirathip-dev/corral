@@ -46,7 +46,8 @@ The generated static gallery records the exact source commit SHA, UTC capture
 time, and TestFlight build number when supplied (otherwise `unavailable`).
 Every capture set is labeled `Simulator demo from the TestFlight source
 revision`. The secret-free Ubuntu Pages job downloads only this validated
-artifact after checking out `gh-pages`, replaces only `ios/`, leaves the egui/WASM root alone,
+artifact after checking out `gh-pages`, replaces only `ios/`, leaves the
+rest of the Pages root alone,
 pushes with the default `GITHUB_TOKEN`, and reads back the public URL with an
 HTTP/content-type/non-empty response check for the page and every allowlisted
 PNG. Capture-retry Pages runs additionally query GitHub Actions via `gh api`:

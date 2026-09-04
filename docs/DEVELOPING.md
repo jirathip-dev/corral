@@ -7,13 +7,14 @@ All quality-gate commands below were run and verified on main
 ## Workspace layout
 
 A **non-virtual** cargo workspace at the root:
-`members = ["crates/corrald-client", "clients/egui"]`,
-`default-members = [".", "crates/corrald-client", "clients/egui"]` — so
-root-level build/clippy/test cover **all three** crates. That
+`members = ["crates/corrald-client"]`,
+`default-members = [".", "crates/corrald-client"]` — so
+root-level build/clippy/test cover **both** packages. That
 `default-members` line is load-bearing: at a non-virtual workspace root
 cargo would otherwise operate on the root package only and silently skip
-the other two. Additive-only: new crates go under `crates/`; `corrald`
-itself is never restructured.
+the client crate. Additive-only: new crates go under `crates/`; `corrald`
+itself is never restructured. (The desktop client was removed in
+#376 — the workspace is daemon + shared client only.)
 
 ```
 src/main.rs              binary entrypoint: --socket/--port/--bind/--cors-origin
@@ -66,11 +67,12 @@ AppIcon catalog:
 
 - `corral-master.png` is the cropped square reference.
 - `corral-icon-1024.png` is the opaque repository/reference output.
-- `corral-icon-256.png` is the opaque egui/Linux desktop output.
-- `corral-icon-macos.png` is a 1024px RGBA macOS output with a baked,
-  centered rounded-squircle mask and transparent outer corners. The artwork
-  stays inside the standard ~80% safe region; macOS does not add this mask to
-  an opaque square automatically.
+- `corral-icon-256.png` is the 256px opaque output (kept from the
+  pre-#376 desktop packaging; no current app embeds it).
+- `corral-icon-macos.png` is a 1024px RGBA output with a baked,
+  centered rounded-squircle mask and transparent outer corners (kept from
+  the pre-#376 desktop packaging; no current app consumes it). The artwork
+  stays inside the standard ~80% safe region.
 - `social-preview.png` is the 1280×640 repository preview asset. Committing
   it does not change GitHub's social-preview setting; that remains a manual
   repository-settings step.
@@ -98,69 +100,15 @@ not checked in.
 
 `check-assets.py` is read-only: it checks the pinned SHA-256 manifest for the
 approved assets and the complete active icon-integration sources, PNG
-dimensions/modes/alpha, social wordmark/caption structure, the parsed iOS
-asset-catalog resource phase, Python/shell syntax, and the release embedding
-gate. The egui binary embeds
-`corral-icon-256.png` at compile time; after a release build, prove that
-embedding with:
-
-```sh
-cargo build --release -p corrald-ui
-mise exec -- python tools/icon/check-assets.py --require-build
-```
+dimensions/modes/alpha, social wordmark/caption structure, and the parsed iOS
+asset-catalog resource phase.
 
 The negative self-tests mutate temporary fixtures, including macOS full
 opacity, corner opacity, safe padding, and centering, social copy, the
-AppIcon catalog's actual Resources phase, an immediate-return generator, and
-both detached and commented-out egui icon applications. Full-source hashes
-plus compile/build-derived checks make those mutations fail even when a token
-or comment is left behind. Pillow checks use the repository's documented
-`getdata()` pixel API rather than a newer-only helper.
-`scripts/test-icon-packaging.sh` uses only temporary destinations and failing
-converter/copy/rename stubs to verify macOS, Linux, and Other-platform staging,
-special-character desktop-entry `Exec` escaping, cleanup, and single- and
-double-failure rollback. If both restoration renames fail, the installer
-reports the exact retained rollback directory instead of deleting the only
-recoverable old payload; it never targets `/Applications` or a user config
-directory. Linux `Exec` values are encoded in the two required passes: command
-quoting is followed by desktop-entry general-string escaping, so the on-disk
-forms use doubled backslashes for quotes, `$`, and backticks, four for
-a literal backslash, and `%%` for a literal percent. Newline- or
-carriage-return-containing requested prefixes, and executable paths containing
-`=`, are rejected before destination directories are created.
-Install prefixes and the macOS app parent are physically canonicalized before
-guards; root-resolving paths, `..` traversal, and symlinked `bin`/`share`
-payload parents are refused. A symlinked prefix is accepted only by resolving
-it to its safe canonical target, and every stage is created beside that
-resolved target so final renames stay on one filesystem. Linux and Other
-preflight the device of every target parent against the staging prefix before
-creating payload directories and recheck before commit; a device mismatch is
-an error rather than a cross-filesystem fallback. Rollback diagnostics
-distinguish a payload-restore failure, which retains the old payload, from a
-cleanup-only failure, which reports that the payload was restored. For the
-cleanup-only case, an existing empty or partial rollback directory gets an
-inspection path, a missing root gets no path or recoverability claim, and an
-existing but uninspectable root is reported as indeterminate with its path.
-If cleanup fails after a fresh install, the diagnostic instead identifies an
-empty rollback directory for inspection rather than claiming a rollback copy
-exists. After a replacement, cleanup diagnostics inspect the expected rollback paths after the failed
-removal: macOS reports a remaining previous path only when it exists, while
-Linux and Other distinguish all, some, or none of the expected backup paths.
-An existing empty directory gets an inspection path; a missing rollback root
-gets no path or recoverability claim; and an existing but uninspectable root
-is reported as indeterminate without being called empty or retained. They
-never infer recoverability from pre-cleanup backup state. The multi-file Linux
-commit remains rollback-based; the installer does not claim one atomic
-operation for the whole payload.
-
-`scripts/setup-corrald.sh` delegates desktop installation to
-`scripts/install-corral-ui.sh`. The installer builds and validates the entire
-macOS bundle—including a round-tripped `Corral.icns`, `CFBundleIconFile`, and
-the executable—or the complete Linux binary/icon/`.desktop` payload in a
-sibling staging directory first. It commits only after validation; existing
-installations are moved into same-filesystem rollback storage and restored if
-a final rename fails. Linux installs the 256px PNG as the `corral` desktop
-icon.
+AppIcon catalog's actual Resources phase, and an immediate-return generator.
+Full-source hashes make those mutations fail even when a token or comment is
+left behind. Pillow checks use the repository's documented `getdata()` pixel
+API rather than a newer-only helper.
 
 ## Quality gates (run all of these before merging)
 
@@ -188,7 +136,6 @@ cargo llvm-cov report \
   --fail-under-lines 40 \
   --fail-under-functions 35
 cargo test -p corrald-client                       # client unit + wire pins
-cargo test -p corrald-ui --test live -- --ignored  # egui live tests
 ```
 
 These are the same gates hosted CI runs (`.github/workflows/rust.yml`), so
@@ -230,27 +177,19 @@ the pre-cut suite no longer exist; the R-numbering keeps its legacy
 gaps). R11 (GitHub PR binding) additionally requires read-only GitHub
 access and a suitable open PR on a tracked repository; run it with
 `--ignored` against a scratch daemon. The W1 acceptance bar is shared by
-both P4 clients.
+the surviving client surfaces.
 
 ## Design-gate evidence
 
 `scripts/design-gate-evidence.sh` renders an approved HTML prototype, captures
 the selected surface, and writes a stamped prototype/live comparison under
-`docs/design/evidence/issue-<N>/`. The egui path requires a healthy corrald and
-uses the app's existing `CORRAL_UI_SCREENSHOT` capture hook; it never invents
-board data. If a host window server needs an input event to wake eframe,
-`--egui-wake-command` supplies that explicit caller-owned wake step and a
-failure aborts the capture. For a targeted native screenshot, corrald-ui also
-repeats that command at a one-second cadence from the exact process PID after
-target selection, through the configured settle interval, until dispatch or a
-bounded 45-second lifetime. It never broadcasts input or targets another
-process. Supply an agent id from `/snapshot` when the detail selection must be
-deterministic:
-
-```sh
-scripts/design-gate-evidence.sh --issue 206 --surface egui \
-  --live-agent herdr:AGENT_ID
-```
+`docs/design/evidence/issue-<N>/`. The live product surface is iOS
+(simulator-only capture through `hermes-sim-task`). The capture tool also
+retains a windowed desktop-surface mode (exact-PID wake seams and bounded
+window-server probes) that is exercised only by its hermetic test suite since
+#376 removed the desktop client — there is no real desktop binary to capture.
+Supply an agent id from `/snapshot` when a detail selection must be
+deterministic.
 
 The generated `conformance.md` is a stable manifest: it omits wall-clock
 metadata, derives the generator path and SHA-256 from one canonical
@@ -296,24 +235,10 @@ collisions retain the old bundle for recovery. iOS capture is simulator-only thr
 `hermes-sim-task`; `--ios-mode demo` is explicitly labeled as a Debug fixture,
 while live mode requires a caller-supplied launch command.
 
-For a real macOS egui lifecycle check—fake herdr fixture, real corrald,
-registered native UI, real target selection, native wgpu PNG, exact-pid wake,
-and bounded cleanup—run:
-
-```sh
-bash scripts/test-design-gate-egui-integration.sh             # read-only verify
-bash scripts/test-design-gate-egui-integration.sh --publish   # explicit native regenerate/publish
-# If the default renderer cannot complete, set CHROME_BIN to a GUI-capable Chrome/Chromium.
-```
-
-The default command reads the committed four-tab bundles, recomputes their
-non-circular implementation content digest (including only the selected
-eframe/wgpu package records from `Cargo.lock`), validates tab/log/PNG and
-runtime daemon/fixture provenance, and asserts that `git status --porcelain`
-is unchanged. Only `--publish` runs native captures and replaces the tracked issue-206 artifacts. It is
-intentionally local/platform-dependent and requires a macOS window server,
-Chrome, Cargo, OpenSSL, and `osascript`; it uses only scratch config, repo,
-worktree, and loopback resources and removes them on completion.
+The desktop-surface capture harness that verified committed desktop
+evidence bundles was removed with #376 along with the client it captured;
+the capture tool's desktop mode is now exercised only through the hermetic
+suite described below.
 
 The macOS readiness record is intentionally privacy-scoped: it retains the
 exact target PID's process/window visibility, frontmost, key/main state, and
@@ -340,16 +265,10 @@ directly. Use `--dry-run` to inspect the resolved operation;
 `bash scripts/test-design-gate-evidence.sh` verifies complete-PNG validation,
 the exit-during-validation recheck, structural prototype rejection through the
 real Chrome path, provenance labels, dimensions, force-gated reruns, lingering and
-TERM-ignoring writers, Chrome trust-boundary flags, egui capture/wake seams,
+TERM-ignoring writers, Chrome trust-boundary flags, desktop wake seams,
 argument failures, and preservation of an existing bundle after a failed run.
 These remain local/platform-dependent developer checks; they are not wired into
 CI.
-
-For native #206 evidence, the configured 1320x860 logical egui viewport may be
-captured at either 1x (`1320x860`) or 2x Retina backing pixels
-(`2640x1720`). The verifier rejects arbitrary dimensions, requires one scale
-consistently across all four tab bundles, and still checks every conformance
-dimension against the complete PNG bytes.
 
 The hermetic suite also covers symlink and wrapper identity, path normalization,
 manifest stability, invalid UTF-8, bounded logs, complete-PNG races,
@@ -369,11 +288,8 @@ fresh-baseline check.
 
 The measured scope is the pure-Rust `corrald` daemon package and
 `corrald-client` package, with `--all-targets` and the normal non-ignored test
-set. `clients/egui` (`corrald-ui`) is excluded deliberately: egui/wgpu and its
-X11/Wayland/OpenGL dependencies are GUI/platform code, and including it would
-make this core gate depend on platform-specific rendering paths rather than
-measure the daemon/client contract. The egui crate remains covered by the
-ordinary workspace clippy, build, and test gates.
+set. The desktop GUI client was removed in #376, so the whole workspace is
+this deterministic core scope.
 
 Install the same local coverage tool and component, then reproduce the
 blocking CI command from the repository root:
@@ -561,20 +477,20 @@ gate also exits 1 at 40/35. Deleting all client tests therefore cannot pass.
 ## Supply-chain gates and baseline
 
 [`deny.toml`](../deny.toml) is the workspace supply-chain policy. The blocking
-command is `cargo deny --locked --workspace check`: `--workspace` makes all three
-members (`corrald`, `corrald-client`, and `corrald-ui`) graph roots. Its
+command is `cargo deny --locked --workspace check`: `--workspace` makes both
+members (`corrald`, `corrald-client`) graph roots. Its
 `all-features` graph setting evaluates feature branches for every target, and
 `licenses.include-dev = true` includes workspace dev-dependencies in the
-license check. The checked-in `Cargo.lock` contains 570 package records; `cargo audit` scans that lockfile
-directly, while cargo-deny evaluates the complete workspace graph rooted at
-the three members.
+license check. The checked-in `Cargo.lock` contains 356 package records after
+the #376 desktop-client removal (584 before); `cargo audit` scans that
+lockfile directly, while cargo-deny evaluates the complete workspace graph
+rooted at the two members.
 
 The license policy allows the project's MIT/Apache-compatible dependency
 licenses plus the reviewed permissive BSL-1.0 and Zlib licenses. MPL-2.0 is
 accepted only for the transitive `option-ext` utility, because its copyleft is
-file-level and does not change this project's MIT/Apache terms. The bundled
-`epaint_default_fonts` asset crate is the only exception for OFL-1.1 and
-Ubuntu-font-1.0. CC0-1.0 is allowed as a public-domain dedication, not as an
+file-level and does not change this project's MIT/Apache terms. CC0-1.0 is
+allowed as a public-domain dedication, not as an
 OSI-approved software license. CDLA-Permissive-2.0 is accepted only for
 `webpki-root-certs` 1.0.9, the wasm32-only `rustls-platform-verifier`
 trust-anchor fallback; Linux and Darwin do not compile it, but cargo-deny's
@@ -661,16 +577,15 @@ future findings cannot be silently carried forward as part of this baseline.
 
 ## State token contract
 
-The shared state→color/label vocabulary for both clients lives in
+The shared state→color/label vocabulary for the client lives in
 `contracts/state-tokens.json` (one entry per `AgentState` carrying `state`,
-`rank`, `label`, `dark`, `light`, `mark`). The egui board keeps native
-`Color32` consts in `clients/egui/src/theme.rs` and the iOS notifier keeps a
-`StateStyle` in `ios/FleetNotifier/UI/StateStyle.swift`, but neither may
-diverge from the contract: a drift test per client reads the JSON and
+`rank`, `label`, `dark`, `light`, `mark`). The iOS notifier keeps a
+`StateStyle` in `ios/FleetNotifier/UI/StateStyle.swift`, and it may not
+diverge from the contract: a drift test reads the JSON and
 asserts the hexes/labels/ranks/marks stay in sync. Update the contract first,
-then re-point each client and its drift test together. Color is never the
+then re-point the client and its drift test together. Color is never the
 only state channel — every chip renders a mark plus a label. The labels the
-BOARDS render are the herdr RAW tokens (working / idle / blocked / unknown;
+BOARD renders are the herdr RAW tokens (working / idle / blocked / unknown;
 the herdr 0.8.2 wire can also carry `done`, recorded in the #324 live
 probe, which is ranked and rendered with `idle` as the finished state —
 never active/working). #319/#320's grouped wording is banned.
@@ -696,7 +611,7 @@ deliberate contract change — this is the smallest recipe:
 3. **Dispatch** (`src/adapters/mod.rs`): extend `DriveCommand` and the
    herdr adapter's `drive()` match. Resolve the canonical `agent_id` to
    the transport target; return typed `DriveError`s.
-4. **Clients** (`crates/corrald-client`, `clients/egui`,
+4. **Clients** (`crates/corrald-client`,
    `ios/FleetNotifier`): mirror the wire type and add a scenario to
    `crates/corrald-client/tests/conformance.rs`.
 5. **Gate**: run all four quality gates, then the live conformance suite

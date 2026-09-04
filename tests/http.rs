@@ -232,7 +232,13 @@ fn no_fleets_json_reference_anywhere_in_src() {
     // (prose that explains the guarantee is permitted and ignored).
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut offenders = Vec::new();
-    let mut stack = vec![root.join("src"), root.join("crates"), root.join("clients")];
+    // #376 removed clients/ (the desktop client) entirely; scan only the
+    // directories that exist so the absence probe does not fail on the
+    // missing dir.
+    let mut stack: Vec<_> = [root.join("src"), root.join("crates"), root.join("clients")]
+        .into_iter()
+        .filter(|dir| dir.is_dir())
+        .collect();
     while let Some(dir) = stack.pop() {
         for entry in std::fs::read_dir(&dir).unwrap().flatten() {
             let path = entry.path();

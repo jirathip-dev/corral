@@ -59,9 +59,8 @@ Flags (`corrald --help`):
 | `--bind`, `-b` | `127.0.0.1` | bind address (loopback / tailnet / private / IPv6 ULA; public and 0.0.0.0 refused) |
 | `--cors-origin` | none | exact browser origin allowed to read the credential-free read plane (repeatable; `*` refused) |
 
-Default config dirs: daemon `$HOME/.config/corral`, client
-`$HOME/.config/corral/ui` — override with `CORRAL_CONFIG_DIR` /
-`CORRAL_UI_CONFIG_DIR`.
+Default config dir: daemon `$HOME/.config/corral` — override with
+`CORRAL_CONFIG_DIR`.
 
 Check it is up:
 
@@ -115,10 +114,6 @@ Result (verified):
 A new device is **read-only**: `grants` is empty, and the only capability
 names that can ever be granted are the signed reads (`read_tail`, plus the
 daemon-retained `read_diff`). There is no HTTP grant route.
-
-> The desktop client (`corrald-ui`, P4 W2) auto-registers on localhost —
-> it reads the daemon's `registration-token` file for the same user, so
-> no curl is needed. See the UI section below.
 
 ## 5. Grant the read capability (out-of-band)
 
@@ -174,30 +169,7 @@ curl -s -H "Authorization: Bearer ***" http://127.0.0.1:8474/audit
 `{"entries":[...],"head":"<sha256>","valid":true,"note":"..."}` — each
 entry carries `prev` + `hash`; `valid` is the chain integrity verdict.
 
-## 8. The desktop UI (`corrald-ui`)
-
-On `main` as the `clients/egui` workspace member:
-
-```sh
-cargo run -p corrald-ui --release
-```
-
-A dark-dashboard **read-only** fleet board speaking corrald's HTTP/SSE
-surface directly: Board (repo groups with raw herdr state chips; blocked
-pinned top; rows = name/repo/state/time-in-state/branch + pane ref) and
-Settings (connection only). Tapping a row opens the recents v1 live tail
-via the signed `read_tail` drive (device keys in the macOS Keychain /
-0600 file fallback). There is no Issues tab, no audit pane, no grant
-editor, and no drive/approval UI. It **auto-registers on localhost** by
-reading the daemon's `registration-token` for the same user, so steps 4
-and 5 above are only needed for other clients. The WASM build (`#215`,
-mobile layout per `#304`) renders the same read-only board from a bundled
-synthetic fixture — no signing, no keyring, no `/drive`.
-
-macOS dev builds need one ad-hoc re-sign to stop Keychain re-prompts —
-[OPERATIONS.md](OPERATIONS.md) has the how-to.
-
-## 9. The iOS app (FleetNotifier)
+## 8. The iOS app (FleetNotifier)
 
 SwiftUI client (`ios/` in this repo, bundle `com.corral.fleetnotifier`) that
 speaks the same HTTP/SSE surface: read-only board (repo groups, raw state

@@ -3,12 +3,11 @@
 
 The default check is read-only and does not build or install anything. It
 pins the approved bytes and the complete active integration source files,
-then checks image structure, parsed project metadata, shell syntax, and the
-release binary's embedded icon bytes.
+then checks image structure, parsed project metadata, and shell/Python
+syntax.
 
-Use ``--require-build`` after a release build to prove that the 256px PNG is
-present in the produced ``corrald-ui`` executable. ``--self-test`` runs the
-same checks against temporary fixtures with deliberate corruptions.
+``--self-test`` runs the same checks against temporary fixtures with
+deliberate corruptions.
 """
 
 from __future__ import annotations
@@ -44,14 +43,12 @@ APPROVED_SHA256 = {
 }
 
 INTEGRATION_SHA256 = {
-    "clients/egui/src/main.rs": "a1fb60dbd7db67b5303409e75f2a3af51b66f8aa3e39555854d330cf900c4b92",
     "tools/icon/from-user-png.py": "ac45d24e32410c0c2738d1c516d4be6e95568c894d000252d7fe27bb32163084",
-    "tools/icon/check-desktop-entry.py": "801960b07623033a96bf22360800be9806ef500c2a9e0f7253957dd03869ba54",
     "ios/FleetNotifier/Assets.xcassets/AppIcon.appiconset/Contents.json": "5c09bec6eede599b14fa9e4c44b03e7febebc930615a0cd70f02981c09dfe48a",
-    "ios/FleetNotifier.xcodeproj/project.pbxproj": "bd5d8ab95270d017bb5d2b4c6c965d3fcf61e1e1e0776fe211f0caf397c5945d",
-    "scripts/install-corral-ui.sh": "962b084810ed8d23f09fbe616037a9372641826cf3e9b53cfcb28dbc4715445f",
-    "scripts/setup-corrald.sh": "8e369126d9658408a69aa3e1311343254f0f7ab9d95d562f7e1d74408c6eff01",
-    "scripts/test-icon-packaging.sh": "3839305fe3a2d7db82412902c3f9f3a5e7d24a34c79e565c59fcd4f92319b5c5",
+    # Pin refreshed by the #376 lane: the #371-#373 iOS xcodegen additions
+    # changed project.pbxproj without refreshing this pin, so the icon gate
+    # was already failing at the #376 base (ios/ is untouched by #376).
+    "ios/FleetNotifier.xcodeproj/project.pbxproj": "4e51ae807207105a88595b743bf5670058aa3bd58ec1b07486f5d3300280d2d5",
 }
 
 PNG_SPECS = {
@@ -79,11 +76,6 @@ FIXTURE_FILES = [
     "ios/FleetNotifier/Assets.xcassets/AppIcon.appiconset/Contents.json",
     "ios/FleetNotifier/Info.plist",
     "ios/FleetNotifier.xcodeproj/project.pbxproj",
-    "clients/egui/src/main.rs",
-    "scripts/setup-corrald.sh",
-    "scripts/install-corral-ui.sh",
-    "scripts/test-icon-packaging.sh",
-    "tools/icon/check-desktop-entry.py",
     "tools/icon/from-user-png.py",
 ]
 
@@ -254,15 +246,6 @@ def check_pillow_compatibility() -> None:
     require(compatible_pixel_data(image) == [7, 7, 7, 7], "Pillow pixel iteration API is unavailable")
 
 
-def run_bash_syntax(root: Path, relative: str) -> None:
-    path = root / relative
-    require(path.is_file(), f"missing {relative}")
-    result = subprocess.run(
-        ["bash", "-n", str(path)], capture_output=True, text=True, check=False
-    )
-    require(result.returncode == 0, f"{relative} fails bash -n: {result.stderr.strip()}")
-
-
 def run_python_syntax(root: Path, relative: str) -> None:
     path = root / relative
     require(path.is_file(), f"missing {relative}")
@@ -335,29 +318,15 @@ def check_references(root: Path) -> None:
         "Xcode project does not select AppIcon",
     )
 
-    run_bash_syntax(root, "scripts/setup-corrald.sh")
-    run_bash_syntax(root, "scripts/install-corral-ui.sh")
-    run_bash_syntax(root, "scripts/test-icon-packaging.sh")
     run_python_syntax(root, "tools/icon/from-user-png.py")
-    run_python_syntax(root, "tools/icon/check-desktop-entry.py")
 
 
-def check_build_embedding(root: Path) -> None:
-    binary = root / "target/release/corrald-ui"
-    require(binary.is_file(), "release corrald-ui binary is missing; run cargo build --release")
-    icon = (root / "assets/icon/corral-icon-256.png").read_bytes()
-    executable = binary.read_bytes()
-    require(icon in executable, "release corrald-ui does not contain the approved 256 icon bytes")
-
-
-def check_all(root: Path, require_build: bool = False) -> None:
+def check_all(root: Path) -> None:
     check_hashes(root)
     check_integration_hashes(root)
     check_pillow_compatibility()
     check_pixels(root)
     check_references(root)
-    if require_build:
-        check_build_embedding(root)
 
 
 def make_fixture(destination: Path) -> Path:
@@ -471,30 +440,6 @@ def mutate_appicon_catalog(root: Path) -> None:
     path.write_text(json.dumps(contents), encoding="utf-8")
 
 
-def mutate_egui_include(root: Path) -> None:
-    path = root / "clients/egui/src/main.rs"
-    source = path.read_text(encoding="utf-8")
-    path.write_text(source.replace("corral-icon-256.png", "missing-icon.png"), encoding="utf-8")
-
-
-def mutate_egui_icon_application(root: Path) -> None:
-    path = root / "clients/egui/src/main.rs"
-    source = path.read_text(encoding="utf-8")
-    path.write_text(
-        source.replace(".with_icon(app_icon())", "// .with_icon(app_icon())"),
-        encoding="utf-8",
-    )
-
-
-def mutate_egui_detached_icon(root: Path) -> None:
-    path = root / "clients/egui/src/main.rs"
-    source = path.read_text(encoding="utf-8")
-    path.write_text(
-        source.replace("viewport: viewport_builder(),", "viewport: egui::ViewportBuilder::default(),", 1),
-        encoding="utf-8",
-    )
-
-
 def mutate_generator_noop(root: Path) -> None:
     path = root / "tools/icon/from-user-png.py"
     source = path.read_text(encoding="utf-8")
@@ -519,12 +464,6 @@ def mutate_appicon_resources_phase(root: Path) -> None:
     path.write_text(source.replace(resource_line, "", 1), encoding="utf-8")
 
 
-def mutate_packager(root: Path) -> None:
-    path = root / "scripts/install-corral-ui.sh"
-    source = path.read_text(encoding="utf-8")
-    path.write_text(source.replace("iconutil -c icns", "iconutil -c invalid-mode"), encoding="utf-8")
-
-
 def mutate_generator_padding(root: Path) -> None:
     path = root / "tools/icon/from-user-png.py"
     source = path.read_text(encoding="utf-8")
@@ -538,12 +477,6 @@ def mutate_generator_fallback(root: Path) -> None:
         source.replace("ImageFont.truetype", "ImageFont.load_default"),
         encoding="utf-8",
     )
-
-
-def mutate_unembedded_build(root: Path) -> None:
-    binary = root / "target/release/corrald-ui"
-    binary.parent.mkdir(parents=True, exist_ok=True)
-    binary.write_bytes(b"a release-shaped executable without the icon")
 
 
 def self_test() -> None:
@@ -560,13 +493,9 @@ def self_test() -> None:
             ("social wordmark corruption", mutate_social_wordmark),
             ("social caption corruption", mutate_social_caption),
             ("iOS AppIcon catalog filename", mutate_appicon_catalog),
-            ("missing egui include", mutate_egui_include),
-            ("commented-out egui icon application", mutate_egui_icon_application),
-            ("detached egui icon application", mutate_egui_detached_icon),
             ("immediate-return generator", mutate_generator_noop),
             ("generator source hash", mutate_generator_hash),
             ("AppIcon removed from Resources phase", mutate_appicon_resources_phase),
-            ("packager icon conversion", mutate_packager),
             ("generator padding extent", mutate_generator_padding),
             ("generator font fallback", mutate_generator_fallback),
         ]
@@ -586,26 +515,11 @@ def self_test() -> None:
             mutation,
         )
 
-    with tempfile.TemporaryDirectory(prefix="corral-icon-build-") as temporary:
-        fixture = make_fixture(Path(temporary))
-        mutate_unembedded_build(fixture)
-        try:
-            check_build_embedding(fixture)
-        except SystemExit:
-            pass
-        else:
-            raise AssertionError("self-test mutation was accepted: unembedded release binary")
-
     print(f"icon checker self-tests: ok ({len(mutations) + 1} negative cases)")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--require-build",
-        action="store_true",
-        help="require target/release/corrald-ui to contain the approved icon bytes",
-    )
     parser.add_argument(
         "--self-test",
         action="store_true",
@@ -616,7 +530,7 @@ def main() -> int:
     if args.self_test:
         self_test()
     else:
-        check_all(ROOT, require_build=args.require_build)
+        check_all(ROOT)
         print("icon assets and integration references: ok")
     return 0
 

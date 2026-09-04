@@ -2,20 +2,20 @@
 # setup-corrald.sh — one-shot corrald daemon setup (build + launchd + first run)
 #
 # Idempotent: safe to re-run. Works for any user (uses $HOME, no hardcoded paths).
-# Does NOT modify source; only builds, creates the config dir, installs a
-# launchd agent, and stages the desktop client through the icon-aware installer.
+# Does NOT modify source; only builds, creates the config dir, and installs the
+# launchd agents.
 #
 # Usage:
 #   scripts/setup-corrald.sh            # build + run under launchd on 127.0.0.1:8474
 #   scripts/setup-corrald.sh --from-release <binary-path>  # prebuilt corrald, no cargo
-#   scripts/setup-corrald.sh --bind 100.67.222.5   # Tailscale/private IP (desktop/daemon
-#                                                  # only; iOS needs Tailscale Serve —
-#                                                  # see docs/OPERATIONS.md)
+#   scripts/setup-corrald.sh --bind 100.67.222.5   # Tailscale/private IP (daemon only;
+#                                                  # iOS needs Tailscale Serve — see
+#                                                  # docs/OPERATIONS.md)
 #   scripts/setup-corrald.sh --uninstall
 #
 # Prereqs (source mode): rustup (pinned toolchain auto-installs), herdr running
 # (optional; corrald serves without it, just shows no agents). Release mode uses
-# a prebuilt corrald + sibling corrald-ui and needs no Rust toolchain.
+# a prebuilt corrald and needs no Rust toolchain.
 set -euo pipefail
 
 BIND="127.0.0.1"
@@ -81,7 +81,7 @@ if [[ -n "$FROM_RELEASE" ]]; then
   }
   FROM_RELEASE_DIR="$(dirname "$FROM_RELEASE")"
   BIN="$FROM_RELEASE"
-  if [[ -x "$FROM_RELEASE_DIR/corrald-ui" && -f "$FROM_RELEASE_DIR/scripts/setup-corrald.sh" ]]; then
+  if [[ -f "$FROM_RELEASE_DIR/scripts/setup-corrald.sh" ]]; then
     REPO_DIR="$FROM_RELEASE_DIR"
   fi
 fi
@@ -294,33 +294,11 @@ else
   echo ">> Skipping launchd agent (macOS only)"
 fi
 
-# --- Desktop client install (platform-aware) ---------------------------------
-install_desktop_client() {
-  local UI_BIN="$REPO_DIR/target/release/corrald-ui"
-  if [[ -n "$FROM_RELEASE" ]]; then
-    UI_BIN="$FROM_RELEASE_DIR/corrald-ui"
-    if [[ ! -x "$UI_BIN" ]]; then
-      echo "!! prebuilt corrald-ui binary is missing or not executable: $UI_BIN" >&2
-      return 1
-    fi
-  elif [[ ! -x "$UI_BIN" ]]; then
-    echo ">> corrald-ui binary missing — building..." >&2
-    cargo build --release 2>>"$LOG" || { echo "   ✗ build failed" >&2; return 1; }
-  fi
-  CORRAL_INSTALL_PLATFORM="$(uname -s)" \
-    bash "$REPO_DIR/scripts/install-corral-ui.sh" --binary "$UI_BIN"
-}
-
-install_desktop_client
+# --- Desktop client install removed with #376 (iOS-only product) -------------
 
 echo
 echo ">> Next:"
-if [[ -n "$FROM_RELEASE" ]]; then
-  echo "   - board:           open ${CORRAL_MACOS_APP_DEST:-/Applications/Corral.app}"
-else
-  echo "   - client (egui):   cargo run -p corrald-ui --release   (auto-registers on localhost)"
-  echo "   - device grants:   out-of-band in $CONFIG_DIR/registry.json (stop daemon, edit \"grants\", restart; see docs/OPERATIONS.md) — no grant HTTP surface since #354"
-fi
+echo "   - register a device:   steps 4-5 in docs/QUICKSTART.md (register, then out-of-band read_tail grant)"
 echo "   - view config:     ls -la $CONFIG_DIR"
 echo "   - logs:            tail -f $LOG"
 echo "   - log rotation:    50 MiB cap, 2 gz generations, every 30 min ($CONFIG_DIR/corral-rotate.log)"

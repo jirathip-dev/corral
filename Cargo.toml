@@ -49,5 +49,5 @@ zeroize = "1"
 corrald = { path = ".", features = ["test-utils"] }
 http-body-util = "0.1"
 tempfile = "3"
-tokio-tungstenite = "0.29"
+tokio-tungstenite = "0.30"
 tower = { version = "0.5", features = ["util"] }

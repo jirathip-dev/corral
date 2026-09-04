@@ -159,7 +159,14 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # all, Latte recess panels, DEBUG recents-evidence driver), and the demo
     # seed was rebuilt to the block-per-run evidence shape (DemoFleet) —
     # re-pinned.
-    "272e75b7448dfe446ca7d538d041c9616e7cb30e050dbd06f7d45b60329ed9ed"
+    # 2026-09-04 (#379): Settings cleanup + How-to-connect — the Settings
+    # Device section lost the grants list/stale capability language for the
+    # identity read-out (Key id, Keychain note, read-only signed device
+    # label, paired/registration state, Remove action), the shared
+    # HowToConnectSheet + Settings '?' entry + unpaired-launch auto-present
+    # landed in FleetViews, and FleetNotifierApp gained the DEBUG
+    # -corralDemoConnectEvidence route — re-pinned.
+    "25d936c0869cb92009843e659e7b65ec6def67bf7bfc6f425c812222ed9387fd"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #332 R4: pin the focused grant fixture independently from the Release
@@ -202,7 +209,14 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # RecentsBlockSessionTests (default-expanded, toggle, reveal, reset), the
     # demo fixture pin asserts the block-per-run treatments, and the
     # wiring/theme pins moved onto the block renderer — re-pinned.
-    "808c2699ee40a28ef3039fb647c513a45b787acd694b6d8c250e10465ffcea26"
+    # 2026-09-04 (#379): the Settings-device and Settings-wiring pins were
+    # updated for the post-cut identity read-out (Remove action instead of
+    # the Reset section, How-to-connect MARK boundary), and
+    # SettingsConnectWiringTests was added (grants list/stale capability
+    # absence, Device identity rows, Settings '?' entry, unpaired-launch
+    # auto-present, numbered connect-sheet steps + copy-host + README link)
+    # — re-pinned.
+    "111fed57252ab3cdadd03909587cd63ba2076b355a8467c26bfec7d540ace153"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

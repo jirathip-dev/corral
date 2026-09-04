@@ -29,6 +29,15 @@ struct FleetNotifierApp: App {
 #if DEBUG
                     if CorralDemoLaunch.wantsDetail(arguments: CommandLine.arguments) {
                         model.enterDemo(detailAgentId: CorralDemoLaunch.detailAgentID)
+                    } else if CorralDemoLaunch.wantsConnectEvidence(arguments: CommandLine.arguments) {
+                        // #379 evidence: guarantee the UNPAIRED first-launch
+                        // state no matter what the app container holds from
+                        // earlier runs — the board's real auto-present then
+                        // shows the How-to-connect sheet, and the driver
+                        // steps through Settings and the sheet behind marker
+                        // files (no demo fleet: the connect frames must show
+                        // the real fresh-install surfaces).
+                        model.resetDevice()
                     } else if CorralDemoLaunch.wantsReopenEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsFilterEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsSettingsEvidence(arguments: CommandLine.arguments)
@@ -71,12 +80,17 @@ struct FleetNotifierApp: App {
 /// `-corralDemoSettingsEvidence` (#365) drives the board + Settings-sheet
 /// sequence behind the always-visible gear. `-corralDemoThemeEvidence`
 /// (#372) drives the Mocha → Appearance → Latte board/recents sequence.
+/// `-corralDemoConnectEvidence` (#379) wipes any leftover identity so the
+/// launch is UNPAIRED, then records the auto-presented How-to-connect
+/// sheet, the Settings sheet (Device section without the grants list), and
+/// the shared connect sheet content.
 enum CorralDemoLaunch {
     static let detailArgument = "-corralDemoDetail"
     static let reopenEvidenceArgument = "-corralDemoUXEvidence"
     static let filterEvidenceArgument = "-corralDemoFilterEvidence"
     static let settingsEvidenceArgument = "-corralDemoSettingsEvidence"
     static let themeEvidenceArgument = "-corralDemoThemeEvidence"
+    static let connectEvidenceArgument = "-corralDemoConnectEvidence"
 
     static var detailAgentID: String {
         DemoFleet.featuredAgentID
@@ -100,6 +114,10 @@ enum CorralDemoLaunch {
 
     static func wantsThemeEvidence(arguments: [String]) -> Bool {
         arguments.contains(themeEvidenceArgument)
+    }
+
+    static func wantsConnectEvidence(arguments: [String]) -> Bool {
+        arguments.contains(connectEvidenceArgument)
     }
 }
 #endif

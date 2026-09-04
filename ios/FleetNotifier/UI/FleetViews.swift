@@ -12,7 +12,9 @@ import Combine
 // - Recents: tap a row → bottom sheet with the LIVE tail (auto-scroll,
 //   ≤200-line daemon cap). No load-earlier, no Conversation/Harness
 //   partition, no composer.
-// - Settings: connection + notification pairing + Appearance only.
+// - Settings: Appearance + connection pairing, device identity read-out,
+//   notifications, and the How-to-connect sheet ('?' entry; auto-presented
+//   on an unpaired first launch).
 // Removed: Issues browser, Terminal, Diff, approval/prompt/attach/kill
 // controls, device/grant admin.
 //
@@ -517,6 +519,14 @@ struct FleetView: View {
     @ObservedObject var model: AppModel
     @EnvironmentObject private var theme: ThemeStore
     @State private var showSettings = false
+    // #379: the How-to-connect sheet. Presented from the Settings '?' Help
+    // button AND auto-presented over the board on an unpaired first launch
+    // (fresh install); the DEBUG evidence driver opens the same binding.
+    @State private var showConnectHelp = false
+    /// #379: one-shot guard for the unpaired-launch auto-present. Fires at
+    /// most ONCE per board lifetime (first launch while unpaired) — a
+    /// deliberate device removal later must NOT re-pop the sheet.
+    @State private var autoPresentedConnectHelp = false
 
     var body: some View {
         // #372: UI accent = the active flavor's mauve; the system color
@@ -649,6 +659,19 @@ struct FleetView: View {
             .sheet(item: $model.recentsRequest,
                    onDismiss: { model.recentsSheetDismissed() }) { request in
                 RecentOutputSheet(agentId: request.agentId, model: model)
+            }
+            // #379: the How-to-connect sheet — the SAME shared content the
+            // Settings '?' button presents from the Settings sheet. The
+            // unpaired-launch auto-present drives this binding; the DEBUG
+            // recorded-evidence driver opens it too (simctl cannot tap).
+            .sheet(isPresented: $showConnectHelp) {
+                HowToConnectSheet(host: model.hostURL?.absoluteString ?? "")
+            }
+            // #379: a fresh install (or any launch that finds the device
+            // UNPAIRED) auto-presents the connect sheet once — first
+            // launch guidance for the daemon-setup + pairing steps.
+            .task(id: model.mode) {
+                await autoPresentConnectHelpIfUnpaired()
             }
 #if DEBUG
             .onChange(of: model.mode) { _, _ in
@@ -920,6 +943,21 @@ struct FleetView: View {
         }
     }
 
+    /// #379: auto-present the How-to-connect sheet when the board first
+    /// appears on an UNPAIRED device (fresh install / first launch) — the
+    /// one-shot guard keeps a later deliberate device removal from re-pop-
+    /// ping it, and the mode gate keeps demo/paired launches quiet. The
+    /// sleep lets the first frame settle so the sheet presents cleanly;
+    /// mode is re-checked afterwards so a same-instant demo entry or
+    /// registration cannot race the presentation.
+    private func autoPresentConnectHelpIfUnpaired() async {
+        guard !autoPresentedConnectHelp, model.mode == .needsSetup else { return }
+        try? await Task.sleep(for: .milliseconds(700))
+        guard !autoPresentedConnectHelp, model.mode == .needsSetup else { return }
+        autoPresentedConnectHelp = true
+        showConnectHelp = true
+    }
+
 #if DEBUG
     /// Deterministic evidence route: `-corralDemoDetail` opens the recents
     /// sheet for the featured demo agent right after seeding (simctl cannot
@@ -947,6 +985,8 @@ struct FleetView: View {
             await runFilterSequence()
         } else if CorralDemoLaunch.wantsSettingsEvidence(arguments: CommandLine.arguments) {
             await runSettingsSequence()
+        } else if CorralDemoLaunch.wantsConnectEvidence(arguments: CommandLine.arguments) {
+            await runConnectSequence()
         } else if CorralDemoLaunch.wantsThemeEvidence(arguments: CommandLine.arguments) {
             await runThemeSequence()
         }
@@ -1028,6 +1068,45 @@ struct FleetView: View {
         try? await Task.sleep(for: .milliseconds(800))
         EvidenceMarkers.write("phase-3-done")
         try? await Task.sleep(for: .milliseconds(1500))
+    }
+
+    /// #379 evidence: three frames from ONE deterministic launch on an
+    /// UNPAIRED device (the app-level harness wiped any leftover identity
+    /// first — see CorralDemoLaunch): (1) the auto-presented connect sheet
+    /// over the fresh connect form — the REAL first-launch path, no driver
+    /// action beyond waiting for the launch auto-present; (2) the Settings
+    /// sheet whose Device section shows the identity read-out with NO
+    /// grants list; (3) the shared HowToConnectSheet content (the same
+    /// struct the Settings '?' button presents — simctl cannot tap that
+    /// toolbar button, so the driver opens the board-level binding; the
+    /// '?' wiring is source-pinned by the unit tests). The host row is
+    /// seeded so step 2's Copy-host control is visible in its enabled
+    /// state (simctl cannot type into the Host field); the copy action
+    /// itself is pasteboard wiring, pinned by the unit tests.
+    private func runConnectSequence() async {
+        guard model.mode == .needsSetup else { return }
+        guard await themePause(2000) else { return }
+        EvidenceMarkers.write("phase-1-connect-autopresent")
+        guard await themePause(4000) else { return }
+        showConnectHelp = false
+        guard await themePause(900) else { return }
+        showSettings = true
+        guard await themePause(1500) else { return }
+        EvidenceMarkers.write("phase-2-settings-device-no-grants")
+        guard await themePause(4000) else { return }
+        showSettings = false
+        guard await themePause(900) else { return }
+        // SAFETY: fixed literal URL used only by the DEBUG evidence driver
+        // to light up the Copy-host row for the phase-3 frame.
+        model.hostURL = URL(string: "https://fleet.example.ts.net")!
+        showConnectHelp = true
+        guard await themePause(1500) else { return }
+        EvidenceMarkers.write("phase-3-connect-sheet")
+        guard await themePause(4000) else { return }
+        showConnectHelp = false
+        guard await themePause(900) else { return }
+        EvidenceMarkers.write("phase-4-done")
+        _ = await themePause(1500)
     }
 
     /// #372 evidence: Mocha default board → Settings (Appearance section)
@@ -1187,19 +1266,26 @@ struct RegistrationView: View {
     }
 }
 
-// MARK: - Settings (connection + notification pairing + Appearance)
+// MARK: - Settings (Appearance, connection pairing, device identity, notifications, help)
 
 /// #365: the surface behind the board's always-visible gear. The first
 /// section is the CONNECTION pairing — host field + registration token —
 /// which serves BOTH a fresh board (pair through Settings) and an
 /// already-paired device re-pointing at a different host. Below it sit the
-/// retained #354 read-out (device identity), the global notification
-/// pairing toggle, and the destructive device reset.
+/// global notification pairing toggle and the DEVICE read-out.
 ///
 /// #372: the FIRST section is Appearance — the ONLY theme control in the
 /// whole app (placement lock: no picker on the board toolbar, the recents
 /// header, or any tail top-right). Four Catppuccin flavor rows with the
 /// locked swatch strips; selection persists through `ThemeStore`.
+///
+/// #379: the Device section is the post-cut identity read-out ONLY — Key
+/// id, Keychain storage note, the read-only signed device label, the
+/// paired/registration state, and the Remove action. The grants list and
+/// every stale capability name are gone (the product grants nothing but
+/// `read_tail`, out-of-band). The sheet's nav-bar '?' opens the shared
+/// How-to-connect sheet (the same content the unpaired first launch
+/// auto-presents over the board).
 struct SettingsView: View {
     @ObservedObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
@@ -1208,6 +1294,11 @@ struct SettingsView: View {
     @State private var host: String
     @State private var token = ""
     @State private var registering = false
+    /// #379: the Settings-header '?' Help entry — presents the SAME shared
+    /// HowToConnectSheet the unpaired-launch auto-present shows over the
+    /// board (each presentation site owns its binding; they are never both
+    /// up at once).
+    @State private var showConnectHelp = false
 
     /// #365: the host field opens pre-filled with the ACTIVE host so a
     /// paired device can re-point without retyping it; a fresh board falls
@@ -1221,68 +1312,130 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                appearanceSection
-                Section("Connection") {
-                    TextField("Host (Tailscale host or loopback)", text: $host)
-                        .textFieldStyle(.roundedBorder)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                    SecureField("Registration token", text: $token)
-                        .textFieldStyle(.roundedBorder)
-                    Button {
-                        registering = true
-                        Task {
-                            await model.register(host: host, token: token)
-                            registering = false
+            ScrollViewReader { proxy in
+                Form {
+                    appearanceSection
+                    Section("Connection") {
+                        TextField("Host (Tailscale host or loopback)", text: $host)
+                            .textFieldStyle(.roundedBorder)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        SecureField("Registration token", text: $token)
+                            .textFieldStyle(.roundedBorder)
+                        Button {
+                            registering = true
+                            Task {
+                                await model.register(host: host, token: token)
+                                registering = false
+                            }
+                        } label: {
+                            if registering {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Text("Register device (read-only)")
+                            }
                         }
-                    } label: {
-                        if registering {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Text("Register device (read-only)")
+                        .disabled(host.isEmpty || token.isEmpty || registering)
+                        Text("The device signs every read with its own Ed25519 key. Registration grants NOTHING: the host provisions the read_tail grant out-of-band.")
+                            .font(.caption)
+                            .foregroundStyle(theme.subtext1)
+                    }
+                    Section {
+                        // #379 evidence: the connect-evidence Settings
+                        // frame scrolls this anchor into view (the Device
+                        // read-out sits below Appearance + Connection and
+                        // simctl cannot scroll the form).
+                        LabeledContent("Key id", value: String((model.keyId ?? "—").prefix(16)))
+                            .id("settings.device")
+                        LabeledContent("Key storage",
+                                       value: DeviceKeyStore.storageLocation == .keychain
+                                           ? "Keychain" : "in-app store (⚠️ insecure)")
+                        // #379: the grants list is gone — the product grants
+                        // nothing but read_tail, provisioned out-of-band, so
+                        // the Device section states the device's posture
+                        // instead of enumerating capabilities.
+                        Label("Read-only signed device", systemImage: "lock.shield")
+                        LabeledContent("State", value: model.mode == .live ? "Paired" : "Not paired")
+                        if model.keyStorageWarning {
+                            Label("Keychain unavailable — the device key is stored in the plaintext in-app store. Use a device with Keychain support for production.",
+                                  systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundStyle(theme.peach)
                         }
+                        // #379: Remove/revoke action — the pre-cut "Reset
+                        // device identity" destructive action now lives in
+                        // the Device section beside the identity it removes.
+                        Button("Remove device", role: .destructive) {
+                            model.resetDevice()
+                            dismiss()
+                        }
+                    } header: {
+                        Text("Device")
+                    } footer: {
+                        Text("Removing the device wipes its key and pairing from this phone — nothing is sent to the host.")
+                            .foregroundStyle(theme.subtext1)
                     }
-                    .disabled(host.isEmpty || token.isEmpty || registering)
-                    Text("The device signs every read with its own Ed25519 key. Registration grants NOTHING: the host provisions the read_tail grant out-of-band.")
-                        .font(.caption)
-                        .foregroundStyle(theme.subtext1)
-                }
-                Section("Device") {
-                    LabeledContent("Key id", value: String((model.keyId ?? "—").prefix(16)))
-                    LabeledContent("Key storage", value: DeviceKeyStore.storageLocation == .keychain ? "Keychain" : "in-app store (⚠️ insecure)")
-                    LabeledContent("Grants", value: model.grants.isEmpty ? "none (read-only)" : model.grants.joined(separator: ", "))
-                    LabeledContent("Name", value: UIDevice.current.name)
-                    // #365: no read-only host row here — the Connection
-                    // section's editable host field is the one host surface.
-                }
-                Section("Notifications") {
-                    Toggle("State-change notifications",
-                           isOn: Binding(
-                            get: { model.notificationsEnabled },
-                            set: { model.setNotificationsEnabled($0) }))
-                    Text("Alerts when an agent starts, blocks, or finishes. No badges or catch-up.")
-                        .font(.caption)
-                        .foregroundStyle(theme.subtext1)
-                }
-                Section("Reset") {
-                    Button("Reset device identity", role: .destructive) {
-                        model.resetDevice()
-                        dismiss()
+                    Section("Notifications") {
+                        Toggle("State-change notifications",
+                               isOn: Binding(
+                                get: { model.notificationsEnabled },
+                                set: { model.setNotificationsEnabled($0) }))
+                        Text("Alerts when an agent starts, blocks, or finishes. No badges or catch-up.")
+                            .font(.caption)
+                            .foregroundStyle(theme.subtext1)
                     }
                 }
+                .navigationTitle("Settings")
+                .toolbar {
+                    // #379: Settings-header '?' Help entry — opens the same
+                    // shared HowToConnectSheet the unpaired first launch
+                    // auto-presents over the board.
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            showConnectHelp = true
+                        } label: {
+                            Image(systemName: "questionmark.circle")
+                        }
+                        .accessibilityLabel("How to connect")
+                        .accessibilityHint("Opens daemon setup and device pairing steps")
+                    }
+                }
+                // #372: the form surface follows the active flavor's base token
+                // (native cells still provide the grouped chrome), and the
+                // scheme is forced INSIDE the sheet so a live flavor flip
+                // re-traits the presented form's system chrome too (an
+                // app-level scheme change does not reach presented sheets).
+                .scrollContentBackground(.hidden)
+                .background(theme.base)
+                .preferredColorScheme(theme.flavor.isLight ? .light : .dark)
+                // #379: the '?' Help entry presents the shared connect sheet
+                // from INSIDE this sheet's hierarchy (sheet-over-sheet needs
+                // the inner presentation modifier in the presented tree).
+                .sheet(isPresented: $showConnectHelp) {
+                    HowToConnectSheet(host: host)
+                }
+#if DEBUG
+                .task { await scrollDeviceIntoViewForConnectEvidence(proxy) }
+#endif
             }
-            .navigationTitle("Settings")
-            // #372: the form surface follows the active flavor's base token
-            // (native cells still provide the grouped chrome), and the
-            // scheme is forced INSIDE the sheet so a live flavor flip
-            // re-traits the presented form's system chrome too (an
-            // app-level scheme change does not reach presented sheets).
-            .scrollContentBackground(.hidden)
-            .background(theme.base)
-            .preferredColorScheme(theme.flavor.isLight ? .light : .dark)
         }
     }
+
+#if DEBUG
+    /// #379 evidence: the connect-evidence Settings frame must show the
+    /// Device identity read-out (grants list gone). Appearance + Connection
+    /// push it below the fold on 390x844-class screens and simctl cannot
+    /// scroll the form, so the DEBUG-only launch argument scrolls the
+    /// Device anchor into view once the sheet settles.
+    private func scrollDeviceIntoViewForConnectEvidence(_ proxy: ScrollViewProxy) async {
+        guard CorralDemoLaunch.wantsConnectEvidence(arguments: CommandLine.arguments) else { return }
+        try? await Task.sleep(for: .milliseconds(1000))
+        guard CorralDemoLaunch.wantsConnectEvidence(arguments: CommandLine.arguments) else { return }
+        withAnimation(.easeInOut(duration: 0.35)) {
+            proxy.scrollTo("settings.device", anchor: .top)
+        }
+    }
+#endif
 
     /// #372 Appearance: the ONLY theme picker (Settings-only placement
     /// lock). One row per Catppuccin flavor, locked order + swatch strips
@@ -1348,6 +1501,140 @@ private struct FlavorSwatchStrip: View {
             }
         }
         .accessibilityHidden(true)
+    }
+}
+
+// MARK: - How to connect (#379)
+
+/// #379: the in-app "How to connect" sheet — five numbered steps covering
+/// daemon setup (launchd/one command + healthz, with the README Setup link),
+/// reaching the daemon from the phone (Tailscale HTTPS serve URL / LAN, with
+/// a copy-host control), pasting the host, registering with the pairing
+/// token, and enabling state-change notifications. ONE shared content view
+/// presented by BOTH entries: the Settings-header '?' Help button and the
+/// unpaired-first-launch auto-present over the board.
+///
+/// `host` is the host the Copy control copies: the LIVE Connection field
+/// text when the '?' button opens the sheet from Settings, and the active
+/// registered host (empty on a fresh device) when the launch auto-present
+/// shows it. An empty host disables the copy button and shows the setup
+/// hint instead — nothing is copied that was never entered.
+struct HowToConnectSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var theme: ThemeStore
+
+    /// The host string offered for copy in step 2 (see type doc).
+    let host: String
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Text("Run the daemon on your Mac first — then pair this phone with it. The full manual lives in the README (link below).")
+                        .font(.subheadline)
+                        .foregroundStyle(theme.subtext1)
+                }
+                Section {
+                    Text("Install it under launchd (scripts/setup-corrald.sh, idempotent) or run it from a checkout with one command. Verify it answers:")
+                        .font(.subheadline)
+                        .foregroundStyle(theme.subtext1)
+                    Text("curl -s http://127.0.0.1:8474/healthz   # → ok")
+                        .font(.caption.monospaced())
+                        .foregroundStyle(theme.subtext1)
+                    // SAFETY: fixed literal URL to this repository's README
+                    // Setup section anchor (the #376-added link target).
+                    Link(destination: URL(string: "https://github.com/jirathip-dev/corral#setup")!) {
+                        Label("Open the README Setup section", systemImage: "book")
+                    }
+                    .font(.subheadline)
+                } header: {
+                    stepHeader(number: 1, title: "Run the daemon on your Mac")
+                }
+                Section {
+                    Text("The daemon binds loopback only. From the phone, reach it through the Mac's Tailscale HTTPS serve URL (https://<host>.<tailnet>.ts.net) or a LAN address.")
+                        .font(.subheadline)
+                        .foregroundStyle(theme.subtext1)
+                    LabeledContent("Host",
+                                   value: host.isEmpty
+                                       ? "Not set — type it in Settings → Connection"
+                                       : host)
+                    Button {
+                        UIPasteboard.general.string = host
+                    } label: {
+                        Label("Copy host", systemImage: "doc.on.doc")
+                    }
+                    .disabled(host.isEmpty)
+                } header: {
+                    stepHeader(number: 2, title: "Reach it from the phone")
+                }
+                Section {
+                    Text("Open Settings → Connection and paste the host into the Host field.")
+                        .font(.subheadline)
+                        .foregroundStyle(theme.subtext1)
+                } header: {
+                    stepHeader(number: 3, title: "Open Settings and paste the Host")
+                }
+                Section {
+                    Text("Paste the daemon's registration token into the Registration token field and tap Register device (read-only). The device pairs as a read-only signed device.")
+                        .font(.subheadline)
+                        .foregroundStyle(theme.subtext1)
+                } header: {
+                    stepHeader(number: 4, title: "Register with the pairing token")
+                }
+                Section {
+                    Text("Turn on State-change notifications in Settings so you get start / blocked / finished alerts.")
+                        .font(.subheadline)
+                        .foregroundStyle(theme.subtext1)
+                } header: {
+                    stepHeader(number: 5, title: "Enable state-change notifications")
+                }
+            }
+            .navigationTitle("How to connect")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
+            // #372/#379: same sheet treatment as the rest of the app — the
+            // active flavor's base token under native grouped chrome, and
+            // the scheme forced INSIDE the presented stack.
+            .scrollContentBackground(.hidden)
+            .background(theme.base)
+            .preferredColorScheme(theme.flavor.isLight ? .light : .dark)
+        }
+        .presentationDragIndicator(.visible)
+    }
+
+    /// One numbered step header: the circle badge + title. Section headers
+    /// cannot hold buttons, so the copy/link controls live in the rows.
+    private func stepHeader(number: Int, title: String) -> some View {
+        HStack(spacing: 10) {
+            StepNumberBadge(number: number)
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(theme.text)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(number). \(title)")
+    }
+}
+
+/// The circled step number from the approved sheet layout — accent-tinted
+/// disc, bold numeral, token colors only.
+private struct StepNumberBadge: View {
+    let number: Int
+    @EnvironmentObject private var theme: ThemeStore
+
+    var body: some View {
+        Text("\(number)")
+            .font(.footnote.weight(.bold))
+            .foregroundStyle(theme.accent)
+            .frame(width: 24, height: 24)
+            .background(theme.accent.opacity(0.14), in: Circle())
+            .accessibilityHidden(true)
     }
 }
 

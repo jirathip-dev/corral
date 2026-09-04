@@ -43,6 +43,7 @@ struct FleetNotifierApp: App {
                                 || CorralDemoLaunch.wantsSettingsEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsThemeEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsGlassEvidence(arguments: CommandLine.arguments)
+                                || CorralDemoLaunch.wantsRepoLabelEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsCollapseEvidence(arguments: CommandLine.arguments)
                                 || CommandLine.arguments.contains("-demoMode") {
                         model.enterDemo()
@@ -89,6 +90,11 @@ struct FleetNotifierApp: App {
 /// `-corralDemoGlassEvidence` (#385) seeds the demo fleet and records the
 /// translucent recents + Settings sheets (Mocha + Latte) over the busy
 /// board.
+/// `-corralDemoRepoLabelEvidence` (#384) seeds the demo fleet and records
+/// the per-row repo label visibility rule — All rows WITH their repo label
+/// chips vs the demo-atlas repo pill active (rows WITHOUT repo name labels,
+/// color-only hue echo, same row heights), then All restored, in Mocha and
+/// Latte.
 /// `-corralDemoCollapseEvidence` (#386) seeds the demo fleet and records
 /// the board hierarchy change — thick collapsible status bars vs demoted
 /// repo subgroup captions — with the blocked section collapsed and the
@@ -101,6 +107,7 @@ enum CorralDemoLaunch {
     static let themeEvidenceArgument = "-corralDemoThemeEvidence"
     static let connectEvidenceArgument = "-corralDemoConnectEvidence"
     static let glassEvidenceArgument = "-corralDemoGlassEvidence"
+    static let repoLabelEvidenceArgument = "-corralDemoRepoLabelEvidence"
     static let collapseEvidenceArgument = "-corralDemoCollapseEvidence"
 
     static var detailAgentID: String {
@@ -136,6 +143,14 @@ enum CorralDemoLaunch {
     /// `FleetView.runGlassSequence()`.
     static func wantsGlassEvidence(arguments: [String]) -> Bool {
         arguments.contains(glassEvidenceArgument)
+    }
+
+    /// #384: records the per-row repo label visibility rule — All rows
+    /// with their repo label chips vs the demo-atlas pill active (rows
+    /// without repo name labels, same row heights), then All restored, in
+    /// Mocha and Latte — see `FleetView.runRepoLabelSequence()`.
+    static func wantsRepoLabelEvidence(arguments: [String]) -> Bool {
+        arguments.contains(repoLabelEvidenceArgument)
     }
 
     /// #386: records the board-hierarchy change — thick collapsible

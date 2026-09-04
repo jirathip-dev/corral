@@ -4590,6 +4590,137 @@ final class SheetTranslucencyWiringTests: XCTestCase {
     }
 }
 
+// MARK: - #384 per-row repo label visibility (source wiring, bundled source)
+
+/// Decoy-resistant source wiring over the bundled FleetViews source (the
+/// #316 mechanism): while ANY repo pill is active (the reconciled filter is
+/// not nil/'All') the per-row repo NAME label must disappear from agent
+/// rows — the WorkspaceLine then renders only a COLOR-ONLY hue echo that
+/// keeps the label chip's exact height (caption2 line-box spacer + chip
+/// padding: rows do not jump), and
+/// the branch/basename lead the line without a stray separator dot. The
+/// flag re-derives SYNCHRONOUSLY from the same pure reconcile that filters
+/// the board (no @State, no timer), so tapping 'All' restores the label
+/// chip instantly. A compile-capable bypass of any hop — a hardcoded flag,
+/// an ungated chip, a decoy echo carrying text — goes RED here.
+final class RepoRowLabelWiringTests: XCTestCase {
+
+    private func bundledSource() throws -> String {
+        let bundle = Bundle(for: RepoRowLabelWiringTests.self)
+        let url = try XCTUnwrap(bundle.url(forResource: "FleetViews",
+                                           withExtension: "swift.txt"))
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    private func slice(from startMarker: String, to endMarker: String,
+                       in source: String) throws -> String {
+        let start = try XCTUnwrap(source.range(of: startMarker),
+                                  "marker not found: \\(startMarker)")
+        let end = try XCTUnwrap(source.range(of: endMarker),
+                                "end marker not found: \\(endMarker)")
+        return String(source[start.lowerBound..<end.lowerBound])
+    }
+
+    func testRowLabelHidingDerivesFromTheActiveRepoPillAndReachesEveryRow()
+        throws {
+        let source = try bundledSource()
+        // The hiding flag is a plain body derivation over the SAME
+        // reconciled filter that drives the sections ('All'/nil = false).
+        XCTAssertEqual(source.components(separatedBy:
+            "let rowRepoLabelsHidden = activeRepoFilter != nil").count - 1, 1,
+            "the row-label flag must derive once from the reconciled repo filter")
+        // Exactly three mentions: the derivation + the two boardSections
+        // call sites (demo + live). A hardcoded/extra state decoy REDs.
+        XCTAssertEqual(source.components(separatedBy: "rowRepoLabelsHidden").count - 1, 3,
+                       "every boardSections call site must consume the derived flag")
+        XCTAssertEqual(source.components(separatedBy:
+            "hideRepoLabels: rowRepoLabelsHidden").count - 1, 2,
+            "demo AND live boards must both thread the flag")
+        // boardSections threads the flag into every agent row.
+        let renderer = try slice(from: "private func boardSections(sections: BoardModel.Sections",
+                                 to: "private func repoSubgroupHeader(",
+                                 in: source)
+        XCTAssertEqual(renderer.components(separatedBy:
+            "agentRow(agent, repos: repos,").count - 1, 1,
+            "exactly one agentRow call site must exist in the board renderer")
+        XCTAssertTrue(renderer.contains("hideRepoLabel: hideRepoLabels"),
+                      "the board must pass the hide flag into every agent row")
+        // agentRow passes the flag into AgentRow (one hop inside the row
+        // builder) and AgentRow passes it into WorkspaceLine — two call
+        // sites file-wide share the same spelling.
+        let row = try slice(from: "private func agentRow(_ agent: Agent",
+                            to: "/// Board chrome: connection status",
+                            in: source)
+        XCTAssertEqual(row.components(separatedBy: "hideRepoLabel: hideRepoLabel)").count - 1, 1,
+                       "agentRow must pass the flag into AgentRow")
+        XCTAssertEqual(source.components(separatedBy:
+            "hideRepoLabel: hideRepoLabel)").count - 1, 2,
+            "AgentRow must pass the flag into WorkspaceLine (one extra hop)")
+    }
+
+    func testUnderAllTheRowKeepsItsRepoNameLabelChip() throws {
+        let source = try bundledSource()
+        let line = try slice(from: "struct WorkspaceLine: View {",
+                             to: "// MARK: - #364 A touch feedback",
+                             in: source)
+        // The flag defaults to false (no filter = 'All'), and the label
+        // chip renders in the else branch of the hide gate.
+        XCTAssertTrue(line.contains("var hideRepoLabel: Bool = false"),
+                      "WorkspaceLine must default to showing the label ('All')")
+        let gate = try XCTUnwrap(line.range(of: "if hideRepoLabel {"),
+                                 "the hide gate must exist in WorkspaceLine")
+        let chip = try XCTUnwrap(line.range(of: "RepoLabelChip(repo: w.repo, repos: repos)"),
+                                 "the repo label chip must still be wired")
+        let branchStart = try XCTUnwrap(line.range(of: "if let branch = w.branch {"),
+                                        "the branch segment must follow the repo slot")
+        XCTAssertLessThan(gate.lowerBound, chip.lowerBound,
+                          "the chip must render only after the hide gate opens")
+        XCTAssertLessThan(chip.lowerBound, branchStart.lowerBound,
+                          "the chip must sit in the else branch, before the branch segment")
+        XCTAssertEqual(line.components(separatedBy:
+            "RepoLabelChip(repo: w.repo, repos: repos)").count - 1, 1,
+            "exactly one repo label chip call may exist (#371 pin retained)")
+        // The branch/basename separators are BETWEEN segments only: when
+        // the chip is hidden the branch LEADS the line (no stray dot).
+        XCTAssertTrue(line.contains("if !hideRepoLabel {\n                    segmentSeparator"),
+                      "the branch must not take a leading separator when the label is hidden")
+        XCTAssertTrue(line.contains("if !hideRepoLabel || w.branch != nil {"),
+                      "a lone basename must not take a leading separator when hidden")
+    }
+
+    func testHiddenLabelIsAColorOnlyEchoThatKeepsTheRowHeight() throws {
+        let source = try bundledSource()
+        let line = try slice(from: "struct WorkspaceLine: View {",
+                             to: "// MARK: - #364 A touch feedback",
+                             in: source)
+        // The hidden branch routes to the color-only echo (never a text
+        // label, never the chip chrome).
+        XCTAssertTrue(line.contains("repoColorEcho(for: w.repo)"),
+                      "the hidden branch must render the color-only echo")
+        let echo = try slice(from: "private func repoColorEcho(for repo: String?) -> some View {",
+                             to: "/// The worktree basename (D26)",
+                             in: source)
+        XCTAssertTrue(echo.contains(".fill(theme.repoHueColor(for: repo ?? \"\", among: repos))"),
+                      "the echo must use the same deterministic repo hue as the label chip")
+        XCTAssertEqual(echo.components(separatedBy: "Text(").count - 1, 1,
+                       "the echo may carry ONLY the invisible spacer Text — "
+                       + "any visible repo-name Text goes RED")
+        XCTAssertFalse(echo.contains("Capsule()"),
+                       "the echo must not fake a chip shell")
+        XCTAssertTrue(echo.contains(".frame(width: 6, height: 6)"),
+                      "the echo must be the small hue dot")
+        XCTAssertTrue(echo.contains("Text(\" \").font(.caption2.weight(.bold)).opacity(0)"),
+                      "the echo must keep the label chip's caption2 line box "
+                      + "(transparent spacer — opacity is purely visual and "
+                      + "deterministically keeps layout) so rows never jump "
+                      + "on pill toggle")
+        XCTAssertTrue(echo.contains(".padding(.vertical, 2)"),
+                      "the echo must keep the label chip's vertical padding footprint")
+        XCTAssertTrue(echo.contains(".accessibilityHidden(true)"),
+                      "the pure-color echo must not add VoiceOver noise")
+    }
+}
+
 extension StringProtocol {
     /// First 1-based line number containing `needle` (source-wiring helper).
     fileprivate func lineNumber(of needle: String) -> Int? {

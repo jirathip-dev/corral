@@ -135,9 +135,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 
     func application(_ application: UIApplication,
                      didFailToRegisterForRemoteNotificationsWithError error: Error) {
-        // Simulator / missing aps-environment entitlement: keep the DEBUG
-        // local bridge; on release builds this is a silent no-op (the
-        // notifier just won't deliver until the profile has the entitlement).
+        // #389: the target now carries aps-environment (development Debug /
+        // production Release — CODE_SIGN_ENTITLEMENTS in project.yml), so on
+        // a real device this fires only for a genuine APNs failure. The
+        // SIMULATOR has no push service and always fails here: keep the
+        // DEBUG local bridge (PushBridge) as the exercisable fallback.
         Self.apnsRegistered = false
     }
 

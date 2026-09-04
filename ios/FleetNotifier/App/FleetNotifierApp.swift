@@ -47,6 +47,7 @@ struct FleetNotifierApp: App {
                                 || CorralDemoLaunch.wantsCollapseEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsTitleEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsConnectionInputsEvidence(arguments: CommandLine.arguments)
+                                || CorralDemoLaunch.wantsDeniedNotificationsEvidence(arguments: CommandLine.arguments)
                                 || CommandLine.arguments.contains("-demoMode") {
                         model.enterDemo()
                     }
@@ -66,6 +67,12 @@ struct FleetNotifierApp: App {
                             // reset (idempotent; never blocks the stream).
                             Task { await model.refreshGrants() }
                         }
+                        // #389: re-read the OS notification permission on
+                        // every foreground so the Settings Notifications
+                        // guidance reflects a grant/denial the user just
+                        // made in the system Settings app (the Settings
+                        // sheet stays up across that trip).
+                        Task { await model.refreshNotificationPermission() }
                     @unknown default:
                         break
                     }
@@ -108,6 +115,10 @@ struct FleetNotifierApp: App {
 /// records the Settings Connection section — themed surface1 inputs on
 /// Macchiato/Mocha/Latte in the unpaired state, then the paired status row
 /// (token field hidden) after the driver seeds a demo registration key id.
+/// `-corralDemoDeniedNotificationsEvidence` (#389) seeds the demo fleet in
+/// MOCHA and forces the DENIED notification permission posture so the
+/// Settings Notifications section's blocked guidance + 'Open iOS Settings'
+/// action can be captured (a simulator cannot be denied notifications).
 enum CorralDemoLaunch {
     static let detailArgument = "-corralDemoDetail"
     static let reopenEvidenceArgument = "-corralDemoUXEvidence"
@@ -120,6 +131,11 @@ enum CorralDemoLaunch {
     static let collapseEvidenceArgument = "-corralDemoCollapseEvidence"
     static let titleEvidenceArgument = "-corralDemoTitleEvidence"
     static let connectionInputsEvidenceArgument = "-corralDemoConnectionInputsEvidence"
+    /// #389: forces the DENIED notification permission posture in demo mode
+    /// so the Settings Notifications section's blocked guidance + 'Open iOS
+    /// Settings' action can be captured (a simulator cannot be denied
+    /// notifications through simctl privacy — no notifications service).
+    static let deniedNotificationsEvidenceArgument = "-corralDemoDeniedNotificationsEvidence"
 
     static var detailAgentID: String {
         DemoFleet.featuredAgentID
@@ -185,6 +201,11 @@ enum CorralDemoLaunch {
     /// `FleetView.runConnectionInputsSequence()`.
     static func wantsConnectionInputsEvidence(arguments: [String]) -> Bool {
         arguments.contains(connectionInputsEvidenceArgument)
+    }
+
+    /// #389: the denied-notifications Settings evidence driver.
+    static func wantsDeniedNotificationsEvidence(arguments: [String]) -> Bool {
+        arguments.contains(deniedNotificationsEvidenceArgument)
     }
 }
 #endif

@@ -989,6 +989,8 @@ struct FleetView: View {
             await runConnectSequence()
         } else if CorralDemoLaunch.wantsThemeEvidence(arguments: CommandLine.arguments) {
             await runThemeSequence()
+        } else if CorralDemoLaunch.wantsGlassEvidence(arguments: CommandLine.arguments) {
+            await runGlassSequence()
         }
     }
 
@@ -1148,6 +1150,51 @@ struct FleetView: View {
         _ = await themePause(5000)
     }
 
+    /// #385 evidence: one deterministic launch records the translucent
+    /// sheets over the busy board — Mocha board → Mocha recents sheet →
+    /// Latte recents sheet (live flavor flip while presented) → Mocha
+    /// Settings sheet → Latte Settings sheet. The driver flips the same
+    /// state the gear button and row taps set (simctl cannot inject
+    /// touches) and the same flavor the Appearance rows set; each phase
+    /// writes a marker file the host screenshot script observes.
+    /// Cancellation-aborts like the other drivers, so a raced task can
+    /// never corrupt the recorded sequence.
+    private func runGlassSequence() async {
+        guard model.mode == .demo else { return }
+        guard await themePause(0) else { return }
+        theme.setFlavor(.mocha)
+        EvidenceMarkers.write("phase-1-board-mocha")
+        guard await themePause(4000) else { return }
+        model.requestRecents(for: DemoFleet.featuredAgentID, haptic: false)
+        guard await themePause(4000) else { return }
+        EvidenceMarkers.write("phase-2-recents-mocha")
+        guard await themePause(5000) else { return }
+        theme.setFlavor(.latte)
+        guard await themePause(4000) else { return }
+        EvidenceMarkers.write("phase-3-recents-latte")
+        guard await themePause(5000) else { return }
+        model.recentsRequest = nil
+        guard await themePause(2000) else { return }
+        // #385 A/B evidence: the Latte BOARD alone at the same scroll
+        // position — the recents sheet frame (phase-3) can then be
+        // pixel-compared against the exact underlying content it covers.
+        EvidenceMarkers.write("phase-4-board-latte")
+        guard await themePause(4000) else { return }
+        theme.setFlavor(.mocha)
+        guard await themePause(1000) else { return }
+        showSettings = true
+        guard await themePause(4000) else { return }
+        EvidenceMarkers.write("phase-5-settings-mocha")
+        guard await themePause(5000) else { return }
+        theme.setFlavor(.latte)
+        guard await themePause(4000) else { return }
+        EvidenceMarkers.write("phase-6-settings-latte")
+        guard await themePause(5000) else { return }
+        showSettings = false
+        guard await themePause(1500) else { return }
+        EvidenceMarkers.write("phase-7-done")
+    }
+
     /// Sleep that reports cancellation: `false` (and stops the caller) when
     /// the surrounding task was cancelled.
     private func themePause(_ milliseconds: Int64) async -> Bool {
@@ -1263,6 +1310,63 @@ struct RegistrationView: View {
             PinnedHeader { Text("Demo") }
         }
 #endif
+    }
+}
+
+// MARK: - #385 Liquid Glass / translucent sheet backdrop
+
+/// The shared #385 sheet backdrop: RecentOutputSheet and the Settings sheet
+/// float over this so the board content behind shows through softly (the
+/// approved terminal-transparency look). The sheets' TEXT layers keep their
+/// opaque token backing (cards, native cells, the recents header strip's
+/// caption row) — the translucency lives in the sheet background between
+/// and around them, so every text tier keeps its current AA contrast while
+/// the board reads through the glass.
+///
+/// - iOS 26+: the NATIVE Liquid Glass surface — SwiftUI `glassEffect`,
+///   availability-gated at compile time, tinted with the active flavor's
+///   base token through the API's theme hook (`Glass.tint`).
+/// - iOS 17–25: the translucent fallback — the flavor's base at the locked
+///   `SheetBackdrop.fallbackTintAlpha` (0.85–0.90 spec band) over an
+///   ultra-thin material blur. Deployment target is 17.0, so this is what
+///   older runtimes actually render; `SheetBackdropTests` locks the
+///   constants and the 4.5:1 worst-case contrast math.
+private struct TranslucentSheetBackdrop: View {
+    /// The active flavor's base token (resolved by the caller so a live
+    /// flavor flip re-creates the backdrop with the new tint).
+    let tint: Color
+
+    var body: some View {
+        ZStack {
+            if #available(iOS 26.0, *) {
+                // #385 iOS 26+: Native Liquid Glass. The tint stays at
+                // `SheetBackdrop.glassTintOpacity` — a full-opacity tint
+                // paints the glass into a flat solid (measured on the 26.5
+                // sim) and hides the board behind the sheet entirely. The
+                // CLEAR style is used rather than `.regular`: over the
+                // system dimming scrim the regular glass reads as an
+                // opaque dark slab; clear glass keeps the terminal
+                // transparency the approved spec calls for (board content
+                // visibly through the sheet — pixel-verified).
+                Rectangle()
+                    .fill(Color.clear)
+                    .glassEffect(.clear
+                        .tint(tint.opacity(SheetBackdrop.glassTintOpacity)),
+                        in: Rectangle())
+            } else {
+                Rectangle().fill(.ultraThinMaterial)
+                tint.opacity(SheetBackdrop.fallbackTintAlpha)
+            }
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+extension View {
+    /// #385: give a sheet presentation the shared translucent backdrop
+    /// (native Liquid Glass on iOS 26+, tinted-material fallback below).
+    func translucentSheetBackdrop(_ tint: Color) -> some View {
+        presentationBackground { TranslucentSheetBackdrop(tint: tint) }
     }
 }
 
@@ -1405,8 +1509,12 @@ struct SettingsView: View {
                 // scheme is forced INSIDE the sheet so a live flavor flip
                 // re-traits the presented form's system chrome too (an
                 // app-level scheme change does not reach presented sheets).
+                // #385: the old opaque `.background(theme.base)` here is gone —
+                // the sheet now floats over the shared translucent backdrop
+                // (presentationBackground below), so the form's inter-cell
+                // surface shows the board content softly instead of painting
+                // an opaque base over the whole sheet.
                 .scrollContentBackground(.hidden)
-                .background(theme.base)
                 .preferredColorScheme(theme.flavor.isLight ? .light : .dark)
                 // #379: the '?' Help entry presents the shared connect sheet
                 // from INSIDE this sheet's hierarchy (sheet-over-sheet needs
@@ -1419,6 +1527,11 @@ struct SettingsView: View {
 #endif
             }
         }
+        // #385: the Settings sheet floats over the shared translucent
+        // backdrop (Liquid Glass on iOS 26+, tinted-material fallback
+        // below) instead of painting an opaque base fill over the
+        // presentation.
+        .translucentSheetBackdrop(theme.base)
     }
 
 #if DEBUG
@@ -1744,6 +1857,11 @@ struct RecentOutputSheet: View {
         // #372: scheme forced at the SHEET level (covers the nav bar +
         // drag chrome of the presented stack).
         .preferredColorScheme(theme.flavor.isLight ? .light : .dark)
+        // #385: the recents sheet floats over the shared translucent
+        // backdrop (Liquid Glass on iOS 26+, tinted-material fallback
+        // below) so the busy board behind shows through the sheet surface
+        // between the blocks.
+        .translucentSheetBackdrop(theme.base)
         .presentationDetents(detents)
         .presentationDragIndicator(.visible)
         // #373: the sheet's own session object rides the environment so
@@ -1817,6 +1935,10 @@ struct RecentOutputSheet: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+        // #385: the header strip's caption row KEEPS its opaque base
+        // backing — muted/dim caption tiers (tailMuted/tailQuiet) must not
+        // float over the translucent backdrop in the darkest underlying
+        // case (SheetBackdropTests locks the tiers that can).
         .background(theme.base)
     }
 
@@ -1831,6 +1953,9 @@ struct RecentOutputSheet: View {
         Group {
             switch RecentOutputModel.phase(for: tail) {
             case .loading:
+                // #385: the non-loaded states keep an OPAQUE base backing
+                // (they paint directly on the sheet surface, which is now
+                // translucent) so their muted ink keeps today's AA.
                 HStack(spacing: 8) {
                     ProgressView()
                         .controlSize(.small)
@@ -1841,12 +1966,14 @@ struct RecentOutputSheet: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .padding(16)
+                .background(theme.base)
             case .empty:
                 Text("No output yet.")
                     .font(.caption)
                     .foregroundStyle(theme.tailMuted)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .padding(16)
+                    .background(theme.base)
             case .error(let failure):
                 VStack(alignment: .leading, spacing: 8) {
                     Label(TranscriptText.errorText(failure), systemImage: "exclamationmark.triangle")
@@ -1862,12 +1989,16 @@ struct RecentOutputSheet: View {
                 }
                 .padding(16)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .background(theme.base)
             case .loaded:
+                // #385: the loaded block stream floats over the translucent
+                // sheet backdrop — the blocks' own opaque card chrome keeps
+                // their ink at today's contrast while the board behind shows
+                // through between the cards.
                 blocksStream
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(theme.base)
     }
 
     /// The live tail as ROLE-RUN BLOCKS (#373): each block is one semantic

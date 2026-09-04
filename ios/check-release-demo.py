@@ -166,7 +166,13 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # HowToConnectSheet + Settings '?' entry + unpaired-launch auto-present
     # landed in FleetViews, and FleetNotifierApp gained the DEBUG
     # -corralDemoConnectEvidence route — re-pinned.
-    "209db196e2f84a53dcd4f2a29f9c4a7c3cb15e5c61bbf343e9f9f14af677936e"
+    # 2026-09-04 (#385): Liquid Glass / translucent sheets —
+    # TranslucentSheetBackdrop + translucentSheetBackdrop(_:) (native
+    # glassEffect(.clear.tint) on iOS 26+, ultraThinMaterial + 88 % base
+    # tint fallback below), both sheets re-pointed at it, the #385
+    # glass-evidence driver (FleetNotifierApp/FleetViews), and the
+    # SheetBackdrop WCAG/blend constants (AppTheme) — re-pinned.
+    "3ee52e9a6bd3b1060f841cb94ba8ea64685ded175fb536393dacf3b00efb8aec"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #332 R4: pin the focused grant fixture independently from the Release
@@ -219,7 +225,12 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # 2026-09-04 (#379 R1): the #379 opener pins unwrap their line numbers
     # with XCTUnwrap so a mutated (missing-opener) source fails cleanly
     # instead of crashing on an empty array — re-pinned.
-    "4ff4f27cee1bcbc56a5b14f532dd7cb58598300382afe3e3516882ffabecb9cc"
+    # 2026-09-04 (#385): SheetBackdropTests (WCAG/blend/band locks) landed
+    # in ThemeTests.swift (not a pinned file) and SheetTranslucencyWiringTests
+    # was added to FleetNotifierTests.swift; the SettingsAccessWiringTests
+    # opener count moved 3 -> 4 for the #385 glass evidence driver —
+    # re-pinned.
+    "87fa5b4a0f161716ec1da2fecf7df3299db066c3b30a8442bd8de1066b0257b3"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

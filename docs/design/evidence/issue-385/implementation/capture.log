@@ -1,0 +1,62 @@
+#385 Liquid Glass / translucent sheets — capture log
+
+Native iOS build (this branch, g385-liquid-glass-sheets @ working tree):
+  HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild build -project
+  ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination
+  'generic/platform=iOS Simulator' -derivedDataPath /tmp/fn-dd build
+  EXIT=0; BUILD SUCCEEDED
+
+Focused discriminating tests (simulator 59DDC0C5-891E-4EC0-91AF-4F50DF68D793,
+iPhone 16 / iOS 26.5):
+  xcodebuild test ... -only-testing:FleetNotifierTests/SheetBackdropTests
+    -only-testing:FleetNotifierTests/SheetTranslucencyWiringTests
+    -only-testing:FleetNotifierTests/SettingsAccessWiringTests
+  EXIT=0; Executed 12 tests, with 0 failures (SheetBackdropTests 5,
+  SheetTranslucencyWiringTests 3, SettingsAccessWiringTests 4 — the
+  #385 opener-count pin moved 3 -> 4 with the glass evidence driver)
+
+Full iOS suite (same sim/destination):
+  xcodebuild test ... -only-testing:FleetNotifierTests
+  EXIT=0; Executed 189 tests, with 0 failures (All tests passed)
+
+anti-slop (advisory):
+  swift run --package-path ios/tools/anti-slop-swift anti-slop
+    ios/FleetNotifier ios/FleetNotifierTests
+  current tree vs base HEAD (git archive): identical violation sets —
+  24 violations across 22 files (17 rules) on BOTH; 0 new from #385.
+
+Release-source digest re-pin:
+  python3 -c "from pathlib import Path; from ios.release_source_manifest
+  import release_source_digest; print(release_source_digest(Path('.')))"
+  -> <new digest, see check-release-demo.py #385 comment>
+  python3 ios/check-release-demo.py --self-test
+  EXIT=0 (PASS; release + test pins re-pinned for the #385 source set)
+
+Native iOS capture (fresh simulator to avoid the notification-permission
+alert race; no keychain identity):
+  xcrun simctl create g385-glass-evidence "iPhone 16"
+    com.apple.CoreSimulator.SimRuntime.iOS-26-5
+  EXIT=0 (UDID 64E34D69-6454-4805-9A9F-BAEAAADF11F5)
+  xcrun simctl boot <udid>; xcrun simctl bootstatus <udid> -b
+  EXIT=0 (fresh boot ~15 min under parallel load: data-migration plugins)
+  xcrun simctl install <udid> /tmp/fn-dd/Build/Products/
+    Debug-iphonesimulator/FleetNotifier.app
+  EXIT=0
+  xcrun simctl launch <udid> com.corral.fleetnotifier -corralDemoGlassEvidence
+  EXIT=0; pid logged
+  385-capture.sh <udid> com.corral.fleetnotifier <outdir>  (marker poll,
+    screenshot per phase; started BEFORE launch so no marker is pre-written)
+  captured phase-1..7 (phase-1-board-mocha, phase-2-recents-mocha,
+  phase-3-recents-latte, phase-4-board-latte, phase-5-settings-mocha,
+  phase-6-settings-latte, phase-7-done); DONE
+  xcrun simctl io <udid> screenshot -> PNG 1179x2556 (iPhone 16 @3x) per phase
+  sips -z 844 390 phase-N-<name>.png --out phase-N-<name>-390x844.png
+  EXIT=0; resized 390x844 (0.18 % aspect distortion from 393x852 pt native)
+  python3 translucency-analysis.py
+  VERDICT: PASS (mocha corr=0.772 tones=2; latte corr=0.892 tones=4;
+  opaque card controls flat)
+  xcrun simctl shutdown <udid>; xcrun simctl delete <udid>
+
+Synthetic-only: DEBUG -corralDemoGlassEvidence over DemoFleet.seed()
+(fictional repos/agents). No live daemon, no physical device, no TestFlight
+claim.

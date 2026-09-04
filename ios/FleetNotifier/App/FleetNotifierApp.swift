@@ -42,6 +42,7 @@ struct FleetNotifierApp: App {
                                 || CorralDemoLaunch.wantsFilterEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsSettingsEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsThemeEvidence(arguments: CommandLine.arguments)
+                                || CorralDemoLaunch.wantsGlassEvidence(arguments: CommandLine.arguments)
                                 || CommandLine.arguments.contains("-demoMode") {
                         model.enterDemo()
                     }
@@ -84,6 +85,9 @@ struct FleetNotifierApp: App {
 /// launch is UNPAIRED, then records the auto-presented How-to-connect
 /// sheet, the Settings sheet (Device section without the grants list), and
 /// the shared connect sheet content.
+/// `-corralDemoGlassEvidence` (#385) seeds the demo fleet and records the
+/// translucent recents + Settings sheets (Mocha + Latte) over the busy
+/// board.
 enum CorralDemoLaunch {
     static let detailArgument = "-corralDemoDetail"
     static let reopenEvidenceArgument = "-corralDemoUXEvidence"
@@ -91,6 +95,7 @@ enum CorralDemoLaunch {
     static let settingsEvidenceArgument = "-corralDemoSettingsEvidence"
     static let themeEvidenceArgument = "-corralDemoThemeEvidence"
     static let connectEvidenceArgument = "-corralDemoConnectEvidence"
+    static let glassEvidenceArgument = "-corralDemoGlassEvidence"
 
     static var detailAgentID: String {
         DemoFleet.featuredAgentID
@@ -118,6 +123,13 @@ enum CorralDemoLaunch {
 
     static func wantsConnectEvidence(arguments: [String]) -> Bool {
         arguments.contains(connectEvidenceArgument)
+    }
+
+    /// #385: records the translucent recents + Settings sheets over the
+    /// busy demo board (Mocha + Latte) behind marker files — see
+    /// `FleetView.runGlassSequence()`.
+    static func wantsGlassEvidence(arguments: [String]) -> Bool {
+        arguments.contains(glassEvidenceArgument)
     }
 }
 #endif

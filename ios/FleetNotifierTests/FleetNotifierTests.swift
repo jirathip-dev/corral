@@ -3502,13 +3502,13 @@ final class SettingsAccessWiringTests: XCTestCase {
                            "\(needle) must be release-active (gear on the board in Release)")
         }
         // The sheet-open action: one release-active (the gear) + the
-        // DEBUG-only recorded-evidence drivers (#365 settings, #372 theme
-        // and #379 connect sequences all open the same sheet); all
-        // required, none release-gated.
+        // DEBUG-only recorded-evidence drivers (#365 settings, #372 theme,
+        // #379 connect and #385 glass sequences all open the same sheet);
+        // all required, none release-gated.
         XCTAssertEqual(releaseActionLines.count, 1,
                        "the gear must be the ONLY release-active settings opener")
-        XCTAssertEqual(allActionLines.count - releaseActionLines.count, 3,
-                       "the #365, #372 and #379 DEBUG evidence drivers are the only debug-gated openers")
+        XCTAssertEqual(allActionLines.count - releaseActionLines.count, 4,
+                       "the #365, #372, #379 and #385 DEBUG evidence drivers are the only debug-gated openers")
     }
 
     func testDemoOverflowMenuIsDebugOnlyAndNoLongerHidesSettings() throws {
@@ -4288,6 +4288,92 @@ final class LegacyHexAuditTests: XCTestCase {
             XCTAssertFalse(source.contains("Color(red:"),
                            "\(file.lastPathComponent) must not build colors from raw RGB triplets")
         }
+    }
+}
+
+// MARK: - #385 translucent-sheet wiring tests
+
+/// Pins the #385 translucent-sheet WIRING in the bundled FleetViews source:
+/// both sheets (RecentOutputSheet + SettingsView) must float over the SHARED
+/// translucent backdrop modifier, and that backdrop must carry BOTH the iOS
+/// 26+ native Liquid Glass branch (availability-gated) and the <26
+/// tinted-material fallback — so a future "simplification" that drops one
+/// path (or bypasses the modifier with an opaque fill) fails here. Uses the
+/// same bundled-source pattern as the #316/#364 wiring tests.
+final class SheetTranslucencyWiringTests: XCTestCase {
+
+    private func bundledSource() throws -> String {
+        let bundle = Bundle(for: SheetTranslucencyWiringTests.self)
+        let url = try XCTUnwrap(bundle.url(forResource: "FleetViews", withExtension: "swift.txt"))
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    private func slice(from source: String, startMarker: String,
+                       endMarker: String) throws -> String {
+        guard let start = source.range(of: startMarker) else {
+            throw NSError(domain: "SheetTranslucencyWiringTests", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey:
+                            "start marker missing from FleetViews source: \(startMarker)"])
+        }
+        let end = try XCTUnwrap(source.range(of: endMarker)?.lowerBound,
+                                "end marker not found: \(endMarker)")
+        return String(source[start.lowerBound..<end])
+    }
+
+    func testRecentOutputSheetFloatsOverTheSharedTranslucentBackdrop() throws {
+        let source = try bundledSource()
+        let sheet = try slice(from: source,
+                              startMarker: "struct RecentOutputSheet: View {",
+                              endMarker: "\n// MARK: - Recents block renderer")
+        XCTAssertEqual(sheet.components(separatedBy: "struct RecentOutputSheet:").count - 1, 1,
+                       "exactly one RecentOutputSheet declaration")
+        XCTAssertTrue(sheet.contains(".translucentSheetBackdrop(theme.base)"),
+                      "the recents sheet must present over the #385 translucent backdrop")
+    }
+
+    func testSettingsSheetFloatsOverTheSharedTranslucentBackdrop() throws {
+        let source = try bundledSource()
+        let settings = try slice(from: source,
+                                 startMarker: "struct SettingsView: View {",
+                                 endMarker: "\nprivate struct FlavorSwatchStrip")
+        XCTAssertEqual(settings.components(separatedBy: "struct SettingsView:").count - 1, 1,
+                       "exactly one SettingsView declaration")
+        XCTAssertTrue(settings.contains(".translucentSheetBackdrop(theme.base)"),
+                      "the Settings sheet must present over the #385 translucent backdrop")
+        let appliedOpaqueFill = settings
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .contains { line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                return !trimmed.hasPrefix("//")
+                    && trimmed.contains(".background(theme.base)")
+            }
+        XCTAssertFalse(appliedOpaqueFill,
+                       "the Settings form must NOT paint an opaque base fill over "
+                       + "the translucent backdrop (the sheet surface shows through)")
+    }
+
+    func testBackdropCarriesBothTheGlassAndTheMaterialFallbackPaths() throws {
+        let source = try bundledSource()
+        let backdrop = try slice(from: source,
+                                 startMarker: "// MARK: - #385 Liquid Glass / translucent sheet backdrop",
+                                 endMarker: "// MARK: - Settings (Appearance")
+        XCTAssertTrue(backdrop.contains("struct TranslucentSheetBackdrop: View"),
+                      "the shared backdrop view must exist")
+        XCTAssertTrue(backdrop.contains("translucentSheetBackdrop(_ tint: Color)"),
+                      "the shared backdrop modifier must exist")
+        // iOS 26+ path: NATIVE Liquid Glass, compile-time availability-gated,
+        // tinted through the API's theme hook at the locked glass tint.
+        XCTAssertTrue(backdrop.contains("#available(iOS 26.0, *)"),
+                      "the native-glass path must be availability-gated")
+        XCTAssertTrue(backdrop.contains(".glassEffect("),
+                      "the iOS 26 path must apply SwiftUI glassEffect")
+        XCTAssertTrue(backdrop.contains("SheetBackdrop.glassTintOpacity"),
+                      "the glass path must use the locked theme-tint strength")
+        // <26 path: the tinted-material fallback the 17–25 runtimes render.
+        XCTAssertTrue(backdrop.contains(".ultraThinMaterial"),
+                      "the fallback must apply a backdrop blur material")
+        XCTAssertTrue(backdrop.contains("SheetBackdrop.fallbackTintAlpha"),
+                      "the fallback must tint the material with the locked alpha")
     }
 }
 

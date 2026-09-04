@@ -1,0 +1,14 @@
+/private/tmp/385-evidence-fresh/390x844/translucency-analysis.py:36: DeprecationWarning: Image.Image.getdata is deprecated and will be removed in Pillow 14 (2027-10-15). Use get_flattened_data instead.
+  return [sum(p) for p in strip.getdata()]
+[recents Mocha] sheet top at 44.4% of height
+  sheet-surface column vs blurred board: corr=0.772 surface-stdev=5.77 board-stdev=27.48 tones=2
+  -> TRANSLUCENT: surface tracks the underlying board
+[recents Latte] sheet top at 35.9% of height
+  sheet-surface column vs blurred board: corr=0.892 surface-stdev=24.56 board-stdev=36.02 tones=4
+  -> TRANSLUCENT: surface tracks the underlying board
+
+Opaque control (card interiors are one flat tone):
+  [mocha block card] card at y=70%: rgb=(49, 50, 68) stdev=9.6 tones=2
+  [latte block card] card at y=55%: rgb=(239, 241, 245) stdev=0.0 tones=1
+
+VERDICT: PASS - sheet surfaces are translucent over the board

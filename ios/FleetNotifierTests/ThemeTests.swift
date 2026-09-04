@@ -372,3 +372,77 @@ final class BoardV2ChipMixTests: XCTestCase {
                        "Other band = mix(surface2 9 %, mantle)")
     }
 }
+
+// MARK: - #385 translucent sheet backdrop tests
+
+/// Locks the #385 translucent-sheet contract (RecentOutputSheet + Settings
+/// sheet float over a backdrop that shows the board through softly):
+/// - the <26 fallback tint alpha sits in the spec's 0.85–0.90 band,
+/// - the iOS 26+ native-glass theme tint sits in its locked 0.2–0.4 band,
+/// - the WCAG math primitives (blend + contrast) are exact,
+/// - the sheet's full text tier keeps >= 4.5:1 contrast over the tinted
+///   backdrop in the WORST underlying-content case (any palette token the
+///   busy board can paint behind the sheet).
+@MainActor
+final class SheetBackdropTests: XCTestCase {
+
+    func testFallbackTintAlphaSitsInTheSpecBand() {
+        XCTAssertEqual(SheetBackdrop.fallbackTintAlpha, 0.88,
+                       "the <26 fallback tint is locked at 88 %")
+        XCTAssertTrue(SheetBackdrop.fallbackTintAlphaRange
+                        .contains(SheetBackdrop.fallbackTintAlpha),
+                      "88 % must sit inside the spec's 0.85–0.90 band")
+        XCTAssertEqual(SheetBackdrop.fallbackTintAlphaRange.lowerBound, 0.85)
+        XCTAssertEqual(SheetBackdrop.fallbackTintAlphaRange.upperBound, 0.90)
+    }
+
+    func testGlassTintOpacitySitsInItsLockedBand() {
+        XCTAssertEqual(SheetBackdrop.glassTintOpacity, 0.3,
+                       "the iOS 26 glass theme tint is locked at 30 %")
+        XCTAssertTrue(SheetBackdrop.glassTintOpacityRange
+                        .contains(SheetBackdrop.glassTintOpacity))
+        XCTAssertEqual(SheetBackdrop.glassTintOpacityRange.lowerBound, 0.2)
+        XCTAssertEqual(SheetBackdrop.glassTintOpacityRange.upperBound, 0.4)
+    }
+
+    func testBlendMathIsExact() {
+        XCTAssertEqual(SheetBackdrop.blend("#ffffff", alpha: 0.5, over: "#000000"),
+                       "#808080", "half white over black rounds to the even channel")
+        XCTAssertEqual(SheetBackdrop.blend("#ffffff", alpha: 1.0, over: "#000000"),
+                       "#ffffff")
+        XCTAssertEqual(SheetBackdrop.blend("#000000", alpha: 0.0, over: "#ff0000"),
+                       "#ff0000")
+        XCTAssertEqual(SheetBackdrop.blend("#1e1e2e", alpha: 0.88, over: "#11111b"),
+                       "#1c1c2c", "mocha base at 88 % over mocha crust (hand-computed)")
+    }
+
+    func testWcagContrastMathMatchesTheReferenceValues() {
+        XCTAssertGreaterThan(SheetBackdrop.contrastRatio("#ffffff", "#000000"), 20.9,
+                             "white on black is the 21:1 maximum")
+        XCTAssertEqual(SheetBackdrop.contrastRatio("#000000", "#000000"), 1.0)
+        // The canonical WCAG 2.x worked example: #767676 on #ffffff = 4.54:1.
+        XCTAssertEqual(SheetBackdrop.contrastRatio("#767676", "#ffffff"), 4.54,
+                       accuracy: 0.01)
+        XCTAssertEqual(SheetBackdrop.relativeLuminance("#ffffff"), 1.0, accuracy: 0.0001)
+        XCTAssertEqual(SheetBackdrop.relativeLuminance("#000000"), 0.0, accuracy: 0.0001)
+    }
+
+    func testTextTierKeepsAAOverTheTintedBackdropInTheWorstUnderlyingCase() {
+        // The board behind a translucent sheet can paint ANY palette token
+        // under any sheet pixel; the full text tier must hold WCAG AA over
+        // tint(base @ fallbackTintAlpha over each candidate) for every
+        // flavor — the "darkest underlying-content case" acceptance.
+        for flavor in CatppuccinFlavor.allCases {
+            let palette = CatppuccinPalette.palette(for: flavor)
+            let candidates = CatppuccinToken.allCases.map { palette.hex($0) }
+            let worst = SheetBackdrop.worstContrast(
+                ink: palette.hex(.text), tint: palette.hex(.base),
+                over: candidates)
+            XCTAssertGreaterThanOrEqual(worst, SheetBackdrop.minimumContrast,
+                                        "\(flavor.rawValue) text over the 88 % "
+                                        + "tinted backdrop must hold 4.5:1 in the "
+                                        + "worst underlying-content case (got "
+                                        + String(format: "%.2f", worst) + ")")
+        }
+    }
+}

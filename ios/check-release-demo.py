@@ -305,7 +305,10 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # (permission-aware enable flows) + SettingsNotificationWiringTests
     # (denied guidance pins; opener count 5 -> 6) + DeviceTokenUploadTests
     # (receiveDeviceToken -> signed /device-token upload) added — re-pinned.
-    "49b381ca954e0f4a01695aa80b8a073868847f41e4ae3f2d5c4cfa205d4e75f0"
+    # 389 r1: the first DeviceTokenUploadTests token fixture became a
+    # deterministic String(repeating:) composition (the 64-hex literal
+    # tripped hosted CI gitleaks generic-api-key) — re-pinned.
+    "697ba8e411a8951b97a7422e44608a3aa809153b44077bc2c374cd316445f62b"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

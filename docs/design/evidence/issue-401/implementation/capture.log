@@ -1,0 +1,69 @@
+# 401 capture log — 2026-09-05 ~05:18 +0700 (final committed-state build, fresh Corral401 sim)
+
+Fresh simulator `Corral401` (iPhone 16, iOS 26.5, UDID
+7F6AD3BA-7AE8-4C73-A7FC-E6765604B929), DEBUG build from branch g401-host-ux
+(base 76037549b17bceee5225a07fdc4bf7b5d1d1e18b + this lane's changes),
+launch-arg evidence drivers, marker polling, simctl screenshots, sips resize.
+
+Build (after all #401 source edits, incl. the release-guard fix):
+
+$ HERDR_XCODEBUILD_DIRECT=1 xcodebuild build \
+    -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier \
+    -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/401-dd build
+** BUILD SUCCEEDED **  (log: /tmp/401-build12.log)
+
+App: /tmp/401-dd/Build/Products/Debug-iphonesimulator/FleetNotifier.app
+Bundle id: com.corral.fleetnotifier (lowercase — simctl launch uses the
+Info.plist GENERATE_INFOPLIST_FILE id).
+Markers: <data>/Documents/ux-evidence/<phase>.marker (app writes per phase,
+holds >=9 s after each marker so the host capture always lands inside the
+named phase). The container's ux-evidence dir is rm -rf'd before each launch
+so stale markers from an earlier driver are never re-captured.
+
+Simulators booted:
+$ xcrun simctl create Corral401 "iPhone 16" com.apple.CoreSimulator.SimRuntime.iOS-26-5
+7F6AD3BA-7AE8-4C73-A7FC-E6765604B929
+$ xcrun simctl boot 7F6AD3BA-7AE8-4C73-A7FC-E6765604B929 && xcrun simctl bootstatus ... -b
+
+Driver 1 — board (All Hosts / one-host-filtered / partial-offline, Mocha+Latte):
+$ /tmp/401-capture.sh 7F6AD3BA-... -corralDemoMultiHostBoardEvidence
+captured phase-1-mh-board-all-mocha
+captured phase-2-mh-board-host-a-mocha
+captured phase-3-mh-board-all-latte
+captured phase-4-mh-board-host-b-latte
+captured phase-5-mh-board-host-repo-latte
+captured phase-6-mh-board-done
+driver -corralDemoMultiHostBoardEvidence finished
+
+Driver 2 — Settings Hosts list (Mocha+Latte):
+$ /tmp/401-capture.sh 7F6AD3BA-... -corralDemoMultiHostSettingsEvidence
+captured phase-1-mh-settings-mocha
+captured phase-2-mh-settings-latte
+captured phase-3-mh-settings-done
+driver -corralDemoMultiHostSettingsEvidence finished
+
+Driver 3 — Add Host sheet (B3 name prefill + fingerprint confirmation):
+$ /tmp/401-capture.sh 7F6AD3BA-... -corralDemoMultiHostAddEvidence
+captured phase-1-mh-add-entry-mocha
+captured phase-2-mh-add-confirm-latte
+captured phase-3-mh-add-done
+driver -corralDemoMultiHostAddEvidence finished
+
+The seeding (DEBUG AppModel.enterMultiHostDemo, synthetic only) wipes the
+simulator's profile store and creates three profiles: Host A (live active
+store; rows = demo-orbit blocked + demo-atlas working + demo-ledger idle),
+Host B (pinned; coordinator session store holds RETAINED rows with ts ~6m
+old, store connection error "host unreachable"), Host C (pinned, then
+connection state set to key mismatch — no session, fails closed). Host A and
+Host B share raw agent id herdr:demo-orbit-blocked and the demo-orbit /
+demo-atlas repos. Fingerprint fixture keys: Data(repeating: n, count: 32)
+base64 for n in 9..12 (host A/B/C + add-host) — synthetic, never a real key.
+
+Resize (locked phone-size gate; this host has no 390x844 device — iPhone 16
+is 393x852 pt / 1179x2556 px @3x, resized per the issue-362+ conventions):
+
+$ for f in raw-*.png; do mv "$f" "${f#raw-}"; done   # drop the raw- prefix
+$ for f in phase-*.png; do sips -z 844 390 "$f" --out "final/${f%.png}-390x844.png"; done
+
+Committed artifacts under docs/design/evidence/issue-401/implementation/:
+README.md, SHA256SUMS.txt, capture.log, 12 phase frames (390x844).

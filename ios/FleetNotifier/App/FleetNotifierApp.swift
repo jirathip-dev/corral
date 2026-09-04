@@ -53,8 +53,20 @@ struct FleetNotifierApp: App {
                                 || CorralDemoLaunch.wantsTitleEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsConnectionInputsEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsDeniedNotificationsEvidence(arguments: CommandLine.arguments)
+                                || CorralDemoLaunch.wantsMultiHostBoardEvidence(arguments: CommandLine.arguments)
+                                || CorralDemoLaunch.wantsMultiHostSettingsEvidence(arguments: CommandLine.arguments)
+                                || CorralDemoLaunch.wantsMultiHostAddEvidence(arguments: CommandLine.arguments)
                                 || CommandLine.arguments.contains("-demoMode") {
-                        model.enterDemo()
+                        // #401: the multi-host evidence drivers seed three
+                        // synthetic profiles (live/offline/key-mismatch)
+                        // instead of the single-host demo fleet.
+                        if CorralDemoLaunch.wantsMultiHostBoardEvidence(arguments: CommandLine.arguments)
+                            || CorralDemoLaunch.wantsMultiHostSettingsEvidence(arguments: CommandLine.arguments)
+                            || CorralDemoLaunch.wantsMultiHostAddEvidence(arguments: CommandLine.arguments) {
+                            model.enterMultiHostDemo()
+                        } else {
+                            model.enterDemo()
+                        }
                     }
 #endif
                 }
@@ -141,6 +153,19 @@ enum CorralDemoLaunch {
     /// Settings' action can be captured (a simulator cannot be denied
     /// notifications through simctl privacy — no notifications service).
     static let deniedNotificationsEvidenceArgument = "-corralDemoDeniedNotificationsEvidence"
+    /// #401: seeds the deterministic MULTI-HOST demo state (Host A live,
+    /// Host B offline with retained stale rows, Host C key mismatch) and
+    /// records the All Hosts / one-host-filtered / partial-offline board
+    /// frames (Mocha + Latte).
+    static let multiHostBoardEvidenceArgument = "-corralDemoMultiHostBoardEvidence"
+    /// #401: same multi-host demo state, recording the Settings Hosts list
+    /// (per-host rows with error/last-seen/retry/rename/remove + the
+    /// mismatch row) in Mocha + Latte.
+    static let multiHostSettingsEvidenceArgument = "-corralDemoMultiHostSettingsEvidence"
+    /// #401: same multi-host demo state, recording the Add Host sheet —
+    /// name/URL entry with the B3 URL-derived name prefill, then the
+    /// fingerprint confirmation phase (Mocha + Latte).
+    static let multiHostAddEvidenceArgument = "-corralDemoMultiHostAddEvidence"
 
     static var detailAgentID: String {
         DemoFleet.featuredAgentID
@@ -211,6 +236,21 @@ enum CorralDemoLaunch {
     /// #389: the denied-notifications Settings evidence driver.
     static func wantsDeniedNotificationsEvidence(arguments: [String]) -> Bool {
         arguments.contains(deniedNotificationsEvidenceArgument)
+    }
+
+    /// #401: the multi-host board evidence driver.
+    static func wantsMultiHostBoardEvidence(arguments: [String]) -> Bool {
+        arguments.contains(multiHostBoardEvidenceArgument)
+    }
+
+    /// #401: the multi-host Settings evidence driver.
+    static func wantsMultiHostSettingsEvidence(arguments: [String]) -> Bool {
+        arguments.contains(multiHostSettingsEvidenceArgument)
+    }
+
+    /// #401: the multi-host Add Host sheet evidence driver.
+    static func wantsMultiHostAddEvidence(arguments: [String]) -> Bool {
+        arguments.contains(multiHostAddEvidenceArgument)
     }
 }
 #endif

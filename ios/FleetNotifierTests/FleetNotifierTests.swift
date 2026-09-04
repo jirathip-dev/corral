@@ -2610,7 +2610,7 @@ final class RepoFilterChipProjectionTests: XCTestCase {
     }
 
     func testEmptyFleetHasNoChips() {
-        XCTAssertTrue(BoardModel.repoFilters([]).isEmpty)
+        XCTAssertTrue(BoardModel.repoFilters([] as [Agent]).isEmpty)
     }
 
     func testFilterKeepsOnlyMatchingRepoAgents() {
@@ -3723,8 +3723,8 @@ final class SettingsAccessWiringTests: XCTestCase {
         // open the same sheet); all required, none release-gated.
         XCTAssertEqual(releaseActionLines.count, 1,
                        "the gear must be the ONLY release-active settings opener")
-        XCTAssertEqual(allActionLines.count - releaseActionLines.count, 6,
-                       "the #365, #372, #379, #385, #388 and #389 DEBUG evidence drivers are the only debug-gated openers")
+        XCTAssertEqual(allActionLines.count - releaseActionLines.count, 8,
+                       "the #365, #372, #379, #385, #388, #389, #401-settings and #401-add DEBUG evidence drivers are the only debug-gated openers")
     }
 
     func testDemoOverflowMenuIsDebugOnlyAndNoLongerHidesSettings() throws {
@@ -7375,5 +7375,530 @@ final class PushPostureModelTests: XCTestCase {
         XCTAssertEqual(json["key_id"] as? String, "dev_push_b")
         let request = try! XCTUnwrap(json["request"] as? [String: Any])
         XCTAssertEqual(request["device_token"] as? String, "")
+    }
+}
+
+// MARK: - #401 multi-host host filter + session-only default (D1/D2/D6)
+
+/// D1 defaults (every fresh launch starts All Hosts + All Repos; both
+/// filters session-only), the D2 host selection lifecycle, removed-host
+/// reconciliation, Settings reorder/rename routing, and the #400 rev N2
+/// recents-route .unavailable guarantee for removed hosts.
+@MainActor
+final class MultiHostHostFilterModelTests: XCTestCase {
+    private var suiteName = ""
+    private var model: AppModel?
+    private var session: URLSession?
+
+    static let keyA = Data(repeating: 21, count: 32).base64EncodedString()
+    static let keyB = Data(repeating: 22, count: 32).base64EncodedString()
+
+    private func cleanup() {
+        model?.stopLive()
+        model = nil
+        session?.invalidateAndCancel()
+        session = nil
+        KeyContinuityGate.reset()
+        HostSwitchURLProtocol.clearScript()
+        if !suiteName.isEmpty {
+            // SAFETY: suiteName was freshly minted per test.
+            UserDefaults(suiteName: suiteName)!.removePersistentDomain(forName: suiteName)
+            suiteName = ""
+        }
+    }
+
+    /// Two profiles: A unpinned (paused on fingerprint confirmation — no
+    /// continuity network on remove-host re-arm paths), B pinned. No
+    /// streams are started anywhere in these fixtures.
+    private func makeStore(defaults: UserDefaults) -> (HostProfileStore, HostProfile, HostProfile) {
+        let store = HostProfileStore(directory: nil, defaults: defaults)
+        // SAFETY: fixed fixture URLs (distinct hostnames).
+        let profileA = try! store.addProfile(displayName: "Host A",
+                                             urlString: "https://filter-a.example",
+                                             hostKeyB64: nil,
+                                             keyId: "dev_filter_a",
+                                             grants: ["read_tail"],
+                                             expiryTs: 1_800_000_000,
+                                             registeredAt: 1)
+        let profileB = try! store.addProfile(displayName: "Host B",
+                                             urlString: "https://filter-b.example",
+                                             hostKeyB64: Self.keyB,
+                                             fingerprint: "FINGER",
+                                             keyId: "dev_filter_b",
+                                             grants: ["read_tail"],
+                                             expiryTs: 1_800_000_000,
+                                             registeredAt: 1)
+        return (store, profileA, profileB)
+    }
+
+    private func makeModel() -> (AppModel, HostProfileStore, HostProfile, HostProfile) {
+        suiteName = "corral.h401.filter.\\(UUID().uuidString)"
+        // SAFETY: a fresh UUID suite name is always a valid suite.
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let (store, profileA, profileB) = makeStore(defaults: defaults)
+        defaults.set(profileA.id.uuidString, forKey: "fleetnotifier.activeHostProfileID")
+        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        let model = AppModel(defaults: defaults,
+                             identityLoader: { (signer, .insecureFallback) },
+                             loadMeta: { nil }, saveMeta: { _ in },
+                             wipeIdentity: {}, profileStore: store)
+        self.model = model
+        return (model, store, profileA, profileB)
+    }
+
+    func testFreshLaunchDefaultsToAllHostsAndAllReposAndStaysSessionOnly() {
+        defer { cleanup() }
+        let (model, _, _, profileB) = makeModel()
+        XCTAssertNil(model.hostFilter,
+                     "D1: every fresh launch starts at All Hosts")
+        XCTAssertNil(model.repoFilter,
+                     "D1: every fresh launch starts at All Repos")
+        // The choices survive in-session refreshes but NEVER persist: a
+        // fresh model over the SAME store/defaults starts All again.
+        model.hostFilter = profileB.id
+        model.repoFilter = "corral"
+        // SAFETY: the suite name was freshly minted in makeModel().
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let store = HostProfileStore(directory: nil, defaults: defaults)
+        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        let relaunched = AppModel(defaults: defaults,
+                                  identityLoader: { (signer, .insecureFallback) },
+                                  loadMeta: { nil }, saveMeta: { _ in },
+                                  wipeIdentity: {}, profileStore: store)
+        self.model = relaunched
+        XCTAssertNil(relaunched.hostFilter,
+                     "D1: the host filter is session-only (never persisted)")
+        XCTAssertNil(relaunched.repoFilter,
+                     "D1: the repo filter is session-only (never persisted)")
+    }
+
+    func testSelectHostFilterKeepsOnlyConfiguredProfilesAndReconcilesRemoval() {
+        defer { cleanup() }
+        let (model, _, profileA, profileB) = makeModel()
+        XCTAssertTrue(model.multiHostConfigured, "2+ profiles arm the host surface")
+        model.selectHostFilter(profileB.id)
+        XCTAssertEqual(model.hostFilter, profileB.id)
+        model.selectHostFilter(profileA.id)
+        XCTAssertEqual(model.hostFilter, profileA.id)
+        // All Hosts.
+        model.selectHostFilter(nil)
+        XCTAssertNil(model.hostFilter)
+        // Unknown/removed ids reconcile to All (never a dangling filter).
+        model.selectHostFilter(UUID())
+        XCTAssertNil(model.hostFilter, "an unknown host selection renders All")
+        model.selectHostFilter(profileB.id)
+        model.removeHost(profileID: profileB.id)
+        XCTAssertNil(model.hostFilter,
+                     "removing the selected host reconciles the filter to All Hosts")
+        XCTAssertEqual(model.profiles.map(\.displayName), ["Host A"])
+        XCTAssertFalse(model.multiHostConfigured, "one profile left = single host")
+    }
+
+    func testSingleHostKeepsTheLegacyBoardSurfaceInert() {
+        defer { cleanup() }
+        let (model, _, profileB, _) = makeModel()
+        XCTAssertNotNil(model.aggregateBoardRows,
+                        "2+ profiles arm the composite board rows")
+        // One host (remove B): the aggregate path is INERT — the board
+        // keeps the legacy fleet-store rendering (F1 parity: no host chip
+        // row, no row badges — the guard the wiring tests pin too).
+        model.removeHost(profileID: profileB.id)
+        XCTAssertEqual(model.profiles.count, 1)
+        XCTAssertNil(model.aggregateBoardRows,
+                     "single-host F1: no composite board rows, no host row/badges")
+    }
+
+    func testReorderDrivesTheStoreOrderThatChipsFollow() {
+        defer { cleanup() }
+        let (model, store, _, _) = makeModel()
+        // [A, B] → move row 0 down to destination 2 ⇒ [B, A].
+        model.moveHosts(from: IndexSet(integer: 0), to: 2)
+        XCTAssertEqual(model.profiles.map(\.displayName), ["Host B", "Host A"])
+        XCTAssertEqual(store.orderedProfiles.map(\.displayName), ["Host B", "Host A"],
+                       "the store order (the chip order) follows the drag")
+        XCTAssertEqual(model.profiles.map(\.order), [0, 1],
+                       "store re-normalizes orders to consecutive integers")
+        // Move row 1 (A) up to destination 0 ⇒ [A, B].
+        model.moveHosts(from: IndexSet(integer: 1), to: 0)
+        XCTAssertEqual(model.profiles.map(\.displayName), ["Host A", "Host B"])
+    }
+
+    func testRenameHostInPlaceSurfacesDuplicateErrorWithoutChangingName() {
+        defer { cleanup() }
+        let (model, _, _, profileB) = makeModel()
+        XCTAssertNil(model.renameHost(id: profileB.id, to: "Renamed Host"))
+        XCTAssertEqual(model.profiles.first { $0.id == profileB.id }?.displayName,
+                       "Renamed Host")
+        // Duplicate display names are rejected with the error text.
+        let error = model.renameHost(id: profileB.id, to: "Host A")
+        XCTAssertNotNil(error)
+        XCTAssertEqual(model.profiles.first { $0.id == profileB.id }?.displayName,
+                       "Renamed Host", "a rejected rename never changes the name")
+    }
+
+    // MARK: - #400 rev N2: removed-host targets render .unavailable
+
+    func testRemovedHostRecentsTargetRendersUnavailableNeverFallingThroughToActiveStore() {
+        defer { cleanup() }
+        let (model, _, _, profileB) = makeModel()
+        // The ACTIVE store is connected and holds an EQUAL raw agent id —
+        // exactly the fall-through the removed-host target must never take.
+        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        model.fleet.apply(.snapshot(Snapshot(schemaVersion: 5, rev: 1,
+                                             generatedAt: 0,
+                                             agents: ["herdr:dup": Agent(
+                                                agentId: "herdr:dup", state: .working,
+                                                ts: 5, capabilities: ["read_tail"])])))
+        model.fleet.noteConnected()
+        // Host B's OWN session had loaded output before it went offline
+        // (E2 offline posture), then the host was REMOVED.
+        if let storeB = model.coordinator?.store(profileID: profileB.id) {
+            storeB.rememberTail(["already-loaded"], for: "herdr:dup")
+            storeB.noteConnectionError("host unreachable")
+        }
+        XCTAssertEqual(model.recentsRouteState(hostProfileID: profileB.id,
+                                               agentID: "herdr:dup"),
+                       .offline, "loaded output + disconnected = offline while paired")
+        model.removeHost(profileID: profileB.id)
+        XCTAssertNil(model.coordinator?.store(profileID: profileB.id),
+                     "the removed host's session is gone")
+        XCTAssertEqual(model.recentsRouteState(hostProfileID: profileB.id,
+                                               agentID: "herdr:dup"),
+                       .unavailable,
+                       "N2: a REMOVED-host target renders .unavailable — it must NEVER fall through to the active fleet store and resolve an equal raw id")
+    }
+
+    func testPausedHostRecentsTargetRendersUnavailable() {
+        defer { cleanup() }
+        let (model, _, profileA, _) = makeModel()
+        XCTAssertEqual(model.recentsRouteState(hostProfileID: profileA.id,
+                                               agentID: "herdr:dup"),
+                       .unavailable,
+                       "an awaiting-fingerprint (paused) host has no live route")
+    }
+}
+
+// MARK: - #401 multi-host board projections (D2-D7 pure view model)
+
+/// Pure projection coverage for the multi-host board: host chips (counts +
+/// health + unified All chip), repo filters rescoped per host (D4), merged
+/// repo subgroups (D5), outage summaries (D7), health classification, and
+/// the last-seen/stale text helpers (C6).
+final class MultiHostBoardProjectionTests: XCTestCase {
+    private func agent(_ id: String, state: AgentState, ts: UInt64,
+                       repo: String? = nil) -> Agent {
+        var workspace = Workspace()
+        if let repo { workspace = Workspace(repo: repo, branch: "main") }
+        return Agent(agentId: id, state: state, reason: nil,
+                     ts: ts, capabilities: [], workspace: workspace)
+    }
+
+    private func row(_ hostID: UUID, _ id: String, state: AgentState,
+                     ts: UInt64, repo: String? = nil,
+                     stale: Bool = false, lastSeen: UInt64 = 0) -> HostBoardRow {
+        HostBoardRow(identity: CompositeAgentID(hostProfileID: hostID, agentID: id),
+                     agent: agent(id, state: state, ts: ts, repo: repo),
+                     isStale: stale,
+                     lastSeen: lastSeen == 0 ? ts : lastSeen)
+    }
+
+    func testLaneCountsAndHostFilterRows() {
+        let a = UUID(), b = UUID()
+        let rows = [row(a, "herdr:a1", state: .working, ts: 10, repo: "corral"),
+                    row(a, "herdr:a2", state: .idle, ts: 20, repo: "demo"),
+                    row(b, "herdr:b1", state: .blocked, ts: 30, repo: "corral")]
+        XCTAssertEqual(BoardModel.laneCounts(rows), [a: 2, b: 1],
+                       "D3: per-host total lane counts are repo-independent")
+        XCTAssertEqual(BoardModel.rows(rows, forHost: a).count, 2)
+        XCTAssertEqual(BoardModel.rows(rows, forHost: b).count, 1)
+        XCTAssertEqual(BoardModel.rows(rows, forHost: nil).count, 3,
+                       "nil = All Hosts")
+    }
+
+    func testRepoFiltersRescopeToTheSelectedHost() {
+        let a = UUID(), b = UUID()
+        let rows = [row(a, "herdr:a1", state: .working, ts: 10, repo: "corral"),
+                    row(a, "herdr:a2", state: .working, ts: 20, repo: "demo-atlas"),
+                    row(b, "herdr:b1", state: .blocked, ts: 30, repo: "demo-atlas"),
+                    row(b, "herdr:b2", state: .blocked, ts: 40, repo: "demo-garden")]
+        // All Hosts: unified chip set + counts.
+        let all = BoardModel.repoFilters(rows)
+        XCTAssertEqual(all.map(\.repo), ["corral", "demo-atlas", "demo-garden"])
+        XCTAssertEqual(all.map(\.count), [1, 2, 1])
+        // Host A: choices + counts recalculate (D4).
+        let aChips = BoardModel.repoFilters(BoardModel.rows(rows, forHost: a))
+        XCTAssertEqual(aChips.map(\.repo), ["corral", "demo-atlas"])
+        XCTAssertEqual(aChips.map(\.count), [1, 1])
+        // Host B.
+        let bChips = BoardModel.repoFilters(BoardModel.rows(rows, forHost: b))
+        XCTAssertEqual(bChips.map(\.repo), ["demo-atlas", "demo-garden"])
+        // Host + repo both apply (D4).
+        let filtered = BoardModel.rows(BoardModel.rows(rows, forHost: b), in: "demo-atlas")
+        XCTAssertEqual(filtered.count, 1)
+        XCTAssertEqual(filtered.first?.identity.hostProfileID, b)
+    }
+
+    func testHostChipsAllFirstWithUnifiedCountAndPartialHealth() {
+        let a = UUID(), b = UUID()
+        let liveFacts = BoardModel.HostRuntimeFacts(isConnected: true)
+        let offlineFacts = BoardModel.HostRuntimeFacts(isConnected: false)
+        let chips = BoardModel.hostChips(hosts: [
+            BoardModel.HostFilterChip(profileID: a, displayName: "Host A",
+                                      laneCount: 3,
+                                      health: BoardModel.hostChipHealth(for: liveFacts)),
+            BoardModel.HostFilterChip(profileID: b, displayName: "Host B",
+                                      laneCount: 1,
+                                      health: BoardModel.hostChipHealth(for: offlineFacts)),
+        ])
+        XCTAssertEqual(chips.count, 3)
+        XCTAssertTrue(chips[0].isAll, "the All chip leads the row")
+        XCTAssertEqual(chips[0].laneCount, 4, "All = the UNIFIED lane count")
+        XCTAssertEqual(chips[0].health, .offline,
+                       "partial health: All is never live while a host is offline")
+        XCTAssertEqual(chips.map(\.displayName), ["All", "Host A", "Host B"],
+                       "hosts follow the user-controlled order")
+        // Zero-lane hosts remain visible (D3).
+        let zero = BoardModel.hostChips(hosts: [
+            BoardModel.HostFilterChip(profileID: a, displayName: "Host A",
+                                      laneCount: 0, health: .connecting),
+        ])
+        XCTAssertEqual(zero.map(\.displayName), ["All", "Host A"])
+        XCTAssertEqual(zero[1].laneCount, 0)
+    }
+
+    func testAllChipHealthIsLiveOnlyWhenEveryHostIsLive() {
+        let a = UUID(), b = UUID()
+        let chips = BoardModel.hostChips(hosts: [
+            BoardModel.HostFilterChip(profileID: a, displayName: "Host A",
+                                      laneCount: 1, health: .live),
+            BoardModel.HostFilterChip(profileID: b, displayName: "Host B",
+                                      laneCount: 1, health: .live),
+        ])
+        XCTAssertEqual(chips[0].health, .live)
+    }
+
+    func testHealthClassificationFailsClosedOnMismatchAndUnconfirmed() {
+        XCTAssertEqual(BoardModel.hostChipHealth(for:
+            BoardModel.HostRuntimeFacts(isConnected: true)), .live)
+        XCTAssertEqual(BoardModel.hostChipHealth(for:
+            BoardModel.HostRuntimeFacts(isConnected: true, keyMismatch: true)),
+            .keyMismatch, "a mismatched host is never live")
+        XCTAssertEqual(BoardModel.hostChipHealth(for:
+            BoardModel.HostRuntimeFacts(isConnected: true, awaitingFingerprint: true)),
+            .awaitingFingerprint)
+        XCTAssertEqual(BoardModel.hostChipHealth(for:
+            BoardModel.HostRuntimeFacts(isConnecting: true)), .connecting)
+        XCTAssertEqual(BoardModel.hostChipHealth(for:
+            BoardModel.HostRuntimeFacts()), .offline)
+    }
+
+    func testOutageSummaryTexts() {
+        XCTAssertNil(BoardModel.hostOutageSummary(hosts: []))
+        XCTAssertNil(BoardModel.hostOutageSummary(hosts: [
+            BoardModel.HostFilterChip(profileID: UUID(), displayName: "A",
+                                      laneCount: 1, health: .live)]))
+        XCTAssertEqual(BoardModel.hostOutageSummary(hosts: [
+            BoardModel.HostFilterChip(profileID: UUID(), displayName: "A",
+                                      laneCount: 1, health: .live),
+            BoardModel.HostFilterChip(profileID: UUID(), displayName: "B",
+                                      laneCount: 1, health: .offline)]),
+            "1 host offline")
+        XCTAssertEqual(BoardModel.hostOutageSummary(hosts: [
+            BoardModel.HostFilterChip(profileID: UUID(), displayName: "A",
+                                      laneCount: 1, health: .offline),
+            BoardModel.HostFilterChip(profileID: UUID(), displayName: "B",
+                                      laneCount: 1, health: .offline)]),
+            "2 hosts offline")
+        XCTAssertEqual(BoardModel.hostOutageSummary(hosts: [
+            BoardModel.HostFilterChip(profileID: UUID(), displayName: "A",
+                                      laneCount: 1, health: .offline),
+            BoardModel.HostFilterChip(profileID: UUID(), displayName: "B",
+                                      laneCount: 1, health: .keyMismatch)]),
+            "1 host offline · 1 host key mismatch")
+        XCTAssertEqual(BoardModel.hostOutageSummary(hosts: [
+            BoardModel.HostFilterChip(profileID: UUID(), displayName: "A",
+                                      laneCount: 0,
+                                      health: .awaitingFingerprint)]),
+            "1 host awaiting fingerprint")
+    }
+
+    func testHostSectionsMergeSameRepoAcrossHostsAndPreserveLiveFirstRanking() {
+        let a = UUID(), b = UUID()
+        // Input arrives in #400's canonical + live-first order (the stale
+        // blocked row of the SAME repo has the NEWER ts — live must still
+        // lead inside the (blocked, corral) bucket).
+        let live = row(a, "herdr:dup", state: .blocked, ts: 10, repo: "corral")
+        let stale = row(b, "herdr:dup", state: .blocked, ts: 99, repo: "corral",
+                        stale: true, lastSeen: 99)
+        let idle = row(b, "herdr:idle", state: .idle, ts: 5)
+        let orphan = row(a, "herdr:orphan", state: .blocked, ts: 1, repo: nil)
+        let sections = BoardModel.hostSections([live, stale, idle, orphan])
+        XCTAssertEqual(sections.statuses.map(\.state), [.blocked, .idle])
+        let blocked = sections.statuses[0]
+        XCTAssertEqual(blocked.subgroups.map(\.repo), ["corral", nil],
+                       "named repos alphabetical, Other LAST — equal repo names from several hosts share one subgroup (D5)")
+        let corral = blocked.subgroups[0]
+        XCTAssertEqual(corral.rows.map(\.identity.hostProfileID), [a, b],
+                       "the same repo from two hosts shares one subgroup")
+        XCTAssertFalse(corral.rows[0].isStale)
+        XCTAssertTrue(corral.rows[1].isStale)
+        XCTAssertEqual(corral.rows[0].agent.state, .blocked)
+        XCTAssertEqual(corral.rows[1].agent.state, .blocked,
+                       "a stale Blocked lane stays Blocked — never recast (C7)")
+        XCTAssertEqual(blocked.header, "blocked (3)")
+        XCTAssertEqual(sections.statuses[1].total, 1)
+    }
+
+    func testHostSubgroupOtherBucketContainsNoRepoRows() {
+        let a = UUID()
+        let rows = [row(a, "herdr:o", state: .working, ts: 5, repo: nil)]
+        let subgroups = BoardModel.hostSubgroups(of: rows)
+        XCTAssertEqual(subgroups.map(\.repo), [nil])
+        XCTAssertEqual(subgroups[0].displayName, BoardModel.otherRepoLabel)
+    }
+
+    func testLastSeenLabelAndExpiryTextAreDeterministic() {
+        let now: UInt64 = 1_800_000_000_000
+        XCTAssertEqual(RelativeTime.lastSeenLabel(lastSeenMs: now - 360_000,
+                                                  nowMs: now),
+                       "last seen 6m ago")
+        XCTAssertEqual(RelativeTime.lastSeenLabel(lastSeenMs: now - 90_000,
+                                                  nowMs: now),
+                       "last seen 1m ago")
+        XCTAssertEqual(RelativeTime.lastSeenLabel(lastSeenMs: now + 5_000,
+                                                  nowMs: now),
+                       "last seen 0s ago",
+                       "a clock-skewed future stamp never renders a negative age")
+        XCTAssertNil(BoardModel.expiryText(epochSeconds: nil))
+        XCTAssertEqual(BoardModel.expiryText(epochSeconds: 1_800_000_000),
+                       "2027-01-15")
+    }
+}
+
+// MARK: - #401 multi-host surface wiring (FleetViews source bundle)
+
+/// Source-wiring pins over the bundled FleetViews source: the host-chip row
+/// renders ONLY with 2+ profiles (above the repo row), the All-Hosts row
+/// badges + stale/last-seen markers ride the composite renderer, Settings
+/// exposes the per-host D7 surface (reorder/rename/retry/remove + F2 copy),
+/// and the Add Host sheet prefills the name from the URL (B3).
+final class MultiHostSurfaceWiringTests: XCTestCase {
+    private func bundledSource() throws -> String {
+        let bundle = Bundle(for: MultiHostSurfaceWiringTests.self)
+        let url = try XCTUnwrap(bundle.url(forResource: "FleetViews",
+                                           withExtension: "swift.txt"))
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    func testHostChipRowSitsAboveRepoRowUnderTheMultiHostGuard() throws {
+        let source = try bundledSource()
+        // The host chips row + outage summary live INSIDE the 2+ profile
+        // guard (probe (a): removing the guard or hoisting the row out of
+        // it makes this RED — the single-host layout stays byte-comparable).
+        let start = try XCTUnwrap(source.range(of: "// #401 D2: with 2+ profiles the HOST-chip row"))
+        let end = try XCTUnwrap(source.range(of: "if let banner = model.banner"))
+        let slice = String(source[start.lowerBound..<end.lowerBound])
+        let guardRange = try XCTUnwrap(slice.range(of: "if model.multiHostConfigured {"),
+                                       "the host chip row must sit inside the 2+ profile guard")
+        let chipsRange = try XCTUnwrap(slice.range(of: "hostChipsRow(chips: hostChipRow,"),
+                                       "the host chip row must be wired above the repo row")
+        XCTAssertLessThan(guardRange.lowerBound, chipsRange.lowerBound)
+        XCTAssertEqual(slice.components(separatedBy: "hostChipsRow(chips: hostChipRow,").count - 1, 1,
+                       "exactly one host-chip row call site")
+        XCTAssertTrue(slice.contains("hostOutageSummaryRow(hostOutageSummary)"),
+                      "the compact D7 summary must ride under the host chips")
+        XCTAssertTrue(slice.contains("} else {\n                            repoChipsRow(chips: chips,"),
+                      "the single-host repo row must keep its own (unchanged) branch")
+    }
+
+    func testHostSelectionFlowsThroughTheModelAndProjections() throws {
+        let source = try bundledSource()
+        XCTAssertTrue(source.contains("model.selectHostFilter(chip.profileID)"),
+                      "chip taps must route through the model filter")
+        XCTAssertTrue(source.contains("BoardModel.rows(aggregateRows, forHost: hostFilter)"),
+                      "the board rows must filter by the selected host")
+        XCTAssertTrue(source.contains("BoardModel.repoFilters(hostRows)"),
+                      "repo chips/counts must rescope to the selected host (D4)")
+        XCTAssertTrue(source.contains("BoardModel.hostSections("),
+                      "the multi-host board must bucket rows through the pure projection")
+        XCTAssertTrue(source.contains("model.aggregateBoardRows"),
+                      "the board consumes #400's aggregate rows")
+    }
+
+    func testRowBadgesAndStaleMarkersAreWiredInTheCompositeRenderer() throws {
+        let source = try bundledSource()
+        let start = try XCTUnwrap(source.range(of: "private func hostAgentRow("))
+        let end = try XCTUnwrap(source.range(of: "/// The display name of a row's owning host"))
+        let slice = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(slice.contains("hostProfileID: row.identity.hostProfileID"),
+                      "the row tap must carry the composite host identity (E1)")
+        XCTAssertTrue(slice.contains("HostBadgeChip(name: hostName)"),
+                      "D6: the compact textual host badge must be wired into composite rows")
+        XCTAssertTrue(source.contains("showHostBadge: showHostBadges"),
+                      "the badge flag must flow from the All-Hosts rule")
+        // probe (b): dropping the stale branch removes this marker → RED.
+        XCTAssertTrue(slice.contains("if row.isStale {"),
+                      "C6: the stale branch must render on retained rows")
+        XCTAssertTrue(slice.contains("StaleRowLabel(lastSeenMs: row.lastSeen)"),
+                      "C6: the last-seen age label must consume the row's stamp")
+        XCTAssertTrue(source.contains("stale · \\(RelativeTime.lastSeenLabel(lastSeenMs: lastSeenMs, nowMs: now))"),
+                      "C6: the stale label must show the relative last-seen age")
+        XCTAssertTrue(source.contains("hostRowSummary(row, hostName: hostName)"),
+                      "row VoiceOver must carry the badge/staleness facts (D8)")
+    }
+
+    func testSettingsExposesReorderRenameRetryRemoveAndF2Text() throws {
+        let source = try bundledSource()
+        let start = try XCTUnwrap(source.range(of: "private var hostsSection: some View {"))
+        let end = try XCTUnwrap(source.range(of: "// MARK: - #399 Add Host"))
+        let slice = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(slice.contains(".onMove(perform: moveHosts)"),
+                      "D2: Settings must support drag-to-reorder")
+        XCTAssertTrue(source.contains("EditButton()"),
+                      "D2: the reorder affordance must exist with 2+ hosts")
+        XCTAssertTrue(slice.contains("model.retryHostConnection(profile)"),
+                      "D7: per-host Retry must route through the model")
+        XCTAssertTrue(slice.contains("model.renameHost(id: profile.id, to: name)"),
+                      "D7/B5: Rename must route through the model (display name only)")
+        XCTAssertTrue(slice.contains("Button(\"Remove host\", role: .destructive)"),
+                      "D7: Remove Host stays reachable per row")
+        XCTAssertTrue(slice.contains("model.removeHost(profileID: profile.id)"),
+                      "D7: Remove Host routes through the model")
+        XCTAssertTrue(slice.contains("LabeledContent(\"Grants expiry\","),
+                      "D7: grants expiry must be readable per host")
+        XCTAssertTrue(slice.contains("Last seen"),
+                      "D7: last seen must be readable per host")
+        XCTAssertTrue(source.contains("settings.notifications.multi-host"),
+                      "F2: the 2+ host APNs/deep-link limitation must be explained in Settings")
+    }
+
+    func testAddHostSheetPrefillsNameFromURL() throws {
+        let source = try bundledSource()
+        let start = try XCTUnwrap(source.range(of: "struct AddHostSheet: View {"))
+        let end = try XCTUnwrap(source.range(of: "/// #399 B6: the launch-time fingerprint confirmation"))
+        let slice = String(source[start.lowerBound..<end.lowerBound])
+        // #399 rev B3: the sheet must prefill the NAME from the entered URL
+        // through the existing candidate helper — never leave `name` dead.
+        XCTAssertTrue(slice.contains("name = HostURLForm.displayNameCandidate(for: newValue)"),
+                      "B3: the sheet must prefill the host name from the URL")
+        XCTAssertTrue(slice.contains("guard name.isEmpty else { return }"),
+                      "B3: a hand-entered name must never be overwritten")
+        XCTAssertTrue(slice.contains("onChange(of: urlString)"),
+                      "B3: the prefill must track URL entry")
+    }
+
+    func testHostChipsAre44PtAccessibleAndTokenThemed() throws {
+        let source = try bundledSource()
+        let start = try XCTUnwrap(source.range(of: "private func hostChipButton("))
+        let end = try XCTUnwrap(source.range(of: "/// #401 D7: the ONE compact board-level outage summary"))
+        let slice = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(slice.contains(".frame(minHeight: 44)"),
+                      "D8: interactive host chips keep the ≥44 pt target")
+        XCTAssertTrue(slice.contains(".accessibilityAddTraits(isSelected ? [.isSelected] : [])"),
+                      "D8: selected host chips carry the VoiceOver selected trait")
+        XCTAssertTrue(source.contains(".id(\"board.host-chips\")"),
+                      "the host chip row carries its scroll anchor")
+        XCTAssertTrue(source.contains("BoardModel.hostHealthToken(health)"),
+                      "D8: health colors resolve through the shared token mapping")
     }
 }

@@ -299,6 +299,12 @@ final class AppModel: ObservableObject {
     /// `BoardModel.reconcile` (a vanished repo renders as All without
     /// losing the user's last choice).
     @Published var repoFilter: String?
+    /// #401 D1/D2: the board's host-chip selection (nil = All Hosts). Like
+    /// `repoFilter` it is model-owned so the choice survives pull-to-refresh
+    /// and tab/foreground refresh; it is SESSION-ONLY (never persisted —
+    /// every fresh launch starts at All Hosts + All Repos, D1) and the
+    /// board reconciles it when the selected host is removed (renders All).
+    @Published var hostFilter: UUID?
     /// #364 C: the recents-sheet presentation request. Model-owned so the
     /// board's `.sheet(item:)` binds straight to it and every open request
     /// — including a re-tap of the SAME agent after a dismissal — is a
@@ -666,6 +672,133 @@ final class AppModel: ObservableObject {
         profileStore != nil || !profiles.isEmpty
     }
 
+    /// #401 D2/D6: the multi-host board surfaces are active with 2+
+    /// configured profiles. Single-host F1 parity: with one profile the
+    /// board keeps the pre-#401 layout (no host chips row, no row badges).
+    var multiHostConfigured: Bool {
+        profiles.count > 1
+    }
+
+    /// #401: the composite board rows across EVERY configured host (the
+    /// ACTIVE host's store plus every coordinator session — #400's
+    /// aggregate read model with per-row staleness/last-seen). nil keeps
+    /// the single-host board on the legacy fleet-store path.
+    var aggregateBoardRows: [HostBoardRow]? {
+        guard multiHostConfigured, let coordinator else { return nil }
+        return coordinator.aggregateRows(profiles: profiles) { [weak self] in
+            self?.fleet
+        }
+    }
+
+    /// The profile the host filter currently selects (nil = All Hosts).
+    var hostFilterProfile: HostProfile? {
+        guard let hostFilter else { return nil }
+        return profiles.first { $0.id == hostFilter }
+    }
+
+    /// #401 D1: select the host chip (nil = All Hosts). The choice is
+    /// session-only and reconciled when the selected host disappears.
+    func selectHostFilter(_ profileID: UUID?) {
+        guard profileID == nil || profiles.contains(where: { $0.id == profileID }) else {
+            hostFilter = nil
+            return
+        }
+        hostFilter = profileID
+    }
+
+    /// #401 C6: per-row state-entered tracking of a COMPOSITE target from
+    /// its OWNING store (the same #166 read the single-host board uses).
+    func stateEnteredAt(hostProfileID: UUID?, agentID: String) -> UInt64? {
+        if let profileID = hostProfileID, profileID != activeProfileID {
+            return coordinator?.store(profileID: profileID)?.stateEnteredAt[agentID]
+        }
+        return fleet.stateEnteredAt[agentID]
+    }
+
+    /// #401 D3/D7: runtime facts of one host profile for the host-filter
+    /// chips and Settings host rows. Consumes #399/#400 state only —
+    /// per-host store connection state, coordinator posture, and the
+    /// active profile's continuity state.
+    func hostRuntimeFacts(for profile: HostProfile) -> BoardModel.HostRuntimeFacts {
+        var facts = BoardModel.HostRuntimeFacts()
+        if profile.id == activeProfileID {
+            facts.keyMismatch = profile.connectionState == .keyMismatch
+                || keyContinuityState == .mismatch
+            facts.awaitingFingerprint =
+                profile.connectionState == .awaitingFingerprintConfirmation
+            switch fleet.connectionState {
+            case .connected: facts.isConnected = true
+            case .connecting: facts.isConnecting = true
+            default: break
+            }
+            // A pinned active host that has not re-verified since
+            // launch/foreground is connecting (B4 re-check in flight).
+            if profile.hostKeyB64 != nil, keyContinuityState == .pending {
+                facts.isConnecting = true
+            }
+        } else {
+            facts.keyMismatch = profile.connectionState == .keyMismatch
+                || coordinator?.posture(profileID: profile.id) == .mismatch
+            facts.awaitingFingerprint =
+                profile.connectionState == .awaitingFingerprintConfirmation
+            if let store = coordinator?.store(profileID: profile.id) {
+                switch store.connectionState {
+                case .connected: facts.isConnected = true
+                case .connecting: facts.isConnecting = true
+                default: break
+                }
+            }
+            // A coordinator session whose verification has NOT completed
+            // (`.verifying`, no stream open) reads as OFFLINE — the host is
+            // not connected; only a live transport attempt (.connecting)
+            // shows as connecting.
+        }
+        return facts
+    }
+
+    /// #401 D7: the Settings row Retry action — idempotent start of ONE
+    /// host's verification/stream. The ACTIVE host re-runs its continuity
+    /// gate + stream; a coordinator host starts only its own session
+    /// (never another host's, never a global reconnect).
+    func retryHostConnection(_ profile: HostProfile) {
+        guard profile.mayConnect else { return }
+        if profile.id == activeProfileID {
+            guard keyContinuityState != .mismatch else { return }
+            startLive()
+        } else {
+            coordinator?.startSessionIfNeeded(profile)
+        }
+    }
+
+    /// #401 D2/D7: drag-to-reorder (Settings). Order drives the host-chip
+    /// row; the store's moveProfile re-normalizes every profile's order.
+    /// SwiftUI `.onMove` delivers the destination in the ORIGINAL row
+    /// coordinates, so a downward move (destination after the removed row)
+    /// is converted to the store's post-removal insertion index.
+    func moveHosts(from source: IndexSet, to destination: Int) {
+        guard let store = profileStore,
+              let movedIndex = source.first,
+              profiles.indices.contains(movedIndex) else { return }
+        let movedID = profiles[movedIndex].id
+        let insertion = destination > movedIndex ? destination - 1 : destination
+        try? store.moveProfile(id: movedID, toOrder: insertion)
+        reloadProfiles(from: store)
+    }
+
+    /// #401 D7: rename one host's DISPLAY NAME in place (B5 — URL/identity
+    /// changes are remove-and-re-pair, never an edit). Returns the error
+    /// text (duplicate/empty name) or nil on success.
+    func renameHost(id: UUID, to newDisplayName: String) -> String? {
+        guard let store = profileStore else { return nil }
+        do {
+            try store.renameProfile(id: id, to: newDisplayName)
+            reloadProfiles(from: store)
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
     private func persistActiveProfileID(_ id: UUID?) {
         activeProfileID = id
         if let id {
@@ -853,6 +986,11 @@ final class AppModel: ObservableObject {
         }
         store.removeProfile(id: profileID)
         reloadProfiles(from: store)
+        // #401 D1: a removed host can never stay selected — the filter
+        // reconciles to All Hosts (session-only choice).
+        if let hostFilter, store.profile(id: hostFilter) == nil {
+            self.hostFilter = nil
+        }
         if wasActive {
             fleet.acceptedHostIdentity = nil
             keyContinuityState = .notPinned
@@ -1891,15 +2029,30 @@ final class AppModel: ObservableObject {
     /// only permitted while the owning host is connected; loaded output
     /// stays visible as `.offline`, nothing loaded + disconnected is
     /// `.unavailable` (never synthesized, never loaded from durable
-    /// storage).
+    /// storage). #401 rev N2: a target whose host was REMOVED (or paused) is
+    /// `.unavailable` — it can never fall through to the ACTIVE fleet store
+    /// and resolve an equal raw agent id on another host.
     func recentsRouteState(hostProfileID: UUID?, agentID: String) -> RecentsRouteState {
-        let store: FleetStore
-        if let profileID = hostProfileID, profileID != activeProfileID,
-           let sessionStore = coordinator?.store(profileID: profileID) {
-            store = sessionStore
+        let store: FleetStore?
+        if let profileID = hostProfileID {
+            // Removed host: no profile, no session — render unavailable
+            // (E3 purge already cleared an open sheet; this closes the race
+            // for a sheet still dismissing or a stale route consumer).
+            guard let profile = profileStore?.profile(id: profileID) else {
+                return .unavailable
+            }
+            guard profile.mayConnect else { return .unavailable }
+            if profileID == activeProfileID {
+                store = fleet
+            } else if let sessionStore = coordinator?.store(profileID: profileID) {
+                store = sessionStore
+            } else {
+                return .unavailable
+            }
         } else {
             store = fleet
         }
+        guard let store else { return .unavailable }
         guard store.connectionState == .connected else {
             let pane = store.tailPane(for: agentID)
             return (pane?.isEmpty ?? true) ? .unavailable : .offline
@@ -2163,6 +2316,87 @@ final class AppModel: ObservableObject {
                                     signerPublicKeyB64: signer?.publicKeyB64)
     }
 
+    /// #401 evidence: deterministic MULTI-HOST demo state (DEBUG only, fresh
+    /// simulators): three synthetic profiles — Host A LIVE (the active
+    /// store, seeded with rows), Host B OFFLINE (its coordinator session
+    /// keeps retained STALE rows, last-seen ~6m), Host C KEY MISMATCH
+    /// (paused, fails closed, no session). Everything routes through the
+    /// #399/#400 public seams (profile store + coordinator sessions' own
+    /// stores) — no network, no stream internals.
+    func enterMultiHostDemo() {
+        guard let store = profileStore, coordinator != nil else {
+            enterDemo()
+            return
+        }
+        cancelLifecycleTasks()
+        fleet.disconnect()
+        let now = UInt64(Date().timeIntervalSince1970 * 1000)
+        let nowSeconds = UInt64(Date().timeIntervalSince1970)
+        store.removeAll()
+        reloadProfiles(from: store)
+        let profileA = try? store.addProfile(
+            displayName: "Host A",
+            urlString: DemoFleet.DemoHosts.urls[0],
+            hostKeyB64: DemoFleet.DemoHosts.hostAKey,
+            fingerprint: "FINGER-A",
+            keyId: "dev_demo_a",
+            grants: ["read_tail"],
+            expiryTs: nowSeconds + 90 * 86_400,
+            registeredAt: 1)
+        let profileB = try? store.addProfile(
+            displayName: "Host B",
+            urlString: DemoFleet.DemoHosts.urls[1],
+            hostKeyB64: DemoFleet.DemoHosts.hostBKey,
+            fingerprint: "FINGER-B",
+            keyId: "dev_demo_b",
+            grants: ["read_tail"],
+            expiryTs: nowSeconds + 30 * 86_400,
+            registeredAt: 1)
+        let profileC = try? store.addProfile(
+            displayName: "Host C",
+            urlString: DemoFleet.DemoHosts.urls[2],
+            hostKeyB64: DemoFleet.DemoHosts.hostCKey,
+            fingerprint: "FINGER-C",
+            keyId: "dev_demo_c",
+            grants: ["read_tail"],
+            expiryTs: nil,
+            registeredAt: 1)
+        if let profileC {
+            // B4: C presents a different key — paused, fails closed.
+            store.noteConnectionState(id: profileC.id, .keyMismatch)
+        }
+        guard let profileA, let profileB else {
+            store.removeAll()
+            reloadProfiles(from: store)
+            enterDemo()
+            return
+        }
+        persistActiveProfileID(profileA.id)
+        reloadProfiles(from: store)
+        // Active host A: live seeded rows.
+        fleet.reset()
+        fleet.seedDemo(agents: DemoFleet.multiHostSeedA(now: now), rev: 1)
+        fleet.noteConnected()
+        // Host B: retained STALE rows in its coordinator session store.
+        if let storeB = coordinator?.store(profileID: profileB.id) {
+            storeB.seedDemo(agents: DemoFleet.multiHostSeedB(now: now), rev: 1)
+            storeB.noteConnectionError("host unreachable")
+        }
+        store.noteLastSuccessfulConnection(id: profileA.id,
+                                           at: now - 2 * 60 * 1000)
+        store.noteLastSuccessfulConnection(id: profileB.id,
+                                           at: now - 6 * 60 * 1000)
+        mode = .demo
+        demoDetailAgentId = nil
+        fingerprintConfirmation = nil
+        hostFilter = nil
+        repoFilter = nil
+        keyContinuityState = .notPinned
+        identityLifecycle.setCurrent(mode: .demo, hostURL: nil,
+                                    keyId: nil,
+                                    signerPublicKeyB64: signer?.publicKeyB64)
+    }
+
     /// Leave demo through the same identity boundary as reset/registration.
     /// Demo rows and their cursor are discarded before a live identity is
     /// restored, so the next connection must receive a fresh snapshot.
@@ -2232,6 +2466,8 @@ final class AppModel: ObservableObject {
         profileStore?.removeAll()
         profiles = []
         activeProfileID = nil
+        // #401 D1: a device reset leaves no host selected (session filter).
+        hostFilter = nil
         // #400 E3: tear down every coordinator session (stream/tasks/rows
         // purged) and return the notification posture to single-host.
         syncCoordinator(startStreams: false)

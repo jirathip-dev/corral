@@ -336,6 +336,69 @@ struct AgentRow: View {
     }
 }
 
+/// #401 D6: the compact textual host badge on multi-host board rows (All
+/// Hosts with 2+ profiles). Text-only identity — color never carries the
+/// meaning (D8); it is a plain caption-tier capsule on the token surface.
+private struct HostBadgeChip: View {
+    let name: String
+    @EnvironmentObject private var theme: ThemeStore
+
+    var body: some View {
+        Text(name)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(theme.subtext1)
+            .lineLimit(1)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 1)
+            .background(theme.surface2.opacity(0.35),
+                        in: RoundedRectangle(cornerRadius: 4))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Host \(name)")
+    }
+}
+
+/// #401 C6: the retained STALE row marker — "stale · last seen 6m ago"
+/// (offline-only when no stamp exists). Self-ticks at 30 s so the age stays
+/// honest without re-rendering the board; the state chip above it keeps the
+/// LAST REPORTED state — never recast (C7).
+private struct StaleRowLabel: View {
+    let lastSeenMs: UInt64
+    @State private var now = UInt64(Date().timeIntervalSince1970 * 1000)
+    @EnvironmentObject private var theme: ThemeStore
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "clock.arrow.circlepath")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(theme.subtext1)
+                .accessibilityHidden(true)
+            Text(text)
+                .font(.caption2)
+                .foregroundStyle(theme.subtext1)
+                .lineLimit(1)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(text)
+        .task(id: "stale-row-ticker") {
+            while !Task.isCancelled {
+                now = UInt64(Date().timeIntervalSince1970 * 1000)
+                do {
+                    try await Task.sleep(nanoseconds: 30_000_000_000)
+                } catch {
+                    break
+                }
+            }
+        }
+    }
+
+    private var text: String {
+        if lastSeenMs > 0 {
+            return "stale · \(RelativeTime.lastSeenLabel(lastSeenMs: lastSeenMs, nowMs: now))"
+        }
+        return "stale · offline"
+    }
+}
+
 // MARK: - Row accessibility
 
 /// One VoiceOver summary for an agent row: name, raw state, repo, branch,
@@ -636,6 +699,43 @@ struct FleetView: View {
         // and #371 splits each section into repo subgroups.
         let sections = BoardModel.sections(
             BoardModel.agents(agents, in: activeRepoFilter))
+        // #401 multi-host board (D1-D7): with 2+ profiles the board renders
+        // the #400 COMPOSITE rows (aggregateBoardRows — never re-derived
+        // ranking) with a host-chip row above the repo chips; every host
+        // chip shows its TOTAL lane count + health independent of the repo
+        // filter (D3), repo chips/choices recalc for the selected host
+        // (D4), rows merge by repo across hosts (D5), and compact textual
+        // host badges show on rows only in All Hosts (D6). With one profile
+        // every host* value below is inert and the legacy single-host path
+        // below renders byte-identically (F1 parity).
+        let multiHost = model.multiHostConfigured
+        let aggregateRows = model.aggregateBoardRows ?? []
+        let hostFilter = model.hostFilter
+        // D2/D4: rows of the selected host (nil = every host).
+        let hostRows = BoardModel.rows(aggregateRows, forHost: hostFilter)
+        // D4: repo chip set + counts over the SELECTED host's rows.
+        let hostRepoChips = BoardModel.repoFilters(hostRows)
+        let activeHostRepoFilter = BoardModel.reconcile(model.repoFilter,
+                                                        against: hostRepoChips)
+        let hostRepos = hostRepoChips.map(\.repo)
+        // D5/C6/C7: bucket the ALREADY-ranked rows (canonical + live-first
+        // from #400) into status sections → merged repo subgroups.
+        let hostSections = BoardModel.hostSections(
+            BoardModel.rows(hostRows, in: activeHostRepoFilter))
+        // D3/D7: host chips in user-controlled order, counts from the
+        // UNFILTERED aggregate (repo-independent).
+        let hostChipInputs = model.profiles.map { profile in
+            BoardModel.HostFilterChip(
+                profileID: profile.id,
+                displayName: profile.displayName,
+                laneCount: BoardModel.laneCounts(aggregateRows)[profile.id] ?? 0,
+                health: BoardModel.hostChipHealth(
+                    for: model.hostRuntimeFacts(for: profile)))
+        }
+        let hostChipRow = BoardModel.hostChips(hosts: hostChipInputs)
+        let hostOutageSummary = BoardModel.hostOutageSummary(hosts: hostChipInputs)
+        // D6: badges only in All Hosts with 2+ profiles.
+        let showRowHostBadges = multiHost && hostFilter == nil
         // #365: the top-bar chrome (.navigationTitle/.toolbar — the Settings
         // gear) renders only inside a navigation shell. The #354 cut deleted
         // the board's NavigationStack, orphaning those modifiers and leaving
@@ -665,9 +765,27 @@ struct FleetView: View {
                                 boardChrome
                             }
                         }
-                        repoChipsRow(chips: chips,
-                                     total: agents.count,
-                                     selection: activeRepoFilter)
+                        // #401 D2: with 2+ profiles the HOST-chip row sits
+                        // ABOVE the repo-chip row (All, then hosts in
+                        // user-controlled order); the compact D7 outage
+                        // summary rides under it. Single-host layout is
+                        // unchanged (the row is hidden with one profile).
+                        if model.multiHostConfigured {
+                            hostChipsRow(chips: hostChipRow,
+                                         selection: model.hostFilter)
+                            if let hostOutageSummary {
+                                hostOutageSummaryRow(hostOutageSummary)
+                            }
+                        }
+                        if model.multiHostConfigured {
+                            repoChipsRow(chips: hostRepoChips,
+                                         total: hostRows.count,
+                                         selection: activeHostRepoFilter)
+                        } else {
+                            repoChipsRow(chips: chips,
+                                         total: agents.count,
+                                         selection: activeRepoFilter)
+                        }
                     }
                     if let banner = model.banner {
                         BannerView(banner: banner) {
@@ -679,12 +797,26 @@ struct FleetView: View {
                         RegistrationView(model: model)
 #if DEBUG
                     case .demo:
-                        boardSections(sections: sections, repos: repos,
-                                      hideRepoLabels: rowRepoLabelsHidden)
+                        if model.multiHostConfigured {
+                            hostBoardSections(sections: hostSections,
+                                              repos: hostRepos,
+                                              hideRepoLabels: activeHostRepoFilter != nil,
+                                              showHostBadges: showRowHostBadges)
+                        } else {
+                            boardSections(sections: sections, repos: repos,
+                                          hideRepoLabels: rowRepoLabelsHidden)
+                        }
 #endif
                     case .live:
-                        boardSections(sections: sections, repos: repos,
-                                      hideRepoLabels: rowRepoLabelsHidden)
+                        if model.multiHostConfigured {
+                            hostBoardSections(sections: hostSections,
+                                              repos: hostRepos,
+                                              hideRepoLabels: activeHostRepoFilter != nil,
+                                              showHostBadges: showRowHostBadges)
+                        } else {
+                            boardSections(sections: sections, repos: repos,
+                                          hideRepoLabels: rowRepoLabelsHidden)
+                        }
                     }
                 }
                 .listStyle(.plain)
@@ -902,6 +1034,118 @@ struct FleetView: View {
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 
+    /// #401 D2/D3: the horizontal HOST-filter chip row rendered ABOVE the
+    /// repo-chip row when 2+ profiles exist — All first, then every host in
+    /// the user-controlled order (Settings drag-to-reorder drives the same
+    /// store order). Each host chip always shows that host's TOTAL lane
+    /// count + health, independent of the repo filter; zero-lane and
+    /// offline hosts stay visible (D3).
+    @ViewBuilder
+    private func hostChipsRow(chips: [BoardModel.HostFilterChip],
+                              selection: UUID?) -> some View {
+        Section {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(chips) { chip in
+                        hostChipButton(chip,
+                                       isSelected: selection == chip.profileID) {
+                            model.selectHostFilter(chip.profileID)
+                        }
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 4)
+            }
+            .id("board.host-chips")
+            .listRowInsets(EdgeInsets())
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+        }
+    }
+
+    /// One host-filter chip: All / host name + total-lane count + a health
+    /// dot whose COLOR never carries the meaning alone — the health text
+    /// label rides on the chip whenever the host is not live and in the
+    /// VoiceOver label/value always (D3/D8). ≥44 pt hit target, visible
+    /// selected state, selected trait.
+    private func hostChipButton(_ chip: BoardModel.HostFilterChip,
+                                isSelected: Bool,
+                                action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(hostHealthColor(chip.health))
+                    .frame(width: 7, height: 7)
+                    .accessibilityHidden(true)
+                Text(chip.isAll ? "All" : chip.displayName)
+                    .lineLimit(1)
+                Text("\(chip.laneCount)")
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(isSelected ? theme.crust.opacity(0.22)
+                                           : theme.surface2.opacity(0.30),
+                                in: Capsule())
+                    .accessibilityHidden(true)
+                if !chip.isAll, chip.health != .live {
+                    Text(chip.health.label)
+                        .font(.caption2.weight(.medium))
+                        .lineLimit(1)
+                        .foregroundStyle(hostHealthColor(chip.health))
+                }
+            }
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(isSelected ? theme.crust : theme.subtext1)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(isSelected ? theme.accent : theme.base,
+                        in: Capsule())
+            .overlay(Capsule().stroke(
+                isSelected ? theme.accent : theme.surface1, lineWidth: 1))
+            .frame(minHeight: 44)
+        }
+        .buttonStyle(BoardPressStyle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(chip.isAll ? "All hosts"
+                                       : "Filter host \(chip.displayName)")
+        .accessibilityValue("\(chip.laneCount) lanes, \(chip.health.label)")
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    }
+
+    /// The health dot color (D8 — color never alone; the textual health
+    /// label and VoiceOver value always accompany it). Resolves through the
+    /// shared token mapping so all four themes stay in sync.
+    private func hostHealthColor(_ health: BoardModel.HostChipHealth) -> Color {
+        theme.color(BoardModel.hostHealthToken(health))
+    }
+
+    /// #401 D7: the ONE compact board-level outage summary row ("1 host
+    /// offline · …"), rendered under the host chips when any host is not
+    /// live. Never a full-width reconnect banner per retry.
+    @ViewBuilder
+    private func hostOutageSummaryRow(_ text: String) -> some View {
+        Section {
+            HStack(spacing: 6) {
+                Image(systemName: "wifi.slash")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(theme.peach)
+                    .accessibilityHidden(true)
+                Text(text)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(theme.peach)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 3)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .combine)
+            .listRowInsets(EdgeInsets())
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+        }
+    }
+
     /// #371/#386 board renderer: one section per raw herdr status in
     /// the locked attention order (blocked → working → idle → unknown; a
     /// done section renders only when herdr reports it), each section led
@@ -1059,6 +1303,192 @@ struct FleetView: View {
         .accessibilityHint("Double tap to open recent output")
     }
 
+    /// #401 D5/D6/C6/C7 multi-host board renderer: status sections first,
+    /// then merged repo subgroups (same repo name from several hosts shares
+    /// one subgroup — no host sections/tabs). Rows arrive ALREADY ranked by
+    /// #400 (canonical + live-first inside each bucket); this renderer adds
+    /// the D6 compact host badge (All Hosts only) and the C6 stale/last-seen
+    /// line on retained stale rows — the raw state token is never recast.
+    @ViewBuilder
+    private func hostBoardSections(sections: BoardModel.HostSections,
+                                   repos: [String],
+                                   hideRepoLabels: Bool,
+                                   showHostBadges: Bool) -> some View {
+        ForEach(sections.statuses) { status in
+            Section {
+                if !sectionCollapse.isCollapsed(status.state) {
+                    ForEach(status.subgroups) { subgroup in
+                        hostRepoSubgroupHeader(subgroup, repos: repos)
+                        ForEach(subgroup.rows) { row in
+                            hostAgentRow(row, repos: repos,
+                                         hideRepoLabels: hideRepoLabels,
+                                         showHostBadge: showHostBadges)
+                                // Composite row id — equal raw agent ids on
+                                // two hosts never collide as anchors.
+                                .id(row.id)
+                                .listRowBackground(theme.base)
+                        }
+                    }
+                }
+            } header: {
+                PinnedHeader(fillsInteractiveWidth: true) {
+                    hostStatusSectionBar(status)
+                }
+            }
+        }
+    }
+
+    /// The #401 host-board status bar — the same thick full-width #386 bar
+    /// visual (state mark, raw status + TOTAL count, collapse chevron) for
+    /// the multi-host sections; the collapse state is shared with the
+    /// single-host board (`sectionCollapse`, session-only).
+    @ViewBuilder
+    private func hostStatusSectionBar(
+        _ status: BoardModel.HostStatusSection) -> some View {
+        let isCollapsed = sectionCollapse.isCollapsed(status.state)
+        Button {
+            sectionCollapse.toggle(status.state)
+        } label: {
+            HStack(spacing: 8) {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(theme.stateColor(for: status.state))
+                    .frame(width: 10, height: 10)
+                    .accessibilityHidden(true)
+                Text(status.header)
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(theme.text)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.down")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(theme.subtext1)
+                    .rotationEffect(.degrees(isCollapsed ? -90 : 0))
+                    .accessibilityHidden(true)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .background(theme.surface1)
+        }
+        .buttonStyle(BoardPressStyle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(status.header)
+        .accessibilityValue(isCollapsed ? "Collapsed" : "Expanded")
+        .accessibilityHint("Toggles the \(status.state.displayName) section")
+    }
+
+    /// The #401 repo subgroup caption — the same demoted caption row visual
+    /// as the single-host board, fed by a multi-host subgroup (rows instead
+    /// of agents; the count is the subgroup's row count).
+    @ViewBuilder
+    private func hostRepoSubgroupHeader(_ subgroup: BoardModel.HostRepoSubgroup,
+                                        repos: [String]) -> some View {
+        let hue = theme.repoHue(for: subgroup.repo ?? "", among: repos)
+        HStack(spacing: 7) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(theme.color(hue))
+                .frame(width: 8, height: 8)
+                .accessibilityHidden(true)
+            Text(subgroup.displayName)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(theme.subtext1)
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            Text("\(subgroup.rows.count)")
+                .font(.caption2.weight(.medium))
+                .monospacedDigit()
+                .foregroundStyle(theme.subtext1)
+                .accessibilityHidden(true)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(theme.color(hue))
+                .frame(width: 2)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(subgroup.header)
+        .listRowInsets(EdgeInsets())
+        .listRowBackground(theme.repoBand(for: hue))
+        .listRowSeparator(.hidden)
+    }
+
+    /// One #401 composite board row: same tap surface as the single-host
+    /// row but the recents request carries the row's HOST profile (E1 —
+    /// an equal raw id on another host can never be opened), the state
+    /// duration reads the OWNING store's stateEnteredAt, and the row
+    /// carries the compact textual host badge (D6) + the stale/last-seen
+    /// marker (C6).
+    @ViewBuilder
+    private func hostAgentRow(_ row: HostBoardRow, repos: [String],
+                              hideRepoLabels: Bool,
+                              showHostBadge: Bool) -> some View {
+        let hostName = showHostBadge ? hostDisplayName(for: row) : nil
+        Button {
+            model.requestRecents(for: row.agent.agentId,
+                                 hostProfileID: row.identity.hostProfileID,
+                                 haptic: true)
+        } label: {
+            VStack(alignment: .leading, spacing: 2) {
+                AgentRow(agent: row.agent,
+                         stateEnteredAt: model.stateEnteredAt(
+                            hostProfileID: row.identity.hostProfileID,
+                            agentID: row.agent.agentId),
+                         repos: repos,
+                         hideRepoLabel: hideRepoLabels)
+                HStack(spacing: 6) {
+                    if let hostName {
+                        HostBadgeChip(name: hostName)
+                    }
+                    if row.isStale {
+                        StaleRowLabel(lastSeenMs: row.lastSeen)
+                    }
+                }
+                .padding(.top, 1)
+            }
+        }
+        .buttonStyle(BoardPressStyle())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(hostRowSummary(row, hostName: hostName))
+        .accessibilityHint("Double tap to open recent output")
+    }
+
+    /// The display name of a row's owning host (D6 badge text). Rows always
+    /// come from configured profiles, but a mid-render removal yields nil —
+    /// the badge simply disappears with the host.
+    private func hostDisplayName(for row: HostBoardRow) -> String? {
+        model.profiles.first { $0.id == row.identity.hostProfileID }?.displayName
+    }
+
+    /// One VoiceOver summary for a composite board row: the agent identity,
+    /// state, repo/branch/pane, plus the host badge and staleness facts —
+    /// color never carries the meaning alone (D8).
+    private func hostRowSummary(_ row: HostBoardRow, hostName: String?) -> String {
+        var parts: [String] = [
+            row.agent.title ?? row.agent.displayName ?? row.agent.agentId,
+            "State: \(StateStyle.style(for: row.agent.state).label)",
+        ]
+        if let repo = row.agent.workspace.repo { parts.append(repo) }
+        if let branch = row.agent.workspace.branch { parts.append(branch) }
+        if let reference = row.agent.attachment?.reference {
+            parts.append("Pane \(reference)")
+        }
+        if let hostName {
+            parts.append("Host \(hostName)")
+        }
+        if row.isStale {
+            parts.append("stale")
+            if row.lastSeen > 0 {
+                let now = UInt64(Date().timeIntervalSince1970 * 1000)
+                parts.append(RelativeTime.lastSeenLabel(lastSeenMs: row.lastSeen,
+                                                        nowMs: now))
+            }
+        }
+        return parts.joined(separator: ", ")
+    }
+
     /// Board chrome: connection status (live) + the pull-to-refresh hint.
     /// No search field; #364 B repo chips live in their own row below.
     @ViewBuilder
@@ -1181,6 +1611,12 @@ struct FleetView: View {
             await runConnectionInputsSequence()
         } else if CorralDemoLaunch.wantsDeniedNotificationsEvidence(arguments: CommandLine.arguments) {
             await runDeniedNotificationsSequence()
+        } else if CorralDemoLaunch.wantsMultiHostBoardEvidence(arguments: CommandLine.arguments) {
+            await runMultiHostBoardSequence()
+        } else if CorralDemoLaunch.wantsMultiHostSettingsEvidence(arguments: CommandLine.arguments) {
+            await runMultiHostSettingsSequence()
+        } else if CorralDemoLaunch.wantsMultiHostAddEvidence(arguments: CommandLine.arguments) {
+            await runMultiHostAddSequence()
         }
     }
 
@@ -1601,6 +2037,88 @@ struct FleetView: View {
         EvidenceMarkers.write("phase-3-denied-done")
         _ = await themePause(1500)
     }
+
+    /// #401 evidence: the multi-host board sequence — All Hosts (Host A
+    /// live rows + Host B RETAINED STALE rows with last-seen age + badges,
+    /// "1 host offline" summary), then the Host A filter (badges gone, repo
+    /// chips rescoped), then Latte All Hosts, then Host B alone (stale rows
+    /// only), then a host+repo combination — Mocha + Latte per the locked
+    /// evidence gate. The driver flips the same `model.hostFilter` /
+    /// `repoFilter` state the chips set and the same flavor the Appearance
+    /// rows set — simctl cannot inject taps. Cancellation-aborts like the
+    /// other drivers, so a raced task can never corrupt the sequence.
+    private func runMultiHostBoardSequence() async {
+        guard model.mode == .demo, model.multiHostConfigured else { return }
+        guard await themePause(0) else { return }
+        theme.setFlavor(.mocha)
+        model.selectHostFilter(nil)
+        model.repoFilter = nil
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("phase-1-mh-board-all-mocha")
+        guard await themePause(9000) else { return }
+        model.selectHostFilter(model.profiles.first { $0.displayName == "Host A" }?.id)
+        guard await themePause(2000) else { return }
+        EvidenceMarkers.write("phase-2-mh-board-host-a-mocha")
+        guard await themePause(9000) else { return }
+        theme.setFlavor(.latte)
+        model.selectHostFilter(nil)
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("phase-3-mh-board-all-latte")
+        guard await themePause(9000) else { return }
+        model.selectHostFilter(model.profiles.first { $0.displayName == "Host B" }?.id)
+        guard await themePause(2000) else { return }
+        EvidenceMarkers.write("phase-4-mh-board-host-b-latte")
+        guard await themePause(9000) else { return }
+        // Host A + repo demo-atlas: both filters apply together (D4).
+        model.selectHostFilter(model.profiles.first { $0.displayName == "Host A" }?.id)
+        model.repoFilter = "demo-atlas"
+        guard await themePause(2000) else { return }
+        EvidenceMarkers.write("phase-5-mh-board-host-repo-latte")
+        guard await themePause(9000) else { return }
+        model.selectHostFilter(nil)
+        model.repoFilter = nil
+        theme.setFlavor(.mocha)
+        guard await themePause(1500) else { return }
+        EvidenceMarkers.write("phase-6-mh-board-done")
+        _ = await themePause(1500)
+    }
+
+    /// #401 evidence: the Settings Hosts list — every configured host's row
+    /// (health, URL, fingerprint/key-id/grants-expiry, error/last seen,
+    /// Retry/Rename/Remove, Host C's key-mismatch notice) in Mocha, then
+    /// Latte after a live flavor flip. The SettingsView DEBUG task scrolls
+    /// the Hosts anchor into view (the section sits below Connection on
+    /// 390x844-class screens and simctl cannot drag).
+    private func runMultiHostSettingsSequence() async {
+        guard model.mode == .demo, model.multiHostConfigured else { return }
+        guard await themePause(0) else { return }
+        theme.setFlavor(.mocha)
+        showSettings = true
+        // SettingsView's own DEBUG task scrolls settings.hosts into view.
+        guard await themePause(6000) else { return }
+        EvidenceMarkers.write("phase-1-mh-settings-mocha")
+        guard await themePause(9000) else { return }
+        theme.setFlavor(.latte)
+        guard await themePause(4000) else { return }
+        EvidenceMarkers.write("phase-2-mh-settings-latte")
+        guard await themePause(9000) else { return }
+        showSettings = false
+        guard await themePause(1500) else { return }
+        EvidenceMarkers.write("phase-3-mh-settings-done")
+        _ = await themePause(1500)
+    }
+
+    /// #401 evidence: the Add Host sheet driver — opens Settings so its
+    /// DEBUG task presents the AddHostSheet, whose own DEBUG task records
+    /// the entry (B3 name prefill) + fingerprint-confirmation phases and
+    /// dismisses itself after the final marker.
+    private func runMultiHostAddSequence() async {
+        guard model.mode == .demo, model.multiHostConfigured else { return }
+        guard await themePause(0) else { return }
+        theme.setFlavor(.mocha)
+        showSettings = true
+        _ = await themePause(1000)
+    }
 #endif
 }
 
@@ -1873,8 +2391,14 @@ struct SettingsView: View {
     @State private var registering = false
     /// #399: Add Host sheet (fingerprint-verified pairing, B3).
     @State private var showAddHost = false
-    /// #399: Remove Host confirmation (B7 local unlink).
-    @State private var confirmRemoveHost = false
+    /// #401 D7: the host row currently awaiting Remove-Host confirmation.
+    @State private var hostBeingRemoved: HostProfile?
+    /// #401 D7: the host row currently being renamed (display name only).
+    @State private var hostBeingRenamed: HostProfile?
+    @State private var renameDraft = ""
+    /// #401 D7: per-host inline errors (e.g. a rejected rename) — keyed by
+    /// profile id so a failed rename lands on the row that failed.
+    @State private var hostRowErrors: [UUID: String] = [:]
     /// #388: the paired section's small 'Re-register' action sets this —
     /// revealing the Registration-token field + Register button again so a
     /// registered device can re-point at a new host. Unpaired devices see
@@ -1998,52 +2522,85 @@ struct SettingsView: View {
                             .foregroundStyle(theme.subtext1)
                     }
                     Section("Notifications") {
-                        Toggle("State-change notifications",
-                               isOn: Binding(
-                                // #389: while the permission is BLOCKED the
-                                // switch shows OFF regardless of the persisted
-                                // intent — the blocked row below explains why
-                                // and the 'Open iOS Settings' action is the
-                                // path back. When the user allows
-                                // notifications in the system Settings and
-                                // returns, the persisted intent (if it was
-                                // ON) resurfaces automatically.
-                                get: { model.notificationsEnabled
-                                    && !model.notificationPermission.showsBlockedGuidance },
-                                set: { model.setNotificationsEnabled($0) }))
-                        // #389 evidence + DEBUG scroll: the row-level anchor
-                        // (same convention as #379's settings.device) lets
-                        // the denied-state driver bring the Notifications
-                        // section into view — Appearance + Connection +
-                        // Device sit above it on 390x844 and simctl cannot
-                        // scroll the form.
-                        .id("settings.notifications")
-                        // #389: a blocked permission (.denied/.restricted)
-                        // shows WHY + an 'Open iOS Settings' action instead
-                        // of the enable toggle silently failing — iOS
-                        // delivers nothing (no APNs token, no local alert)
-                        // until the user allows notifications there. The
-                        // status is refreshed on Settings appear and on
-                        // every foreground (refreshNotificationPermission).
-                        if model.notificationPermission.showsBlockedGuidance {
-                            Label("Corral can't alert you — notifications are off for this app in iOS Settings.",
+                        // #401 F2: with 2+ configured profiles APNs
+                        // enrollment + deep-link routing are DISABLED and
+                        // Settings explains why — a bare lane id cannot name
+                        // a host, so Corral never guesses one. Pending
+                        // empty-token cleanups (offline hosts) surface here
+                        // and retry on that host's next reconnect.
+                        if model.pushPosture == .multiHostDisabled {
+                            Label("With 2+ hosts, notifications and alert deep links are disabled — a lane id can't name a host, so Corral never guesses one.",
                                   systemImage: "bell.slash")
                                 .font(.caption)
-                                .foregroundStyle(theme.peach)
-                            Button("Open iOS Settings") {
-                                openAppSettings()
-                            }
-                            .font(.subheadline)
-                        } else {
-                            Text("Alerts when an agent starts, blocks, or finishes. No badges or catch-up.")
+                                .foregroundStyle(theme.subtext1)
+                                .id("settings.notifications.multi-host")
+                            Text("Notifications re-enable automatically when exactly one host remains.")
                                 .font(.caption)
                                 .foregroundStyle(theme.subtext1)
+                            if !model.pendingPushTokenClears.isEmpty {
+                                let names = model.profiles
+                                    .filter { model.pendingPushTokenClears.contains($0.id) }
+                                    .map(\.displayName)
+                                Label("Previously uploaded token cleanup still pending for: \(names.joined(separator: ", ")). It clears when that host reconnects, or remove the host host-side.",
+                                      systemImage: "arrow.triangle.2.circlepath")
+                                    .font(.caption)
+                                    .foregroundStyle(theme.peach)
+                            }
+                        } else {
+                            Toggle("State-change notifications",
+                                   isOn: Binding(
+                                    // #389: while the permission is BLOCKED the
+                                    // switch shows OFF regardless of the persisted
+                                    // intent — the blocked row below explains why
+                                    // and the 'Open iOS Settings' action is the
+                                    // path back. When the user allows
+                                    // notifications in the system Settings and
+                                    // returns, the persisted intent (if it was
+                                    // ON) resurfaces automatically.
+                                    get: { model.notificationsEnabled
+                                        && !model.notificationPermission.showsBlockedGuidance },
+                                    set: { model.setNotificationsEnabled($0) }))
+                            // #389 evidence + DEBUG scroll: the row-level anchor
+                            // (same convention as #379's settings.device) lets
+                            // the denied-state driver bring the Notifications
+                            // section into view — Appearance + Connection +
+                            // Device sit above it on 390x844 and simctl cannot
+                            // scroll the form.
+                            .id("settings.notifications")
+                            // #389: a blocked permission (.denied/.restricted)
+                            // shows WHY + an 'Open iOS Settings' action instead
+                            // of the enable toggle silently failing — iOS
+                            // delivers nothing (no APNs token, no local alert)
+                            // until the user allows notifications there. The
+                            // status is refreshed on Settings appear and on
+                            // every foreground (refreshNotificationPermission).
+                            if model.notificationPermission.showsBlockedGuidance {
+                                Label("Corral can't alert you — notifications are off for this app in iOS Settings.",
+                                      systemImage: "bell.slash")
+                                    .font(.caption)
+                                    .foregroundStyle(theme.peach)
+                                Button("Open iOS Settings") {
+                                    openAppSettings()
+                                }
+                                .font(.subheadline)
+                            } else {
+                                Text("Alerts when an agent starts, blocks, or finishes. No badges or catch-up.")
+                                    .font(.caption)
+                                    .foregroundStyle(theme.subtext1)
+                            }
                         }
                     }
                     .task { await model.refreshNotificationPermission() }
                 }
                 .navigationTitle("Settings")
                 .toolbar {
+                    // #401 D2: drag-to-reorder the Hosts rows (2+ hosts) —
+                    // the same store order the board's host chips follow.
+                    ToolbarItem(placement: .topBarLeading) {
+                        if model.profiles.count > 1 {
+                            EditButton()
+                        }
+                    }
                     // #379: Settings-header '?' Help entry — opens the same
                     // shared HowToConnectSheet the unpaired first launch
                     // auto-presents over the board.
@@ -2080,12 +2637,34 @@ struct SettingsView: View {
                 .sheet(isPresented: $showAddHost) {
                     AddHostSheet(model: model)
                 }
+                // #401 D7: the per-host Rename alert — display name only
+                // (B5: URL/identity changes are remove-and-re-pair).
+                .alert("Rename host",
+                       isPresented: Binding(
+                        get: { hostBeingRenamed != nil },
+                        set: { if !$0 { hostBeingRenamed = nil } }),
+                       presenting: hostBeingRenamed) { profile in
+                    TextField("Host name", text: $renameDraft)
+                    Button("Save") { renameHost(profile) }
+                    Button("Cancel", role: .cancel) {
+                        hostBeingRenamed = nil
+                    }
+                } message: { _ in
+                    Text("Changes the display name only. The URL and host identity cannot be edited — changing either is remove-and-re-pair.")
+                }
 #if DEBUG
                 .task { await scrollDeviceIntoViewForConnectEvidence(proxy) }
                 // #389: the denied-state evidence driver scrolls the
                 // Notifications section into view (its own .task — see
                 // scrollNotificationsIntoViewForDeniedEvidence).
                 .task { await scrollNotificationsIntoViewForDeniedEvidence(proxy) }
+                // #401: the multi-host Settings evidence driver scrolls the
+                // Hosts rows into view (see
+                // scrollHostsIntoViewForMultiHostEvidence); the Add Host
+                // evidence driver presents the AddHostSheet (see
+                // presentAddHostForMultiHostEvidence).
+                .task { await scrollHostsIntoViewForMultiHostEvidence(proxy) }
+                .task { await presentAddHostForMultiHostEvidence() }
 #endif
             }
         }
@@ -2125,6 +2704,31 @@ struct SettingsView: View {
         withAnimation(.easeInOut(duration: 0.35)) {
             proxy.scrollTo("settings.notifications", anchor: .top)
         }
+    }
+
+    /// #401 evidence: the multi-host Settings frame must show the Hosts
+    /// rows. Appearance + Connection push them below the fold on
+    /// 390x844-class screens and simctl cannot drag, so the DEBUG-only
+    /// launch argument scrolls the first host row's `settings.hosts`
+    /// anchor into view once the sheet settles.
+    private func scrollHostsIntoViewForMultiHostEvidence(_ proxy: ScrollViewProxy) async {
+        guard CorralDemoLaunch.wantsMultiHostSettingsEvidence(arguments: CommandLine.arguments) else { return }
+        try? await Task.sleep(for: .milliseconds(3500))
+        guard CorralDemoLaunch.wantsMultiHostSettingsEvidence(arguments: CommandLine.arguments) else { return }
+        withAnimation(.easeInOut(duration: 0.35)) {
+            proxy.scrollTo("settings.hosts", anchor: .top)
+        }
+    }
+
+    /// #401 evidence: the Add Host sheet driver presents the AddHostSheet
+    /// from the multi-host Settings state (the sheet's own DEBUG task then
+    /// records the entry + confirmation phases — simctl cannot tap the Add
+    /// host row).
+    private func presentAddHostForMultiHostEvidence() async {
+        guard CorralDemoLaunch.wantsMultiHostAddEvidence(arguments: CommandLine.arguments) else { return }
+        try? await Task.sleep(for: .milliseconds(3500))
+        guard CorralDemoLaunch.wantsMultiHostAddEvidence(arguments: CommandLine.arguments) else { return }
+        showAddHost = true
     }
 #endif
 
@@ -2173,59 +2777,24 @@ struct SettingsView: View {
         }
     }
 
-    /// #399: the Hosts section — the ACTIVE host profile's read-out plus
-    /// the Add Host entry (fingerprint-verified pairing, B3) and the
-    /// Remove Host local unlink (B7). Minimal by design: no chips, badges,
-    /// or host-list chrome (that is #401); one profile, one runtime today.
+    /// #401 D2/D7: the Hosts section — one row per configured host in the
+    /// USER-CONTROLLED order (drag to reorder with 2+ hosts; the board's
+    /// host chips follow the same store order — D2), each row carrying the
+    /// full per-host surface: connection posture + error, last seen,
+    /// Retry, fingerprint (copyable), key id, grants/expiry, rename in
+    /// place (B5) and Remove Host (B7 local unlink). The Add Host entry
+    /// (fingerprint-verified pairing, B3) closes the section.
     private var hostsSection: some View {
         Section {
-            if let profile = model.activeProfile {
-                LabeledContent("Host", value: profile.displayName)
-                    .id("settings.hosts")
-                LabeledContent("URL", value: profile.urlString)
-                if let fingerprint = profile.fingerprint {
-                    LabeledContent("Fingerprint",
-                                   value: HostKeyTrust.shortFingerprint(fingerprint))
-                        .textSelection(.enabled)
-                }
-                if let keyID = profile.keyId {
-                    LabeledContent("Key ID", value: String(keyID.prefix(16)))
-                }
-                if profile.connectionState == .awaitingFingerprintConfirmation
-                    || (profile.hostKeyB64 == nil && model.keyContinuityState == .pending) {
-                    Label("Host key not confirmed — the board stays paused until you verify this host's fingerprint.",
-                          systemImage: "lock.shield")
-                        .font(.caption)
-                        .foregroundStyle(theme.peach)
-                        .id("settings.hosts.awaiting")
-                    Button("Review host fingerprint") {
-                        model.requestFingerprintReview(profileID: profile.id)
-                    }
-                    .font(.subheadline)
-                }
-                if profile.connectionState == .keyMismatch
-                    || model.keyContinuityState == .mismatch {
-                    Label("This host presented a different host key than the one you paired. Corral paused it — the last safe board state is kept. Remove the host and pair it again with a fresh token.",
-                          systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption)
-                        .foregroundStyle(theme.red)
-                        .id("settings.hosts.mismatch")
-                }
-                Button("Remove host", role: .destructive) {
-                    confirmRemoveHost = true
-                }
-                .confirmationDialog("Remove \(profile.displayName)?",
-                                    isPresented: $confirmRemoveHost,
-                                    titleVisibility: .visible) {
-                    Button("Remove host", role: .destructive) {
-                        model.removeHost(profileID: profile.id)
-                        dismiss()
-                    }
-                    Button("Cancel", role: .cancel) {}
-                } message: {
-                    Text("Removes this host's profile, cursor and saved board metadata from this phone. The host's registry entry stays until it is removed host-side; the device key is shared and stays.")
-                }
+            ForEach(model.profiles) { profile in
+                hostRow(profile)
+                    // The first host row carries the Settings scroll anchor
+                    // (evidence driver + a11y navigation target).
+                    .id(profile == model.profiles.first
+                        ? "settings.hosts"
+                        : profile.id.uuidString)
             }
+            .onMove(perform: moveHosts)
             Button {
                 showAddHost = true
             } label: {
@@ -2236,8 +2805,173 @@ struct SettingsView: View {
         } header: {
             Text("Hosts")
         } footer: {
-            Text("Each host pairs independently with this device's shared key; adding a host verifies its fingerprint before any registration token is used.")
+            Text(model.profiles.count > 1
+                 ? "Each host pairs independently with this device's shared key. Drag the rows to set the order the board's host chips follow; URL/key changes are remove-and-re-pair."
+                 : "Each host pairs independently with this device's shared key; adding a host verifies its fingerprint before any registration token is used.")
                 .foregroundStyle(theme.subtext1)
+        }
+    }
+
+    /// One host's full Settings row (D7): health + display name header,
+    /// URL, fingerprint/key-id/grants-expiry read-out, per-posture guidance
+    /// (awaiting fingerprint / key mismatch), Retry when a connection can
+    /// be re-attempted, Rename (display name only — B5), and Remove Host.
+    @ViewBuilder
+    private func hostRow(_ profile: HostProfile) -> some View {
+        let health = BoardModel.hostChipHealth(
+            for: model.hostRuntimeFacts(for: profile))
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(theme.color(BoardModel.hostHealthToken(health)))
+                    .frame(width: 8, height: 8)
+                    .accessibilityHidden(true)
+                Text(profile.displayName)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(theme.text)
+                    .lineLimit(1)
+                Text(health.label)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(theme.color(BoardModel.hostHealthToken(health)))
+                Spacer(minLength: 0)
+                if profile.id == model.activeProfile?.id {
+                    Text("Active")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(theme.subtext1)
+                        .accessibilityLabel("Active host")
+                }
+            }
+            if let rowError = hostRowErrors[profile.id] {
+                Label(rowError, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(theme.red)
+            }
+            LabeledContent("URL", value: profile.urlString)
+                .textSelection(.enabled)
+            if let fingerprint = profile.fingerprint {
+                LabeledContent("Fingerprint",
+                               value: HostKeyTrust.shortFingerprint(fingerprint))
+                    .textSelection(.enabled)
+            }
+            if let keyID = profile.keyId {
+                LabeledContent("Key ID", value: String(keyID.prefix(16)))
+            }
+            if let expiryText = BoardModel.expiryText(epochSeconds: profile.expiryTs) {
+                LabeledContent("Grants expiry",
+                               value: profile.grants.isEmpty
+                                   ? "\(expiryText) (no grants)"
+                                   : expiryText)
+            }
+            if profile.connectionState == .awaitingFingerprintConfirmation
+                || (profile.hostKeyB64 == nil && model.keyContinuityState == .pending) {
+                Label("Host key not confirmed — the board stays paused until you verify this host's fingerprint.",
+                      systemImage: "lock.shield")
+                    .font(.caption)
+                    .foregroundStyle(theme.peach)
+                    .id("settings.hosts.awaiting")
+                Button("Review host fingerprint") {
+                    model.requestFingerprintReview(profileID: profile.id)
+                }
+                .font(.subheadline)
+            }
+            if profile.connectionState == .keyMismatch
+                || model.keyContinuityState == .mismatch
+                || model.coordinator?.posture(profileID: profile.id) == .mismatch {
+                Label("This host presented a different host key than the one you paired. Corral paused it — the last safe board state is kept. Remove the host and pair it again with a fresh token.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(theme.red)
+                    .id("settings.hosts.mismatch")
+            } else if let failure = hostConnectionFailure(profile) {
+                Label(failure, systemImage: "wifi.exclamationmark")
+                    .font(.caption)
+                    .foregroundStyle(theme.peach)
+            }
+            if let lastSeen = profile.lastSuccessfulConnectionTs, lastSeen > 0 {
+                LabeledContent("Last seen", value: lastSeenText(lastSeenMs: lastSeen))
+                    .foregroundStyle(theme.subtext1)
+            }
+            HStack(spacing: 16) {
+                Button("Retry") {
+                    model.retryHostConnection(profile)
+                }
+                .font(.subheadline)
+                .disabled(!profile.mayConnect)
+                .accessibilityLabel("Retry connection for \(profile.displayName)")
+                Button("Rename") {
+                    hostBeingRenamed = profile
+                    renameDraft = profile.displayName
+                }
+                .font(.subheadline)
+                .accessibilityLabel("Rename \(profile.displayName)")
+                Spacer(minLength: 0)
+                Button("Remove host", role: .destructive) {
+                    hostBeingRemoved = profile
+                }
+                .font(.subheadline)
+                .accessibilityLabel("Remove \(profile.displayName)")
+            }
+            .frame(minHeight: 44)
+        }
+        .padding(.vertical, 4)
+        .confirmationDialog("Remove \(profile.displayName)?",
+                            isPresented: Binding(
+                                get: { hostBeingRemoved?.id == profile.id },
+                                set: { if !$0 { hostBeingRemoved = nil } }),
+                            titleVisibility: .visible) {
+            Button("Remove host", role: .destructive) {
+                model.removeHost(profileID: profile.id)
+                hostBeingRemoved = nil
+                if model.profiles.isEmpty {
+                    dismiss()
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Removes this host's profile, cursor and saved board metadata from this phone. The host's registry entry stays until it is removed host-side; the device key is shared and stays.")
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(profile.displayName), \(health.label)")
+    }
+
+    /// The per-host connection failure copy shown under the row (D7): the
+    /// owning store's `.error` reason (active fleet store or the host's
+    /// coordinator session store) — never a board banner.
+    private func hostConnectionFailure(_ profile: HostProfile) -> String? {
+        let store: FleetStore?
+        if profile.id == model.activeProfileID {
+            store = model.fleet
+        } else {
+            store = model.coordinator?.store(profileID: profile.id)
+        }
+        guard let store,
+              case .error(let message) = store.connectionState,
+              !message.isEmpty else { return nil }
+        return message
+    }
+
+    /// Last-seen copy for a host row: "4m ago" relative text (pure).
+    private func lastSeenText(lastSeenMs: UInt64) -> String {
+        let now = UInt64(Date().timeIntervalSince1970 * 1000)
+        return RelativeTime.lastSeenLabel(lastSeenMs: lastSeenMs, nowMs: now)
+    }
+
+    /// #401 D2: Settings drag-to-reorder (2+ hosts) — routes through the
+    /// model so the store order (and therefore the board's host chips)
+    /// updates atomically.
+    private func moveHosts(from source: IndexSet, to destination: Int) {
+        model.moveHosts(from: source, to: destination)
+    }
+
+    /// Per-host rename save: only the display name (B5); a duplicate or
+    /// empty name surfaces inline on that host's row.
+    private func renameHost(_ profile: HostProfile) {
+        let name = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        hostBeingRenamed = nil
+        if let error = model.renameHost(id: profile.id, to: name) {
+            hostRowErrors[profile.id] = error
+        } else {
+            hostRowErrors.removeValue(forKey: profile.id)
         }
     }
 }
@@ -2436,10 +3170,71 @@ struct AddHostSheet: View {
             .scrollContentBackground(.hidden)
             .background(theme.base)
             .preferredColorScheme(theme.flavor.isLight ? .light : .dark)
+            // #401 rev B3: prefill the host NAME from the URL as it is
+            // typed (Tailscale first label) until the user has entered a
+            // name — the reviewed gap where the sheet bound `name` but
+            // never used the existing HostURLForm.displayNameCandidate.
+            .onChange(of: urlString) { _, newValue in
+                guard name.isEmpty else { return }
+                name = HostURLForm.displayNameCandidate(for: newValue)
+            }
         }
         .presentationDragIndicator(.visible)
         .translucentSheetBackdrop(theme.base)
+#if DEBUG
+        // #401 evidence: the Add Host sheet records its two phases — (1)
+        // name/URL entry with the B3 URL-derived NAME PREFILL (the driver
+        // types the URL through the real binding so the real onChange fills
+        // the name), (2) the fingerprint confirmation phase fed by the
+        // synthetic fixture (no network on the evidence sim). Mocha entry,
+        // Latte confirmation — representative light/dark per locked H.
+        .task {
+            guard CorralDemoLaunch.wantsMultiHostAddEvidence(arguments: CommandLine.arguments) else { return }
+            guard await settingsSettle() else { return }
+            theme.setFlavor(.mocha)
+            urlString = DemoFleet.DemoHosts.addHostURL
+            guard await settingsSettle() else { return }
+            EvidenceMarkers.write("phase-1-mh-add-entry-mocha")
+            guard await hold() else { return }
+            theme.setFlavor(.latte)
+            guard await settingsSettle() else { return }
+            prepared = AppModel.PreparedHostPairing(
+                displayName: name.isEmpty ? "demo-host-d" : name,
+                urlString: urlString,
+                hostKey: HostKeyResponse(algorithm: "X25519",
+                                         publicKey: DemoFleet.DemoHosts.addHostKey,
+                                         note: nil),
+                fingerprint: HostKeyTrust.fingerprint(
+                    forBase64: DemoFleet.DemoHosts.addHostKey) ?? "FINGER-DEMO")
+            guard await settingsSettle() else { return }
+            EvidenceMarkers.write("phase-2-mh-add-confirm-latte")
+            _ = await hold()
+            try? await Task.sleep(for: .milliseconds(1500))
+            EvidenceMarkers.write("phase-3-mh-add-done")
+            dismiss()
+        }
+#endif
     }
+
+#if DEBUG
+    private func settingsSettle() async -> Bool {
+        do {
+            try await Task.sleep(for: .milliseconds(2500))
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func hold() async -> Bool {
+        do {
+            try await Task.sleep(for: .milliseconds(9000))
+            return true
+        } catch {
+            return false
+        }
+    }
+#endif
 
     /// Phase 1: name + URL entry.
     private var entrySection: some View {

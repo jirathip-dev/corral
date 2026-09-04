@@ -62,6 +62,7 @@ TEST_SOURCE_FILE = "ios/FleetNotifierTests/FleetNotifierTests.swift"
 # #315: canonical transcript provenance — Models (unknown kind + prompt_request_id),
 # RecentOutputModel (client reclassification removed), FleetViews (unknown rendering).
 APPROVED_RELEASE_SOURCE_DIGEST = (
+    # #401: multi-host board + Settings UX — BoardModel host-chip/host-section projections, AppModel host filter/aggregate accessors + N2 recents-route fix, FleetViews multi-host renderer + Settings per-host rows + F2 text + Add-Host prefill, DemoFleet multi-host seed, TimeInState last-seen label — re-pinned over the #401 source set.
     # #315: re-pinned after the canonical provenance read-model change.
     # #316 V3 context split: canonical-kind partition, structured session
     # status, and locked accessibility roles updated RecentOutputModel,
@@ -235,9 +236,10 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # 400 r1: the 02:50 self-test PASS predated the final wiring/plumbing
     # edits to the Release sources (03:03); digest re-pinned to the tree
     # actually committed at 39e4c83 and built below.
-    "2379f5cb5e94f7ee5aa9c5bd3cfd75545a33fcff5d55e6c035805c5f135383d7"
+    "e7afb97e37e3a5588226823b278356de7cf7c45c7f973a2b68128c2ed57240ca"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
+    # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
     # #332 R4: pin the focused grant fixture independently from the Release
     # app source manifest so a test-source mutation cannot be green-on-green.
     # R6: integration's #319/#320 FleetNotifierTests changes are included;
@@ -338,7 +340,7 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # RecentsCompositeRouteTests, PushPostureModelTests) added to
     # FleetNotifierTests.swift, and two wiring pins updated for the
     # composite recents target — re-pinned.
-    "e7aa7657bd47356291c6110bfabeca9ae084a7bad896b9c6e0e0df6a81177be2"
+    "b8f24098419839fd8d15be803d1b3e0c6be74fd1f07e28f8fde76c131a32bf99"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

@@ -242,4 +242,91 @@ enum DemoFleet {
         blocks.flatMap { $0.text.components(separatedBy: .newlines) }
     }
 }
+extension DemoFleet {
+
+    /// Synthetic host fixture: display names + pinned X25519 keys used ONLY
+    /// by the DEBUG multi-host evidence seeding (fresh simulators; real
+    /// pairing is never touched by demo launch args).
+    enum DemoHosts {
+        static let hostAKey = Data(repeating: 9, count: 32).base64EncodedString()
+        static let hostBKey = Data(repeating: 10, count: 32).base64EncodedString()
+        static let hostCKey = Data(repeating: 11, count: 32).base64EncodedString()
+        static let addHostKey = Data(repeating: 12, count: 32).base64EncodedString()
+        static let urls = [
+            "https://demo-host-a.example.ts.net",
+            "https://demo-host-b.example.ts.net",
+            "https://demo-host-c.example.ts.net",
+        ]
+        static let addHostURL = "demo-host-d.tail0123.ts.net"
+    }
+
+    /// Host A's LIVE rows: the same repo vocabulary as the single-host seed
+    /// so multi-host frames read as one synthetic fleet. A blocked demo-orbit
+    /// row SHARES its raw agent id with Host B's seed (C2 — equal raw ids
+    /// coexist; the composite identity + row badge tell them apart).
+    static func multiHostSeedA(now: UInt64) -> [String: Agent] {
+        var agents: [String: Agent] = [:]
+        func agent(_ id: String, tool: String, state: AgentState,
+                   reason: String?, displayName: String, repo: String?, branch: String?,
+                   seq: UInt64, tsOffset: UInt64, paneRef: String) -> Agent {
+            Agent(agentId: id, tool: tool, state: state, reason: reason,
+                  seq: seq, ts: now - tsOffset, capabilities: ["read_tail"],
+                  workspace: Workspace(repo: repo, branch: branch,
+                                       worktreePath: nil, prNumber: nil,
+                                       ciStatus: .success, dirty: false,
+                                       ahead: 0, behind: 0),
+                  attachment: Attachment(kind: "herdr", reference: paneRef),
+                  displayName: displayName, title: nil)
+        }
+        agents["herdr:demo-orbit-blocked"] = agent(
+            "herdr:demo-orbit-blocked", tool: "claude", state: .blocked,
+            reason: "waiting on a payload review decision",
+            displayName: "demo-orbit-blocked", repo: "demo-orbit",
+            branch: "demo-payload", seq: 8, tsOffset: 90, paneRef: "w23:p2")
+        agents["herdr:demo-atlas-working"] = agent(
+            "herdr:demo-atlas-working", tool: "claude", state: .working,
+            reason: "streaming a segmented recent output",
+            displayName: "demo-atlas-worker", repo: "demo-atlas",
+            branch: "demo-recent", seq: 10, tsOffset: 12, paneRef: "w24:p1")
+        agents["herdr:demo-ledger-idle"] = agent(
+            "herdr:demo-ledger-idle", tool: "codex", state: .idle,
+            reason: nil, displayName: "demo-ledger-idle", repo: "demo-ledger",
+            branch: "demo-embed", seq: 5, tsOffset: 1800, paneRef: "w22:p2")
+        return agents
+    }
+
+    /// Host B's RETAINED rows (host offline — every row stale, last seen
+    /// ~6 minutes ago). Shares demo-orbit/demo-atlas repos AND one raw
+    /// agent id with Host A so All-Hosts merges the repo subgroup and the
+    /// composite badges stay distinct.
+    static func multiHostSeedB(now: UInt64) -> [String: Agent] {
+        var agents: [String: Agent] = [:]
+        func agent(_ id: String, tool: String, state: AgentState,
+                   reason: String?, displayName: String, repo: String?, branch: String?,
+                   seq: UInt64, tsOffset: UInt64, paneRef: String) -> Agent {
+            Agent(agentId: id, tool: tool, state: state, reason: reason,
+                  seq: seq, ts: now - tsOffset, capabilities: ["read_tail"],
+                  workspace: Workspace(repo: repo, branch: branch,
+                                       worktreePath: nil, prNumber: nil,
+                                       ciStatus: .success, dirty: false,
+                                       ahead: 0, behind: 0),
+                  attachment: Attachment(kind: "herdr", reference: paneRef),
+                  displayName: displayName, title: nil)
+        }
+        agents["herdr:demo-orbit-blocked"] = agent(
+            "herdr:demo-orbit-blocked", tool: "codex", state: .blocked,
+            reason: "waiting on a payload review decision",
+            displayName: "demo-orbit-blocked", repo: "demo-orbit",
+            branch: "demo-payload", seq: 9, tsOffset: 360_000, paneRef: "w33:p2")
+        agents["herdr:demo-atlas-working"] = agent(
+            "herdr:demo-atlas-working", tool: "codex", state: .working,
+            reason: "streaming a segmented recent output",
+            displayName: "demo-atlas-worker", repo: "demo-atlas",
+            branch: "demo-recent", seq: 7, tsOffset: 390_000, paneRef: "w34:p1")
+        return agents
+    }
+}
 #endif
+
+// MARK: - #401 multi-host demo fixture (deterministic evidence seeding)
+

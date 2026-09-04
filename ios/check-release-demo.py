@@ -216,7 +216,10 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # absence, Device identity rows, Settings '?' entry, unpaired-launch
     # auto-present, numbered connect-sheet steps + copy-host + README link)
     # — re-pinned.
-    "111fed57252ab3cdadd03909587cd63ba2076b355a8467c26bfec7d540ace153"
+    # 2026-09-04 (#379 R1): the #379 opener pins unwrap their line numbers
+    # with XCTUnwrap so a mutated (missing-opener) source fails cleanly
+    # instead of crashing on an empty array — re-pinned.
+    "5f6f0ddb1778d26df274af3cf0590455f0e03cd532e5c6f58a6d5c15c8c60127"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

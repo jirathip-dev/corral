@@ -3763,7 +3763,9 @@ final class SettingsConnectWiringTests: XCTestCase {
                        "the '?' button must be the Settings sheet's only help opener")
         // The debug scan runs over the SAME slice so line numbers agree.
         let debug = debugActiveLines(slice)
-        XCTAssertFalse(debug.contains(openers[0]),
+        let openerLine = try XCTUnwrap(openers.first,
+                                       "the '?' opener must exist (see count pin above)")
+        XCTAssertFalse(debug.contains(openerLine),
                        "the '?' help entry must be release-active")
         XCTAssertEqual(lineNumbers(of: ".sheet(isPresented: $showConnectHelp)",
                                    in: slice).count, 1,
@@ -3790,10 +3792,12 @@ final class SettingsConnectWiringTests: XCTestCase {
         let releaseOpeners = openers.filter { !debug.contains($0) }
         XCTAssertEqual(releaseOpeners.count, 1,
                        "exactly one RELEASE-active connect-sheet opener must exist (the unpaired auto-present)")
+        let releaseOpener = try XCTUnwrap(releaseOpeners.first,
+                                          "the auto-present opener must exist (see count pin above)")
         let firstGuard = try XCTUnwrap(lineNumbers(of: "model.mode == .needsSetup",
                                                    in: slice).first,
                                        "the auto-present must gate on the unpaired mode")
-        XCTAssertLessThan(firstGuard, releaseOpeners[0],
+        XCTAssertLessThan(firstGuard, releaseOpener,
                           "the auto-present opener must sit behind a needsSetup gate")
         XCTAssertTrue(slice.contains("autoPresentedConnectHelp"),
                       "the auto-present must be one-shot (never re-pop on a later device removal)")

@@ -59,6 +59,7 @@ A static board snapshot (phone + wide layouts, fully fictional sample data) is k
 
 - [docs/QUICKSTART.md](docs/QUICKSTART.md) — run the daemon, register a device, grant `read_tail`, read the fleet
 - [docs/OPERATIONS.md](docs/OPERATIONS.md) — device lifecycle, out-of-band grants, remote access from iOS (Tailscale Serve), troubleshooting
+- [docs/PUSH.md](docs/PUSH.md) — push architecture (Tailscale reachability vs APNs delivery), `.p8` provisioning + launchd wiring
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — the read model, signed read plane, security boundaries
 - [docs/DEVELOPING.md](docs/DEVELOPING.md) — workspace layout, quality gates
 

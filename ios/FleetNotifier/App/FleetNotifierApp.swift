@@ -43,6 +43,7 @@ struct FleetNotifierApp: App {
                                 || CorralDemoLaunch.wantsSettingsEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsThemeEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsGlassEvidence(arguments: CommandLine.arguments)
+                                || CorralDemoLaunch.wantsCollapseEvidence(arguments: CommandLine.arguments)
                                 || CommandLine.arguments.contains("-demoMode") {
                         model.enterDemo()
                     }
@@ -88,6 +89,10 @@ struct FleetNotifierApp: App {
 /// `-corralDemoGlassEvidence` (#385) seeds the demo fleet and records the
 /// translucent recents + Settings sheets (Mocha + Latte) over the busy
 /// board.
+/// `-corralDemoCollapseEvidence` (#386) seeds the demo fleet and records
+/// the board hierarchy change — thick collapsible status bars vs demoted
+/// repo subgroup captions — with the blocked section collapsed and the
+/// working section expanded (Mocha + Latte), then all sections collapsed.
 enum CorralDemoLaunch {
     static let detailArgument = "-corralDemoDetail"
     static let reopenEvidenceArgument = "-corralDemoUXEvidence"
@@ -96,6 +101,7 @@ enum CorralDemoLaunch {
     static let themeEvidenceArgument = "-corralDemoThemeEvidence"
     static let connectEvidenceArgument = "-corralDemoConnectEvidence"
     static let glassEvidenceArgument = "-corralDemoGlassEvidence"
+    static let collapseEvidenceArgument = "-corralDemoCollapseEvidence"
 
     static var detailAgentID: String {
         DemoFleet.featuredAgentID
@@ -130,6 +136,14 @@ enum CorralDemoLaunch {
     /// `FleetView.runGlassSequence()`.
     static func wantsGlassEvidence(arguments: [String]) -> Bool {
         arguments.contains(glassEvidenceArgument)
+    }
+
+    /// #386: records the board-hierarchy change — thick collapsible
+    /// status bars vs demoted repo captions, one section collapsed and
+    /// one expanded (Mocha + Latte) — see
+    /// `FleetView.runCollapseSequence()`.
+    static func wantsCollapseEvidence(arguments: [String]) -> Bool {
+        arguments.contains(collapseEvidenceArgument)
     }
 }
 #endif

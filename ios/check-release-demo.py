@@ -172,7 +172,18 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # tint fallback below), both sheets re-pointed at it, the #385
     # glass-evidence driver (FleetNotifierApp/FleetViews), and the
     # SheetBackdrop WCAG/blend constants (AppTheme) — re-pinned.
-    "3ee52e9a6bd3b1060f841cb94ba8ea64685ded175fb536393dacf3b00efb8aec"
+    # 2026-09-04 (#386): board hierarchy — status sections became THICK
+    # collapsible bars (BoardModel.StatusSectionCollapse session state +
+    # FleetViews statusSectionBar whole-bar toggle + surface1 tier +
+    # chevron, instant collapse so Reduce Motion is unaffected), repo
+    # subgroup headers demoted to caption2/subtext1 captions, and the
+    # FleetNotifierApp/FleetViews #386 collapse-evidence driver
+    # (-corralDemoCollapseEvidence) — re-pinned.
+    # #386 r1: the evidence driver collapses through the idempotent
+    # StatusSectionCollapse.collapse(_:) (the .task(id:) hook fires twice
+    # on demo entry; a non-idempotent toggle let the second pass undo the
+    # first) — re-pinned.
+    "d3a217c3e4684a733f2496662d4133660862f91602d68b65dd8d57b3ab40fd98"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #332 R4: pin the focused grant fixture independently from the Release
@@ -230,7 +241,14 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # was added to FleetNotifierTests.swift; the SettingsAccessWiringTests
     # opener count moved 3 -> 4 for the #385 glass evidence driver —
     # re-pinned.
-    "87fa5b4a0f161716ec1da2fecf7df3299db066c3b30a8442bd8de1066b0257b3"
+    # 2026-09-04 (#386): BoardStatusSectionCollapseTests (fresh
+    # default-expanded, per-section toggle, per-session independence) and
+    # StatusSectionCollapseWiringTests (thick-bar toggle pins, demoted
+    # caption pins, no-animation pins) added; the #371 BoardV2WiringTests
+    # subgroup pin set rescoped to the non-collapsible caption — re-pinned.
+    # #386 r1: idempotent-collapse test added with the evidence-driver fix
+    # — re-pinned.
+    "93259593a234d87d91eb2f134e22cb86b37cc76dc061cbb32c9c3611a7ba1f2c"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

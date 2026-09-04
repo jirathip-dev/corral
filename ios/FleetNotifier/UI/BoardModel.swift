@@ -185,6 +185,43 @@ enum BoardModel {
         return subgroups
     }
 
+    // MARK: - #386 status-section collapse (per-session view state)
+
+    /// Which status sections the user collapsed during THIS board session.
+    /// A fresh state has every section EXPANDED; `toggle(_:)` collapses an
+    /// expanded section and expands a collapsed one. The state is
+    /// in-memory only and is NEVER persisted (consistent with #373 recents
+    /// blocks): the board owns one instance per session, so a relaunch
+    /// always starts fully expanded. Sections are keyed by
+    /// `AgentState.rawValue` — the same stable id `StatusSection` exposes —
+    /// so no wire model needs new conformances.
+    struct StatusSectionCollapse: Equatable, Sendable {
+        private(set) var collapsed: Set<String> = []
+
+        /// A fresh board session: every status section expanded.
+        static let fresh = StatusSectionCollapse()
+
+        func isCollapsed(_ state: AgentState) -> Bool {
+            collapsed.contains(state.rawValue)
+        }
+
+        /// Collapse an expanded section / expand a collapsed one.
+        mutating func toggle(_ state: AgentState) {
+            if collapsed.contains(state.rawValue) {
+                collapsed.remove(state.rawValue)
+            } else {
+                collapsed.insert(state.rawValue)
+            }
+        }
+
+        /// Collapse a section (no-op when already collapsed). Idempotent —
+        /// the deterministic evidence driver uses this so a re-fired task
+        /// can never undo a collapse (toggle stays the interactive path).
+        mutating func collapse(_ state: AgentState) {
+            collapsed.insert(state.rawValue)
+        }
+    }
+
     // MARK: - Persistent connection indicator (#166 review F1)
 
     /// The persistent board connection indicator, modeled as a pure function

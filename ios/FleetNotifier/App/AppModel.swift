@@ -111,10 +111,14 @@ struct DriveBanner: Equatable, Sendable {
 
 /// One logical read drive. The identity is stable across duplicated row
 /// surfaces, so a double tap cannot create two signed request ids.
+/// #400 C2/E1: the key is scoped by the composite identity's host profile,
+/// so two hosts driving an EQUAL raw target id never block or collide.
 private struct DriveActionKey: Hashable, Sendable {
     let capability: Capability
     let target: String
     let identity: String
+    /// Owning host profile (nil = the legacy single-host runtime).
+    let hostProfileID: UUID?
 }
 
 /// #364 C: a recents-sheet presentation request. Carries a monotonic id so
@@ -123,9 +127,35 @@ private struct DriveActionKey: Hashable, Sendable {
 /// request is nil again, so the next open is a real nil → request
 /// transition SwiftUI always presents (the pre-#364 sticky latch compared
 /// equal and swallowed first taps after dismissal).
+/// #400 E1: the request carries the COMPOSITE identity (host_profile_id +
+/// raw agent id) — the sheet resolves EXACTLY the owning host's store, so
+/// an equal raw id on another host can never be opened or driven.
 struct RecentsRequest: Identifiable, Equatable, Sendable {
     let id: UInt64
+    /// Raw agent id unchanged from the wire.
     let agentId: String
+    /// The profile the row belongs to (nil = legacy single-host runtime /
+    /// demo, which resolve to the active store).
+    let hostProfileID: UUID?
+
+    init(id: UInt64, agentId: String, hostProfileID: UUID?) {
+        self.id = id
+        self.agentId = agentId
+        self.hostProfileID = hostProfileID
+    }
+}
+
+/// #400 E2: the recents-sheet availability of one composite target.
+enum RecentsRouteState: Equatable, Sendable {
+    /// The owning host is connected — reloads are permitted.
+    case live
+    /// The owning host disconnected while output was already loaded: the
+    /// loaded content stays visible with an Offline marker and reload is
+    /// disabled until reconnection.
+    case offline
+    /// The owning host is disconnected and nothing was loaded: show
+    /// unavailable; never synthesize or load persisted content.
+    case unavailable
 }
 
 /// App-level orchestration for the READ-ONLY client (#354 L2): identity,
@@ -153,6 +183,21 @@ final class AppModel: ObservableObject {
         case pending
         case verified
         case mismatch
+    }
+
+    /// #400 F1/F2: the app-wide push posture (behavior + state model; the
+    /// Settings text/state rendering is #401's surface).
+    enum PushPosture: Equatable, Sendable {
+        /// Exactly one configured profile: the existing single-host APNs
+        /// enrollment and notification behavior is preserved (F1).
+        case singleHost
+        /// Two or more profiles: APNs enrollment and notification
+        /// deep-link routing are DISABLED — the app never guesses a host
+        /// from a bare agent_id. Previously uploaded tokens are cleared
+        /// best-effort from every reachable host via the signed
+        /// empty-token path; offline hosts carry a pending clear that is
+        /// retried on reconnect (F2).
+        case multiHostDisabled
     }
 
     /// #399 B6/B3: the sheet request that pauses a host profile on the
@@ -283,6 +328,19 @@ final class AppModel: ObservableObject {
     /// #399 B6: non-nil while a profile is paused awaiting fingerprint
     /// confirmation (legacy migration) — the board presents the sheet.
     @Published var fingerprintConfirmation: FingerprintConfirmationRequest?
+    /// #400: the per-host stream coordinator for every NON-active profile
+    /// (the ACTIVE profile keeps the legacy single-host runtime fields
+    /// below for F1 parity). Each coordinator session owns one independent
+    /// stream/cursor/generation/task set (C3); nil when no profile store
+    /// is configured (legacy-only fixtures).
+    @Published private(set) var coordinator: HostStreamCoordinator?
+    /// #400 F1/F2: notification posture of the whole app, derived from the
+    /// configured profile count.
+    @Published private(set) var pushPosture: PushPosture = .singleHost
+    /// #400 F2: host profiles whose previously uploaded APNs token could
+    /// not be cleared because the host was offline — the clear retries on
+    /// that host's next successful connection.
+    @Published private(set) var pendingPushTokenClears: Set<UUID> = []
 
     var signer: DeviceSigner?
     private var notifier: LocalNotifier?
@@ -442,11 +500,33 @@ final class AppModel: ObservableObject {
         // #399 B4: the APNs upload path consults the app-wide continuity
         // gate; install the model predicate only when a profile store is
         // configured (legacy-only fixtures keep the default allow).
+        // #400 F2: with 2+ configured profiles the predicate DENIES
+        // everything — enrollment is disabled and no token can reach any
+        // daemon (an old daemon may still hold a previously uploaded token
+        // until the explicit empty-token cleanup clears it).
         if profileStore != nil {
             KeyContinuityGate.setPushPredicate { [weak self] in
                 guard let self else { return true }
-                return await MainActor.run { self.keyContinuityAllowsLiveWork }
+                return await MainActor.run {
+                    self.profiles.count <= 1 && self.keyContinuityAllowsLiveWork
+                }
             }
+        }
+        // #400 C3/E3: the per-host coordinator owns every NON-active
+        // profile's stream lifecycle. Created up front (profile mutations
+        // reconcile sessions through it); the ACTIVE profile is excluded
+        // and keeps the legacy runtime for F1 parity.
+        if let profileStore {
+            let coordinator = HostStreamCoordinator(
+                defaults: defaults,
+                session: session,
+                profileStore: profileStore,
+                signerProvider: { [weak self] in self?.signer })
+            coordinator.activeProfileID = activeProfileID
+            coordinator.onSessionConnected = { [weak self] profileID in
+                self?.retryPendingPushTokenClear(profileID: profileID)
+            }
+            self.coordinator = coordinator
         }
         // #399 B6: when the profile store is configured, the store is the
         // source of truth for host pairing. The FIRST upgraded launch
@@ -462,6 +542,7 @@ final class AppModel: ObservableObject {
             identityLifecycle.setCurrent(mode: .needsSetup, hostURL: nil,
                                          keyId: nil, signerPublicKeyB64: nil)
         }
+        refreshPushPosture()
     }
 
     // MARK: - #399 host profiles (B1-B7)
@@ -469,6 +550,103 @@ final class AppModel: ObservableObject {
     /// Ordered profiles mirror of the store.
     private func reloadProfiles(from store: HostProfileStore) {
         profiles = store.orderedProfiles
+        // #400: profile mutations reconcile the coordinator's sessions
+        // (removal cancels only that host's tasks — E3) and refresh the
+        // F1/F2 notification posture.
+        syncCoordinator(startStreams: false)
+        refreshPushPosture()
+    }
+
+    /// #400 C3/E3: reconcile the coordinator's per-host sessions against
+    /// the CURRENT profile set. Sessions for removed/paused profiles are
+    /// torn down (stream + tasks canceled, rows purged — E3); sessions
+    /// for new connectable profiles are created. `startStreams` opens the
+    /// not-yet-open sessions' streams (called by startLive — never from
+    /// inside reload, where the caller is mid-mutation and startLive will
+    /// follow).
+    private func syncCoordinator(startStreams: Bool) {
+        guard let store = profileStore, let coordinator else { return }
+        coordinator.activeProfileID = activeProfileID
+        coordinator.update(profiles: store.orderedProfiles,
+                           startStreams: startStreams)
+    }
+
+    /// #400 F1/F2: derive the notification posture from the configured
+    /// profile count. Crossing INTO multi-host (2+) disables APNs
+    /// enrollment + deep-link routing and schedules best-effort
+    /// empty-token clears of any previously uploaded token; crossing back
+    /// to exactly one profile re-arms the single-host notification half
+    /// (the next startLive() runs enrollment again).
+    private func refreshPushPosture() {
+        let posture: PushPosture = profiles.count > 1 ? .multiHostDisabled : .singleHost
+        if pushPosture != posture {
+            pushPosture = posture
+            if posture == .singleHost {
+                notificationsConfigured = false
+            }
+        }
+        if posture == .multiHostDisabled {
+            schedulePushTokenClearsIfPreviouslyUploaded()
+        }
+    }
+
+    /// #400 F2: best-effort CLEAR each host's previously uploaded APNs
+    /// token via the existing signed empty-token path. Only runs when this
+    /// device actually holds/recorded a token (a fresh process with no
+    /// upload history has nothing to clear). Reachable hosts clear
+    /// immediately; unreachable hosts land in `pendingPushTokenClears` and
+    /// retry on that host's next successful connection.
+    private func schedulePushTokenClearsIfPreviouslyUploaded() {
+        guard pushPosture == .multiHostDisabled else { return }
+        guard let delegate = AppDelegate.shared, delegate.hasUploadedDeviceToken() else {
+            return
+        }
+        guard signer != nil else { return }
+        for profile in profiles {
+            guard profile.keyId != nil,
+                  let url = URL(string: profile.urlString) else { continue }
+            clearUploadedToken(profileID: profile.id, hostURL: url,
+                               profileKeyId: profile.keyId ?? "")
+        }
+    }
+
+    private func clearUploadedToken(profileID: UUID, hostURL: URL, profileKeyId: String) {
+        guard let signer else { return }
+        let context = lifecycleContext()
+        let taskId = UUID()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.lifecycleTasks.removeValue(forKey: taskId) }
+            guard !Task.isCancelled, self.isCurrent(context) else { return }
+            let client = DriveClient(host: hostURL, session: self.session)
+            do {
+                // Empty token = the daemon's documented clear path.
+                _ = try await client.registerDeviceToken("", keyId: profileKeyId,
+                                                         signer: signer)
+                guard !Task.isCancelled, self.isCurrent(context) else { return }
+                self.pendingPushTokenClears.remove(profileID)
+            } catch {
+                guard !Task.isCancelled, self.isCurrent(context) else { return }
+                // Offline host: keep the clear pending and retry on the
+                // host's next successful connection (F2).
+                self.pendingPushTokenClears.insert(profileID)
+            }
+        }
+        lifecycleTasks[taskId] = task
+    }
+
+    /// #400 F2: retry one host's pending token clear when it reconnects.
+    func retryPendingPushTokenClear(profileID: UUID) {
+        guard pendingPushTokenClears.contains(profileID) else { return }
+        guard let store = profileStore,
+              let profile = store.profile(id: profileID),
+              let url = URL(string: profile.urlString),
+              let keyId = profile.keyId else {
+            pendingPushTokenClears.remove(profileID)
+            return
+        }
+        pendingPushTokenClears.remove(profileID)
+        clearUploadedToken(profileID: profileID, hostURL: url, profileKeyId: keyId)
     }
 
     /// The profile the single-host runtime is bound to: the persisted
@@ -580,6 +758,9 @@ final class AppModel: ObservableObject {
             // gate (parity with the pre-#399 Connection flow).
             keyContinuityState = .notPinned
         }
+        // #400: the active profile is now excluded from the coordinator —
+        // reconcile sessions for the remaining hosts.
+        syncCoordinator(startStreams: false)
     }
 
     /// #399 B4: fail-closed gate for every live read/write route. A
@@ -662,8 +843,14 @@ final class AppModel: ObservableObject {
     func removeHost(profileID: UUID) {
         guard let store = profileStore else { return }
         let wasActive = activeProfile?.id == profileID
-        cancelLifecycleTasks()
-        stopLive()
+        if wasActive {
+            // Removing the ACTIVE host tears down the whole single-host
+            // runtime first (stream + every task), then unlinks the
+            // profile and rebinds the next ordered host (or returns to
+            // setup).
+            cancelLifecycleTasks()
+            stopLive()
+        }
         store.removeProfile(id: profileID)
         reloadProfiles(from: store)
         if wasActive {
@@ -690,6 +877,23 @@ final class AppModel: ObservableObject {
                 mode = .needsSetup
                 identityLifecycle.setCurrent(mode: .needsSetup, hostURL: nil,
                                              keyId: nil, signerPublicKeyB64: nil)
+            }
+        } else {
+            // #400 E3: removing a NON-active host cancels ONLY that host's
+            // tasks and purges ONLY that composite target's stream, tails,
+            // and sheet state — every other host keeps streaming and the
+            // active board is untouched (the old code canceled the whole
+            // app here, freezing the active host too).
+            coordinator?.remove(profileID: profileID)
+            cancelHostDriveTasks(hostProfileID: profileID)
+            if recentsRequest?.hostProfileID == profileID {
+                recentsRequest = nil
+            }
+            // #400 F2: a 2+ → 1 transition re-arms the single-host
+            // notification/APNs half (enrollment + deep links).
+            if profiles.count == 1, mode == .live {
+                notificationsConfigured = false
+                startLive()
             }
         }
     }
@@ -1174,6 +1378,11 @@ final class AppModel: ObservableObject {
 
     func startLive() {
         guard let hostURL else { return }
+        // #400 C3: start/reconnect every OTHER configured host
+        // concurrently — independent of the ACTIVE profile's gates below
+        // (a paused or mismatched active host must never freeze the rest
+        // of the board). Idempotent per host.
+        syncCoordinator(startStreams: true)
         // #399 B6: a profile paused on fingerprint confirmation never
         // opens a stream — the board presents the confirmation sheet and
         // only confirmFingerprint() releases it.
@@ -1235,6 +1444,8 @@ final class AppModel: ObservableObject {
         // fleet emits no frames, so apply() alone would never clear it).
         // #399 C6: stamp last-successful-connection + persist the
         // allowlisted board metadata cache on connection success.
+        // #400 F2: an ACTIVE-host reconnect also retries any pending
+        // empty-token clear left by the multi-host safety gate.
         fleet.onConnected = { [weak self] in
             guard let self else { return }
             if self.banner?.kind == "stream_connection" {
@@ -1243,6 +1454,7 @@ final class AppModel: ObservableObject {
             if let profile = self.activeProfile {
                 self.profileStore?.noteLastSuccessfulConnection(id: profile.id)
                 self.persistBoardMetadata()
+                self.retryPendingPushTokenClear(profileID: profile.id)
             }
         }
         // #399 B4/C1: only accept frames stamped with the pinned host
@@ -1264,6 +1476,12 @@ final class AppModel: ObservableObject {
         // register()). Guard it to once per process.
         guard !notificationsConfigured else { return }
         notificationsConfigured = true
+        // #400 F2: with 2+ configured profiles APNs enrollment is DISABLED
+        // (and the DEBUG local bridge mirrors the release posture — no
+        // state-change notifications either). The flag stays set so the
+        // half never re-runs while multi-host; removing down to one host
+        // resets it and re-arms the single-host behavior (F1).
+        guard profiles.count <= 1 else { return }
         notifier = LocalNotifier()
         notifier?.isEnabled = notificationsEnabled
         // This OS permission request captures no host, key, fleet, or mode;
@@ -1271,6 +1489,9 @@ final class AppModel: ObservableObject {
         let notifierForAuthorization = notifier
         Task { await notifierForAuthorization?.requestAuthorization() }
         // #354 L2: notification tap → deep link to the agent row's recents.
+        // #400 F2: the deep-link closure is only installed on the
+        // single-host path — with 2+ profiles the app never guesses a host
+        // from a bare agent_id.
         notifier?.onOpenAgent = { [weak self] agentId in
             self?.openRecents(for: agentId)
         }
@@ -1285,6 +1506,15 @@ final class AppModel: ObservableObject {
     }
 
     func stopLive() {
+        // #400 C3: cancel every coordinator host's stream/tasks when the
+        // app backgrounds; persist their per-host cursors + allowlisted
+        // caches before the session ends (C5/C6).
+        if let coordinator, let store = profileStore {
+            let profiles = store.orderedProfiles
+            coordinator.persistCursors(profiles: profiles)
+            coordinator.persistAllMetadata(profiles: profiles)
+            coordinator.stopAll()
+        }
         fleet.disconnect()
         fleet.persistCursor()
         // #399: mirror the active profile's cursor into the profile store
@@ -1327,17 +1557,31 @@ final class AppModel: ObservableObject {
         isRefreshingFleet = true
         defer { isRefreshingFleet = false }
         let context = lifecycleContext()
+        // #400 C3: pull-to-refresh fans out to every configured host
+        // CONCURRENTLY. The ACTIVE host's fetch keeps its exact legacy
+        // behavior (banner on failure); every coordinator host refreshes
+        // in parallel and applies its own result — a failing host never
+        // blocks or erases the hosts that succeeded.
         let client = CorraldClient(host: hostURL, session: session)
-        do {
-            let snapshot = try await client.fetchSnapshot()
-            guard !Task.isCancelled, isCurrent(context) else { return }
-            fleet.applyRefresh(snapshot)
-            persistBoardMetadata()
-        } catch {
-            guard !Task.isCancelled, isCurrent(context) else { return }
-            banner = .error("fleet_refresh",
-                            "Fleet refresh failed — \(error.localizedDescription)")
+        let activeRefresh = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let snapshot = try await client.fetchSnapshot()
+                guard !Task.isCancelled, self.isCurrent(context) else { return }
+                self.fleet.applyRefresh(snapshot)
+                self.persistBoardMetadata()
+            } catch {
+                guard !Task.isCancelled, self.isCurrent(context) else { return }
+                self.banner = .error("fleet_refresh",
+                                     "Fleet refresh failed — \(error.localizedDescription)")
+            }
         }
+        let coordinatorRefresh = Task { @MainActor [weak self] in
+            guard let self, let store = self.profileStore else { return }
+            _ = await self.coordinator?.refreshAll(profiles: store.orderedProfiles)
+        }
+        await activeRefresh.value
+        _ = await coordinatorRefresh.value
     }
 
     // MARK: - Notifications (#354 L2)
@@ -1345,7 +1589,11 @@ final class AppModel: ObservableObject {
     /// The transition hooks. The LOCAL path fires only through the DEBUG
     /// bridge (`PushBridge`); release builds rely on APNs — the daemon
     /// pushes the same payload once the APNs provisioning checkpoint is met.
+    /// #400 F2: with 2+ configured profiles notifications are disabled
+    /// entirely (no APNs enrollment, and the DEBUG local bridge mirrors
+    /// the release posture) — nothing fires for any host.
     private func notifyTransition(_ type: PushPayload.PushType, agentId: String) {
+        guard profiles.count <= 1 else { return }
         guard let agent = fleet.agent(agentId) else { return }
         guard PushBridge.shouldPresentLocally else { return }
         let payload = PushPayload.transition(type: type, agent: agent)
@@ -1421,8 +1669,13 @@ final class AppModel: ObservableObject {
     /// Deep link from a tapped notification: open the agent's row recents.
     /// Live mode only — setup/demo states have no live agent to show. A
     /// deep link is not a row tap, so it plays no haptic.
+    /// #400 F2: with 2+ configured profiles notification deep-link routing
+    /// is DISABLED — a bare agent_id cannot name a host, so the app never
+    /// guesses one (the payload carries no host and no cross-host search
+    /// may run). Exactly one profile keeps the legacy route (F1).
     func openRecents(for agentId: String) {
         guard mode == .live else { return }
+        guard profiles.count <= 1 else { return }
         guard fleet.agent(agentId) != nil else {
             banner = .info("This agent is no longer on the fleet — refresh the board.")
             return
@@ -1439,16 +1692,53 @@ final class AppModel: ObservableObject {
     /// any dismissal re-presents. `haptic: true` is reserved for real row
     /// taps (one light selection tick); programmatic opens stay silent.
     func requestRecents(for agentId: String, haptic: Bool) {
-        guard fleet.agent(agentId) != nil else { return }
-        // #399 B4: no Recent Output route while the pinned host identity
-        // is unverified or mismatched — the sheet stays closed.
-        guard keyContinuityAllowsLiveWork else {
-            _ = keyContinuityDeniedBanner()
+        requestRecents(for: agentId, hostProfileID: activeProfile?.id, haptic: haptic)
+    }
+
+    /// #400 E1: open the recents sheet for a COMPOSITE target — the row's
+    /// host profile rides in the request. EXACTLY one profile is resolved
+    /// (the legacy/active store for nil/active ids, the coordinator
+    /// session's store otherwise); NO other host is searched, so an equal
+    /// raw agent id on another host never satisfies this request.
+    func requestRecents(for agentId: String, hostProfileID: UUID?, haptic: Bool) {
+        let profileID = hostProfileID ?? activeProfile?.id
+        guard let profileID else {
+            // No profile store: the pure legacy/demo runtime — the fleet
+            // store is the only surface (unchanged single-host behavior).
+            guard fleet.agent(agentId) != nil else { return }
+            // #399 B4: no Recent Output route while the pinned host
+            // identity is unverified or mismatched — the sheet stays
+            // closed.
+            guard keyContinuityAllowsLiveWork else {
+                _ = keyContinuityDeniedBanner()
+                return
+            }
+            presentRecents(agentId: agentId, hostProfileID: nil, haptic: haptic)
             return
         }
+        guard let profile = profileStore?.profile(id: profileID) else { return }
+        if profileID == activeProfileID {
+            guard fleet.agent(agentId) != nil else { return }
+            guard keyContinuityAllowsLiveWork else {
+                _ = keyContinuityDeniedBanner()
+                return
+            }
+            presentRecents(agentId: agentId, hostProfileID: profileID, haptic: haptic)
+            return
+        }
+        // Coordinator-owned host (E1): the owning session store must be
+        // connectable and must hold the row — never another host's.
+        guard profile.mayConnect else { return }
+        guard coordinator?.allowsLiveWork(profileID: profileID) == true else { return }
+        guard coordinator?.agent(profileID: profileID, agentID: agentId) != nil else { return }
+        presentRecents(agentId: agentId, hostProfileID: profileID, haptic: haptic)
+    }
+
+    private func presentRecents(agentId: String, hostProfileID: UUID?, haptic: Bool) {
         if haptic { hapticTick() }
         recentsSerial += 1
-        recentsRequest = RecentsRequest(id: recentsSerial, agentId: agentId)
+        recentsRequest = RecentsRequest(id: recentsSerial, agentId: agentId,
+                                        hostProfileID: hostProfileID)
     }
 
     /// The recents sheet finished dismissing (swipe-down or Done — the
@@ -1463,7 +1753,8 @@ final class AppModel: ObservableObject {
     func recentsSheetDismissed() {
         guard let pending = recentsRequest else { return }
         recentsSerial += 1
-        recentsRequest = RecentsRequest(id: recentsSerial, agentId: pending.agentId)
+        recentsRequest = RecentsRequest(id: recentsSerial, agentId: pending.agentId,
+                                        hostProfileID: pending.hostProfileID)
     }
 
     /// #364 A.2: the sheet's Done (close) control was tapped — one light
@@ -1479,45 +1770,150 @@ final class AppModel: ObservableObject {
     /// history (recents v1 = LIVE TAIL ONLY). `silent` suppresses the
     /// in-flight/again banners so the auto timer does not spam the fleet
     /// banner.
-    func driveReadTail(agent: Agent, driveClient: DriveClient, silent: Bool = false,
+    /// #400 E1: the route is COMPOSITE — `hostProfileID` names the owning
+    /// profile; signing uses THAT profile's key id/grants + the shared
+    /// phone signer against that profile URL with the untouched raw agent
+    /// id. The route NEVER searches or retries another host.
+    func driveReadTail(agent: Agent, hostProfileID: UUID? = nil,
+                       driveClient: DriveClient, silent: Bool = false,
                        lines: UInt32 = 200) {
-        guard let live = fleet.agent(agent.agentId) else { return }
-        // #399 B4: no signed read may reach a host whose pinned identity
-        // is unverified or mismatched (Recent Output route fails closed).
+        let profileID = hostProfileID ?? activeProfile?.id
+        guard let route = readRoute(hostProfileID: profileID, silent: silent) else { return }
+        // E1: the target row must exist in the OWNING store — an equal raw
+        // agent id on another host never satisfies this route.
+        guard let live = route.store.agent(agent.agentId) else { return }
+        // #400 E2: reload is disabled while the owning host is not
+        // connected; any already-loaded output stays visible (memory-only)
+        // and nothing is synthesized or loaded from the durable cache.
+        guard route.store.connectionState == .connected else {
+            if !silent {
+                banner = .error("host_offline",
+                                "Recent output is unavailable while the host is offline.")
+            }
+            return
+        }
+        guard authorize(.readTail, for: live, grants: route.grants,
+                        silent: silent) else { return }
+        // E1: sign against THAT profile's URL — for coordinator-owned
+        // hosts the caller's (active-host) client is replaced by a client
+        // bound to the owning profile, so a signed read can never cross
+        // hosts even when the view hands the model a stale client.
+        let client: DriveClient
+        if let profile = route.profile, profile.id != activeProfileID,
+           let url = URL(string: profile.urlString) {
+            client = DriveClient(host: url, session: session)
+        } else {
+            client = driveClient
+        }
+        let sinceRev = route.store.tailPane(for: live.agentId)?.sourceRev
+        let payload = CanonicalJSON.readTailPayload(lines: lines, sinceRev: sinceRev)
+        let key = DriveActionKey(capability: .readTail, target: live.agentId,
+                                 identity: "tail-\(lines)", hostProfileID: profileID)
+        guard let requestId = beginDriveAction(key, silent: silent) else { return }
+        route.store.prepareTailFetch(agent: live.agentId)
+        drive(capability: .readTail, target: live.agentId, payload: payload,
+              driveClient: client, keyId: route.keyId, signer: route.signer,
+              actionKey: key, requestId: requestId,
+              store: route.store, profile: route.profile)
+    }
+
+    /// The signed read route of one host profile (E1): exactly one profile
+    /// resolves to exactly one store/key-id/grants set. `nil`/active ids
+    /// resolve to the legacy single-host runtime (F1 parity); coordinator
+    /// profiles resolve to their OWN session store only. A paused or
+    /// key-mismatched profile has no route (fail closed — nothing reaches
+    /// the replacement identity and no other host is searched).
+    private func readRoute(hostProfileID: UUID?, silent: Bool) -> ReadRoute? {
+        let profile = hostProfileID.flatMap { profileStore?.profile(id: $0) }
+        if let profile {
+            guard profile.mayConnect else { return nil }
+            let store: FleetStore
+            if profile.id == activeProfileID {
+                guard keyContinuityAllowsLiveWork else {
+                    if !silent { _ = keyContinuityDeniedBanner() }
+                    return nil
+                }
+                store = fleet
+            } else {
+                guard let sessionStore = coordinator?.store(profileID: profile.id),
+                      coordinator?.allowsLiveWork(profileID: profile.id) == true else {
+                    return nil
+                }
+                store = sessionStore
+            }
+            guard let keyId = profile.keyId, let signer else { return nil }
+            return ReadRoute(profile: profile, store: store, keyId: keyId,
+                             grants: Set(profile.grants.compactMap(Capability.init(rawValue:))),
+                             signer: signer)
+        }
+        // Legacy single-host runtime / demo (no profile store, or a nil
+        // target id): the pre-#400 route, unchanged.
         guard keyContinuityAllowsLiveWork else {
             if !silent { _ = keyContinuityDeniedBanner() }
-            return
+            return nil
         }
         guard let signer, let keyId else {
             if !silent { banner = .error("unregistered", "Device is not registered.") }
-            return
-        }
-        guard authorize(.readTail, for: live, silent: silent) else { return }
-        let sinceRev = fleet.tailPane(for: live.agentId)?.sourceRev
-        let payload = CanonicalJSON.readTailPayload(lines: lines, sinceRev: sinceRev)
-        let key = DriveActionKey(capability: .readTail, target: live.agentId,
-                                 identity: "tail-\(lines)")
-        guard let requestId = beginDriveAction(key, silent: silent) else { return }
-        fleet.prepareTailFetch(agent: live.agentId)
-        drive(capability: .readTail, target: live.agentId, payload: payload,
-              driveClient: driveClient, keyId: keyId, signer: signer,
-              actionKey: key, requestId: requestId)
-    }
-
-    /// Resolve a drive's target from the current read model. A recents sheet
-    /// may outlive a delta deletion; in that case no signed bytes are built.
-    private func currentAgent(for agentId: String) -> Agent? {
-        guard let agent = fleet.agent(agentId) else {
-            banner = .error("stale_agent", "This agent was deleted or migrated; refresh the fleet.")
             return nil
         }
-        return agent
+        return ReadRoute(profile: nil, store: fleet, keyId: keyId,
+                         grants: actionGrants, signer: signer)
+    }
+
+    private struct ReadRoute {
+        let profile: HostProfile?
+        let store: FleetStore
+        let keyId: String
+        let grants: Set<Capability>
+        let signer: DeviceSigner
+    }
+
+    /// #400 E1: the agent of a composite target from EXACTLY the owning
+    /// store. nil/active ids resolve to the legacy fleet store; any other
+    /// profile resolves its coordinator session store. Equal raw ids on
+    /// other hosts are unreachable here.
+    func fleetAgent(hostProfileID: UUID?, agentID: String) -> Agent? {
+        if let profileID = hostProfileID, profileID != activeProfileID {
+            return coordinator?.agent(profileID: profileID, agentID: agentID)
+        }
+        return fleet.agent(agentID)
+    }
+
+    /// #400 E1: the tail pane of a composite target from its OWNING store.
+    func fleetTailPane(hostProfileID: UUID?, agentID: String) -> TailPane? {
+        if let profileID = hostProfileID, profileID != activeProfileID {
+            return coordinator?.tailPane(profileID: profileID, agentID: agentID)
+        }
+        return fleet.tailPane(for: agentID)
+    }
+
+    /// #400 E2: Recent Output availability of a composite target. Reload is
+    /// only permitted while the owning host is connected; loaded output
+    /// stays visible as `.offline`, nothing loaded + disconnected is
+    /// `.unavailable` (never synthesized, never loaded from durable
+    /// storage).
+    func recentsRouteState(hostProfileID: UUID?, agentID: String) -> RecentsRouteState {
+        let store: FleetStore
+        if let profileID = hostProfileID, profileID != activeProfileID,
+           let sessionStore = coordinator?.store(profileID: profileID) {
+            store = sessionStore
+        } else {
+            store = fleet
+        }
+        guard store.connectionState == .connected else {
+            let pane = store.tailPane(for: agentID)
+            return (pane?.isEmpty ?? true) ? .unavailable : .offline
+        }
+        return .live
     }
 
     /// Both sides of the drive authorization contract must hold locally for
     /// a read control. The daemon remains authoritative and can still
     /// return a typed refusal, which the common drive path surfaces.
+    /// #400 E1: composite routes authorize against the OWNING profile's
+    /// grants (`grants`); the legacy runtime passes its global set.
     private func authorize(_ capability: Capability, for agent: Agent,
+                           grants: Set<Capability>? = nil,
                            silent: Bool = false) -> Bool {
         guard agent.capabilities.contains(capability.rawValue) else {
             if !silent {
@@ -1526,7 +1922,7 @@ final class AppModel: ObservableObject {
             }
             return false
         }
-        guard actionGrants.contains(capability) else {
+        guard (grants ?? actionGrants).contains(capability) else {
             if !silent {
                 banner = .error("not_granted",
                                 "requires the \(capability.rawValue) grant — ask the host.")
@@ -1580,9 +1976,15 @@ final class AppModel: ObservableObject {
         })
     }
 
+    /// #400 E1/E3: one signed read drive. `store` is the composite target's
+    /// OWNING store — results, tail panes, failures, and stale removals
+    /// land there, never in another host's namespace. Cancellation is
+    /// scoped per host (`DriveActionKey.hostProfileID`), so removing one
+    /// host terminates exactly its read tasks.
     private func drive(capability: Capability, target: String, payload: CanonicalJSON.Value,
                        driveClient: DriveClient, keyId: String, signer: DeviceSigner,
-                       actionKey: DriveActionKey, requestId: String) {
+                       actionKey: DriveActionKey, requestId: String,
+                       store: FleetStore, profile: HostProfile?) {
         let context = lifecycleContext()
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -1595,7 +1997,7 @@ final class AppModel: ObservableObject {
                 }
             }
             guard !Task.isCancelled, self.isCurrent(context) else { return }
-            let rev = self.fleet.lastEventId
+            let rev = store.lastEventId
             // #167: hard timeout — a stalled read must never leave the
             // recents pane on an infinite spinner.
             let op: @Sendable () async -> DriveResult = {
@@ -1614,15 +2016,16 @@ final class AppModel: ObservableObject {
                     let blocks = response.result?.tailBlocks ?? []
                     // Fold the segmented blocks; the result stays in the
                     // sheet (no hijacking fleet banner).
-                    self.fleet.rememberTail(lines, blocks: blocks,
-                                            sourceRev: response.result?.tailSourceRev ?? response.rev,
-                                            for: target)
+                    store.rememberTail(lines, blocks: blocks,
+                                       sourceRev: response.result?.tailSourceRev ?? response.rev,
+                                       for: target)
                 } else {
                     if response.errorKind == "stale_agent" {
                         self.handleStaleAgent(target,
-                                              message: response.error ?? "the agent moved or disappeared")
+                                              message: response.error ?? "the agent moved or disappeared",
+                                              store: store, profile: profile)
                     } else {
-                        self.fleet.foldTailFailure(TranscriptFailure(
+                        store.foldTailFailure(TranscriptFailure(
                             kind: response.errorKind ?? "dispatch_refused",
                             message: response.error ?? "dispatch refused (ok:false)",
                             candidates: []), for: target)
@@ -1632,11 +2035,12 @@ final class AppModel: ObservableObject {
                 switch error {
                 case .server(let status, let kind, let message, _):
                     if kind == "stale_agent" {
-                        self.handleStaleAgent(target, message: message)
+                        self.handleStaleAgent(target, message: message,
+                                              store: store, profile: profile)
                         return
                     }
                     if capability == .readTail {
-                        self.fleet.foldTailFailure(TranscriptFailure(
+                        store.foldTailFailure(TranscriptFailure(
                             kind: kind, message: message, candidates: []), for: target)
                         return
                     }
@@ -1645,7 +2049,7 @@ final class AppModel: ObservableObject {
                     self.banner = .error(kind, "\(message) (HTTP \(status))")
                 case .network(let message):
                     if capability == .readTail {
-                        self.fleet.foldTailFailure(TranscriptFailure(
+                        store.foldTailFailure(TranscriptFailure(
                             kind: message == "Recent output timed out." ? "timeout" : "transport",
                             message: message, candidates: []), for: target)
                     } else {
@@ -1653,7 +2057,7 @@ final class AppModel: ObservableObject {
                     }
                 case .encoding:
                     if capability == .readTail {
-                        self.fleet.foldTailFailure(TranscriptFailure(
+                        store.foldTailFailure(TranscriptFailure(
                             kind: "encoding", message: "payload encoding failed",
                             candidates: []), for: target)
                     } else {
@@ -1664,6 +2068,20 @@ final class AppModel: ObservableObject {
         }
         driveTasks[requestId] = task
         driveTaskKeys[requestId] = actionKey
+    }
+
+    /// #400 E3: cancel every in-flight read task owned by ONE host profile
+    /// (host removal). Other hosts' drives are untouched — removal never
+    /// tears down the rest of the board.
+    private func cancelHostDriveTasks(hostProfileID: UUID) {
+        let doomed = driveTaskKeys.filter { $0.value.hostProfileID == hostProfileID }
+            .map(\.key)
+        for requestId in doomed {
+            driveTasks.removeValue(forKey: requestId)?.cancel()
+            if let key = driveTaskKeys.removeValue(forKey: requestId) {
+                inFlightDriveKeys.remove(key)
+            }
+        }
     }
 
     /// Invalidate the current identity before cancelling handles. Results from
@@ -1692,15 +2110,26 @@ final class AppModel: ObservableObject {
 
     /// Stale target handling is deliberately shared by the HTTP 409 path and
     /// the narrow 200 dispatch-race path: remove the row immediately, then
-    /// fetch the current read model once.
-    private func handleStaleAgent(_ target: String, message: String) {
-        fleet.removeAgent(target)
+    /// fetch the current read model once. #400 E3: the removal + refetch are
+    /// scoped to the COMPOSITE target's own store/host — the row is purged
+    /// from exactly the owning host (its tails + sheet state go with it) and
+    /// the reconciliation snapshot comes from that same host. An equal raw
+    /// id on another host is untouched.
+    private func handleStaleAgent(_ target: String, message: String,
+                                  store: FleetStore, profile: HostProfile?) {
+        store.removeAgent(target)
         banner = .error("stale_agent", "\(message) — refreshing the fleet.")
         let context = lifecycleContext()
-        guard context.mode == .live, let hostURL = context.hostURL else { return }
-        // #399 B4: the reconciliation fetch is a live read — same
-        // fail-closed gate as every other fetch.
-        guard keyContinuityAllowsLiveWork else { return }
+        guard context.mode == .live else { return }
+        // The reconciliation fetch is a live read of THE OWNING host.
+        let hostURL: URL?
+        if let profile, let url = URL(string: profile.urlString) {
+            hostURL = url
+        } else {
+            hostURL = context.hostURL
+            guard keyContinuityAllowsLiveWork else { return }
+        }
+        guard let hostURL else { return }
         let client = CorraldClient(host: hostURL, session: session)
         let taskId = UUID()
         let task = Task { @MainActor [weak self] in
@@ -1709,7 +2138,7 @@ final class AppModel: ObservableObject {
             guard self.isCurrent(context) else { return }
             guard let snapshot = try? await client.fetchSnapshot() else { return }
             guard !Task.isCancelled, self.isCurrent(context) else { return }
-            self.fleet.apply(.snapshot(snapshot))
+            store.apply(.snapshot(snapshot))
         }
         lifecycleTasks[taskId] = task
     }
@@ -1803,6 +2232,10 @@ final class AppModel: ObservableObject {
         profileStore?.removeAll()
         profiles = []
         activeProfileID = nil
+        // #400 E3: tear down every coordinator session (stream/tasks/rows
+        // purged) and return the notification posture to single-host.
+        syncCoordinator(startStreams: false)
+        refreshPushPosture()
         keyContinuityState = .notPinned
         fingerprintConfirmation = nil
         fleet.acceptedHostIdentity = nil

@@ -30,6 +30,10 @@ RELEASE_SOURCE_FILES = (
     "ios/FleetNotifier/Profiles/HostKeyTrust.swift",
     "ios/FleetNotifier/Profiles/HostProfile.swift",
     "ios/FleetNotifier/Profiles/HostProfileStore.swift",
+    # #400: the per-host stream coordinator (composite identity, per-host
+    # stream/tail lifecycle + cleanup, offline/stale board projection) is
+    # Release app source — added to the manifest.
+    "ios/FleetNotifier/Profiles/HostStreamCoordinator.swift",
     "ios/FleetNotifier/Profiles/KeyContinuityGate.swift",
     "ios/FleetNotifier/UI/AppTheme.swift",
     "ios/FleetNotifier/UI/BoardModel.swift",

@@ -226,7 +226,16 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # AppDelegate (push gate), FleetViews (Hosts section + AddHostSheet +
     # FingerprintConfirmationSheet) and FleetNotifierApp (profile-store
     # wiring) changed — re-pinned over the new 25-file Release source set.
-    "8ab13c700fdc1bac785c53ff0076754f0f8d2fafd49f42aa40eb2275c90b1e76"
+    # 400: per-host stream coordinator + composite identity + Recent Output
+    # composite routing — HostStreamCoordinator.swift added to the Release
+    # source set; AppModel (coordinator wiring, composite read routes,
+    # F1/F2 push posture + empty-token clears), AppDelegate (upload
+    # record), FleetStore (host-scoped cursor restore/purge), and
+    # FleetViews (composite recents sheet target) changed — re-pinned.
+    # 400 r1: the 02:50 self-test PASS predated the final wiring/plumbing
+    # edits to the Release sources (03:03); digest re-pinned to the tree
+    # actually committed at 39e4c83 and built below.
+    "2379f5cb5e94f7ee5aa9c5bd3cfd75545a33fcff5d55e6c035805c5f135383d7"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #332 R4: pin the focused grant fixture independently from the Release
@@ -324,7 +333,12 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # FleetNotifierTests.swift — re-pinned.
     # 399 r1: SAFETY comments added above the new fixture force-unwraps
     # (anti-slop advisory) — re-pinned.
-    "6bb07704389da2680a9dff3b2061d20a76a5b251100e09a89cb91f0f98ae44dd"
+    # 400: the #400 suite (CompositeIdentityTests, HostBoardProjectionTests,
+    # HostStreamCoordinatorTests, MultiHostIsolationTests,
+    # RecentsCompositeRouteTests, PushPostureModelTests) added to
+    # FleetNotifierTests.swift, and two wiring pins updated for the
+    # composite recents target — re-pinned.
+    "e7aa7657bd47356291c6110bfabeca9ae084a7bad896b9c6e0e0df6a81177be2"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

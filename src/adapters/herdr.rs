@@ -1081,6 +1081,12 @@ pub struct HerdrAdapter {
     /// Canonical Corral/Herdr repo and git-fact view used while building a
     /// fresh agent record. It never derives attribution from pane labels.
     workspace_attribution: WorkspaceAttribution,
+    /// Stable public host identity (base64 X25519 key, #399 C1): stamped
+    /// onto every agent record this adapter emits so a client can verify
+    /// the feed it accepts against the identity it paired with. `None`
+    /// keeps records host-less (pre-#399 behavior for tests and direct
+    /// hermetic adapter users).
+    host_identity_b64: Option<String>,
     state: Arc<Mutex<SessionState>>,
     /// The read model to retire after a source-level `agent_not_found`.
     /// `start` installs this for the production adapter; tests and direct
@@ -1117,9 +1123,23 @@ impl HerdrAdapter {
         socket_path: PathBuf,
         workspace_attribution: WorkspaceAttribution,
     ) -> Self {
+        Self::new_with_attribution_and_host(socket_path, workspace_attribution, None)
+    }
+
+    /// Constructor with the daemon's stable public host identity (#399 C1):
+    /// every agent record this adapter builds is stamped with it. The
+    /// production entrypoint passes `AuthPlane.host.public_key_b64()` so the
+    /// wire identity matches `GET /host-key`; tests that do not care about
+    /// host stamping use the host-less constructors above.
+    pub fn new_with_attribution_and_host(
+        socket_path: PathBuf,
+        workspace_attribution: WorkspaceAttribution,
+        host_identity_b64: Option<String>,
+    ) -> Self {
         Self {
             socket_path,
             workspace_attribution,
+            host_identity_b64,
             state: Arc::new(Mutex::new(SessionState::default())),
             store: Arc::new(Mutex::new(None)),
             #[cfg(test)]
@@ -1766,7 +1786,10 @@ impl HerdrAdapter {
             capabilities: CAPABILITIES.iter().map(|s| s.to_string()).collect(),
             waiting_on: None,
             parent_id: None,
-            host: None,
+            // #399 C1: stamp the daemon's stable public host identity
+            // (base64 X25519 key, identical to GET /host-key) onto every
+            // record so a client profile can verify the feed it accepts.
+            host: self.host_identity_b64.clone(),
             workspace: Workspace {
                 repo: workspace_facts
                     .as_ref()
@@ -2997,6 +3020,61 @@ mod tests {
                 .contains_key("herdr:2d5e5911-b103-4a92-adc3-a8bdc03fd784")
         );
         assert!(snapshot.agents.contains_key("herdr:pane:w1D:p1"));
+    }
+
+    #[tokio::test]
+    async fn stamped_agent_host_matches_the_daemon_host_identity() {
+        // #399 C1: the production adapter stamps the SAME base64 X25519
+        // public key that `GET /host-key` publishes onto every agent
+        // record, so a client profile can verify the feed it accepts.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let host = crate::auth::HostIdentity::load_or_create(dir.path()).expect("host identity");
+        let identity_b64 = host.public_key_b64();
+        let adapter = HerdrAdapter::new_with_attribution_and_host(
+            PathBuf::from("/nonexistent.sock"),
+            WorkspaceAttribution::from_roots(
+                std::iter::empty::<crate::core::workspace::RepoRoot>(),
+                PathBuf::from("/nonexistent-herdr-worktrees"),
+            ),
+            Some(identity_b64.clone()),
+        );
+        let wire = serde_json::to_string(&json!({
+            "agents": [fixture_claude(), fixture_opencode_no_session()]
+        }))
+        .unwrap();
+        let decoded = HerdrAdapter::decode_agent_list(serde_json::from_str(&wire).unwrap())
+            .expect("agent.list wire decodes");
+        let store = Store::new();
+        adapter.reconcile_against_list(&decoded, &store).await;
+
+        let snapshot = store.snapshot().await;
+        assert_eq!(snapshot.agents.len(), 2);
+        for agent in snapshot.agents.values() {
+            assert_eq!(
+                agent.host.as_deref(),
+                Some(identity_b64.as_str()),
+                "every herdr agent record must be stamped with the daemon host identity"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn hostless_adapter_keeps_records_without_a_host_stamp() {
+        // The host-less constructors (tests/hermetic users) keep records
+        // exactly as before #399 — nothing outside the production
+        // entrypoint changes.
+        let store = Store::new();
+        let adapter = HerdrAdapter::new(PathBuf::from("/nonexistent.sock"));
+        let wire = serde_json::to_string(&json!({ "agents": [fixture_claude()] })).unwrap();
+        let decoded = HerdrAdapter::decode_agent_list(serde_json::from_str(&wire).unwrap())
+            .expect("agent.list wire decodes");
+        adapter.reconcile_against_list(&decoded, &store).await;
+        let snapshot = store.snapshot().await;
+        assert_eq!(snapshot.agents.len(), 1);
+        assert!(
+            snapshot.agents.values().all(|agent| agent.host.is_none()),
+            "a host-less adapter must not stamp records"
+        );
     }
 
     #[test]

@@ -87,6 +87,18 @@ final class FleetStore: ObservableObject {
     /// `apply()` would never run to clear a stale `.error` indicator.
     var onConnected: (@MainActor @Sendable () -> Void)?
 
+    /// #399 B4/C1: when a pinned host identity is set, any agent record in
+    /// an applied frame whose NON-NIL host differs from the pin is a
+    /// feed-integrity failure — the frame is REJECTED (fail closed) and
+    /// the hook fires so the owner can surface the mismatch and stop the
+    /// stream. Host-less records (a transitional pre-#399 daemon) are
+    /// tolerated; the URL-level `/host-key` check is the continuity gate.
+    /// Fired only when `acceptedHostIdentity` is non-nil.
+    var onHostIntegrityMismatch: (@MainActor @Sendable () -> Void)?
+    /// The pinned host identity the live feed must conform to (nil =
+    /// legacy single-host flows without a pin).
+    var acceptedHostIdentity: String?
+
     private static let log = Logger(subsystem: "com.corral.fleetnotifier", category: "stream")
 
     private var streamTask: Task<Void, Never>?
@@ -148,6 +160,18 @@ final class FleetStore: ObservableObject {
     }
 
     private func apply(withoutDiff event: FleetEvent) {
+        // #399 B4/C1: fail closed when the frame carries records from a
+        // DIFFERENT host identity than the one this store was pinned to.
+        // The prior (stale) snapshot stays untouched — nothing is applied.
+        if let pinned = acceptedHostIdentity,
+           !Self.conformsToPinnedHost(event, pin: pinned) {
+            Self.log.error(
+                "frame rejected: agent host does not match pinned host identity"
+            )
+            connectionState = .error("host_identity_mismatch")
+            onHostIntegrityMismatch?()
+            return
+        }
         guard accepts(event) else { return }
         switch event {
         case .snapshot(let snapshot):
@@ -270,6 +294,23 @@ final class FleetStore: ObservableObject {
 
     func agent(_ id: String) -> Agent? {
         agents[id]
+    }
+
+    /// #399 B4/C1: does every agent record in this frame conform to the
+    /// pinned host identity? Records WITHOUT a host (transitional
+    /// pre-#399 daemon) pass; a record stamped with a DIFFERENT host
+    /// fails the whole frame closed.
+    static func conformsToPinnedHost(_ event: FleetEvent, pin: String) -> Bool {
+        func conforms(_ agent: Agent) -> Bool {
+            guard let host = agent.host else { return true }
+            return host == pin
+        }
+        switch event {
+        case .snapshot(let snapshot):
+            return snapshot.agents.values.allSatisfy(conforms)
+        case .delta(let delta):
+            return delta.upd.allSatisfy(conforms)
+        }
     }
 
     func tail(for id: String) -> [String]? {

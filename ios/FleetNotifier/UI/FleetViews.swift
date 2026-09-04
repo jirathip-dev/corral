@@ -767,6 +767,12 @@ struct FleetView: View {
                 .sheet(isPresented: $showConnectHelp) {
                     HowToConnectSheet(host: model.hostURL?.absoluteString ?? "")
                 }
+                // #399 B6: the legacy-migration fingerprint confirmation —
+                // the profile is paused (no stream) until the user confirms
+                // the pinned host key on this sheet.
+                .sheet(item: $model.fingerprintConfirmation) { request in
+                    FingerprintConfirmationSheet(model: model, request: request)
+                }
                 // #379: a fresh install (or any launch that finds the device
                 // UNPAIRED) auto-presents the connect sheet once — first
                 // launch guidance for the daemon-setup + pairing steps.
@@ -1861,6 +1867,10 @@ struct SettingsView: View {
     @State private var host: String
     @State private var token = ""
     @State private var registering = false
+    /// #399: Add Host sheet (fingerprint-verified pairing, B3).
+    @State private var showAddHost = false
+    /// #399: Remove Host confirmation (B7 local unlink).
+    @State private var confirmRemoveHost = false
     /// #388: the paired section's small 'Re-register' action sets this —
     /// revealing the Registration-token field + Register button again so a
     /// registered device can re-point at a new host. Unpaired devices see
@@ -1944,6 +1954,9 @@ struct SettingsView: View {
                                 .font(.caption)
                                 .foregroundStyle(theme.subtext1)
                         }
+                    }
+                    if model.hostProfilesConfigured {
+                        hostsSection
                     }
                     Section {
                         // #379 evidence: the connect-evidence Settings
@@ -2058,6 +2071,11 @@ struct SettingsView: View {
                 .sheet(isPresented: $showConnectHelp) {
                     HowToConnectSheet(host: host)
                 }
+                // #399: the Add Host sheet (fingerprint-verified pairing)
+                // presents from inside Settings, over the same backdrop.
+                .sheet(isPresented: $showAddHost) {
+                    AddHostSheet(model: model)
+                }
 #if DEBUG
                 .task { await scrollDeviceIntoViewForConnectEvidence(proxy) }
                 // #389: the denied-state evidence driver scrolls the
@@ -2147,6 +2165,74 @@ struct SettingsView: View {
             Text("Appearance")
         } footer: {
             Text("Applies to the whole app — board, sheets, rail and settings.")
+                .foregroundStyle(theme.subtext1)
+        }
+    }
+
+    /// #399: the Hosts section — the ACTIVE host profile's read-out plus
+    /// the Add Host entry (fingerprint-verified pairing, B3) and the
+    /// Remove Host local unlink (B7). Minimal by design: no chips, badges,
+    /// or host-list chrome (that is #401); one profile, one runtime today.
+    private var hostsSection: some View {
+        Section {
+            if let profile = model.activeProfile {
+                LabeledContent("Host", value: profile.displayName)
+                    .id("settings.hosts")
+                LabeledContent("URL", value: profile.urlString)
+                if let fingerprint = profile.fingerprint {
+                    LabeledContent("Fingerprint",
+                                   value: HostKeyTrust.shortFingerprint(fingerprint))
+                        .textSelection(.enabled)
+                }
+                if let keyID = profile.keyId {
+                    LabeledContent("Key ID", value: String(keyID.prefix(16)))
+                }
+                if profile.connectionState == .awaitingFingerprintConfirmation
+                    || (profile.hostKeyB64 == nil && model.keyContinuityState == .pending) {
+                    Label("Host key not confirmed — the board stays paused until you verify this host's fingerprint.",
+                          systemImage: "lock.shield")
+                        .font(.caption)
+                        .foregroundStyle(theme.peach)
+                        .id("settings.hosts.awaiting")
+                    Button("Review host fingerprint") {
+                        model.requestFingerprintReview(profileID: profile.id)
+                    }
+                    .font(.subheadline)
+                }
+                if profile.connectionState == .keyMismatch
+                    || model.keyContinuityState == .mismatch {
+                    Label("This host presented a different host key than the one you paired. Corral paused it — the last safe board state is kept. Remove the host and pair it again with a fresh token.",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(theme.red)
+                        .id("settings.hosts.mismatch")
+                }
+                Button("Remove host", role: .destructive) {
+                    confirmRemoveHost = true
+                }
+                .confirmationDialog("Remove \(profile.displayName)?",
+                                    isPresented: $confirmRemoveHost,
+                                    titleVisibility: .visible) {
+                    Button("Remove host", role: .destructive) {
+                        model.removeHost(profileID: profile.id)
+                        dismiss()
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("Removes this host's profile, cursor and saved board metadata from this phone. The host's registry entry stays until it is removed host-side; the device key is shared and stays.")
+                }
+            }
+            Button {
+                showAddHost = true
+            } label: {
+                Label("Add host", systemImage: "plus.circle")
+            }
+            .id("settings.add-host")
+            .accessibilityHint("Pairs another corrald host with fingerprint verification")
+        } header: {
+            Text("Hosts")
+        } footer: {
+            Text("Each host pairs independently with this device's shared key; adding a host verifies its fingerprint before any registration token is used.")
                 .foregroundStyle(theme.subtext1)
         }
     }
@@ -2307,6 +2393,309 @@ private struct StepNumberBadge: View {
     }
 }
 
+// MARK: - #399 Add Host (fingerprint-verified pairing, B3)
+
+/// The Add Host sheet: phase 1 collects the display name + URL and
+/// fetches `/host-key` (validating the X25519 form); phase 2 shows the
+/// derived fingerprint for EXPLICIT confirmation and only then accepts
+/// the registration token and calls `/register` with the shared phone
+/// Ed25519 key. Full pinned key + returned grants/expiry persist in the
+/// active host profile.
+struct AddHostSheet: View {
+    @ObservedObject var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var theme: ThemeStore
+
+    @State private var name = ""
+    @State private var urlString = ""
+    @State private var token = ""
+    @State private var prepared: AppModel.PreparedHostPairing?
+    @State private var working = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                if let prepared {
+                    confirmationSection(prepared)
+                } else {
+                    entrySection
+                }
+            }
+            .navigationTitle("Add host")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(theme.base)
+            .preferredColorScheme(theme.flavor.isLight ? .light : .dark)
+        }
+        .presentationDragIndicator(.visible)
+        .translucentSheetBackdrop(theme.base)
+    }
+
+    /// Phase 1: name + URL entry.
+    private var entrySection: some View {
+        Section {
+            ConnectionField(title: "Host name", secure: false, text: $name)
+            ConnectionField(title: "https://host (Tailscale serve URL or loopback)",
+                            secure: false, text: $urlString)
+            if let errorMessage {
+                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(theme.red)
+            }
+            Button {
+                verifyHostKey()
+            } label: {
+                if working {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Text("Verify host key")
+                }
+            }
+            .disabled(working || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                      || urlString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Text("Corral fetches the host's X25519 identity key and shows its fingerprint BEFORE any registration token is accepted. Nothing is saved yet.")
+                .font(.caption)
+                .foregroundStyle(theme.subtext1)
+        } header: {
+            Text("Host")
+        } footer: {
+            Text("Remote hosts must use https:// (the daemon's Tailscale HTTPS serve URL); http:// is accepted for loopback development hosts only.")
+                .foregroundStyle(theme.subtext1)
+        }
+    }
+
+    /// Phase 2: fingerprint confirmation + registration token.
+    @ViewBuilder
+    private func confirmationSection(_ pairing: AppModel.PreparedHostPairing) -> some View {
+        Section {
+            LabeledContent("Host", value: pairing.displayName)
+            LabeledContent("URL", value: pairing.urlString)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Fingerprint")
+                    .font(.caption)
+                    .foregroundStyle(theme.subtext1)
+                Text(pairing.fingerprint)
+                    .font(.caption2.monospaced())
+                    .textSelection(.enabled)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Fingerprint \(pairing.fingerprint)")
+            Button {
+                UIPasteboard.general.string = pairing.fingerprint
+            } label: {
+                Label("Copy fingerprint", systemImage: "doc.on.doc")
+            }
+            .font(.subheadline)
+            Text("Compare this fingerprint with the one shown by the daemon host. If it matches, enter the registration token to pair.")
+                .font(.caption)
+                .foregroundStyle(theme.subtext1)
+        } header: {
+            Text("Confirm the host identity")
+        }
+        Section {
+            ConnectionField(title: "Registration token", secure: true, text: $token)
+            Button {
+                complete(pairing)
+            } label: {
+                if working {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Text("Confirm fingerprint & register")
+                }
+            }
+            .disabled(working || token.isEmpty)
+            if let errorMessage {
+                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(theme.red)
+            }
+        } header: {
+            Text("Pair")
+        }
+    }
+
+    private func verifyHostKey() {
+        errorMessage = nil
+        working = true
+        Task {
+            defer { working = false }
+            do {
+                prepared = try await model.prepareHostPairing(displayName: name,
+                                                              rawURL: urlString)
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func complete(_ pairing: AppModel.PreparedHostPairing) {
+        errorMessage = nil
+        working = true
+        Task {
+            defer { working = false }
+            await model.completeAddHost(pairing, token: token)
+            dismiss()
+        }
+    }
+}
+
+/// #399 B6: the launch-time fingerprint confirmation for a MIGRATED
+/// legacy host. The app pauses once, fetches the host key, and only opens
+/// the live stream after the user confirms the pinned identity. Decline
+/// keeps the profile paused; Remove Host unlinks locally (B7).
+struct FingerprintConfirmationSheet: View {
+    @ObservedObject var model: AppModel
+    let request: AppModel.FingerprintConfirmationRequest
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var theme: ThemeStore
+
+    private enum Phase: Equatable {
+        case loading
+        case failed(String)
+        case ready(HostKeyResponse)
+    }
+
+    @State private var phase: Phase = .loading
+    @State private var confirmRemove = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Text("“\(request.profileName)” was paired by an older version of Corral. Verify its identity fingerprint before the board connects — Corral never auto-accepts a host key.")
+                        .font(.subheadline)
+                        .foregroundStyle(theme.subtext1)
+                } header: {
+                    Text("Verify this host")
+                }
+                switch phase {
+                case .loading:
+                    Section {
+                        HStack {
+                            Spacer()
+                            ProgressView()
+                            Spacer()
+                        }
+                    }
+                case .failed(let message):
+                    Section {
+                        Label("Could not fetch the host key — \(message)",
+                              systemImage: "wifi.exclamationmark")
+                            .font(.caption)
+                            .foregroundStyle(theme.peach)
+                        Button("Retry") { load() }
+                    }
+                case .ready(let response):
+                    if HostKeyTrust.isWellFormed(response),
+                       let fingerprint = HostKeyTrust.fingerprint(forBase64: response.publicKey) {
+                        Section {
+                            Text(fingerprint)
+                                .font(.caption2.monospaced())
+                                .textSelection(.enabled)
+                            Button {
+                                UIPasteboard.general.string = fingerprint
+                            } label: {
+                                Label("Copy fingerprint", systemImage: "doc.on.doc")
+                            }
+                            .font(.subheadline)
+                        } header: {
+                            Text("Host fingerprint")
+                        } footer: {
+                            Text("Compare it with the identity the host itself shows. Confirm only if it matches.")
+                                .foregroundStyle(theme.subtext1)
+                        }
+                        Section {
+                            Button("Confirm — it's my host") {
+                                model.confirmFingerprint(profileID: request.profileID,
+                                                         hostKeyB64: response.publicKey,
+                                                         fingerprint: fingerprint)
+                                dismiss()
+                            }
+                            Button("Not now") {
+                                model.deferFingerprintConfirmation()
+                                dismiss()
+                            }
+                            Button("Remove host", role: .destructive) {
+                                confirmRemove = true
+                            }
+                        } footer: {
+                            Text("Removing the host unlinks it on this phone only — the daemon registry entry stays until the host removes it.")
+                                .foregroundStyle(theme.subtext1)
+                        }
+                        .confirmationDialog("Remove \(request.profileName)?",
+                                            isPresented: $confirmRemove,
+                                            titleVisibility: .visible) {
+                            Button("Remove host", role: .destructive) {
+                                model.removeHost(profileID: request.profileID)
+                                dismiss()
+                            }
+                            Button("Cancel", role: .cancel) {}
+                        } message: {
+                            Text("Removes the host profile, cursor and saved board metadata from this phone. The shared device key stays.")
+                        }
+                    } else {
+                        Section {
+                            Label("The host did not return a well-formed X25519 key — pairing is stopped.",
+                                  systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundStyle(theme.red)
+                            Button("Not now") {
+                                model.deferFingerprintConfirmation()
+                                dismiss()
+                            }
+                            Button("Remove host", role: .destructive) {
+                                confirmRemove = true
+                            }
+                        }
+                        .confirmationDialog("Remove \(request.profileName)?",
+                                            isPresented: $confirmRemove,
+                                            titleVisibility: .visible) {
+                            Button("Remove host", role: .destructive) {
+                                model.removeHost(profileID: request.profileID)
+                                dismiss()
+                            }
+                            Button("Cancel", role: .cancel) {}
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Confirm host key")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Later") {
+                        model.deferFingerprintConfirmation()
+                        dismiss()
+                    }
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(theme.base)
+            .preferredColorScheme(theme.flavor.isLight ? .light : .dark)
+        }
+        .presentationDragIndicator(.visible)
+        .translucentSheetBackdrop(theme.base)
+        .task(id: request.id) { load() }
+    }
+
+    private func load() {
+        phase = .loading
+        Task {
+            do {
+                let response = try await model.fetchHostKey(profileID: request.profileID)
+                phase = .ready(response)
+            } catch {
+                phase = .failed(error.localizedDescription)
+            }
+        }
+    }
+}
 // MARK: - Recents bottom sheet (#354 L2 recents v1 → #373 block-per-run)
 
 /// Per-sheet-session collapse/reveal state (#373): a manual collapse is a

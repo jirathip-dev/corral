@@ -5469,3 +5469,893 @@ final class DeviceTokenUploadTests: XCTestCase {
                        "a duplicate OS callback for the same identity + token must not re-upload")
     }
 }
+
+// MARK: - #399 host identity + host-profile store/trust
+
+/// X25519 host-key form validation + fingerprint derivation (B3).
+final class HostKeyTrustTests: XCTestCase {
+    /// SAFETY: 32 zero bytes are a valid X25519 public-key byte string
+    /// (any 32-byte value is a valid X25519 public key input); fixture.
+    private static let zeroKeyB64 = Data(repeating: 0, count: 32).base64EncodedString()
+    /// SAFETY: 32 bytes of 0xAB; fixture only.
+    private static let abKeyB64 = Data(repeating: 0xAB, count: 32).base64EncodedString()
+
+    private func response(key: String, algorithm: String = "X25519") -> HostKeyResponse {
+        HostKeyResponse(algorithm: algorithm, publicKey: key, note: nil)
+    }
+
+    func testWellFormedX25519KeyPasses() {
+        XCTAssertTrue(HostKeyTrust.isWellFormed(response(key: Self.zeroKeyB64)))
+    }
+
+    func testWrongAlgorithmIsRejected() {
+        XCTAssertFalse(HostKeyTrust.isWellFormed(response(key: Self.zeroKeyB64,
+                                                          algorithm: "Ed25519")))
+    }
+
+    func testMalformedKeysAreRejected() {
+        XCTAssertFalse(HostKeyTrust.isWellFormed(response(key: "not-base64!")))
+        XCTAssertFalse(HostKeyTrust.isWellFormed(
+            response(key: Data(repeating: 0, count: 31).base64EncodedString())))
+        XCTAssertFalse(HostKeyTrust.isWellFormed(response(key: "")))
+    }
+
+    func testFingerprintIsStableGroupedAndKeySpecific() throws {
+        let first = try XCTUnwrap(HostKeyTrust.fingerprint(forBase64: Self.zeroKeyB64))
+        let again = try XCTUnwrap(HostKeyTrust.fingerprint(forBase64: Self.zeroKeyB64))
+        let other = try XCTUnwrap(HostKeyTrust.fingerprint(forBase64: Self.abKeyB64))
+        XCTAssertEqual(first, again, "fingerprint must be deterministic")
+        XCTAssertNotEqual(first, other, "different keys must fingerprint differently")
+        // 64 uppercase hex chars in 4-char groups.
+        XCTAssertEqual(first.filter { $0 != " " }.count, 64)
+        XCTAssertEqual(first.split(separator: " ").count, 16)
+        XCTAssertEqual(first, first.uppercased())
+        XCTAssertNil(HostKeyTrust.fingerprint(forBase64: "bad-key"))
+    }
+
+    func testMatchIsExactOnTheFullPinnedKey() {
+        let keyA = response(key: Self.zeroKeyB64)
+        let keyB = response(key: Self.abKeyB64)
+        XCTAssertTrue(HostKeyTrust.matches(keyA, pinnedKeyB64: Self.zeroKeyB64))
+        XCTAssertFalse(HostKeyTrust.matches(keyB, pinnedKeyB64: Self.zeroKeyB64))
+        XCTAssertFalse(HostKeyTrust.matches(keyB, pinnedKeyB64: "malformed"))
+    }
+}
+
+/// URL normalization for host profiles (B1): https default, loopback
+/// http tolerated for dev, duplicates collapse to the same string.
+final class HostURLFormTests: XCTestCase {
+    func testSchemeLessInputBecomesHTTPS() {
+        XCTAssertEqual(HostURLForm.normalized("host.tail1234.ts.net"),
+                       "https://host.tail1234.ts.net")
+        XCTAssertEqual(HostURLForm.normalized("macbook-pro"),
+                       "https://macbook-pro")
+    }
+
+    func testTrailingSlashAndDefaultPortAreNormalized() {
+        XCTAssertEqual(HostURLForm.normalized("https://mac.tail1234.ts.net/"),
+                       "https://mac.tail1234.ts.net")
+        XCTAssertEqual(HostURLForm.normalized("https://mac.tail1234.ts.net:443"),
+                       "https://mac.tail1234.ts.net")
+        XCTAssertEqual(HostURLForm.normalized("HTTPS://MAC.TAIL1234.TS.NET"),
+                       "https://mac.tail1234.ts.net")
+    }
+
+    func testLoopbackHTTPAllowedButRemoteHTTPRejected() {
+        XCTAssertEqual(HostURLForm.normalized("http://127.0.0.1:8474"),
+                       "http://127.0.0.1:8474")
+        XCTAssertEqual(HostURLForm.normalized("http://localhost:8474"),
+                       "http://localhost:8474")
+        XCTAssertNil(HostURLForm.normalized("http://10.0.0.5:8474"),
+                     "plain http to a remote host is refused by Add Host")
+        XCTAssertNil(HostURLForm.normalized("http://mac.tail1234.ts.net"))
+    }
+
+    func testLegacyMigrationPreservesPlainHTTPForExistingDaemons() {
+        XCTAssertEqual(HostURLForm.normalizedForLegacyMigration("http://10.0.0.5:8474"),
+                       "http://10.0.0.5:8474")
+        XCTAssertEqual(HostURLForm.normalizedForLegacyMigration("http://mac.tail1234.ts.net"),
+                       "http://mac.tail1234.ts.net")
+    }
+
+    func testGarbageIsRejected() {
+        XCTAssertNil(HostURLForm.normalized(""))
+        XCTAssertNil(HostURLForm.normalized("not a url with spaces"))
+        XCTAssertNil(HostURLForm.normalized("ftp://host"))
+        XCTAssertNil(HostURLForm.normalized("https://"))
+    }
+
+    func testDisplayNameCandidateUsesFirstHostLabel() {
+        XCTAssertEqual(HostURLForm.displayNameCandidate(for: "https://mac-pro.tail1234.ts.net"),
+                       "mac-pro")
+        XCTAssertEqual(HostURLForm.displayNameCandidate(for: "mac-pro"), "mac-pro")
+    }
+}
+
+/// Host-profile store semantics (B1-B7): add/duplicates/rename/remove,
+/// per-profile cursors + key-id scoping, and legacy migration.
+final class HostProfileStoreTests: XCTestCase {
+    /// SAFETY: fixed valid 32-byte X25519 public-key fixtures.
+    static let keyA = Data(repeating: 7, count: 32).base64EncodedString()
+    /// SAFETY: fixed valid 32-byte X25519 public-key fixtures.
+    static let keyB = Data(repeating: 8, count: 32).base64EncodedString()
+
+    /// In-memory store (nil directory) for store-level tests.
+    private func makeStore() -> HostProfileStore {
+        HostProfileStore(directory: nil, defaults: .standard)
+    }
+
+    func testAddProfileOrdersAndRejectsDuplicates() throws {
+        let store = makeStore()
+        let a = try store.addProfile(displayName: "Mac",
+                                     urlString: "mac.tail1234.ts.net",
+                                     registeredAt: 1)
+        let b = try store.addProfile(displayName: "Bazzite",
+                                     urlString: "https://bazzite.tail1234.ts.net",
+                                     hostKeyB64: Self.keyB,
+                                     registeredAt: 2)
+        XCTAssertEqual(store.orderedProfiles.map(\.displayName), ["Mac", "Bazzite"])
+        XCTAssertEqual(a.order, 0)
+        XCTAssertEqual(b.order, 1)
+        // Empty + duplicate names rejected.
+        XCTAssertThrowsError(try store.addProfile(displayName: "   ",
+                                                  urlString: "https://x.example",
+                                                  registeredAt: 3))
+        XCTAssertThrowsError(try store.addProfile(displayName: "mac",
+                                                  urlString: "https://y.example",
+                                                  registeredAt: 3))
+        // Duplicate normalized URL rejected (scheme-less + trailing slash
+        // forms collapse onto the existing record).
+        XCTAssertThrowsError(try store.addProfile(displayName: "Other",
+                                                  urlString: "https://mac.tail1234.ts.net/",
+                                                  registeredAt: 3))
+        // Duplicate pinned host identity rejected.
+        XCTAssertThrowsError(try store.addProfile(displayName: "Other",
+                                                  urlString: "https://other.example",
+                                                  hostKeyB64: Self.keyB,
+                                                  registeredAt: 3))
+        // Invalid URL + remote plain http rejected by the Add Host form.
+        XCTAssertThrowsError(try store.addProfile(displayName: "Nope",
+                                                  urlString: "http://remote.example",
+                                                  registeredAt: 3))
+    }
+
+    func testRenameIsInPlaceAndURLIsImmutable() throws {
+        let store = makeStore()
+        let a = try store.addProfile(displayName: "Mac",
+                                     urlString: "https://mac.example",
+                                     registeredAt: 1)
+        let renamed = try store.renameProfile(id: a.id, to: "MacBook Pro")
+        XCTAssertEqual(renamed.displayName, "MacBook Pro")
+        XCTAssertEqual(renamed.id, a.id, "rename must not mint a new identity")
+        XCTAssertEqual(renamed.urlString, "https://mac.example")
+        // Empty + duplicate renames rejected.
+        XCTAssertThrowsError(try store.renameProfile(id: a.id, to: "  "))
+        try store.addProfile(displayName: "Bazzite",
+                             urlString: "https://bazzite.example",
+                             registeredAt: 2)
+        XCTAssertThrowsError(try store.renameProfile(id: a.id, to: "bazzite"))
+        // No URL/identity mutation API exists (remove-and-re-pair only).
+        let profile = try XCTUnwrap(store.profile(id: a.id))
+        XCTAssertNil(profile.hostKeyB64)
+    }
+
+    func testFingerprintConfirmationPinsKeyAndLiftsPause() throws {
+        let store = makeStore()
+        let migrated = try XCTUnwrap(
+            store.migrateLegacy(host: "https://mac.example", keyId: "dev_legacy",
+                                grants: ["read_tail"], expiryTs: 1_800_000_000,
+                                registeredAt: 1))
+        XCTAssertEqual(migrated.connectionState,
+                       .awaitingFingerprintConfirmation)
+        XCTAssertNil(migrated.hostKeyB64)
+        let pinned = try store.confirmFingerprint(id: migrated.id,
+                                                  hostKeyB64: Self.keyA,
+                                                  fingerprint: "F1")
+        XCTAssertEqual(pinned.hostKeyB64, Self.keyA)
+        XCTAssertEqual(pinned.fingerprint, "F1")
+        XCTAssertEqual(pinned.connectionState, .disconnected)
+        // A second profile cannot pin the SAME identity: confirming the
+        // same key on another profile must throw the duplicate-identity
+        // error.
+        let other = try store.addProfile(displayName: "Other",
+                                         urlString: "https://other.example",
+                                         hostKeyB64: Self.keyB,
+                                         registeredAt: 2)
+        XCTAssertThrowsError(try store.confirmFingerprint(id: other.id,
+                                                          hostKeyB64: Self.keyA,
+                                                          fingerprint: "F1-again"))
+    }
+
+    func testLegacyMigrationIsIdempotentAndPreservesRegistration() {
+        let store = makeStore()
+        let first = store.migrateLegacy(host: "https://mac.example",
+                                        keyId: "dev_legacy",
+                                        grants: ["read_tail", "read_diff"],
+                                        expiryTs: 1_800_000_000,
+                                        registeredAt: 123)
+        XCTAssertNotNil(first)
+        XCTAssertEqual(first?.keyId, "dev_legacy")
+        XCTAssertEqual(first?.grants, ["read_tail", "read_diff"])
+        XCTAssertEqual(first?.expiryTs, 1_800_000_000)
+        XCTAssertEqual(first?.registeredAt, 123)
+        // Running the migration again (relaunch/upgrade) must no-op:
+        // exactly ONE profile, never two active legacy/profile records.
+        XCTAssertNil(store.migrateLegacy(host: "https://mac.example",
+                                         keyId: "dev_legacy",
+                                         grants: ["read_tail"],
+                                         expiryTs: 1_800_000_000,
+                                         registeredAt: 123))
+        XCTAssertEqual(store.orderedProfiles.count, 1)
+        // A migration without a complete legacy identity is a no-op too.
+        let fresh = makeStore()
+        XCTAssertNil(fresh.migrateLegacy(host: nil, keyId: nil, grants: [],
+                                         expiryTs: nil, registeredAt: 0))
+        XCTAssertTrue(fresh.isEmpty)
+    }
+
+    func testPerProfileCursorsAndKeyIDsAreScoped() throws {
+        let store = makeStore()
+        _ = try store.addProfile(displayName: "Mac",
+                                 urlString: "https://mac.example",
+                                 keyId: "dev_same",
+                                 registeredAt: 1)
+        _ = try store.addProfile(displayName: "Bazzite",
+                                 urlString: "https://bazzite.example",
+                                 keyId: "dev_same",
+                                 registeredAt: 2)
+        // B2: identical deterministic key-id strings are scoped per
+        // profile — both records hold theirs independently (the same
+        // phone key signed both registrations).
+        let ids = store.orderedProfiles.map(\.keyId)
+        XCTAssertEqual(ids, ["dev_same", "dev_same"])
+        let a = store.orderedProfiles[0]
+        let b = store.orderedProfiles[1]
+        store.setCursor(41, for: a.id)
+        store.setCursor(7, for: b.id)
+        XCTAssertEqual(store.cursor(for: a.id), 41)
+        XCTAssertEqual(store.cursor(for: b.id), 7)
+        store.setCursor(nil, for: a.id)
+        XCTAssertNil(store.cursor(for: a.id))
+        XCTAssertEqual(store.cursor(for: b.id), 7)
+    }
+
+    func testFileBackedStoreRoundTripsAtomically() throws {
+        // SAFETY: per-test temp directory under the system temp dir.
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("corral-profiles-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = HostProfileStore(directory: directory)
+        _ = try store.addProfile(displayName: "Mac",
+                                 urlString: "https://mac.example",
+                                 hostKeyB64: Self.keyA,
+                                 keyId: "dev_1", registeredAt: 1)
+        let reloaded = HostProfileStore(directory: directory)
+        XCTAssertEqual(reloaded.orderedProfiles.count, 1)
+        XCTAssertEqual(reloaded.orderedProfiles.first?.displayName, "Mac")
+        XCTAssertEqual(reloaded.orderedProfiles.first?.hostKeyB64, Self.keyA)
+        // Only ONE document exists (atomic replace, no stray temp files).
+        let files = try FileManager.default
+            .contentsOfDirectory(atPath: directory.path)
+        XCTAssertEqual(files, [HostProfileStore.profilesFileName])
+    }
+
+    func testRemoveHostPurgesOnlyThatProfileIncludingCursorAndCache() throws {
+        // SAFETY: per-test temp directory under the system temp dir.
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("corral-remove-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = HostProfileStore(directory: directory)
+        let a = try store.addProfile(displayName: "Mac",
+                                     urlString: "https://mac.example",
+                                     hostKeyB64: Self.keyA,
+                                     registeredAt: 1)
+        let b = try store.addProfile(displayName: "Bazzite",
+                                     urlString: "https://bazzite.example",
+                                     hostKeyB64: Self.keyB,
+                                     registeredAt: 2)
+        store.setCursor(11, for: a.id)
+        store.setCursor(22, for: b.id)
+        let cacheRow = BoardCacheRow(compositeIdentity: BoardCacheDTO.composite(
+            hostProfileID: a.id, agentID: "ag1"),
+            hostProfileID: a.id,
+            agentID: "ag1",
+            state: "working",
+            ts: 1,
+            stateEnteredAt: 1,
+            displayName: nil,
+            title: nil,
+            reason: nil,
+            tool: "claude",
+            paneReference: "p1",
+            repo: "corral",
+            branch: "main",
+            basename: "corral",
+            lastSeen: 1)
+        store.boardCache.save([cacheRow], for: a.id)
+        store.boardCache.save([], for: b.id)
+
+        store.removeProfile(id: a.id)
+
+        XCTAssertNil(store.profile(id: a.id))
+        XCTAssertNotNil(store.profile(id: b.id), "the other profile must survive")
+        XCTAssertNil(store.cursor(for: a.id), "A's cursor must be purged")
+        XCTAssertEqual(store.cursor(for: b.id), 22, "B's cursor must survive")
+        XCTAssertNil(store.boardCache.load(for: a.id), "A's cache file must be purged")
+        XCTAssertNotNil(store.boardCache.load(for: b.id), "B's cache must survive")
+        let files = try FileManager.default
+            .contentsOfDirectory(atPath: directory.path)
+            .filter { $0 != HostProfileStore.profilesFileName }
+        XCTAssertFalse(files.contains { $0.contains(a.id.uuidString) },
+                       "no A-named cache/cursor artifacts may survive")
+    }
+
+    func testCommitActivePairingKeepsOtherProfilesAndDedupesURL() throws {
+        let store = makeStore()
+        _ = try store.addProfile(displayName: "Mac",
+                                 urlString: "https://mac.example",
+                                 hostKeyB64: Self.keyA,
+                                 registeredAt: 1)
+        _ = try store.addProfile(displayName: "Bazzite",
+                                 urlString: "https://bazzite.example",
+                                 hostKeyB64: Self.keyB,
+                                 registeredAt: 2)
+        // The STORE commit only dedupes the paired URL and appends; the
+        // model separately removes the previous ACTIVE record (B5).
+        let pairing = try store.commitActivePairing(displayName: "Mac",
+                                                    urlString: "https://new.example",
+                                                    hostKeyB64: Self.keyA,
+                                                    fingerprint: "FP",
+                                                    keyId: "dev_2",
+                                                    grants: [],
+                                                    expiryTs: nil,
+                                                    registeredAt: 3)
+        XCTAssertEqual(store.orderedProfiles.map(\.urlString),
+                       ["https://mac.example", "https://bazzite.example",
+                        "https://new.example"],
+                       "other profiles must stay intact at the store level")
+        XCTAssertEqual(pairing.hostKeyB64, Self.keyA)
+        // Re-registering the SAME url refreshes the record instead of
+        // duplicating it (one record per URL).
+        _ = try store.commitActivePairing(displayName: "Mac",
+                                          urlString: "https://new.example",
+                                          hostKeyB64: Self.keyA,
+                                          fingerprint: "FP",
+                                          keyId: "dev_3",
+                                          grants: [],
+                                          expiryTs: nil,
+                                          registeredAt: 4)
+        XCTAssertEqual(store.orderedProfiles
+            .filter { $0.urlString == "https://new.example" }.count,
+            1, "one record per URL")
+        XCTAssertEqual(store.orderedProfiles.count, 3)
+    }
+}
+
+// MARK: - #399 legacy migration (B6) model behavior
+
+/// Reference box so @Sendable store closures share one metadata store
+/// with the test body (value capture would freeze the empty dictionary).
+private final class LegacyMetaBox: @unchecked Sendable {
+    var meta: DeviceKeyStore.DeviceMeta?
+}
+
+/// First-upgraded-launch migration pauses once for fingerprint
+/// confirmation; no stream/token activity happens before it.
+@MainActor
+final class HostProfileMigrationModelTests: XCTestCase {
+    private var suiteName = ""
+    private var model: AppModel?
+    private var box: LegacyMetaBox?
+    private var session: URLSession?
+
+    private func cleanup() {
+        model?.stopLive()
+        model = nil
+        session?.invalidateAndCancel()
+        session = nil
+        HostSwitchURLProtocol.clearScript()
+        if !suiteName.isEmpty {
+            // SAFETY: suiteName was freshly minted per test.
+            UserDefaults(suiteName: suiteName)!.removePersistentDomain(forName: suiteName)
+            suiteName = ""
+        }
+        box = nil
+    }
+
+    private func makeModel(defaults: UserDefaults,
+                           host: String,
+                           storeDirectory: URL? = nil,
+                           session: URLSession? = nil) -> AppModel {
+        let legacyMeta = DeviceKeyStore.DeviceMeta(
+            keyId: "dev_legacy", host: host,
+            grants: ["read_tail"], expiryTs: 1_800_000_000, registeredAt: 99)
+        let metaBox = LegacyMetaBox()
+        metaBox.meta = legacyMeta
+        box = metaBox
+        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        let store = HostProfileStore(directory: storeDirectory, defaults: defaults)
+        return AppModel(session: session ?? URLSession(configuration: .ephemeral),
+                        defaults: defaults,
+                        identityLoader: { (signer, .insecureFallback) },
+                        loadMeta: { [weak metaBox] in metaBox?.meta },
+                        saveMeta: { [weak metaBox] meta in metaBox?.meta = meta },
+                        removeMeta: { [weak metaBox] in metaBox?.meta = nil },
+                        profileStore: store)
+    }
+
+    private func scriptedSession(host: String) -> URLSession {
+        // SAFETY: fixed fixture URL derived from the host constant.
+        let hostKeyURL = URL(string: host)!.appendingPathComponent("/host-key")
+        HostSwitchURLProtocol.setScript([
+            hostKeyURL:
+                (200, Data(#"{"algorithm":"X25519","public_key":"\#(Data(repeating: 0, count: 32).base64EncodedString())"}"#.utf8), false),
+        ])
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [HostSwitchURLProtocol.self]
+        return URLSession(configuration: config)
+    }
+
+    func testMigrationPausesWithOneProfileAndConsumesLegacyKeys() {
+        suiteName = "corral.migration.\(UUID().uuidString)"
+        // SAFETY: a fresh UUID suite name is always a valid suite.
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let host = "https://mac.example"
+        defaults.set(host, forKey: "fleetnotifier.host")
+        defer { cleanup() }
+        let session = scriptedSession(host: host)
+        self.session = session
+        let model = makeModel(defaults: defaults, host: host, session: session)
+        self.model = model
+
+        // The FIRST upgraded launch migrates legacy data into ONE profile
+        // and pauses for fingerprint confirmation — no stream yet.
+        XCTAssertEqual(model.profiles.count, 1)
+        let profile = model.profiles[0]
+        XCTAssertEqual(profile.keyId, "dev_legacy")
+        XCTAssertEqual(profile.grants, ["read_tail"])
+        XCTAssertEqual(profile.expiryTs, 1_800_000_000)
+        XCTAssertEqual(profile.registeredAt, 99)
+        XCTAssertNil(profile.hostKeyB64, "no pin until fingerprint confirmation")
+        XCTAssertEqual(profile.connectionState, .awaitingFingerprintConfirmation)
+        XCTAssertNotNil(model.fingerprintConfirmation,
+                        "migration must pause on the fingerprint confirmation")
+        XCTAssertNil(defaults.object(forKey: "fleetnotifier.host"),
+                     "the legacy host record must be consumed (never two active records)")
+        XCTAssertNil(box?.meta, "legacy DeviceMeta must be consumed")
+        model.startLive()
+        XCTAssertTrue(HostSwitchURLProtocol.requests.isEmpty,
+                      "no stream/fetch may run before fingerprint confirmation")
+    }
+
+    func testMigrationIsIdempotentAcrossRelaunches() {
+        suiteName = "corral.migration2.\(UUID().uuidString)"
+        // SAFETY: a fresh UUID suite name is always a valid suite; temp
+        // store dir is per-test under the system temp dir.
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let storeDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("corral-migrate-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            cleanup()
+            try? FileManager.default.removeItem(at: storeDirectory)
+        }
+        let host = "https://mac.example"
+        defaults.set(host, forKey: "fleetnotifier.host")
+        let first = makeModel(defaults: defaults, host: host,
+                              storeDirectory: storeDirectory)
+        XCTAssertEqual(first.profiles.count, 1, "first upgraded launch migrates once")
+        first.stopLive()
+        // The legacy keys were consumed; a relaunch against the same
+        // FILE-backed store must NOT create a second profile.
+        let second = makeModel(defaults: defaults, host: host,
+                               storeDirectory: storeDirectory)
+        self.model = second
+        XCTAssertEqual(second.profiles.count, 1,
+                       "relaunch after migration must keep exactly one profile")
+    }
+}
+
+// MARK: - #399 key continuity (B4): fail-closed RED/GREEN target
+
+/// Launch/reconnect key continuity: with a PINNED profile, `/host-key`
+/// is re-checked before the live stream opens; a mismatch fails closed
+/// (no stream/fetch/push-register/Recent Output), the prior snapshot
+/// stays stale, and only Remove Host + fresh pairing recovers.
+@MainActor
+final class HostKeyContinuityModelTests: XCTestCase {
+    private var suiteName = ""
+    private var model: AppModel?
+    private var session: URLSession?
+
+    /// SAFETY: fixed valid X25519 public-key fixtures (32-byte fills).
+    static let pinnedKey = Data(repeating: 1, count: 32).base64EncodedString()
+    /// SAFETY: fixed valid X25519 public-key fixtures (32-byte fills).
+    static let rotatedKey = Data(repeating: 2, count: 32).base64EncodedString()
+
+    /// SAFETY: fixed valid URL literals used only as scripted-endpoint
+    /// keys and request assertions in this test class.
+    private let hostURL = URL(string: "https://mac.example")!
+    private let eventsURL = URL(string: "https://mac.example/events")!
+    private let hostKeyURL = URL(string: "https://mac.example/host-key")!
+    private let grantsURL = URL(string: "https://mac.example/grants-read")!
+    private let driveURL = URL(string: "https://mac.example/drive")!
+
+    private func cleanup() {
+        model?.stopLive()
+        model = nil
+        session?.invalidateAndCancel()
+        session = nil
+        HostSwitchURLProtocol.clearScript()
+        KeyContinuityGate.reset()
+        if !suiteName.isEmpty {
+            // SAFETY: suiteName was freshly minted per test.
+            UserDefaults(suiteName: suiteName)!.removePersistentDomain(forName: suiteName)
+            suiteName = ""
+        }
+    }
+
+    private func scriptedSession(reportedKey: String) -> URLSession {
+        HostSwitchURLProtocol.setScript([
+            hostKeyURL: (200, Data(#"{"algorithm":"X25519","public_key":"\#(reportedKey)"}"#.utf8),
+                         false),
+            eventsURL: (200, Data(), true),
+        ])
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [HostSwitchURLProtocol.self]
+        return URLSession(configuration: config)
+    }
+
+    private func makePinnedModel(reportedKey: String) -> AppModel {
+        suiteName = "corral.continuity.\(UUID().uuidString)"
+        // SAFETY: a fresh UUID suite name is always a valid suite.
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let store = HostProfileStore(directory: nil, defaults: defaults)
+        // SAFETY: fixed valid fixtures — URL + key + registration.
+        let profile = try! store.addProfile(
+            displayName: "Mac",
+            urlString: hostURL.absoluteString,
+            hostKeyB64: Self.pinnedKey,
+            fingerprint: "FINGER",
+            keyId: "dev_pinned",
+            grants: ["read_tail"],
+            expiryTs: 1_800_000_000,
+            registeredAt: 1)
+        defaults.set(profile.id.uuidString, forKey: "fleetnotifier.activeHostProfileID")
+        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        let model = AppModel(session: scriptedSession(reportedKey: reportedKey),
+                             defaults: defaults,
+                             identityLoader: { (signer, .insecureFallback) },
+                             loadMeta: { nil }, saveMeta: { _ in },
+                             wipeIdentity: {},
+                             profileStore: store)
+        return model
+    }
+
+    private func requests(to url: URL) -> [URLRequest] {
+        HostSwitchURLProtocol.requests.filter { $0.url?.absoluteString == url.absoluteString }
+    }
+
+    private func seedSnapshot(model: AppModel, rev: UInt64 = 5) {
+        let agent = Agent(agentId: "herdr:a1", source: "herdr", tool: "claude",
+                          state: .working, reason: "writing code", seq: 1,
+                          ts: 100, capabilities: ["read_tail"],
+                          host: Self.pinnedKey)
+        let snapshot = Snapshot(schemaVersion: 5, rev: rev,
+                                generatedAt: 100, agents: ["herdr:a1": agent])
+        model.fleet.apply(.snapshot(snapshot))
+    }
+
+    private func waitUntil(_ condition: @autoclosure () -> Bool,
+                           timeout: TimeInterval = 5) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+    }
+
+    func testHostKeyMismatchFailsClosedWithNoWorkReachingTheHost() async {
+        let model = makePinnedModel(reportedKey: Self.rotatedKey)
+        self.model = model
+        defer { cleanup() }
+        seedSnapshot(model: model)
+        model.startLive()
+        await waitUntil(model.keyContinuityState == .mismatch)
+        XCTAssertEqual(model.keyContinuityState, .mismatch,
+                       "a different host key must fail the profile closed")
+        XCTAssertGreaterThanOrEqual(requests(to: hostKeyURL).count, 1,
+                                    "the /host-key re-check must run first")
+        XCTAssertEqual(model.banner?.kind, "host_key_mismatch")
+        XCTAssertTrue(requests(to: eventsURL).isEmpty,
+                      "no stream may reach the replacement identity")
+        XCTAssertEqual(model.fleet.agents.count, 1,
+                       "the last safe snapshot must stay stale, not erased")
+        // Every other route fails closed too: pull refresh, grants
+        // refresh, recents sheet, Recent Output read.
+        await model.refreshFleet()
+        await model.refreshGrants()
+        model.requestRecents(for: "herdr:a1", haptic: false)
+        let driveClient = DriveClient(host: hostURL, session: session ?? .shared)
+        if let agent = model.fleet.agent("herdr:a1") {
+            model.driveReadTail(agent: agent, driveClient: driveClient)
+        }
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertTrue(requests(to: grantsURL).isEmpty,
+                      "no signed grants-read may reach the replacement identity")
+        XCTAssertTrue(requests(to: driveURL).isEmpty,
+                      "no Recent Output read may reach the replacement identity")
+        XCTAssertNil(model.recentsRequest, "the recents sheet must stay closed")
+        // Push enrollment is gated by the same continuity predicate.
+        let allowsPush = await KeyContinuityGate.allowsPushRegistration()
+        XCTAssertFalse(allowsPush, "APNs enrollment must be denied on mismatch")
+    }
+
+    func testHostKeyMatchOpensTheStreamAfterRecheck() async {
+        let model = makePinnedModel(reportedKey: Self.pinnedKey)
+        self.model = model
+        defer { cleanup() }
+        seedSnapshot(model: model)
+        model.startLive()
+        await waitUntil(!requests(to: eventsURL).isEmpty)
+        XCTAssertEqual(model.keyContinuityState, .verified)
+        XCTAssertGreaterThanOrEqual(requests(to: hostKeyURL).count, 1,
+                                    "the check must run BEFORE the stream opens")
+        XCTAssertGreaterThanOrEqual(requests(to: eventsURL).count, 1,
+                                    "a matching key opens the live stream")
+    }
+
+    func testRemoveHostRecoversFromMismatchAndKeepsTheSharedKey() async {
+        let model = makePinnedModel(reportedKey: Self.rotatedKey)
+        self.model = model
+        defer { cleanup() }
+        let signerBefore = model.signer
+        model.startLive()
+        await waitUntil(model.keyContinuityState == .mismatch)
+        XCTAssertEqual(model.keyContinuityState, .mismatch)
+        // SAFETY: the pinned fixture guarantees an active profile.
+        let profileID = try! XCTUnwrap(model.activeProfile?.id)
+        model.removeHost(profileID: profileID)
+        XCTAssertEqual(model.profiles.count, 0)
+        XCTAssertNotNil(model.signer, "the shared phone key must survive Remove Host")
+        XCTAssertNotNil(signerBefore, "fixture must hold a signer")
+        XCTAssertEqual(model.mode, .needsSetup)
+        XCTAssertEqual(model.keyContinuityState, .notPinned)
+        // Fresh pairing is possible again after removal: phase 1 against
+        // the same (rotated) key no longer trips the duplicate check.
+        let prepared = try! await model.prepareHostPairing(  // SAFETY: scripted session.
+            displayName: "Mac", rawURL: "https://mac.example")
+        XCTAssertEqual(prepared.hostKey.publicKey, Self.rotatedKey)
+        XCTAssertFalse(prepared.fingerprint.isEmpty)
+    }
+}
+
+// MARK: - #399 feed integrity + durable cache (C1/C5)
+
+/// Frame-level pinned-identity acceptance (C1): a frame stamped with a
+/// different host is rejected whole; the stale snapshot survives.
+@MainActor
+final class PinnedFeedIntegrityTests: XCTestCase {
+    private func agent(_ id: String, host: String?) -> Agent {
+        Agent(agentId: id, host: host)
+    }
+
+    func testConformsToPinnedHost() {
+        let pinned = "pinned-key"
+        let good = FleetEvent.snapshot(Snapshot(schemaVersion: 5, rev: 1,
+                                                generatedAt: 0,
+                                                agents: ["a": agent("a", host: pinned),
+                                                         "b": agent("b", host: nil)]))
+        XCTAssertTrue(FleetStore.conformsToPinnedHost(good, pin: pinned),
+                      "matching + host-less records pass")
+        let bad = FleetEvent.delta(Delta(rev: 2,
+                                         upd: [agent("c", host: "rotated-key")],
+                                         del: []))
+        XCTAssertFalse(FleetStore.conformsToPinnedHost(bad, pin: pinned),
+                       "a record stamped with another host fails the frame closed")
+    }
+
+    func testMismatchedFrameIsRejectedAndStaleStateSurvives() {
+        let store = FleetStore(defaults: .standard)
+        defer { store.acceptedHostIdentity = nil; store.reset() }
+        let pin = "pinned-key"
+        store.acceptedHostIdentity = pin
+        store.apply(.snapshot(Snapshot(schemaVersion: 5, rev: 1,
+                                       generatedAt: 0,
+                                       agents: ["a": agent("a", host: pin)])))
+        XCTAssertEqual(store.agents.count, 1)
+        var mismatchFired = false
+        store.onHostIntegrityMismatch = { mismatchFired = true }
+        store.apply(.delta(Delta(rev: 2,
+                                 upd: [agent("b", host: "rotated-key")],
+                                 del: [])))
+        XCTAssertTrue(mismatchFired, "the integrity hook must fire")
+        XCTAssertEqual(store.agents.count, 1,
+                       "the mismatched frame must be rejected entirely")
+        XCTAssertEqual(store.agents["a"]?.host, pin)
+        XCTAssertEqual(store.connectionState, .error("host_identity_mismatch"))
+    }
+}
+
+/// C5: the durable cache stores ONLY the allowlisted DTO fields — no
+/// read_tail line/block or transcript text can reach durable storage.
+@MainActor
+final class BoardMetadataCacheTests: XCTestCase {
+    /// SAFETY: per-test temp directory under the system temp dir.
+    private func makeDirectory() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("corral-cache-\(UUID().uuidString)", isDirectory: true)
+    }
+
+    func testSnapshotProjectsOnlyMetadataFields() throws {
+        let profileID = UUID()
+        let transcriptMarker = "tail-line-\(UUID().uuidString)"
+        let blockMarker = "block-text-\(UUID().uuidString)"
+        var agent = Agent(agentId: "herdr:a1", source: "herdr", tool: "claude",
+                          state: .blocked, reason: "waiting on a review",
+                          seq: 2, ts: 42,
+                          capabilities: ["read_tail"],
+                          host: "host-key")
+        agent.displayName = "fix-399"
+        agent.title = "host profiles"
+        agent.workspace = Workspace(repo: "corral",
+                                    branch: "g399-host-profiles",
+                                    worktreePath: "/Users/x/.herdr/worktrees/corral/g399-host-profiles",
+                                    dirty: false)
+        agent.attachment = Attachment(kind: "herdr-pane", reference: "w1:p1")
+        // Transcript content exists ONLY in the tail pane the DTO must
+        // never see (read_tail lines/blocks are memory-only per C5).
+        let store = FleetStore(defaults: .standard)
+        store.rememberTail([transcriptMarker, "line 2"], blocks: [
+            TranscriptBlock(kind: .agent, text: blockMarker, at: 1),
+        ], for: agent.agentId)
+
+        let rows = BoardCacheDTO.snapshot(hostProfileID: profileID,
+                                          agents: ["herdr:a1": agent],
+                                          stateEnteredAt: ["herdr:a1": 40],
+                                          now: 100)
+        XCTAssertEqual(rows.count, 1)
+        let row = try XCTUnwrap(rows.first)
+        XCTAssertEqual(row.agentID, "herdr:a1")
+        XCTAssertEqual(row.state, "blocked")
+        XCTAssertEqual(row.reason, "waiting on a review")
+        XCTAssertEqual(row.tool, "claude")
+        XCTAssertEqual(row.paneReference, "w1:p1")
+        XCTAssertEqual(row.repo, "corral")
+        XCTAssertEqual(row.branch, "g399-host-profiles")
+        XCTAssertEqual(row.basename, "g399-host-profiles")
+        XCTAssertEqual(row.stateEnteredAt, 40)
+        XCTAssertEqual(row.compositeIdentity,
+                       BoardCacheDTO.composite(hostProfileID: profileID, agentID: "herdr:a1"))
+        // The DTO has no line/block/transcript/token fields by
+        // construction — prove it by encoding: the markers cannot appear.
+        let data = try JSONEncoder().encode(rows)
+        let text = try XCTUnwrap(String(data: data, encoding: .utf8))
+        XCTAssertFalse(text.contains(transcriptMarker),
+                       "read_tail LINES must never reach the durable cache")
+        XCTAssertFalse(text.contains(blockMarker),
+                       "transcript BLOCK text must never reach the durable cache")
+        XCTAssertFalse(text.contains("device_token"),
+                       "no pairing-token field may exist in the DTO")
+        store.acceptedHostIdentity = nil
+        store.reset()
+    }
+
+    func testCacheFileRoundTripsAndSurvivesReloadWithOnlyAllowedKeys() throws {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let profileID = UUID()
+        let cache = BoardCacheStore(directory: directory)
+        let row = BoardCacheRow(compositeIdentity: "\(profileID)::a1",
+                                hostProfileID: profileID,
+                                agentID: "a1",
+                                state: "working",
+                                ts: 5,
+                                stateEnteredAt: 5,
+                                displayName: "fix",
+                                title: "title",
+                                reason: "reason",
+                                tool: "claude",
+                                paneReference: "p1",
+                                repo: "corral",
+                                branch: "main",
+                                basename: "corral",
+                                lastSeen: 9)
+        cache.save([row], for: profileID)
+        // The persisted JSON contains EXACTLY the allowlisted key set.
+        let url = try XCTUnwrap(cache.cacheFileURL(for: profileID))
+        let raw = try String(contentsOf: url, encoding: .utf8)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: Data(raw.utf8)) as? [[String: Any]])
+        XCTAssertEqual(object.count, 1)
+        let keys = Set(try XCTUnwrap(object.first).keys)
+        let allowed: Set<String> = ["composite_identity", "host_profile_id", "agent_id",
+                                    "state", "ts", "state_entered_at", "display_name",
+                                    "title", "reason", "tool", "pane_reference",
+                                    "repo", "branch", "basename", "last_seen"]
+        XCTAssertEqual(keys, allowed,
+                       "the durable cache file must contain ONLY allowlisted DTO fields")
+        let reloaded = BoardCacheStore(directory: directory)
+        let rows = try XCTUnwrap(reloaded.load(for: profileID))
+        XCTAssertEqual(rows.first, row)
+        // Remove purges the FILE + any in-memory rows: a fresh store over
+        // the same directory must see nothing.
+        cache.remove(for: profileID)
+        let afterRemoval = BoardCacheStore(directory: directory)
+        XCTAssertNil(afterRemoval.load(for: profileID))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path),
+                       "the cache document must be deleted")
+    }
+}
+
+// MARK: - #399 host-profile Settings/board wiring (source pins)
+
+/// Source-wiring pins over the bundled FleetViews source: the Settings
+/// Hosts section (Add Host entry), the fingerprint confirmation sheet
+/// binding, and the Add Host fingerprint flow.
+final class HostProfileWiringTests: XCTestCase {
+    private func bundledSource() throws -> String {
+        let bundle = Bundle(for: HostProfileWiringTests.self)
+        let url = try XCTUnwrap(bundle.url(forResource: "FleetViews",
+                                           withExtension: "swift.txt"))
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    /// 1-based line numbers of every line containing the needle.
+    private func lineNumbers(of needle: String, in text: String) -> [Int] {
+        text.split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+            .compactMap { index, line in line.contains(needle) ? index + 1 : nil }
+    }
+
+    func testSettingsHostsSectionWiresAddHostAndRemoveHost() throws {
+        let source = try bundledSource()
+        let start = try XCTUnwrap(source.range(of: "private var hostsSection: some View {"),
+                                  "the Hosts section must exist in SettingsView")
+        let end = try XCTUnwrap(source.range(of: "// MARK: - #399 Add Host"),
+                                "the Add Host views must follow SettingsView")
+        let slice = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(slice.contains("Text(\"Hosts\")"), "Hosts section header")
+        XCTAssertTrue(slice.contains("Label(\"Add host\", systemImage: \"plus.circle\")"),
+                      "the Add Host entry must exist")
+        XCTAssertTrue(slice.contains("showAddHost = true"),
+                      "the Add Host row must present the AddHostSheet")
+        XCTAssertTrue(slice.contains("Button(\"Remove host\", role: .destructive)"),
+                      "Remove Host must be reachable from Settings")
+        XCTAssertTrue(slice.contains("model.removeHost(profileID: profile.id)"),
+                      "Remove Host must route through the model")
+        XCTAssertTrue(slice.contains(".id(\"settings.add-host\")"),
+                      "the Add Host row carries its evidence anchor")
+    }
+
+    func testAddHostSheetShowsFingerprintBeforeRegistering() throws {
+        let source = try bundledSource()
+        let start = try XCTUnwrap(source.range(of: "struct AddHostSheet: View {"))
+        let end = try XCTUnwrap(source.range(of: "/// #399 B6: the launch-time fingerprint confirmation"))
+        let slice = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(slice.contains("Text(\"Verify host key\")"),
+                      "phase 1 fetches the host key before any token")
+        XCTAssertTrue(slice.contains("model.prepareHostPairing(displayName: name"),
+                      "phase 1 must route through prepareHostPairing")
+        XCTAssertTrue(slice.contains("Text(\"Confirm fingerprint & register\")"),
+                      "phase 2 requires explicit fingerprint confirmation")
+        XCTAssertTrue(slice.contains("model.completeAddHost(pairing, token: token)"),
+                      "registration runs only after confirmation")
+        XCTAssertTrue(slice.contains("Registration token"),
+                      "the token field appears at the confirmation step")
+        XCTAssertTrue(slice.contains("UIPasteboard.general.string = pairing.fingerprint"),
+                      "the full fingerprint stays copyable")
+    }
+
+    func testBoardPresentsFingerprintConfirmationForPausedProfiles() throws {
+        let source = try bundledSource()
+        XCTAssertEqual(lineNumbers(of: ".sheet(item: $model.fingerprintConfirmation)",
+                                   in: source).count, 1,
+                       "the board must present the migration confirmation exactly once")
+        XCTAssertTrue(source.contains(
+            "FingerprintConfirmationSheet(model: model, request: request)"))
+        XCTAssertTrue(source.contains("model.confirmFingerprint(profileID: request.profileID"))
+        XCTAssertTrue(source.contains("model.fetchHostKey(profileID: request.profileID)"),
+                      "the sheet fetches the key for display")
+        XCTAssertTrue(source.contains("Corral never auto-accepts"),
+                      "the confirmation must state the no-auto-accept rule")
+    }
+}

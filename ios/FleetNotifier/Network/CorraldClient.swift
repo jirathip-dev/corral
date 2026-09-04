@@ -34,6 +34,22 @@ struct CorraldClient: Sendable {
         return try JSONDecoder().decode(Snapshot.self, from: data)
     }
 
+    /// #399 B3/B4: the host's stable public identity —
+    /// `GET /host-key` `{algorithm, public_key}`. Consumed BEFORE pairing
+    /// (fingerprint confirmation) and re-checked before opening a live
+    /// stream after launch; a mismatch fails closed. Shape validation
+    /// (X25519 base64 of 32 bytes) lives in `HostKeyTrust` — this is the
+    /// transport only.
+    func fetchHostKey() async throws -> HostKeyResponse {
+        var request = URLRequest(url: host.appendingPathComponent("/host-key"))
+        request.timeoutInterval = 15
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw DriveError.network("host-key failed: \(response)")
+        }
+        return try JSONDecoder().decode(HostKeyResponse.self, from: data)
+    }
+
     /// Live SSE event stream with automatic reconnect.
     ///
     /// - Resumes from `lastEventId` via the `Last-Event-ID` header.

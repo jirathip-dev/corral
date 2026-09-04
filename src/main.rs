@@ -312,9 +312,13 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr, cors_origins: Vec<St
     let repo_source_discovery =
         Arc::new(LiveRepoSourceDiscovery::from_env().with_attribution(attribution.clone()));
 
-    let adapter: Arc<dyn Adapter> = Arc::new(HerdrAdapter::new_with_attribution(
+    let adapter: Arc<dyn Adapter> = Arc::new(HerdrAdapter::new_with_attribution_and_host(
         socket_path.clone(),
         attribution.clone(),
+        // #399 C1: stamp every agent record with the daemon's stable
+        // public host identity — the same X25519 key `GET /host-key`
+        // publishes — so clients can verify the feed they accept.
+        Some(auth.host.public_key_b64()),
     ));
     adapter.clone().start(store.clone());
 

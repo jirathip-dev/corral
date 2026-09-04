@@ -1083,7 +1083,7 @@ expect_failure(
 print("verified exact artifact dimensions, recorded hashes, and negative paths")
 PY
 
-"$PYTHON_BIN" - "$SCRIPT_DIR/design-gate-content-identity.py" "$REPO_DIR/Cargo.lock" <<'PY'
+"$PYTHON_BIN" - "$SCRIPT_DIR/design-gate-content-identity.py" "$REPO_DIR" <<'PY'
 import importlib.util
 from pathlib import Path
 import sys
@@ -1093,23 +1093,18 @@ if spec is None or spec.loader is None:
     raise SystemExit("could not load the content identity helper")
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
-lock = Path(sys.argv[2]).read_text(encoding="utf-8")
-original = module.renderer_dependency_fingerprint(lock)
-eframe_change = lock.replace(
-    'name = "eframe"\nversion = "0.36.1"',
-    'name = "eframe"\nversion = "0.36.2"',
-    1,
-)
-assert eframe_change != lock
-assert module.renderer_dependency_fingerprint(eframe_change) != original
-unrelated_change = lock.replace(
-    'name = "lazy_static"\nversion = "1.5.0"',
-    'name = "lazy_static"\nversion = "1.5.1"',
-    1,
-)
-assert unrelated_change != lock
-assert module.renderer_dependency_fingerprint(unrelated_change) == original
-print("verified narrow eframe/wgpu lockfile fingerprint")
+root = Path(sys.argv[2])
+scope = module.files_for(root, module.CURRENT_FILES)
+assert scope, "implementation identity scope is empty"
+missing = [p for p in scope if not p.is_file()]
+assert not missing, f"implementation identity scope lists missing files: {missing[:3]}"
+assert any("ios/FleetNotifier/UI/FleetViews.swift" in p.as_posix() for p in scope), \
+    "implementation identity scope does not include the iOS client sources"
+assert not any("clients/egui" in p.as_posix() for p in scope), \
+    "implementation identity scope still references the removed egui client"
+assert not any("docs/design/evidence" in p.as_posix() for p in scope), \
+    "implementation identity scope includes generated evidence"
+print("verified current-product implementation identity scope (iOS client + capture generator, no egui/lockfile inputs)")
 PY
 grep -q 'byte-stable for identical semantic inputs' "$WORK/output/issue-211/conformance.md" \
   || fail "manifest stability contract is not documented"

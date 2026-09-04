@@ -4,19 +4,44 @@ import SwiftUI
 struct FleetNotifierApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model = AppModel()
+    // #372: the app-wide theme (flavor + Reduce Motion). Owned here so the
+    // flavor's color scheme/tint reach every sheet and the picker's choice
+    // persists across launches. #371: the DEBUG-only launch argument
+    // `-corralDemoReduceMotion` forces the Reduce-Motion provider so the
+    // simulator evidence can capture the static working dot — simctl cannot
+    // toggle the system Reduce Motion setting.
+    @StateObject private var theme = ThemeStore(reduceMotionProvider: {
+#if DEBUG
+        if CommandLine.arguments.contains("-corralDemoReduceMotion") {
+            return true
+        }
+#endif
+        return UIAccessibility.isReduceMotionEnabled
+    })
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
             RootView(model: model)
+                .environmentObject(theme)
                 .task {
                     // Dev-only launch-arg harnesses (Debug only).
 #if DEBUG
                     if CorralDemoLaunch.wantsDetail(arguments: CommandLine.arguments) {
                         model.enterDemo(detailAgentId: CorralDemoLaunch.detailAgentID)
+                    } else if CorralDemoLaunch.wantsConnectEvidence(arguments: CommandLine.arguments) {
+                        // #379 evidence: guarantee the UNPAIRED first-launch
+                        // state no matter what the app container holds from
+                        // earlier runs — the board's real auto-present then
+                        // shows the How-to-connect sheet, and the driver
+                        // steps through Settings and the sheet behind marker
+                        // files (no demo fleet: the connect frames must show
+                        // the real fresh-install surfaces).
+                        model.resetDevice()
                     } else if CorralDemoLaunch.wantsReopenEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsFilterEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsSettingsEvidence(arguments: CommandLine.arguments)
+                                || CorralDemoLaunch.wantsThemeEvidence(arguments: CommandLine.arguments)
                                 || CommandLine.arguments.contains("-demoMode") {
                         model.enterDemo()
                     }
@@ -53,12 +78,19 @@ struct FleetNotifierApp: App {
 /// demo fleet and drive the #364 recorded evidence sequences (markers in
 /// Documents/ux-evidence that the host screenshot script observes).
 /// `-corralDemoSettingsEvidence` (#365) drives the board + Settings-sheet
-/// sequence behind the always-visible gear.
+/// sequence behind the always-visible gear. `-corralDemoThemeEvidence`
+/// (#372) drives the Mocha → Appearance → Latte board/recents sequence.
+/// `-corralDemoConnectEvidence` (#379) wipes any leftover identity so the
+/// launch is UNPAIRED, then records the auto-presented How-to-connect
+/// sheet, the Settings sheet (Device section without the grants list), and
+/// the shared connect sheet content.
 enum CorralDemoLaunch {
     static let detailArgument = "-corralDemoDetail"
     static let reopenEvidenceArgument = "-corralDemoUXEvidence"
     static let filterEvidenceArgument = "-corralDemoFilterEvidence"
     static let settingsEvidenceArgument = "-corralDemoSettingsEvidence"
+    static let themeEvidenceArgument = "-corralDemoThemeEvidence"
+    static let connectEvidenceArgument = "-corralDemoConnectEvidence"
 
     static var detailAgentID: String {
         DemoFleet.featuredAgentID
@@ -78,6 +110,14 @@ enum CorralDemoLaunch {
 
     static func wantsSettingsEvidence(arguments: [String]) -> Bool {
         arguments.contains(settingsEvidenceArgument)
+    }
+
+    static func wantsThemeEvidence(arguments: [String]) -> Bool {
+        arguments.contains(themeEvidenceArgument)
+    }
+
+    static func wantsConnectEvidence(arguments: [String]) -> Bool {
+        arguments.contains(connectEvidenceArgument)
     }
 }
 #endif

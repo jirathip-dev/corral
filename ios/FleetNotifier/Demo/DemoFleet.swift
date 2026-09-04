@@ -1,11 +1,21 @@
 #if DEBUG
 import Foundation
 
-/// Seeded Debug demo fleet: renders the #362 READ-ONLY board — raw herdr
-/// status sections (blocked / working / idle / unknown; working rows span
-/// different repos incl. an orphan with repo = nil), blocked agents
-/// visually first — with no daemon reachable. No actions exist; the one
-/// demo drive is read_tail.
+/// Seeded Debug demo fleet: renders the #371 READ-ONLY board v2 — raw herdr
+/// status sections (blocked / working / idle / done / unknown), each split
+/// into always-open repo subgroups (alphabetical, Other last) with working
+/// rows carrying the breathing-motion chips — with no daemon reachable. No
+/// actions exist; the one demo drive is read_tail.
+///
+/// Shape (evidence-fit): blocked spans two repos, working spans two repos
+/// PLUS the orphan (Other subgroup, gray), and one done row proves the Done
+/// section renders when present. The demo exercises every status + subgroup
+/// kind in ONE seed: the first 844 pt viewport shows the chips row, the
+/// blocked (2) section's two subgroup bands, and the working (3) section's
+/// bands with the breathing-motion chips; idle/done/unknown + the Other
+/// band sit below the fold (the board scrolls; simctl cannot inject scroll,
+/// so the lower sections are unit- + source-wiring-covered, never claimed
+/// as viewport evidence).
 enum DemoFleet {
 
     /// The opt-in detail route used by the reproducible evidence gate.
@@ -33,16 +43,26 @@ enum DemoFleet {
                   displayName: displayName, title: nil)
         }
 
-        // Blocked agents: the blocked section is the board's first section,
-        // so this row leads the board without any cross-repo promotion.
+        // Blocked agents: the blocked section is the board's first section.
+        // TWO blocked rows across different repos prove the subgroup bands
+        // render alphabetically (demo-garden < demo-orbit) INSIDE Blocked —
+        // #371 groups every section uniformly, incl. Blocked.
         agents["herdr:demo-garden-blocked"] = agent(
             "herdr:demo-garden-blocked", tool: "claude", state: .blocked,
             reason: "waiting on human review of the catalog push",
             displayName: "demo-garden-agent", repo: "demo-garden", branch: "demo-catalog",
             seq: 9, tsOffset: 30, dirty: true, prNumber: 9026, paneRef: "w21:p1")
 
+        agents["herdr:demo-orbit-blocked"] = agent(
+            "herdr:demo-orbit-blocked", tool: "codex", state: .blocked,
+            reason: "waiting on a payload review decision",
+            displayName: "demo-orbit-blocked", repo: "demo-orbit", branch: "demo-payload",
+            seq: 8, tsOffset: 90, paneRef: "w23:p2")
+
         // Working agents across DIFFERENT repos (plus the orphan below):
-        // one status section, repo carried as row metadata only.
+        // the working section shows demo-atlas + demo-orbit subgroup bands
+        // then the gray Other band — and every working row carries the
+        // #371 breathing-motion chip.
         agents["herdr:demo-orbit-working"] = agent(
             "herdr:demo-orbit-working", tool: "opencode", state: .working,
             reason: "streaming a segmented recent output",
@@ -62,9 +82,18 @@ enum DemoFleet {
             reason: nil, displayName: "demo-ledger-idle", repo: "demo-ledger", branch: "demo-embed",
             seq: 5, tsOffset: 1800, paneRef: "w22:p2")
 
+        // Done row: proves the Done section renders when herdr reports done
+        // (the live-board norm has none; BoardModel emits it only when a
+        // done agent exists).
+        agents["herdr:demo-garden-done"] = agent(
+            "herdr:demo-garden-done", tool: "claude", state: .done,
+            reason: "catalog push merged", displayName: "demo-garden-done",
+            repo: "demo-garden", branch: "demo-catalog",
+            seq: 7, tsOffset: 600, paneRef: "w21:p2")
+
         // Unknown + orphan (no repo) agents exercise the tail statuses: the
-        // orphan carries repo = nil but still lands in its status section
-        // (working) — repo is row metadata, never a grouping key.
+        // orphan carries repo = nil and lands in the working section's
+        // Other subgroup (gray, after the alphabetical repos — #371).
         agents["herdr:demo-atlas-unknown"] = agent(
             "herdr:demo-atlas-unknown", tool: "claude", state: .unknown,
             reason: nil, displayName: "demo-atlas-unknown", repo: "demo-atlas", branch: nil,
@@ -116,42 +145,96 @@ enum DemoFleet {
         }
     }
 
-    /// Live-tail fixture: one stream of canonical blocks (user / agent /
-    /// tool / system / unknown) in daemon order — recents renders the
-    /// bounded tail as ONE continuous chronological rail (#361).
+    /// Live-tail fixture (#373 block-per-run): one canonical block stream
+    /// whose role-run shape exercises every block treatment the recents
+    /// sheet must prove — quiet Status material first, user/assistant
+    /// prose runs, a >20-line tool run (per-block 20-line cap + inline
+    /// "Show all"), a BARE tool call (doc icon — no shell echo), a diff
+    /// run (ANSI-remap proof: `+` / `-` / `@@` syntax marks resolve
+    /// through the ACTIVE flavor's ANSI slots), and a FINAL call-only tool
+    /// run (the muted inline "waiting for output…" line — never its own
+    /// block). Same-tool invocations ride inside ONE tool run (compact
+    /// line per call). Content is fully fictional.
     static func recentBlocks(for agent: Agent) -> [RecentBlock] {
-        // The divider-only system block below stays ON PURPOSE: the rail
-        // row model drops divider-only rows, so simulator evidence proves
-        // ZERO divider rows render.
-        let file = "src/board_view.rs"
         let omitted = agent.seq > 0 ? UInt32(min(agent.seq * 10, 2_000)) : nil
         return [
             RecentBlock(
-                kind: .agent,
-                text: "(demo) Snapshot read model is consistent.",
-                truncatedBefore: omitted),
-            RecentBlock(kind: .user,
-                        text: "Please verify the diff too.",
-                        truncatedBefore: nil),
-            RecentBlock(
-                kind: .agent,
-                text: "def deploy():\n    print(\"ready ✅\")\n    return True",
-                truncatedBefore: nil),
-            RecentBlock(
                 kind: .system,
                 text: "read_tail page truncated to the newest 200 lines.",
+                truncatedBefore: omitted),
+            RecentBlock(
+                kind: .user,
+                text: "The retry wrapper double-applies on the demo endpoint — find where it wraps twice and add a regression test that bites.",
                 truncatedBefore: nil),
             RecentBlock(
-                kind: .system,
-                text: "──────────────────────────────────────",
+                kind: .agent,
+                text: "Starting from the request path: the wrapper probably wraps both the call site and its caller. Running the baseline first.",
                 truncatedBefore: nil),
-            RecentBlock(kind: .unknown,
-                        text: "raw pane line without provenance",
-                        truncatedBefore: nil),
             RecentBlock(
                 kind: .tool,
-                text: "git diff -- \(file)\n@@ -18,2 +18,4 @@\n-const OLD: &str = \"plain\";\n+pub fn recent_output() -> Bool {\n+    true\n+}",
-                truncatedBefore: nil)
+                text: "read_file src/retry.ts  lines 1-18\n"
+                    + "  1  export function withRetry(fn, attempts = 3) {\n"
+                    + "  2    return async (...args) => {\n"
+                    + "  3      for (let attempt = 1; attempt <= attempts; attempt++) {\n"
+                    + "  4        try { return await fn(...args) }\n"
+                    + "  5        catch (error) {\n"
+                    + "  6          if (attempt === attempts) throw error\n"
+                    + "  7        }\n"
+                    + "  8      }\n"
+                    + "  9    }\n"
+                    + " 10  }",
+                truncatedBefore: nil),
+            RecentBlock(
+                kind: .agent,
+                text: "Found it — the caller wraps the post a second time, so 409s retry twice. Removing the outer wrapper and the redundant predicate range.",
+                truncatedBefore: nil),
+            RecentBlock(
+                kind: .tool,
+                text: "$ pnpm vitest run src/retry.test.ts\n"
+                    + " RUN  v2.1.4  demo-atlas\n"
+                    + "\n"
+                    + " ✓ src/retry.test.ts (9 tests) 142ms\n"
+                    + "   ✓ wraps the post exactly once\n"
+                    + "   ✓ retries 503 up to the attempt budget\n"
+                    + "   ✓ retries 429 and honours Retry-After\n"
+                    + "   ✓ does not retry 409 Conflict\n"
+                    + "   ✓ does not retry 400 Bad Request\n"
+                    + "   ✓ does not retry 404 Not Found\n"
+                    + "   ✓ propagates the original error body\n"
+                    + "   ✓ clears its timer on success\n"
+                    + "   ✓ is a no-op when attempts = 1\n"
+                    + "   ✓ reports the attempt count in telemetry\n"
+                    + "\n"
+                    + " Test Files  1 passed (1)\n"
+                    + "      Tests  9 passed (9)\n"
+                    + "   Duration  1.42s (transform 210ms, collect 380ms)\n"
+                    + "\n"
+                    + " PASS  Waiting for file changes...\n"
+                    + "   ✓ 9/9 checks green — done\n"
+                    + "  demo-atlas: retry suite baseline green\n"
+                    + "\n"
+                    + " — press q to exit —",
+                truncatedBefore: nil),
+            RecentBlock(
+                kind: .agent,
+                text: "9/9 green — here is the exact change that keeps 409 out of the retry path:",
+                truncatedBefore: nil),
+            RecentBlock(
+                kind: .tool,
+                text: "$ git diff -- src/retry.ts\n"
+                    + "@@ -18,2 +18,4 @@\n"
+                    + "-const retryable = (s) => s >= 408\n"
+                    + "+const RETRYABLE = new Set([408, 425, 429, 500])\n"
+                    + "+const retryable = (s) => RETRYABLE.has(s)",
+                truncatedBefore: nil),
+            RecentBlock(
+                kind: .agent,
+                text: "The explicit set keeps 409 out of the retry path. Double-checking for any other retry sites before I push.",
+                truncatedBefore: nil),
+            RecentBlock(
+                kind: .tool,
+                text: "$ rg -n withRetry src/",
+                truncatedBefore: nil),
         ]
     }
 

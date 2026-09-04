@@ -126,7 +126,47 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # the Settings Connection section (host + pairing) updated FleetViews;
     # AppModel register() gained the host-switch stream semantics; digest
     # re-pinned to the #365 head source set.
-    "a88f05b806e49132b7d869687b3ee03fd3d5cb2dc7488ff83164f525b5ebd982"
+    # 2026-09-03 (#372): Catppuccin theming foundation — AppTheme.swift
+    # added to the Release source set (palette tables, ANSI remap, repo-hue
+    # fnv port, ThemeStore), StateStyle reduced to vocabulary-only, and
+    # FleetViews/FleetNotifierApp consume theme tokens (no legacy hexes);
+    # digest re-pinned to the #372 head source set.
+    # 2026-09-03 (#372 evidence gate): the recorded-theme-evidence driver
+    # gained cancellation-abort pacing + 5 s phase holds, the board rows
+    # opted into the base token (iOS 26 plain lists ignore List-level row
+    # backgrounds), and tint/color-scheme moved into FleetView + the
+    # presented sheets so a live flavor flip re-traits the sheet chrome;
+    # digest re-pinned.
+    # 2026-09-03 (#372 R1): state colors collapsed into ONE shared mapping
+    # (ThemeStore.stateToken(for:)) consumed by BOTH stateColor(for:) and
+    # stateHex(for:) — no parallel switch; digest re-pinned.
+    # 2026-09-03 (#371): the board-v2 renderer landed — BoardModel groups
+    # every status section into always-open repo subgroups (alphabetical +
+    # Other last), FleetViews renders subgroup bands + tinted state chips +
+    # repo label chips + the working-motion glyph (Reduce Motion static
+    # dot), AppTheme gained the locked chip/band/ink mixes (half-even
+    # quantization matching the approved color-mix render), DemoFleet
+    # reseeded to the board-v2 evidence shape (two blocked repos, working
+    # split across repos + orphan, one done row), FleetNotifierApp gained
+    # the DEBUG -corralDemoReduceMotion provider override, and the #364
+    # filter-evidence driver gained the same cancellation-abort pacing as
+    # the #372 theme driver (a raced driver cannot corrupt the recorded
+    # filter phases); digest re-pinned to the #371 head source set.
+    # 2026-09-04 (#373): recents became block-per-run — the #361 continuous
+    # rail model was replaced by the role-run display model
+    # (RecentOutputModel), the recents sheet + block renderer landed in
+    # FleetViews (icon-only headers, session collapse, 20-line cap + Show
+    # all, Latte recess panels, DEBUG recents-evidence driver), and the demo
+    # seed was rebuilt to the block-per-run evidence shape (DemoFleet) —
+    # re-pinned.
+    # 2026-09-04 (#379): Settings cleanup + How-to-connect — the Settings
+    # Device section lost the grants list/stale capability language for the
+    # identity read-out (Key ID, Keychain note, read-only signed device
+    # label, paired/registration state, Remove action), the shared
+    # HowToConnectSheet + Settings '?' entry + unpaired-launch auto-present
+    # landed in FleetViews, and FleetNotifierApp gained the DEBUG
+    # -corralDemoConnectEvidence route — re-pinned.
+    "209db196e2f84a53dcd4f2a29f9c4a7c3cb15e5c61bbf343e9f9f14af677936e"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #332 R4: pin the focused grant fixture independently from the Release
@@ -153,7 +193,33 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # Settings Connection surface) and SettingsHostSwitchTests (register
     # while live: host switch drops/restarts the SSE stream) added —
     # re-pinned.
-    "b0cbecf3143f23709c978b36fff31fd1c076bd90649d5ba10c907efe8a5dcb25"
+    # 2026-09-03 (#372): the wiring tests moved off RecentOutputPalette onto
+    # theme tokens, ThemeWiringTests + LegacyHexAuditTests were added (in
+    # FleetNotifierTests.swift), and the #372 theme-evidence driver added a
+    # second DEBUG-gated settings opener — re-pinned.
+    # 2026-09-03 (#371): BoardModelReadOnlyTests became BoardModelBoardV2Tests
+    # (subgroup alpha + Other-last + section totals + filter-keeps-sections),
+    # WorkingMotionTests + BoardV2WiringTests (working glyph, tinted chip via
+    # the shared state mapping, subgroup/row hue pins) were added, and the
+    # demo seed tests now carry the done row; BoardV2ChipMixTests lives in
+    # ThemeTests.swift (not a pinned file) — re-pinned.
+    # 2026-09-04 (#373): the rail-era model classes became RecentBlockModelTests
+    # (role-boundary, same-tool grouping, call/output split, waiting-line
+    # scope, 20-line cap, live append into the open block) +
+    # RecentsBlockSessionTests (default-expanded, toggle, reveal, reset), the
+    # demo fixture pin asserts the block-per-run treatments, and the
+    # wiring/theme pins moved onto the block renderer — re-pinned.
+    # 2026-09-04 (#379): the Settings-device and Settings-wiring pins were
+    # updated for the post-cut identity read-out (Remove action instead of
+    # the Reset section, How-to-connect MARK boundary), and
+    # SettingsConnectWiringTests was added (grants list/stale capability
+    # absence, Device identity rows, Settings '?' entry, unpaired-launch
+    # auto-present, numbered connect-sheet steps + copy-host + README link)
+    # — re-pinned.
+    # 2026-09-04 (#379 R1): the #379 opener pins unwrap their line numbers
+    # with XCTUnwrap so a mutated (missing-opener) source fails cleanly
+    # instead of crashing on an empty array — re-pinned.
+    "4ff4f27cee1bcbc56a5b14f532dd7cb58598300382afe3e3516882ffabecb9cc"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

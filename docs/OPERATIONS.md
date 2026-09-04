@@ -1,7 +1,7 @@
 # Corral Operations
 
 Running and maintaining `corrald`: device lifecycle, grants, remote
-access from iOS (Tailscale Serve), the macOS Keychain how-to, audit
+access from iOS (Tailscale Serve), audit
 semantics, and troubleshooting. Commands marked
 "verified" were run against a throwaway daemon on 2026-08-16.
 
@@ -13,20 +13,20 @@ For a new machine / public install, two scripts make the daemon turnkey:
 
 Builds the release binary, creates `~/.config/corral` (keys, tokens), and
 installs a **launchd agent** (`com.corral.corrald`) so the daemon runs at
-login and stays up (KeepAlive). It also installs the release desktop client:
-`/Applications/Corral.app` on macOS or `~/.local/bin/corrald-ui` plus a
-`.desktop` entry on Linux. Idempotent; safe to re-run.
+login and stays up (KeepAlive). Idempotent; safe to re-run. (The pre-#376
+desktop client install is gone: Corral is an iOS-only product.)
 
 ```sh
 scripts/setup-corrald.sh                     # loopback only (default 127.0.0.1:8474)
-scripts/setup-corrald.sh --bind 100.67.222.5 # bind a Tailscale/private IP (desktop/daemon only)
+scripts/setup-corrald.sh --bind 100.67.222.5 # bind a Tailscale/private IP (daemon only)
 scripts/setup-corrald.sh --uninstall         # remove all three launchd agents (keeps config)
 ```
 
-`--bind <tailnet-ip>` serves DESKTOP clients on the tailnet; the iOS
-client cannot use it (ATS refuses plain HTTP to the CGNAT range) — for
-iOS, keep the daemon loopback-only and use Tailscale Serve instead: see
-"Remote access from iOS (Tailscale Serve)" below.
+`--bind <tailnet-ip>` serves the credential-free read plane on the
+tailnet (for scripts or other hosts); the iOS client cannot use it (ATS
+refuses plain HTTP to the CGNAT range) — for iOS, keep the daemon
+loopback-only and use Tailscale Serve instead: see "Remote access from
+iOS (Tailscale Serve)" below.
 
 `launchctl bootstrap` is intentionally NOT run from inside an automation
 gateway (same reason as the herdr-server agent): run the script from your
@@ -35,58 +35,15 @@ own Terminal. If the daemon is already up under launchd, the script's
 kickstart -k` only restarts the process; it does not re-read a rewritten
 plist).
 
-The macOS desktop install is handled by `scripts/install-corral-ui.sh`. It
-stages the complete `Corral.app` beside `/Applications/Corral.app`, builds and
-round-trips `Contents/Resources/Corral.icns` from the checked-in
-transparent-squircle `assets/icon/corral-icon-macos.png`, validates the
-squircle mask), validates the executable, and writes
-`CFBundleIconFile=Corral` in `Info.plist` before touching the live
-destination. Linux stages the binary, the 256px
-`assets/icon/corral-icon-256.png`, and the
-`~/.local/share/applications/corral.desktop` entry together. Only a validated
-staged payload is committed; the desktop entry quotes and escapes executable
-paths containing spaces, `%`, quotes, `$`, backticks, or backslashes according
-to desktop-entry syntax. A failed copy, converter, plist check, or final rename leaves the
-existing installation in place and rolls back any partial commit. If rollback
-restoration itself fails, the installer keeps and reports the exact rollback
-directory so the old payload remains recoverable. A missing icon or failed
-macOS icon conversion is an installation error rather than a silent fallback.
-The Linux `Exec` value uses command quoting followed by desktop-entry
-general-string escaping: quotes, `$`, and backticks receive doubled on-disk
-backslashes, a literal backslash receives four, and `%` is written as `%%`.
-Newline- or carriage-return-containing requested prefixes and executable paths
-containing `=` fail before destination directories are created. Install
-prefixes and the macOS app parent are physically
-canonicalized before safety checks; root/`..` paths and symlinked `bin` or
-`share` payload parents are rejected, while a safe symlinked prefix is
-resolved to its canonical target. Staging and final renames stay beside the
-resolved destination on one filesystem. Linux and Other explicitly compare
-the device of every target parent with the staging prefix before mutation and
-again before commit; device mismatches fail rather than pretending a
-cross-filesystem rename is atomic. If payload restoration fails, the old
-payload is retained in the reported rollback directory; if only rollback
-directory cleanup fails after a failed install, an existing empty or partial
-rollback directory is named for inspection, a missing root is reported
-without a path or recoverability claim, and an uninspectable root is reported
-as indeterminate with its path. After a fresh install, the cleanup-failure
-diagnostic instead names an empty rollback directory for inspection. After a replacement, the
-diagnostic checks the expected rollback paths after failed cleanup and reports
-all, some, or none of the prior Linux/Other backups (or the macOS previous
-path) without promising recoverability from a pre-cleanup count. An existing
-empty rollback directory is named for inspection; a missing root has no
-inspection or recoverability claim; and an existing but uninspectable root is
-reported as indeterminate. The multi-file Linux commit is rollback-based
-rather than one single atomic operation.
-
-`--uninstall` removes all three launchd agents and leaves the config directory; it
-does not remove an installed desktop app. Use
-`scripts/install-corral.sh --uninstall` to also remove the staged release
-files and the `Corral.app` desktop payload.
+`--uninstall` removes all three launchd agents (daemon, auto-update, log
+rotation) and leaves the config directory in place. A release install is
+removed with `scripts/install-corral.sh --uninstall`, which also removes
+the staged release files.
 
 Prebuilt tagged releases can be installed without a Rust toolchain using
 `scripts/install-corral.sh`; see the README install section. In that mode
-`scripts/setup-corrald.sh --from-release <binary>` skips the cargo build and
-uses the bundled `corrald` and `corrald-ui` binaries instead.
+`scripts/setup-corrald.sh --from-release <binary>` skips the cargo build
+and uses the bundled `corrald` binary instead.
 
 ### Grant provisioning (out-of-band since #354)
 
@@ -244,9 +201,10 @@ Read-only client, grant-gated per device (see "Grants model" below):
 - **Read-only since #354**: the mutating drive capabilities (`prompt`,
   `interrupt`, `approve`, `kill`, `attach`, `start_worktree`,
   `read_issues`) and the terminal/attach transport were removed from the
-  daemon; the worktree-diff page was removed from BOTH CLIENTS (iOS L2,
-  egui L3) while the daemon RETAINS the signed `read_diff` read path
-  (bounded changed-files/diff page — no client dispatches it). A signed
+  daemon; the worktree-diff page was removed from the iOS client in #354
+  (L2) while the daemon RETAINS the signed `read_diff` read path
+  (bounded changed-files/diff — no bundled client dispatches it). A
+  signed
   drive naming a removed capability is refused at the capability boundary
   (`400 unknown_capability`) before the authorizer, before any adapter
   dispatch, and before the audit log.
@@ -290,9 +248,7 @@ curl -s -X POST http://127.0.0.1:8474/register \
 ```
 
 Verified response: `{"key_id":"dev_...","grants":[],"expiry_ts":...,
-"revoked":false,...}` — **empty grants = read-only by default**. The
-desktop client (`corrald-ui`) auto-registers on localhost by reading the
-same `registration-token` file (same user).
+"revoked":false,...}` — **empty grants = read-only by default**.
 
 Device keys expire 90 days after registration (`expiry_ts`). Expiry and
 revocation are checked on every `verify` — re-register with a fresh key
@@ -370,24 +326,6 @@ sessions — so once an out-of-band `"revoked": true` has been loaded
 | Registration token | delete `registration-token`, restart; existing devices keep working, new enrollments need the new token |
 | Admin token | delete `admin-token`, restart |
 | Device keys | re-register before expiry; or revoke out-of-band: stop the daemon, set `"revoked": true` in `registry.json`, restart |
-
-## macOS Keychain how-to (hit live 2026-08-16)
-
-The dev binary is unsigned, and the client stores its device keypair via
-the macOS Keychain (`keyring` crate, service `corrald-ui`). A fresh
-`cargo build` changes the (unsigned) identity, so macOS re-prompts
-"corrald-ui wants to access key…" on **every** launch of an existing
-device. Fix after every rebuild:
-
-```sh
-codesign -s - --force target/release/corrald-ui
-```
-
-Ad-hoc signing gives a stable CDHash, so the next launch prompts once
-and "Always Allow" sticks. First-run/new devices don't prompt (keychain
-adds are silent) — prompts appear when **reading** an item created by an
-older binary identity. If prompts return, the binary was rebuilt without
-re-signing.
 
 ## Audit log
 
@@ -481,10 +419,10 @@ CORRAL_LOG_MAX_BYTES=1024 scripts/rotate-corral-logs.sh
 one agent pane, segmented server-side into wire blocks (user / agent /
 tool / system) served ADDITIVELY as `{"lines": [...], "blocks": [...]}`
 on the signed `POST /drive` response. It is an on-demand VIEW fetch —
-never pushed (D5 stays intact). Both the desktop egui board and the iOS
-FleetNotifier app render the Recent-output surface from this one payload:
-clients consume the segmented `blocks` (with the legacy `lines` field as
-the backward-compatible text view).
+never pushed (D5 stays intact). The iOS FleetNotifier app renders the
+Recent-output surface from this one payload: clients consume the
+segmented `blocks` (with the legacy `lines` field as the
+backward-compatible text view).
 
 ```sh
 # signed POST /drive with capability read_tail (see the drive plane)
@@ -529,9 +467,9 @@ provider (`docs/design/evidence/issue-324/`).
 The signed `/drive` surface accepts exactly two capability names —
 `read_tail` (above, used by every client for recents) and `read_diff`
 (bounded worktree-diff read, #232). `read_diff` is retained daemon-side
-and its grant still parses, but no client dispatches it after the #354
-client cuts: the iOS Diff page was removed in L2 and egui keeps `read_diff`
-only as a wire-decode case (L3). Every other name — `prompt`, `interrupt`,
+and its grant still parses, but no bundled client dispatches it: the iOS
+Diff page was removed in #354 L2 and the desktop client was removed in
+#376. Every other name — `prompt`, `interrupt`,
 `approve`, `kill`, `attach`, `start_worktree`, `read_issues` — is refused
 with `400 unknown_capability` before the authorizer, before dispatch, and
 before the audit log.
@@ -549,7 +487,7 @@ What a client can do against a live daemon (routes verified against
 | `GET /snapshot` | none (credential-free read) | full fleet snapshot, monotonic `rev` |
 | `GET /events` | none (credential-free read) | SSE stream; resumes from `Last-Event-ID` |
 | `GET /history` | none (credential-free read) | D23 event-ring window (`?since=<ms>&limit=`) |
-| `GET /issues` | none (credential-free read) | repo-level issue metadata view (#113; no client UI renders it after L2/L3) |
+| `GET /issues` | none (credential-free read) | repo-level issue metadata view (#113; no bundled client UI renders it) |
 | `POST /drive` | device signature | signed read drive: `read_tail` (all clients) / `read_diff` (daemon-retained; no client dispatches it) |
 | `POST /grants-read` | device signature | device refreshes its OWN grants (#101) |
 | `POST /device-token` | device signature | APNs device-token registration (daemon push path) |
@@ -587,11 +525,11 @@ watch/reap/prune` with `--registry`) is superseded — those commands were
 the corral-owned read/write path that configless removes. Pane/worktree
 cleanup uses `herdr` directly (`herdr pane close`, `herdr worktree
 remove`, `git worktree prune`) and `fleet-watch` remains the fleet-ops
-watcher. The core board exposes only the `Board` and `Settings` tabs; it
-has no Issues or Fleets tab (the Issues tab was removed with the #354
-client cut). Fleet-ops surfaces (registry views, watch, re-arm) live in the
-fleet-ops tooling itself — the `herdr-fleet` CLI and
-`fleet-watch` — never in corrald's daemon or core UI.
+watcher. The iOS app exposes only its board, recents, and Settings
+surfaces; it has no Issues or Fleets tab (the Issues browser was removed
+with the #354 client cut). Fleet-ops surfaces (registry views, watch,
+re-arm) live in the fleet-ops tooling itself — the `herdr-fleet` CLI and
+`fleet-watch` — never in corrald's daemon or the iOS app.
 
 ## Workspace/repo attribution
 
@@ -654,8 +592,9 @@ changes prune stale categories, so every visible category is current. The
 view is display-only end to end: the `start_worktree` drive (the only
 consumer of a selected issue) and its grant were removed from the daemon
 along with the other mutating capabilities in #354, so `GET /issues` never
-starts or mutates anything. Since the #354 client cuts (L2 iOS, L3 egui)
-no bundled client renders an Issues tab — the route remains a
+starts or mutates anything. No bundled client renders an Issues tab since
+#354 L2 removed it from the iOS app (the desktop client was removed in
+#376) — the route remains a
 credential-free read endpoint for read-only clients and scripts.
 
 ## Security model summary
@@ -695,9 +634,6 @@ credential-free read endpoint for read-only clients and scripts.
 | Daemon won't start, `failed to bind` | port already in use — pick another `--port`; `lsof -nP -iTCP:<port> -sTCP:LISTEN` to see who owns it |
 | `GET /snapshot` shows no herdr agents | herdr socket missing/unreachable. The adapter warns and retries with backoff; HTTP keeps serving (verified). `corrald` must run on the same machine as herdr |
 | Daemon log storms: repeated `events.subscribe` `REQUEST_TIMEOUT` + re-bootstrap, fd count climbing | herdr replays pane state BEFORE answering `subscribe`; the reader never blocks on event delivery. A full bounded channel is a deterministic resynchronization signal: the reader drains the pending subscribe response, retires the stream, then a successfully subscribed global stream re-bootstraps only after the shared capped outage backoff. Accepted-then-closed global streams use that same ladder, so repeated closes cannot reset to an immediate resubscribe; the ladder resets only after a meaningful stable interval. Connect/subscribe failures use capped exponential backoff (30s maximum) and emit one WARN per outage; each pane retry task owns its live forwarder, cancels it on removal/replacement, and remains active until herdr recovers. A dropped client aborts the reader so no descriptor is leaked (#105/#117) |
-| UI can't connect | client defaults to `http://127.0.0.1:8474`; check the daemon port and that the client config (`$CORRAL_UI_CONFIG_DIR/config.json`) points at the right host |
-| UI read rows do nothing / `not_granted` | device has no grant for that capability — provision it out-of-band in `<config-dir>/registry.json` (stop the daemon, edit `"grants"`, restart; `read_tail` is the capability clients use) |
 | `400 unknown_capability` on a signed drive | the drive names a capability the daemon removed in the #354 cut (`prompt`, `interrupt`, `approve`, `kill`, `attach`, `start_worktree`, `read_issues`) — the remaining signed-read set is `read_tail` (client recents) and the daemon-retained `read_diff` |
-| macOS Keychain re-prompts | binary was rebuilt — re-run `codesign -s - --force target/release/corrald-ui` (see keychain how-to above) |
 | repeated `git plane event over budget` warnings | the four-command git budget preserves daemon scheduling, so an isolated slow probe is diagnostic and still correct; if warnings coincide with `event stream closed`/`re-bootstrapping`, inspect host git/filesystem load and the `took_ms` values. The daemon must not reset revisions merely because a git probe is slow |
 | `git plane: worktree scan failed` warning | benign when `CORRAL_REPO_ROOT` has no `.git` (e.g. throwaway roots); the first failure is WARNed once, retries back off (10s → 60s → 5m), present sources retain their last-known worktrees/topology during a transient Git failure, and immediate `~/Projects` checkouts are refreshed by the 15-minute rediscovery pass |

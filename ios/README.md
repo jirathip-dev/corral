@@ -366,9 +366,28 @@ the featured agent's recents bottom sheet (simctl cannot inject the tap).
 The route is state-driven and compiled only under `#if DEBUG`; production
 and Release builds cannot enter it.
 
-The recents sheet forces SwiftUI's `.dark` color scheme so the charcoal
-tokens remain coherent even when the containing app follows the system
-appearance.
+The #372 recorded-evidence route `-corralDemoThemeEvidence` drives the
+Mocha board → Settings Appearance section → live Latte flip → Latte board →
+Latte recents rail sequence (marker files in Documents/ux-evidence), so the
+host screenshot script captures both themes deterministically.
+
+### Theming (#372)
+
+The whole app renders through the active Catppuccin flavor — Latte, Frappé,
+Macchiato, or Mocha (default Mocha) — chosen in Settings → Appearance (the
+ONLY picker; placement lock). Every surface consumes theme tokens from
+`ThemeStore` (see `FleetNotifier/UI/AppTheme.swift`): base/mantle/crust and
+surface/overlay/text/subtext hierarchy, per-flavor state colors (working =
+teal, blocked = red, done = green, idle = subtext0, unknown = surface2),
+the mauve UI accent (teal stays reserved for the working state), the
+deterministic fnv1a32 repo-hue ring, and per-flavor ANSI slot remaps for
+the recents tail. The recents sheet no longer forces SwiftUI's `.dark`
+color scheme — it follows the active flavor (its output panel recesses to
+`base` on Latte — the accepted light-panel rule — and to `mantle` on the
+dark flavors). Reduce Motion is respected app-wide: the recents auto-scroll
+lands without animation when the system Reduce Motion setting is on, and
+`ThemeStore.reduceMotion` is the plumbing the #371 working-motion chip
+consumes.
 
 ## Live verification (historical Debug evidence)
 

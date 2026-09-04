@@ -596,6 +596,15 @@ struct FleetView: View {
     /// (consistent with #373's per-sheet session state) — and every fresh
     /// session defaults to ALL EXPANDED.
     @State private var sectionCollapse = BoardModel.StatusSectionCollapse()
+#if DEBUG
+    /// #387: scroll requests from the recorded-evidence driver. simctl
+    /// cannot drag the board list, so the DEBUG driver asks the board's
+    /// ScrollViewReader (see body) to scroll; a repeated request for the
+    /// same anchor is an idempotent no-op, so a re-fired evidence task
+    /// (the .task(id:) hook fires twice on demo entry) cannot corrupt a
+    /// captured phase.
+    @State private var evidenceScrollTarget: String?
+#endif
 
     var body: some View {
         // #372: UI accent = the active flavor's mauve; the system color
@@ -631,136 +640,165 @@ struct FleetView: View {
         // the board's NavigationStack, orphaning those modifiers and leaving
         // the board with NO visible way into Settings; restore the shell.
         return NavigationStack {
-            List {
-                // Issue #219: the board chrome is the FIRST section of the same
-                // physical scroll surface (a pinned header) instead of a
-                // `.safeAreaInset` outside the list. During the pull gesture
-                // the chrome, section headers, and rows translate as one unit.
-                if model.mode != .needsSetup {
-                    Section {
-                        if model.fleet.agents.isEmpty {
-                            Color.clear
-                                .frame(height: 0)
-                                .listRowInsets(EdgeInsets())
-                                .listRowBackground(Color.clear)
-                                .listRowSeparator(.hidden)
-                        }
-                    } header: {
-                        PinnedHeader(fillsInteractiveWidth: true) {
-                            boardChrome
-                        }
-                    }
-                    repoChipsRow(chips: chips,
-                                 total: agents.count,
-                                 selection: activeRepoFilter)
-                }
-                if let banner = model.banner {
-                    BannerView(banner: banner) {
-                        model.banner = nil
-                    }
-                }
-                switch model.mode {
-                case .needsSetup:
-                    RegistrationView(model: model)
-#if DEBUG
-                case .demo:
-                    boardSections(sections: sections, repos: repos,
-                                  hideRepoLabels: rowRepoLabelsHidden)
-#endif
-                case .live:
-                    boardSections(sections: sections, repos: repos,
-                                  hideRepoLabels: rowRepoLabelsHidden)
-                }
-            }
-            .listStyle(.plain)
-            .listSectionSpacing(.compact)
-            // #372: the board surface is the active flavor's base token —
-            // rows ride transparent over it while the chrome strips use
-            // mantle (PinnedHeader), matching the approved palette layering.
-            // `.listRowBackground` keeps iOS 26 plain rows on the token
-            // surface (system rows would paint white/black cards in the
-            // forced light/dark scheme).
-            .scrollContentBackground(.hidden)
-            .background(theme.base)
-            .listRowBackground(theme.base)
-            // Issue #219: native pull-to-refresh on the one physical scroll
-            // surface. `refreshFleet` is coalesced and never touches the SSE
-            // stream task.
-            .refreshable {
-                await model.refreshFleet()
-            }
-            .navigationTitle("Fleet")
-            // #365: Settings is an ALWAYS-VISIBLE top-bar control — a plain
-            // gear Button (system gear shape, >=44 pt target, VoiceOver
-            // label) opening the Settings sheet. The DEBUG demo toggle is
-            // NOT on the main path: it lives in a secondary overflow menu
-            // that exists only in Debug builds (Release shows the gear
-            // alone).
-            .toolbar {
-                ToolbarItemGroup(placement: .topBarTrailing) {
-#if DEBUG
-                    Menu {
-                        Button(model.mode == .demo ? "Exit demo" : "Demo mode",
-                               systemImage: "sparkles") {
-                            if model.mode == .demo {
-                                model.exitDemo()
-                            } else {
-                                model.enterDemo()
+            // #387: the board list rides a ScrollViewReader so the DEBUG
+            // recorded-evidence driver can reach the SCROLLED nav-bar state
+            // (simctl cannot drag the list). The reader itself is passive;
+            // no scroll machinery compiles into Release.
+            ScrollViewReader { proxy in
+                List {
+                    // Issue #219: the board chrome is the FIRST section of the same
+                    // physical scroll surface (a pinned header) instead of a
+                    // `.safeAreaInset` outside the list. During the pull gesture
+                    // the chrome, section headers, and rows translate as one unit.
+                    if model.mode != .needsSetup {
+                        Section {
+                            if model.fleet.agents.isEmpty {
+                                Color.clear
+                                    .frame(height: 0)
+                                    .listRowInsets(EdgeInsets())
+                                    .listRowBackground(Color.clear)
+                                    .listRowSeparator(.hidden)
+                            }
+                        } header: {
+                            PinnedHeader(fillsInteractiveWidth: true) {
+                                boardChrome
                             }
                         }
-                    } label: {
-                        Image(systemName: "slider.horizontal.3")
+                        repoChipsRow(chips: chips,
+                                     total: agents.count,
+                                     selection: activeRepoFilter)
                     }
-                    .accessibilityLabel("Developer menu")
-#endif
-                    Button {
-                        showSettings = true
-                    } label: {
-                        Image(systemName: "gearshape")
+                    if let banner = model.banner {
+                        BannerView(banner: banner) {
+                            model.banner = nil
+                        }
                     }
-                    .accessibilityLabel("Settings")
-                    .accessibilityHint("Opens connection and notification settings")
-                    .frame(minWidth: 44, minHeight: 44)
-                }
-            }
-            .sheet(isPresented: $showSettings) {
-                SettingsView(model: model)
-            }
-            // #364 C: recents bottom sheet binds DIRECTLY to the model-owned
-            // request — row taps, notification deep links, and the demo route
-            // all funnel through `model.requestRecents`. Every request is a
-            // fresh value, and the dismissal reconciler (`onDismiss`) clears
-            // or re-arms it, so a first tap after ANY dismissal re-presents
-            // (the old view-latched target + equality-guarded onChange
-            // swallowed it).
-            .sheet(item: $model.recentsRequest,
-                   onDismiss: { model.recentsSheetDismissed() }) { request in
-                RecentOutputSheet(agentId: request.agentId, model: model)
-            }
-            // #379: the How-to-connect sheet — the SAME shared content the
-            // Settings '?' button presents from the Settings sheet. The
-            // unpaired-launch auto-present drives this binding; the DEBUG
-            // recorded-evidence driver opens it too (simctl cannot tap).
-            .sheet(isPresented: $showConnectHelp) {
-                HowToConnectSheet(host: model.hostURL?.absoluteString ?? "")
-            }
-            // #379: a fresh install (or any launch that finds the device
-            // UNPAIRED) auto-presents the connect sheet once — first
-            // launch guidance for the daemon-setup + pairing steps.
-            .task(id: model.mode) {
-                await autoPresentConnectHelpIfUnpaired()
-            }
+                    switch model.mode {
+                    case .needsSetup:
+                        RegistrationView(model: model)
 #if DEBUG
-            .onChange(of: model.mode) { _, _ in
-                applyDemoRouteIfNeeded()
-            }
-            .task {
-                applyDemoRouteIfNeeded()
-            }
-            .task(id: model.mode) {
-                await runDemoEvidenceIfNeeded()
-            }
+                    case .demo:
+                        boardSections(sections: sections, repos: repos,
+                                      hideRepoLabels: rowRepoLabelsHidden)
 #endif
+                    case .live:
+                        boardSections(sections: sections, repos: repos,
+                                      hideRepoLabels: rowRepoLabelsHidden)
+                    }
+                }
+                .listStyle(.plain)
+                .listSectionSpacing(.compact)
+                // #372: the board surface is the active flavor's base token —
+                // rows ride transparent over it while the chrome strips use
+                // mantle (PinnedHeader), matching the approved palette layering.
+                // `.listRowBackground` keeps iOS 26 plain rows on the token
+                // surface (system rows would paint white/black cards in the
+                // forced light/dark scheme).
+                .scrollContentBackground(.hidden)
+                .background(theme.base)
+                .listRowBackground(theme.base)
+                // Issue #219: native pull-to-refresh on the one physical scroll
+                // surface. `refreshFleet` is coalesced and never touches the SSE
+                // stream task.
+                .refreshable {
+                    await model.refreshFleet()
+                }
+                // #387: the board header is chrome-only — NO 'Fleet' title
+                // text in the large-title state or the scrolled inline state
+                // (app identity is the gear, top-right). An EMPTY title with
+                // INLINE display mode reserves no large-title band at rest and
+                // the collapsed bar shows no text when scrolled either — the
+                // freed space belongs to the board (content starts naturally
+                // higher; no extra insets forced).
+                .navigationTitle("")
+                .navigationBarTitleDisplayMode(.inline)
+                // #365: Settings is an ALWAYS-VISIBLE top-bar control — a plain
+                // gear Button (system gear shape, >=44 pt target, VoiceOver
+                // label) opening the Settings sheet. The DEBUG demo toggle is
+                // NOT on the main path: it lives in a secondary overflow menu
+                // that exists only in Debug builds (Release shows the gear
+                // alone).
+                .toolbar {
+                    ToolbarItemGroup(placement: .topBarTrailing) {
+#if DEBUG
+                        Menu {
+                            Button(model.mode == .demo ? "Exit demo" : "Demo mode",
+                                   systemImage: "sparkles") {
+                                if model.mode == .demo {
+                                    model.exitDemo()
+                                } else {
+                                    model.enterDemo()
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "slider.horizontal.3")
+                        }
+                        .accessibilityLabel("Developer menu")
+#endif
+                        Button {
+                            showSettings = true
+                        } label: {
+                            Image(systemName: "gearshape")
+                        }
+                        .accessibilityLabel("Settings")
+                        .accessibilityHint("Opens connection and notification settings")
+                        .frame(minWidth: 44, minHeight: 44)
+                    }
+                }
+                .sheet(isPresented: $showSettings) {
+                    SettingsView(model: model)
+                }
+                // #364 C: recents bottom sheet binds DIRECTLY to the model-owned
+                // request — row taps, notification deep links, and the demo route
+                // all funnel through `model.requestRecents`. Every request is a
+                // fresh value, and the dismissal reconciler (`onDismiss`) clears
+                // or re-arms it, so a first tap after ANY dismissal re-presents
+                // (the old view-latched target + equality-guarded onChange
+                // swallowed it).
+                .sheet(item: $model.recentsRequest,
+                       onDismiss: { model.recentsSheetDismissed() }) { request in
+                    RecentOutputSheet(agentId: request.agentId, model: model)
+                }
+                // #379: the How-to-connect sheet — the SAME shared content the
+                // Settings '?' button presents from the Settings sheet. The
+                // unpaired-launch auto-present drives this binding; the DEBUG
+                // recorded-evidence driver opens it too (simctl cannot tap).
+                .sheet(isPresented: $showConnectHelp) {
+                    HowToConnectSheet(host: model.hostURL?.absoluteString ?? "")
+                }
+                // #379: a fresh install (or any launch that finds the device
+                // UNPAIRED) auto-presents the connect sheet once — first
+                // launch guidance for the daemon-setup + pairing steps.
+                .task(id: model.mode) {
+                    await autoPresentConnectHelpIfUnpaired()
+                }
+#if DEBUG
+                .onChange(of: model.mode) { _, _ in
+                    applyDemoRouteIfNeeded()
+                }
+                .task {
+                    applyDemoRouteIfNeeded()
+                }
+                .task(id: model.mode) {
+                    await runDemoEvidenceIfNeeded()
+                }
+#endif
+#if DEBUG
+                // #387: the recorded-evidence driver's scroll requests —
+                // simctl cannot drag the list, so the DEBUG driver asks
+                // the list to scroll to a row id. Fired from a .task(id:)
+                // (like the proven #379 settings scroll) with a short
+                // settle so the request lands after the current update;
+                // instant + idempotent: a repeated request for the same
+                // anchor is a no-op, so a re-fired evidence task cannot
+                // corrupt a phase.
+                .task(id: evidenceScrollTarget) {
+                    guard let target = evidenceScrollTarget else { return }
+                    try? await Task.sleep(for: .milliseconds(400))
+                    proxy.scrollTo(target, anchor: .top)
+                }
+#endif
+            }
         }
         .tint(theme.accent)
         .preferredColorScheme(theme.flavor.isLight ? .light : .dark)
@@ -795,6 +833,10 @@ struct FleetView: View {
                 .padding(.horizontal, 20)
                 .padding(.vertical, 4)
             }
+            // #387: the chips row is the demo board's FIRST content row —
+            // its id is the ScrollViewReader 'top' anchor the recorded-
+            // evidence driver returns to (see BoardEvidenceAnchor.top).
+            .id("board.filter-chips")
             .listRowInsets(EdgeInsets())
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
@@ -877,6 +919,11 @@ struct FleetView: View {
                         ForEach(subgroup.agents) { agent in
                             agentRow(agent, repos: repos,
                                      hideRepoLabel: hideRepoLabels)
+                                // #387: every board row carries its agent id as
+                                // the ScrollViewReader anchor the recorded-
+                                // evidence driver scrolls to (the scrolled
+                                // nav-bar state; simctl cannot drag).
+                                .id(agent.agentId)
                                 // #372: iOS 26 plain lists paint their own
                                 // row background unless each row opts into
                                 // the token surface (a List-level
@@ -1117,6 +1164,8 @@ struct FleetView: View {
             await runRepoLabelSequence()
         } else if CorralDemoLaunch.wantsCollapseEvidence(arguments: CommandLine.arguments) {
             await runCollapseSequence()
+        } else if CorralDemoLaunch.wantsTitleEvidence(arguments: CommandLine.arguments) {
+            await runTitleSequence()
         }
     }
 
@@ -1411,6 +1460,44 @@ struct FleetView: View {
         EvidenceMarkers.write("phase-7-done")
         _ = await themePause(1500)
     }
+
+    /// #387 evidence: one deterministic launch records the chrome-only
+    /// board header — Mocha at the TOP of the board and MOCHA SCROLLED
+    /// (the nav bar collapsed, still title-free), then the same pair in
+    /// Latte after a live flavor flip. simctl cannot drag the list, so
+    /// the driver scrolls through ScrollViewReader requests (instant +
+    /// idempotent — a re-fired evidence task cannot corrupt a phase);
+    /// each phase writes a marker the host screenshot script observes.
+    private func runTitleSequence() async {
+        guard model.mode == .demo else { return }
+        guard await themePause(0) else { return }
+        theme.setFlavor(.mocha)
+        // Deterministic top for EVERY pass (the .task(id:) evidence hook
+        // can fire twice on demo entry): the chips row is the demo
+        // board's first content row, so landing it at the top edge IS the
+        // top-of-board state.
+        evidenceScrollTarget = BoardEvidenceAnchor.top
+        guard await themePause(2000) else { return }
+        EvidenceMarkers.write("phase-1-board-mocha-top")
+        guard await themePause(4000) else { return }
+        // Scroll below the fold: the nav bar rides its collapsed state.
+        evidenceScrollTarget = BoardEvidenceAnchor.belowFold
+        guard await themePause(2000) else { return }
+        EvidenceMarkers.write("phase-2-board-mocha-scrolled")
+        guard await themePause(4000) else { return }
+        theme.setFlavor(.latte)
+        guard await themePause(1500) else { return }
+        // Latte, still scrolled: the SAME collapsed chrome on the light
+        // palette (a live flavor flip must not restore any title).
+        EvidenceMarkers.write("phase-3-board-latte-scrolled")
+        guard await themePause(4000) else { return }
+        evidenceScrollTarget = BoardEvidenceAnchor.top
+        guard await themePause(2000) else { return }
+        EvidenceMarkers.write("phase-4-board-latte-top")
+        guard await themePause(4000) else { return }
+        EvidenceMarkers.write("phase-5-done")
+        _ = await themePause(1500)
+    }
 #endif
 }
 
@@ -1428,6 +1515,18 @@ enum EvidenceMarkers {
         try? (name + "\n").write(to: dir.appendingPathComponent(name + ".marker"),
                                  atomically: true, encoding: .utf8)
     }
+}
+
+/// #387 evidence scroll anchors: `.top` is the demo board's first content
+/// row (the filter-chips row — see repoChipsRow's `.id("board.filter-chips")`);
+/// `.belowFold` is a demo row below the first-viewport fold (the idle
+/// agent — every agent row carries its agent id), so scrolling it to the
+/// viewport top edge puts the nav bar in its fully collapsed state.
+/// simctl cannot drag, so the title-evidence driver scrolls through
+/// ScrollViewReader requests.
+enum BoardEvidenceAnchor {
+    static let top = "board.filter-chips"
+    static let belowFold = "herdr:demo-ledger-idle"
 }
 #endif
 

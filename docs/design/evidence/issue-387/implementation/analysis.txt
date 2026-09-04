@@ -1,0 +1,33 @@
+#387 header audit — measured numbers (raw 1179x2556 px frames @3x)
+
+OCR text-band geometry (pt on the 852 pt screen; Vision normalized boxes
+converted top-origin):
+
+phase-1-board-mocha-top:
+  system clock ~21 pt | NO text 21..94 pt (nav band empty) |
+  pull-to-refresh hint top ~94 pt | chips row ~148 pt | blocked bar ~225 pt
+phase-4-board-latte-top:
+  system clock ~21 pt | NO text 21..95 pt (nav band empty) |
+  pull-to-refresh hint top ~95 pt | chips row ~148 pt | blocked bar ~225 pt
+phase-2-board-mocha-scrolled:
+  system clock ~21 pt | NO text 21..128 pt (nav band empty; section bar
+  pinned directly beneath the bar) | working (3) bar ~128 pt | idle (1)
+  ~250 pt | done (1) lower
+phase-3-board-latte-scrolled: same geometry as phase 2 on the latte palette
+
+Base (issue-386 phase-1-board-mocha-390x844.png, pre-#387):
+  'Fleet' title top ~134 pt (conf 1.00) | pull-to-refresh hint ~170 pt
+=> content starts ~76-90 pt higher after #387 (the freed title band).
+
+Fleet-word audit: case-insensitive 'Fleet' OCR hits per phase (conf >= 0.4):
+  0 / 0 / 0 / 0 / 0. Base frame: 1 hit.
+
+Gear presence (mauve accent cluster, top-right toolbar region
+160x230 raw px): 374 px in ALL FOUR board phases (Mocha accent
+#CBA6F7 / Latte accent #8839EF, tol 26). Latte frames additionally
+vision-verified: purple gear top-right, empty bar left/center.
+
+Frame content anchors (top phase = chips row under the compact bar;
+scrolled phase = working/idle/done sections in view) confirm the scroll
+driver really moved the list (frames are not duplicates: raw PNG bytes
+differ across phases; mocha vs latte palettes differ).

@@ -1,0 +1,14 @@
+phase-1-board-mocha.png (mocha): 3 surface1 bar band(s)
+  bar  269.7- 318.0pt  height=48.3pt
+  bar  340.0- 388.3pt  height=48.3pt
+  bar  823.3- 852.0pt  height=28.7pt
+phase-2-board-latte.png (latte): 3 surface1 bar band(s)
+  bar  269.7- 318.0pt  height=48.3pt
+  bar  340.0- 388.3pt  height=48.3pt
+  bar  823.3- 852.0pt  height=28.7pt
+phase-3-all-collapsed-latte.png (latte): 5 surface1 bar band(s)
+  bar  269.7- 318.0pt  height=48.3pt
+  bar  340.0- 388.3pt  height=48.3pt
+  bar  410.3- 458.7pt  height=48.3pt
+  bar  480.7- 529.0pt  height=48.3pt
+  bar  551.0- 599.3pt  height=48.3pt

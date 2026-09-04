@@ -527,6 +527,11 @@ struct FleetView: View {
     /// most ONCE per board lifetime (first launch while unpaired) — a
     /// deliberate device removal later must NOT re-pop the sheet.
     @State private var autoPresentedConnectHelp = false
+    /// #386: which status sections are collapsed. View-owned so the state
+    /// lives for the board session ONLY — never persisted, never restored
+    /// (consistent with #373's per-sheet session state) — and every fresh
+    /// session defaults to ALL EXPANDED.
+    @State private var sectionCollapse = BoardModel.StatusSectionCollapse()
 
     var body: some View {
         // #372: UI accent = the active flavor's mauve; the system color
@@ -772,57 +777,96 @@ struct FleetView: View {
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 
-    /// The #371 board v2 renderer: one section per raw herdr status in the
-    /// locked attention order (blocked → working → idle → unknown; a done
-    /// section renders only when herdr reports it), each section split into
-    /// always-open REPO SUBGROUPS (alphabetical, Other last) rendered as a
-    /// tinted header band + its agent rows. Subgroups are NOT collapsible —
-    /// no disclosure controls anywhere. `sections` arrives ALREADY filtered
-    /// by the #364 B chip selection; `repos` is the fleet-wide repo set so
-    /// subgroup + row hues match the filter chips' fnv1a32 % 8 assignment.
+    /// The #371/#386 board renderer: one section per raw herdr status in
+    /// the locked attention order (blocked → working → idle → unknown; a
+    /// done section renders only when herdr reports it), each section led
+    /// by the #386 THICK collapsible status bar. While EXPANDED the
+    /// section shows its always-open REPO SUBGROUP captions (alphabetical,
+    /// Other last) + agent rows; a COLLAPSED section renders its bar alone
+    /// (counts stay on the bar). Subgroup captions are NOT collapsible —
+    /// the status bar is the only disclosure control. `sections` arrives
+    /// ALREADY filtered by the #364 B chip selection; `repos` is the
+    /// fleet-wide repo set so subgroup + row hues match the filter chips'
+    /// fnv1a32 % 8 assignment.
     @ViewBuilder
     private func boardSections(sections: BoardModel.Sections,
                                repos: [String]) -> some View {
         ForEach(sections.statuses) { status in
             Section {
-                ForEach(status.subgroups) { subgroup in
-                    repoSubgroupHeader(subgroup, repos: repos)
-                    ForEach(subgroup.agents) { agent in
-                        agentRow(agent, repos: repos)
-                            // #372: iOS 26 plain lists paint their own row
-                            // background unless each row opts into the token
-                            // surface (a List-level `.listRowBackground` is not
-                            // honored); rows ride the flavor's base.
-                            .listRowBackground(theme.base)
+                // #386: a collapsed status section hides its subgroups and
+                // rows — the bar above is all that remains (instant; no
+                // animation, so Reduce Motion is unaffected).
+                if !sectionCollapse.isCollapsed(status.state) {
+                    ForEach(status.subgroups) { subgroup in
+                        repoSubgroupHeader(subgroup, repos: repos)
+                        ForEach(subgroup.agents) { agent in
+                            agentRow(agent, repos: repos)
+                                // #372: iOS 26 plain lists paint their own
+                                // row background unless each row opts into
+                                // the token surface (a List-level
+                                // `.listRowBackground` is not honored);
+                                // rows ride the flavor's base.
+                                .listRowBackground(theme.base)
+                        }
                     }
                 }
             } header: {
-                PinnedHeader {
-                    statusSectionHeader(status)
+                PinnedHeader(fillsInteractiveWidth: true) {
+                    statusSectionBar(status)
                 }
             }
         }
     }
 
-    /// The pinned status header: state-colored mark + raw status name +
-    /// TOTAL count across the section's subgroups (#371: the total is the
-    /// section's own count — it rescopes with the #364 B chip filter).
+    /// The #386 status bar: the section's THICK full-width header —
+    /// taller and bolder than the old caption row, on the theme's
+    /// surface1 tier (the chrome strips around it stay mantle, so the bar
+    /// contrasts per palette) — carrying the state-colored mark, the raw
+    /// status name + TOTAL count, and a chevron that rotates to point
+    /// right when the section is collapsed. The WHOLE bar is the tap
+    /// target (≥44 pt); collapse is INSTANT (no animation beyond the
+    /// static chevron rotation, so Reduce Motion is unaffected) and the
+    /// state is the board-session-only `sectionCollapse`.
     @ViewBuilder
-    private func statusSectionHeader(
+    private func statusSectionBar(
         _ status: BoardModel.StatusSection) -> some View {
-        HStack(spacing: 7) {
-            RoundedRectangle(cornerRadius: 2)
-                .fill(theme.stateColor(for: status.state))
-                .frame(width: 8, height: 8)
-                .accessibilityHidden(true)
-            Text(status.header)
-                .accessibilityLabel(status.header)
+        let isCollapsed = sectionCollapse.isCollapsed(status.state)
+        Button {
+            sectionCollapse.toggle(status.state)
+        } label: {
+            HStack(spacing: 8) {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(theme.stateColor(for: status.state))
+                    .frame(width: 10, height: 10)
+                    .accessibilityHidden(true)
+                Text(status.header)
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(theme.text)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.down")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(theme.subtext1)
+                    .rotationEffect(.degrees(isCollapsed ? -90 : 0))
+                    .accessibilityHidden(true)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .background(theme.surface1)
         }
+        .buttonStyle(BoardPressStyle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(status.header)
+        .accessibilityValue(isCollapsed ? "Collapsed" : "Expanded")
+        .accessibilityHint("Toggles the \(status.state.displayName) section")
     }
 
-    /// One always-open repo subgroup band (#371): 2 pt hue rail + hue dot +
-    /// repo name (label ink) + the subgroup's agent count. Renders as a
-    /// plain non-collapsible row on the hue 9 %-over-mantle band; Other
+    /// One always-open repo subgroup caption (#371 → #386 DEMOTED): a
+    /// small/secondary caption row — 2 pt hue rail + small hue chip +
+    /// repo name + count in caption2 subtext1 type (never the section
+    /// bar's headline tier) — on the hue 9 %-over-mantle band. NOT
+    /// collapsible (no disclosure control anywhere on the row); Other
     /// (gray surface2) sits last by construction in BoardModel.
     @ViewBuilder
     private func repoSubgroupHeader(_ subgroup: BoardModel.RepoSubgroup,
@@ -837,12 +881,12 @@ struct FleetView: View {
                 .frame(width: 8, height: 8)
                 .accessibilityHidden(true)
             Text(subgroup.displayName)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(theme.repoInk(for: hue))
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(theme.subtext1)
                 .lineLimit(1)
             Spacer(minLength: 8)
             Text("\(subgroup.agents.count)")
-                .font(.caption.weight(.semibold))
+                .font(.caption2.weight(.medium))
                 .monospacedDigit()
                 .foregroundStyle(theme.subtext1)
                 .accessibilityHidden(true)
@@ -991,6 +1035,8 @@ struct FleetView: View {
             await runThemeSequence()
         } else if CorralDemoLaunch.wantsGlassEvidence(arguments: CommandLine.arguments) {
             await runGlassSequence()
+        } else if CorralDemoLaunch.wantsCollapseEvidence(arguments: CommandLine.arguments) {
+            await runCollapseSequence()
         }
     }
 
@@ -1204,6 +1250,44 @@ struct FleetView: View {
         } catch {
             return false
         }
+    }
+
+    /// #386 evidence: one deterministic launch records the board-hierarchy
+    /// change — Mocha board with the BLOCKED status section COLLAPSED
+    /// (thick bar alone, chevron rotated right) above the EXPANDED working
+    /// section (thick bar + small repo captions + rows), the SAME collapse
+    /// in Latte after a live flavor flip, then every remaining section
+    /// collapsed so the frame proves an empty section still renders its
+    /// bar (counts on the bar). The driver flips the same state a bar tap
+    /// sets (`sectionCollapse.collapse` — IDEMPOTENT: the `.task(id:)`
+    /// evidence hook can fire twice on demo entry and a second pass must
+    /// never undo the first; the interactive bar keeps `toggle`) and the
+    /// same flavor the Appearance rows set — simctl cannot inject touches.
+    /// Cancellation-aborts like the other drivers, so a raced task can
+    /// never corrupt the sequence.
+    private func runCollapseSequence() async {
+        guard model.mode == .demo else { return }
+        guard await themePause(0) else { return }
+        theme.setFlavor(.mocha)
+        // Collapse the blocked section first and let the update settle
+        // before the marker so the captured frame is the settled state.
+        sectionCollapse.collapse(.blocked)
+        guard await themePause(800) else { return }
+        EvidenceMarkers.write("phase-1-board-mocha")
+        guard await themePause(5000) else { return }
+        theme.setFlavor(.latte)
+        guard await themePause(4000) else { return }
+        EvidenceMarkers.write("phase-2-board-latte")
+        guard await themePause(5000) else { return }
+        // Collapse every remaining section: the board must show five bars
+        // and nothing else (an empty status section still renders its bar).
+        for state in AgentState.allCases {
+            sectionCollapse.collapse(state)
+        }
+        EvidenceMarkers.write("phase-3-all-collapsed-latte")
+        guard await themePause(5000) else { return }
+        EvidenceMarkers.write("phase-4-done")
+        _ = await themePause(1500)
     }
 #endif
 }

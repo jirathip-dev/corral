@@ -2418,6 +2418,92 @@ final class BoardModelBoardV2Tests: XCTestCase {
     }
 }
 
+// MARK: - #386 status-section collapse (pure per-session state)
+
+/// The status-section collapse contract (#386): a fresh board session has
+/// EVERY section EXPANDED, toggling collapses/expands exactly ONE section
+/// independently, and no state is shared across sessions — the collapse
+/// lives in memory for the board session only and is never persisted
+/// (consistent with #373 recents blocks). `StatusSectionCollapse` is the
+/// pure state the board view holds per session.
+final class BoardStatusSectionCollapseTests: XCTestCase {
+
+    func testFreshSessionDefaultsEverySectionExpanded() {
+        let collapse = BoardModel.StatusSectionCollapse.fresh
+        for state in AgentState.allCases {
+            XCTAssertFalse(collapse.isCollapsed(state),
+                           "a fresh board session must start with \(state.displayName) EXPANDED")
+        }
+        XCTAssertTrue(collapse.collapsed.isEmpty,
+                      "a fresh session collapses nothing")
+    }
+
+    func testToggleCollapsesThenExpandsTheSameSection() {
+        var collapse = BoardModel.StatusSectionCollapse.fresh
+        collapse.toggle(.working)
+        XCTAssertTrue(collapse.isCollapsed(.working))
+        XCTAssertEqual(collapse.collapsed, ["working"])
+        collapse.toggle(.working)
+        XCTAssertFalse(collapse.isCollapsed(.working),
+                       "toggling the same section again must expand it")
+        XCTAssertTrue(collapse.collapsed.isEmpty)
+    }
+
+    func testCollapseIsIdempotentAndNeverExpands() {
+        // The evidence driver collapses through `collapse(_:)` — a task
+        // re-fire must never undo an earlier collapse (toggle is only for
+        // the interactive bar).
+        var collapse = BoardModel.StatusSectionCollapse.fresh
+        collapse.collapse(.blocked)
+        collapse.collapse(.blocked)
+        XCTAssertEqual(collapse.collapsed, ["blocked"],
+                       "repeated collapse calls must stay collapsed (idempotent)")
+        collapse.collapse(.working)
+        XCTAssertTrue(collapse.isCollapsed(.blocked))
+        XCTAssertTrue(collapse.isCollapsed(.working))
+        collapse.toggle(.blocked)
+        XCTAssertFalse(collapse.isCollapsed(.blocked),
+                       "only an explicit toggle may expand a collapsed section")
+        XCTAssertTrue(collapse.isCollapsed(.working),
+                      "collapsing one section never touches another")
+    }
+
+    func testCollapseIsPerSectionAndIndependent() {
+        var collapse = BoardModel.StatusSectionCollapse.fresh
+        collapse.toggle(.blocked)
+        collapse.toggle(.idle)
+        XCTAssertTrue(collapse.isCollapsed(.blocked))
+        XCTAssertTrue(collapse.isCollapsed(.idle))
+        XCTAssertFalse(collapse.isCollapsed(.working))
+        XCTAssertFalse(collapse.isCollapsed(.done))
+        XCTAssertFalse(collapse.isCollapsed(.unknown),
+                       "collapsing one section must never touch the others")
+        collapse.toggle(.blocked)
+        XCTAssertFalse(collapse.isCollapsed(.blocked))
+        XCTAssertTrue(collapse.isCollapsed(.idle),
+                      "expanding one section must not expand another")
+    }
+
+    func testSessionsAreIndependentAndNeverPersisted() {
+        var first = BoardModel.StatusSectionCollapse.fresh
+        var second = BoardModel.StatusSectionCollapse.fresh
+        first.toggle(.blocked)
+        XCTAssertTrue(first.isCollapsed(.blocked))
+        XCTAssertFalse(second.isCollapsed(.blocked),
+                       "a second board session must start fully expanded — no shared/persisted state")
+    }
+
+    func testRawStatusIdKeysMatchStatusSectionIds() {
+        // The collapse state keys by the SAME id the rendered section
+        // exposes (`state.rawValue`), so a collapse survives section
+        // re-projection and never drifts from the section it names.
+        for state in AgentState.allCases {
+            let section = BoardModel.StatusSection(state: state, subgroups: [])
+            XCTAssertEqual(section.id, state.rawValue)
+        }
+    }
+}
+
 // MARK: - #371 working-motion math (pure, view-independent)
 
 /// Locks the breathing-heartbeat math (the approved 1.2 s cycle, 160 ms
@@ -3294,9 +3380,12 @@ final class ReadOnlySurfaceWiringTests: XCTestCase {
 /// #316 decoy-resistant mechanism): the tinted state chip consuming the
 /// shared state mapping, the working heartbeat + Reduce Motion static dot
 /// inside that chip (never a spinner), the repo subgroup bands + row repo
-/// chips resolving hues from the shared RepoHue function, and the section
-/// headers carrying status + TOTAL. A compile-capable bypass of any of
-/// those call sites goes RED here.
+/// chips resolving hues from the shared RepoHue function, and the DEMOTED
+/// repo subgroup captions (#386) staying visible under the status sections
+/// — while the status sections' own THICK collapsible bars (status +
+/// TOTAL, chevron, session collapse state) are pinned by
+/// StatusSectionCollapseWiringTests (#386). A compile-capable bypass of
+/// any of those call sites goes RED here.
 final class BoardV2WiringTests: XCTestCase {
 
     private func bundledSource() throws -> String {
@@ -3368,29 +3457,38 @@ final class BoardV2WiringTests: XCTestCase {
 
     func testRepoSubgroupsAndRowChipsConsumeTheSharedRepoHue() throws {
         let source = try bundledSource()
-        // Subgroup band: hue resolved from the SAME fleet repo set the
-        // chips row uses, rendered with the band/ink/rail tokens.
-        let renderer = try slice(from: "private func statusSectionHeader(",
+        // #386: status sections are COLLAPSIBLE now — their thick toggle
+        // bar (chevron, collapse state, surface1) is pinned by
+        // StatusSectionCollapseWiringTests. These pins scope to the
+        // SUBGROUP CAPTION ONLY, which stays non-collapsible and DEMOTED:
+        // hue resolved from the SAME fleet repo set the chips row uses,
+        // rendered on the band tokens with the small secondary caption
+        // type (never the status bar's headline tier).
+        let renderer = try slice(from: "private func repoSubgroupHeader(",
                                  to: "\n    @ViewBuilder\n    private func agentRow",
                                  in: source)
         XCTAssertEqual(renderer.components(separatedBy: "private func repoSubgroupHeader(").count - 1, 1,
-                       "exactly one subgroup band builder must exist")
+                       "exactly one subgroup caption builder must exist")
         XCTAssertTrue(renderer.contains("theme.repoHue(for: subgroup.repo"),
-                      "subgroup bands must consume the shared RepoHue function")
+                      "subgroup captions must consume the shared RepoHue function")
         XCTAssertTrue(renderer.contains("theme.repoBand(for: hue)"),
-                      "subgroup bands must use the hue-over-mantle band token")
-        XCTAssertTrue(renderer.contains("theme.repoInk(for: hue)"),
-                      "subgroup names must use the locked label ink")
+                      "subgroup captions must use the hue-over-mantle band token")
         XCTAssertTrue(renderer.contains("subgroup.agents.count"),
-                      "subgroup headers must carry their count")
+                      "subgroup captions must carry their count")
         XCTAssertTrue(renderer.contains("subgroup.displayName"),
                       "repo identity is never color-only — the name always renders")
+        XCTAssertTrue(renderer.contains(".font(.caption2.weight(.semibold))"),
+                      "the repo name must render in the DEMOTED caption2 tier (#386)")
+        XCTAssertTrue(renderer.contains("theme.subtext1"),
+                      "the repo name must render in secondary ink, not label ink (#386)")
+        XCTAssertFalse(renderer.contains("theme.surface1"),
+                       "subgroup captions must not paint like the thick status bar (#386)")
         XCTAssertFalse(renderer.contains("DisclosureGroup"),
                        "subgroups are always open — never collapsible")
-        XCTAssertFalse(renderer.contains("isExpanded"),
-                       "no expand/collapse state may exist on the board")
+        XCTAssertFalse(renderer.contains("sectionCollapse"),
+                       "subgroup captions must never read the status-bar collapse state")
         XCTAssertFalse(renderer.contains("chevron"),
-                       "no chevron affordance may hint at collapsibility")
+                       "no chevron affordance may hint the subgroup is collapsible")
 
         // Row chip: WorkspaceLine renders the repo as a colored label chip
         // (Other for orphans) with the SAME hue + ink helpers.
@@ -3414,6 +3512,121 @@ final class BoardV2WiringTests: XCTestCase {
                        "the row's workspace line must render exactly one repo chip")
         XCTAssertTrue(line.contains("let w = agent.workspace"),
                       "the workspace line must keep its per-segment layout")
+    }
+}
+
+// MARK: - #386 status-bar collapse wiring (thick bars, demoted captions)
+
+/// Decoy-resistant source wiring over the bundled FleetViews source (the
+/// #316 mechanism): the #386 status sections render as THICK collapsible
+/// bars — default EXPANDED via the board-session-only `sectionCollapse`
+/// state, the WHOLE bar the toggle (chevron rotates), a collapsed section
+/// hides its subgroups/rows but keeps its bar + counts — while the repo
+/// subgroup captions below stay visible, DEMOTED (caption2/subtext1), and
+/// non-collapsible. A compile-capable bypass of any production call site
+/// (a bar that does not read/toggle the state, a subgroup caption that
+/// paints like a status bar) goes RED here.
+final class StatusSectionCollapseWiringTests: XCTestCase {
+
+    private func bundledSource() throws -> String {
+        let bundle = Bundle(for: StatusSectionCollapseWiringTests.self)
+        let url = try XCTUnwrap(bundle.url(forResource: "FleetViews",
+                                           withExtension: "swift.txt"))
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    private func slice(from startMarker: String, to endMarker: String,
+                       in source: String) throws -> String {
+        let start = try XCTUnwrap(source.range(of: startMarker),
+                                  "marker not found: \(startMarker)")
+        let end = try XCTUnwrap(source.range(of: endMarker),
+                                "end marker not found: \(endMarker)")
+        return String(source[start.lowerBound..<end.lowerBound])
+    }
+
+    func testBoardOwnsOneSessionOnlyCollapseStateDefaultExpanded() throws {
+        let source = try bundledSource()
+        let boardStart = try XCTUnwrap(source.range(of: "\nstruct FleetView: View {"),
+                                       "FleetView declaration must exist")
+        let boardEnd = try XCTUnwrap(source.range(of: "\n// MARK: - Banner"),
+                                     "the banner section must follow FleetView")
+        let slice = String(source[boardStart.lowerBound..<boardEnd.lowerBound])
+        // The collapse state is a VIEW-owned @State over the pure
+        // BoardModel.StatusSectionCollapse (fresh == all expanded, per
+        // BoardStatusSectionCollapseTests) — never a model/persisted
+        // property, so it can only live for the board session.
+        XCTAssertEqual(slice.components(separatedBy:
+            "@State private var sectionCollapse = BoardModel.StatusSectionCollapse()").count - 1, 1,
+            "FleetView must own exactly one session collapse state, defaulting to fresh/expanded")
+        XCTAssertFalse(slice.contains("UserDefaults"),
+                       "collapse state must never be persisted")
+    }
+
+    func testExpandedSectionsRenderTheirSubgroupsOnlyThroughTheState() throws {
+        let source = try bundledSource()
+        let renderer = try slice(from: "private func boardSections(sections: BoardModel.Sections",
+                                 to: "private func repoSubgroupHeader(",
+                                 in: source)
+        // The status bar is the section's header (full-bleed pinned bar).
+        XCTAssertTrue(renderer.contains("PinnedHeader(fillsInteractiveWidth: true)"),
+                      "the status bar must be the full-width pinned header")
+        XCTAssertTrue(renderer.contains("statusSectionBar(status)"),
+                      "every status section must render through the #386 bar builder")
+        // Subgroups + rows render ONLY while the section is expanded.
+        XCTAssertTrue(renderer.contains("if !sectionCollapse.isCollapsed(status.state) {"),
+                      "a collapsed section must hide its subgroups and rows")
+        XCTAssertTrue(renderer.contains("ForEach(status.subgroups)"),
+                      "an expanded section still renders its repo subgroups")
+        XCTAssertTrue(renderer.contains("ForEach(subgroup.agents)"),
+                      "an expanded section still renders its agent rows")
+        XCTAssertFalse(renderer.contains("withAnimation"),
+                       "collapse is instant — no animation may wrap the toggle")
+    }
+
+    func testStatusBarIsTheThickWholeBarToggleWithCounts() throws {
+        let source = try bundledSource()
+        let bar = try slice(from: "private func statusSectionBar(",
+                            to: "private func repoSubgroupHeader(",
+                            in: source)
+        XCTAssertTrue(bar.contains("let isCollapsed = sectionCollapse.isCollapsed(status.state)"),
+                      "the bar must read the session collapse state")
+        XCTAssertTrue(bar.contains("sectionCollapse.toggle(status.state)"),
+                      "tapping the bar must toggle exactly that status section")
+        XCTAssertTrue(bar.contains("Text(status.header)"),
+                      "the bar keeps the raw status name + TOTAL count (counts stay on the bar)")
+        XCTAssertTrue(bar.contains(".font(.headline.weight(.bold))"),
+                      "the status name must render in the larger bold tier")
+        XCTAssertTrue(bar.contains("theme.stateColor(for: status.state)"),
+                      "the bar mark must consume the shared state mapping")
+        XCTAssertTrue(bar.contains("Image(systemName: \"chevron.down\")"),
+                      "the bar must show a disclosure chevron")
+        XCTAssertTrue(bar.contains("rotationEffect(.degrees(isCollapsed ? -90 : 0))"),
+                      "the chevron must rotate when the section collapses")
+        XCTAssertTrue(bar.contains(".background(theme.surface1)"),
+                      "the thick bar must use the surface1 tier (mantle chrome contrasts)")
+        XCTAssertTrue(bar.contains("minHeight: 44"),
+                      "the whole-bar hit target must stay >= 44 pt")
+        XCTAssertTrue(bar.contains(".buttonStyle(BoardPressStyle())"),
+                      "the bar must give pressed feedback like the other board controls")
+        XCTAssertTrue(bar.contains(".accessibilityValue(isCollapsed ? \"Collapsed\" : \"Expanded\")"),
+                      "VoiceOver must announce the collapse state")
+        XCTAssertFalse(bar.contains("withAnimation"),
+                       "the chevron flip is static — Reduce Motion needs no animation gate")
+    }
+
+    func testCollapsedSectionRendersOnlyItsBarNotAgentContent() throws {
+        let source = try bundledSource()
+        let board = try slice(from: "private func boardSections(sections: BoardModel.Sections",
+                              to: "private func agentRow",
+                              in: source)
+        // Exactly ONE #386 collapse gate exists around the subgroup/row
+        // loops; a second gate (or an alternate collapsed-content branch)
+        // that could leak rows under a collapsed bar goes RED here.
+        XCTAssertEqual(board.components(separatedBy:
+            "if !sectionCollapse.isCollapsed(status.state) {").count - 1, 1,
+            "exactly one collapse gate must wrap the section content")
+        XCTAssertEqual(board.components(separatedBy: "ForEach(status.subgroups)").count - 1, 1,
+                       "exactly one subgroup loop may exist — no ungated copy beside it")
     }
 }
 

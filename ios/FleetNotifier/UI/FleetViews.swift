@@ -758,7 +758,11 @@ struct FleetView: View {
                 // swallowed it).
                 .sheet(item: $model.recentsRequest,
                        onDismiss: { model.recentsSheetDismissed() }) { request in
-                    RecentOutputSheet(agentId: request.agentId, model: model)
+                    // #400 E1: the sheet receives the row's COMPOSITE
+                    // identity and resolves exactly the owning host.
+                    RecentOutputSheet(agentId: request.agentId,
+                                      hostProfileID: request.hostProfileID,
+                                      model: model)
                 }
                 // #379: the How-to-connect sheet — the SAME shared content the
                 // Settings '?' button presents from the Settings sheet. The
@@ -2746,6 +2750,10 @@ enum RecentsBlocksEvidence {
 /// block. No load-earlier paging, no partition, no composer.
 struct RecentOutputSheet: View {
     let agentId: String
+    /// #400 E1: the row's host profile (nil = legacy single-host runtime /
+    /// demo). The sheet resolves every read through the composite identity
+    /// so an equal raw id on another host is never touched.
+    let hostProfileID: UUID?
     @ObservedObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var theme: ThemeStore
@@ -2755,8 +2763,8 @@ struct RecentOutputSheet: View {
     // (simctl cannot scroll; Release never touches it).
     @State private var recentsProxy: ScrollViewProxy?
 
-    private var agent: Agent? { model.fleet.agent(agentId) }
-    private var tail: TailPane? { model.fleet.tailPane(for: agentId) }
+    private var agent: Agent? { model.fleetAgent(hostProfileID: hostProfileID, agentID: agentId) }
+    private var tail: TailPane? { model.fleetTailPane(hostProfileID: hostProfileID, agentID: agentId) }
     private var driveClient: DriveClient { model.makeDriveClient() }
 
     var body: some View {
@@ -3020,7 +3028,11 @@ struct RecentOutputSheet: View {
             return
         }
 #endif
-        model.driveReadTail(agent: agent, driveClient: driveClient, silent: true)
+        // #400 E1: the reload drive carries the sheet's composite identity
+        // (host profile + raw agent id) — it resolves exactly the owning
+        // host and never falls back to another host.
+        model.driveReadTail(agent: agent, hostProfileID: hostProfileID,
+                            driveClient: driveClient, silent: true)
     }
 
 #if DEBUG

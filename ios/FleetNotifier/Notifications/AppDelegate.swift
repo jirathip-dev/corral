@@ -86,6 +86,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 
     private let identityLifecycle: IdentityLifecycle
     private let session: URLSession
+    private let defaults: UserDefaults
     private let identityProvider: @Sendable () -> DeviceSigner?
     private let beforeDeviceTokenUpload: @Sendable () async -> Void
     private let deviceTokenState = DeviceTokenState()
@@ -105,16 +106,33 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     /// the device key store.
     init(identityLifecycle: IdentityLifecycle = .shared,
          session: URLSession = .shared,
+         defaults: UserDefaults = .standard,
          identityProvider: @escaping @Sendable () -> DeviceSigner? = {
              try? DeviceKeyStore.loadOrCreate().0
          },
          beforeDeviceTokenUpload: @escaping @Sendable () async -> Void = {}) {
         self.identityLifecycle = identityLifecycle
         self.session = session
+        self.defaults = defaults
         self.identityProvider = identityProvider
         self.beforeDeviceTokenUpload = beforeDeviceTokenUpload
         super.init()
         Self.shared = self
+    }
+
+    /// #400 F2: records that a device token was ever uploaded under the
+    /// current keychain identity. Persisted across launches so the
+    /// 2+-profile safety gate can best-effort CLEAR a previously uploaded
+    /// token even when this process never received a fresh OS token.
+    static let deviceTokenUploadedKey = "fleetnotifier.deviceTokenUploaded"
+
+    /// Whether this device holds a token a daemon may have enrolled (this
+    /// process received an OS token, or a previous process recorded a
+    /// successful signed upload). The 2+-profile gate uses this to decide
+    /// that empty-token cleanup is warranted.
+    func hasUploadedDeviceToken() -> Bool {
+        defaults.bool(forKey: Self.deviceTokenUploadedKey)
+            || Self.apnsRegistered
     }
 
     func application(_ application: UIApplication,
@@ -166,6 +184,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     func clearRetainedDeviceToken() {
         deviceTokenState.clear()
         Self.apnsRegistered = false
+        // #400 F2: a reset wipes the identity that authorized any upload,
+        // so the persisted upload record dies with it.
+        defaults.removeObject(forKey: Self.deviceTokenUploadedKey)
     }
 
     @discardableResult
@@ -211,6 +232,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                 _ = try await client.registerDeviceToken(hex, keyId: keyId, signer: signer)
                 guard !Task.isCancelled, lifecycle.isCurrent(context) else { return }
                 tokenState.succeeded(context, token: hex)
+                // #400 F2: persist the upload fact so the 2+-profile safety
+                // gate can clear this token after a relaunch (a fresh
+                // process never re-receives the OS token once enrollment is
+                // disabled).
+                self.defaults.set(true, forKey: Self.deviceTokenUploadedKey)
             } catch {
                 guard !Task.isCancelled, lifecycle.isCurrent(context) else { return }
                 tokenState.failed(context, token: hex)

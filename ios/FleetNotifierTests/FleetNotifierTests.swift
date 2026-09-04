@@ -3203,8 +3203,8 @@ final class ReadOnlySurfaceWiringTests: XCTestCase {
         let sliceEnd = try XCTUnwrap(nextDecl?.lowerBound,
                                      "the recents block renderer MARK must follow the sheet source")
         let slice = String(source[sheetStart.lowerBound..<sliceEnd])
-        XCTAssertTrue(slice.contains("model.driveReadTail(agent: agent, driveClient: driveClient, silent: true)"),
-                      "the recents sheet must auto-refresh through the live read_tail drive")
+        XCTAssertTrue(slice.contains("model.driveReadTail(agent: agent, hostProfileID: hostProfileID,"),
+                      "the recents sheet must auto-refresh through the live read_tail drive, carrying the composite identity")
         XCTAssertTrue(slice.contains("RecentOutputModel.phase(for: tail)"),
                       "the recents sheet must render the tail pane's four-state machine")
         XCTAssertTrue(slice.contains("RecentOutputModel.displayBlocks(from: tail)"),
@@ -3317,7 +3317,10 @@ final class ReadOnlySurfaceWiringTests: XCTestCase {
         // straight from that request.
         XCTAssertTrue(source.contains("model.requestRecents(for: agent.agentId, haptic: true)"))
         XCTAssertTrue(source.contains(".sheet(item: $model.recentsRequest,"))
-        XCTAssertTrue(source.contains("RecentOutputSheet(agentId: request.agentId, model: model)"))
+        XCTAssertTrue(source.contains("RecentOutputSheet(agentId: request.agentId,"),
+                      "the sheet must receive the request's composite identity")
+        XCTAssertTrue(source.contains("hostProfileID: request.hostProfileID,"),
+                      "the request's host profile must ride into the sheet")
         XCTAssertTrue(source.contains("onDismiss: { model.recentsSheetDismissed() }"),
                       "dismissal must run the request-lifecycle reconciler")
     }
@@ -4204,7 +4207,15 @@ private final class HostSwitchURLProtocol: URLProtocol {
 
     override func startLoading() {
         Self.lock.lock()
-        Self.requestsStorage.append(request)
+        // Materialize the POST body (URLSession may deliver it as a
+        // stream — see requestBodyData) so body assertions read it off
+        // the recorded copy. The protocol fabricates its response, so the
+        // recorded copy is the only consumer of the body bytes.
+        var copy = request
+        if let body = requestBodyData(request) {
+            copy.httpBody = body
+        }
+        Self.requestsStorage.append(copy)
         // SAFETY: URLProtocol requests always carry a URL.
         let scripted = Self.scriptStorage[request.url!]
         Self.lock.unlock()
@@ -6357,5 +6368,1012 @@ final class HostProfileWiringTests: XCTestCase {
                       "the sheet fetches the key for display")
         XCTAssertTrue(source.contains("Corral never auto-accepts"),
                       "the confirmation must state the no-auto-accept rule")
+    }
+}
+
+// MARK: - #400 composite client identity (C2)
+
+/// The composite key `(host_profile_id, raw_agent_id)` round-trips and raw
+/// agent ids containing ":" (e.g. "herdr:demo") parse unambiguously.
+final class CompositeIdentityTests: XCTestCase {
+    func testDescriptionUsesCanonicalSeparator() {
+        let profileID = UUID()
+        let identity = CompositeAgentID(hostProfileID: profileID, agentID: "herdr:a1")
+        XCTAssertEqual(identity.description,
+                       "\(profileID.uuidString)::herdr:a1")
+        XCTAssertEqual(identity.hostProfileID, profileID)
+        XCTAssertEqual(identity.agentID, "herdr:a1", "the raw id must stay untouched")
+    }
+
+    func testParsesRawAgentIdsContainingColons() {
+        let profileID = UUID()
+        for raw in ["herdr:a1", "herdr:demo-garden", "plain", "a::b"] {
+            let key = CompositeAgentID(hostProfileID: profileID, agentID: raw).description
+            // SAFETY: the fixture key was built from the profile id above.
+            let parsed = CompositeAgentID(string: key)!
+            XCTAssertEqual(parsed.hostProfileID, profileID)
+            XCTAssertEqual(parsed.agentID, raw)
+        }
+    }
+
+    func testRejectsMalformedKeys() {
+        XCTAssertNil(CompositeAgentID(string: ""))
+        XCTAssertNil(CompositeAgentID(string: "not-a-uuid::herdr:a1"))
+        XCTAssertNil(CompositeAgentID(string: "\(UUID().uuidString)"))
+        XCTAssertNil(CompositeAgentID(string: "\(UUID().uuidString)::"))
+    }
+}
+
+// MARK: - #400 stale/offline board projection (C6/C7)
+
+/// Live rows come from the host's store; a disconnected host retains its
+/// snapshot rows as STALE (state token preserved verbatim — never recast),
+/// and a never-connected host renders its durable allowlisted cache rows.
+/// C7 ranks live rows before stale rows inside every (state, repo) bucket.
+@MainActor
+final class HostBoardProjectionTests: XCTestCase {
+    private func agent(_ id: String, state: AgentState, ts: UInt64,
+                       repo: String? = nil, blockedReason: String? = nil) -> Agent {
+        var workspace = Workspace()
+        if let repo { workspace = Workspace(repo: repo, branch: "main") }
+        return Agent(agentId: id, state: state, reason: blockedReason,
+                     ts: ts, capabilities: [], workspace: workspace)
+    }
+
+    private func makeStore(agents: [Agent]) -> FleetStore {
+        let store = FleetStore(defaults: .standard)
+        store.apply(.snapshot(Snapshot(schemaVersion: 5, rev: 1, generatedAt: 0,
+                                       agents: Dictionary(uniqueKeysWithValues:
+                                           agents.map { ($0.agentId, $0) }))))
+        return store
+    }
+
+    func testDisconnectedHostRetainsSnapshotRowsAsStaleWithoutRecastingState() {
+        let profileID = UUID()
+        let blocked = agent("herdr:b", state: .blocked, ts: 40,
+                            blockedReason: "waiting on a review")
+        let store = makeStore(agents: [blocked])
+        // Host goes offline: rows stay, marked stale, last-seen stamped.
+        let rows = HostBoardProjection.boardRows(hostProfileID: profileID,
+                                                 store: store, cached: nil,
+                                                 connected: false)
+        XCTAssertEqual(rows.count, 1)
+        let row = rows[0]
+        XCTAssertTrue(row.isStale)
+        XCTAssertEqual(row.agent.state, .blocked,
+                       "a stale Blocked lane must NEVER be recast (urgency/Unknown)")
+        XCTAssertEqual(row.agent.reason, "waiting on a review",
+                       "retained metadata keeps the last reported reason")
+        XCTAssertEqual(row.identity.hostProfileID, profileID)
+        XCTAssertEqual(row.lastSeen, 40)
+    }
+
+    func testConnectedRowsAreLiveAndAuthoritative() {
+        let profileID = UUID()
+        let working = agent("herdr:w", state: .working, ts: 90)
+        let store = makeStore(agents: [working])
+        let rows = HostBoardProjection.boardRows(hostProfileID: profileID,
+                                                 store: store, cached: nil,
+                                                 connected: true)
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertFalse(rows[0].isStale)
+    }
+
+    func testNeverConnectedHostRendersDurableCacheRowsAsStale() {
+        let profileID = UUID()
+        let store = FleetStore(defaults: .standard)
+        // The allowlisted cache row from a previous session (C5 DTO).
+        let cached = BoardCacheRow(compositeIdentity: "\(profileID)::herdr:old",
+                                   hostProfileID: profileID, agentID: "herdr:old",
+                                   state: "blocked", ts: 50, stateEnteredAt: 50,
+                                   displayName: "fix", title: "t", reason: "waiting",
+                                   tool: "claude", paneReference: "w1:p1",
+                                   repo: "corral", branch: "main",
+                                   basename: "corral", lastSeen: 60)
+        let rows = HostBoardProjection.boardRows(hostProfileID: profileID,
+                                                 store: store, cached: [cached],
+                                                 connected: false)
+        XCTAssertEqual(rows.count, 1)
+        let row = rows[0]
+        XCTAssertTrue(row.isStale)
+        XCTAssertEqual(row.agent.state, .blocked)
+        XCTAssertEqual(row.agent.agentId, "herdr:old")
+        XCTAssertEqual(row.lastSeen, 60, "stale last-seen age comes from the cache stamp")
+        XCTAssertNil(row.agent.workspace.worktreePath,
+                     "the cache holds only the basename — no path is synthesized")
+    }
+
+    func testAuthoritativeReconnectReplacesRetainedCacheRows() {
+        let profileID = UUID()
+        let cached = BoardCacheRow(compositeIdentity: "\(profileID)::herdr:old",
+                                   hostProfileID: profileID, agentID: "herdr:old",
+                                   state: "blocked", ts: 50, stateEnteredAt: 50,
+                                   displayName: nil, title: nil, reason: nil,
+                                   tool: nil, paneReference: nil,
+                                   repo: "corral", branch: "main",
+                                   basename: "corral", lastSeen: 60)
+        // The authoritative reconnect snapshot no longer contains the lane.
+        let store = makeStore(agents: [agent("herdr:live", state: .idle, ts: 80)])
+        let rows = HostBoardProjection.boardRows(hostProfileID: profileID,
+                                                 store: store, cached: [cached],
+                                                 connected: true)
+        XCTAssertEqual(rows.map(\.agent.agentId), ["herdr:live"],
+                       "an authoritative reconnect replaces the retained snapshot")
+        XCTAssertFalse(rows[0].isStale)
+    }
+
+    func testLiveRowsRankBeforeStaleRowsWithinStatusRepoBuckets() {
+        // Same (state, repo) bucket: one live + one stale of the same raw
+        // lane name on two hosts. Canonical input order (ts desc) has the
+        // STALE row first (newer ts); C7 must still rank the LIVE row
+        // first inside the bucket, and keep ts/id order on each side.
+        let profileA = UUID(), profileB = UUID()
+        let live = HostBoardRow(identity: CompositeAgentID(hostProfileID: profileA,
+                                                           agentID: "herdr:dup"),
+                                agent: agent("herdr:dup", state: .blocked, ts: 10,
+                                             repo: "corral"),
+                                isStale: false, lastSeen: 10)
+        let stale = HostBoardRow(identity: CompositeAgentID(hostProfileID: profileB,
+                                                            agentID: "herdr:dup"),
+                                 agent: agent("herdr:dup", state: .blocked, ts: 99,
+                                              repo: "corral", blockedReason: "old"),
+                                 isStale: true, lastSeen: 99)
+        let idle = HostBoardRow(identity: CompositeAgentID(hostProfileID: profileB,
+                                                           agentID: "herdr:idle"),
+                                agent: agent("herdr:idle", state: .idle, ts: 5),
+                                isStale: false, lastSeen: 5)
+        let ranked = HostBoardProjection.liveFirst([stale, live, idle])
+        let ids = ranked.map(\.identity.description)
+        XCTAssertEqual(ids.first, live.identity.description,
+                       "the LIVE blocked row must lead its (blocked, corral) bucket")
+        XCTAssertEqual(ids.dropFirst().first, stale.identity.description,
+                       "the stale row follows inside the same bucket")
+        XCTAssertEqual(ids.last, idle.identity.description,
+                       "the idle bucket is untouched by the blocked bucket")
+        XCTAssertEqual(ranked[0].agent.state, .blocked)
+        XCTAssertEqual(ranked[1].agent.state, .blocked,
+                       "stale blocked stays blocked — never Unknown")
+    }
+}
+
+// MARK: - #400 per-host stream coordinator (C3/C4/E3)
+
+/// C3/C4 runtime tests: THREE profiles with EQUAL raw agent ids run one
+/// independent stream/cursor/generation/task set each; background cancels
+/// all; removing one host cancels ONLY that host and purges only its
+/// composite state; pull-refresh fans out with per-host outcomes.
+@MainActor
+final class HostStreamCoordinatorTests: XCTestCase {
+    private var suiteName = ""
+    private var coordinator: HostStreamCoordinator?
+
+    private func cleanup() {
+        coordinator?.stopAll()
+        coordinator = nil
+        HostSwitchURLProtocol.clearScript()
+        if !suiteName.isEmpty {
+            // SAFETY: suiteName was freshly minted per test.
+            UserDefaults(suiteName: suiteName)!.removePersistentDomain(forName: suiteName)
+            suiteName = ""
+        }
+    }
+
+    private func hostKey(_ value: UInt8) -> String {
+        Data(repeating: value, count: 32).base64EncodedString()
+    }
+
+    private func waitUntil(_ condition: @autoclosure () -> Bool,
+                           timeout: TimeInterval = 5) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+    }
+
+    /// Three pinned profiles with EQUAL raw agent ids under distinct URLs.
+    private func makeThreeHostStore() -> (HostProfileStore, [HostProfile], [URL], [String]) {
+        let store = HostProfileStore(directory: nil,
+                                     // SAFETY: fixed test fixture invariant (see the test's fixture builder); failure here is a harness bug, not a product defect.
+                                     defaults: UserDefaults(suiteName: suiteName)!)
+        let urls = [
+            // SAFETY: fixed valid fixture URLs (distinct hostnames).
+            URL(string: "https://h400-a.example")!,
+            URL(string: "https://h400-b.example")!,
+            URL(string: "https://h400-c.example")!,
+        ]
+        let keys = [hostKey(1), hostKey(2), hostKey(3)]
+        var profiles: [HostProfile] = []
+        for index in 0..<3 {
+            let profile = try! store.addProfile(displayName: "Host \(index)",
+                                                urlString: urls[index].absoluteString,
+                                                hostKeyB64: keys[index],
+                                                fingerprint: "FINGER",
+                                                keyId: "dev_h\(index)",
+                                                grants: ["read_tail"],
+                                                expiryTs: 1_800_000_000,
+                                                registeredAt: 1)
+            profiles.append(profile)
+        }
+        return (store, profiles, urls, keys)
+    }
+
+    private func scriptedSession(urls: [URL], keys: [String]) -> URLSession {
+        var script: [URL: (Int, Data, Bool)] = [:]
+        for (url, key) in zip(urls, keys) {
+            // SAFETY: fixed fixture JSON from the fixture key.
+            script[url.appendingPathComponent("/host-key")] = (
+                200,
+                Data(#"{"algorithm":"X25519","public_key":"\#(key)"}"#.utf8),
+                false)
+            script[url.appendingPathComponent("/events")] = (200, Data(), true)
+        }
+        HostSwitchURLProtocol.setScript(script)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [HostSwitchURLProtocol.self]
+        return URLSession(configuration: config)
+    }
+
+    private func requests(to url: URL) -> [URLRequest] {
+        HostSwitchURLProtocol.requests.filter { $0.url?.absoluteString == url.absoluteString }
+    }
+
+    private func makeAgent(_ id: String, state: AgentState, host: String?,
+                           ts: UInt64, repo: String? = nil) -> Agent {
+        Agent(agentId: id, state: state, ts: ts,
+              capabilities: ["read_tail"], host: host,
+              workspace: Workspace(repo: repo, branch: "main"))
+    }
+
+    func testThreeProfilesStartConcurrentStreamsWithIndependentCursors() async {
+        suiteName = "corral.h400.coord.\(UUID().uuidString)"
+        defer { cleanup() }
+        let (store, profiles, urls, keys) = makeThreeHostStore()
+        let session = scriptedSession(urls: urls, keys: keys)
+        self.session = session
+        // SAFETY: fixed test fixture invariant (see the test's fixture builder); failure here is a harness bug, not a product defect.
+        let coordinator = HostStreamCoordinator(defaults: UserDefaults(suiteName: suiteName)!,
+                                                session: session, profileStore: store,
+                                                signerProvider: { nil })
+        self.coordinator = coordinator
+        coordinator.update(profiles: profiles, startStreams: true)
+        // All three hosts open their own streams concurrently.
+        for url in urls {
+            await waitUntil(!requests(to: url.appendingPathComponent("/events")).isEmpty)
+        }
+        // Independent cursors: advance ONLY host A's read model.
+        let storeA = try! XCTUnwrap(coordinator.store(profileID: profiles[0].id))
+        let storeB = try! XCTUnwrap(coordinator.store(profileID: profiles[1].id))
+        let storeC = try! XCTUnwrap(coordinator.store(profileID: profiles[2].id))
+        storeA.apply(.snapshot(Snapshot(schemaVersion: 5, rev: 42, generatedAt: 0,
+                                        agents: ["dup": makeAgent("dup", state: .working,
+                                                                  host: keys[0], ts: 1)])))
+        XCTAssertEqual(storeA.lastEventId, 42)
+        XCTAssertNil(storeB.lastEventId, "host B's cursor must not move with A's data")
+        XCTAssertNil(storeC.lastEventId)
+        // Reconnect generations are per host: disconnect + reconnect A only.
+        let generationA = storeA.connectionGeneration
+        let generationB = storeB.connectionGeneration
+        storeA.disconnect()
+        coordinator.startSessionIfNeeded(profiles[0])
+        await waitUntil(storeA.connectionGeneration > generationA)
+        XCTAssertEqual(storeB.connectionGeneration, generationB,
+                       "host B's connection generation must not bump when A reconnects")
+    }
+
+    func testBackgroundStopAllCancelsEveryHostStream() async {
+        suiteName = "corral.h400.bg.\(UUID().uuidString)"
+        defer { cleanup() }
+        let (store, profiles, urls, keys) = makeThreeHostStore()
+        let session = scriptedSession(urls: urls, keys: keys)
+        self.session = session
+        // SAFETY: fixed test fixture invariant (see the test's fixture builder); failure here is a harness bug, not a product defect.
+        let coordinator = HostStreamCoordinator(defaults: UserDefaults(suiteName: suiteName)!,
+                                                session: session, profileStore: store,
+                                                signerProvider: { nil })
+        self.coordinator = coordinator
+        coordinator.update(profiles: profiles, startStreams: true)
+        for url in urls {
+            await waitUntil(!requests(to: url.appendingPathComponent("/events")).isEmpty)
+        }
+        coordinator.stopAll()
+        for profile in profiles {
+            let store = try! XCTUnwrap(coordinator.store(profileID: profile.id))
+            XCTAssertFalse(store.isStreaming, "background must cancel host \(profile.displayName)'s stream")
+            XCTAssertEqual(store.connectionState, .disconnected)
+        }
+    }
+
+    func testRemoveOneHostCancelsOnlyItsStreamAndPurgesOnlyItsState() async {
+        suiteName = "corral.h400.remove.\(UUID().uuidString)"
+        defer { cleanup() }
+        let (store, profiles, urls, keys) = makeThreeHostStore()
+        let session = scriptedSession(urls: urls, keys: keys)
+        self.session = session
+        // SAFETY: fixed test fixture invariant (see the test's fixture builder); failure here is a harness bug, not a product defect.
+        let coordinator = HostStreamCoordinator(defaults: UserDefaults(suiteName: suiteName)!,
+                                                session: session, profileStore: store,
+                                                signerProvider: { nil })
+        self.coordinator = coordinator
+        coordinator.update(profiles: profiles, startStreams: true)
+        for url in urls {
+            await waitUntil(!requests(to: url.appendingPathComponent("/events")).isEmpty)
+        }
+        // Seed every host with the SAME raw id + a per-host tail.
+        for (index, profile) in profiles.enumerated() {
+            let hostStore = try! XCTUnwrap(coordinator.store(profileID: profile.id))
+            hostStore.apply(.snapshot(Snapshot(schemaVersion: 5, rev: 1, generatedAt: 0,
+                                               agents: ["dup": makeAgent("dup", state: .blocked,
+                                                                         host: keys[index], ts: 10)])))
+            hostStore.rememberTail(["line-h\(index)"], for: "dup")
+        }
+        let doomed = profiles[1]
+        let doomedStore = try! XCTUnwrap(coordinator.store(profileID: doomed.id))
+        coordinator.remove(profileID: doomed.id)
+        // E3: the removed host's stream is canceled and its rows/tails are
+        // purged; the OTHER hosts keep streaming with their state intact.
+        XCTAssertFalse(doomedStore.isStreaming,
+                       "host removal must cancel that host's stream task")
+        XCTAssertEqual(doomedStore.connectionState, .disconnected)
+        XCTAssertTrue(doomedStore.agents.isEmpty, "the removed host's rows must be purged")
+        XCTAssertNil(doomedStore.tail(for: "dup"), "the removed host's tails must be purged")
+        for index in [0, 2] {
+            let survivor = try! XCTUnwrap(coordinator.store(profileID: profiles[index].id))
+            XCTAssertTrue(survivor.isStreaming,
+                          "removing one host must never cancel another host's stream")
+            XCTAssertEqual(survivor.agent("dup")?.agentId, "dup",
+                           "the survivor's equal raw id must be untouched")
+            XCTAssertEqual(survivor.tail(for: "dup"), ["line-h\(index)"])
+        }
+        XCTAssertNil(coordinator.store(profileID: doomed.id),
+                     "the session must be gone after removal")
+    }
+
+    func testRefreshFansOutAndAppliesSuccessfulResultsWhenAnotherHostFails() async {
+        suiteName = "corral.h400.refresh.\(UUID().uuidString)"
+        defer { cleanup() }
+        let (store, profiles, urls, keys) = makeThreeHostStore()
+        // A pull-refresh fan-out: hosts 0 and 2 answer a snapshot, host 1
+        // fails (500). Session stores exist without streams.
+        var script: [URL: (Int, Data, Bool)] = [:]
+        let snapshotA = Snapshot(schemaVersion: 5, rev: 9, generatedAt: 0,
+                                 agents: ["dup": makeAgent("dup", state: .working,
+                                                           host: keys[0], ts: 9)])
+        let snapshotC = Snapshot(schemaVersion: 5, rev: 9, generatedAt: 0,
+                                 agents: ["dup": makeAgent("dup", state: .idle,
+                                                           host: keys[2], ts: 9)])
+        // SAFETY: fixture snapshots encode through the same Codable the
+        // wire uses.
+        script[urls[0].appendingPathComponent("/snapshot")] = (
+            200, try! JSONEncoder().encode(snapshotA), false)
+        script[urls[1].appendingPathComponent("/snapshot")] = (
+            500, Data("boom".utf8), false)
+        script[urls[2].appendingPathComponent("/snapshot")] = (
+            200, try! JSONEncoder().encode(snapshotC), false)
+        HostSwitchURLProtocol.setScript(script)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [HostSwitchURLProtocol.self]
+        let session = URLSession(configuration: config)
+        self.session = session
+        let coordinator = HostStreamCoordinator(defaults: UserDefaults(suiteName: suiteName)!,
+                                                session: session, profileStore: store,
+                                                signerProvider: { nil })
+        self.coordinator = coordinator
+        coordinator.update(profiles: profiles, startStreams: false)
+        let outcomes = await coordinator.refreshAll(profiles: profiles)
+        XCTAssertNil(outcomes[profiles[0].id] ?? nil, "host A's successful refresh applies")
+        XCTAssertNotNil(outcomes[profiles[1].id] ?? nil, "host B's failure is isolated")
+        XCTAssertNil(outcomes[profiles[2].id] ?? nil, "host C's successful refresh applies")
+        let storeA = try! XCTUnwrap(coordinator.store(profileID: profiles[0].id))
+        let storeB = try! XCTUnwrap(coordinator.store(profileID: profiles[1].id))
+        let storeC = try! XCTUnwrap(coordinator.store(profileID: profiles[2].id))
+        XCTAssertEqual(storeA.lastEventId, 9, "successful results apply even when another host fails")
+        XCTAssertEqual(storeC.lastEventId, 9)
+        XCTAssertNil(storeB.lastEventId, "the failed host keeps no partial state")
+        XCTAssertEqual(storeB.connectionState, .disconnected,
+                       "a failed host must not freeze or erase the others")
+    }
+
+    private var session: URLSession?
+}
+
+// MARK: - #400 equal-raw-id isolation (C2)
+
+/// Equal raw agent ids on three hosts coexist: snapshot upserts/deletes,
+/// state-duration tracking, and tails from one host NEVER touch the equal
+/// raw id on another host — every surface keys by the composite identity.
+@MainActor
+final class MultiHostIsolationTests: XCTestCase {
+    private var suiteName = ""
+
+    private func cleanup() {
+        HostSwitchURLProtocol.clearScript()
+        if !suiteName.isEmpty {
+            // SAFETY: suiteName was freshly minted per test.
+            UserDefaults(suiteName: suiteName)!.removePersistentDomain(forName: suiteName)
+            suiteName = ""
+        }
+    }
+
+    private func hostKey(_ value: UInt8) -> String {
+        Data(repeating: value, count: 32).base64EncodedString()
+    }
+
+    /// Three pinned profiles, all holding the SAME raw agent id "herdr:dup".
+    private func makeThreeHostStore() -> (HostProfileStore, [HostProfile]) {
+        let store = HostProfileStore(directory: nil,
+                                     // SAFETY: fixed test fixture invariant (see the test's fixture builder); failure here is a harness bug, not a product defect.
+                                     defaults: UserDefaults(suiteName: suiteName)!)
+        var profiles: [HostProfile] = []
+        for index in 0..<3 {
+            // SAFETY: fixed valid fixture URLs (distinct hostnames).
+            let url = URL(string: "https://iso-h\(index).example")!
+            let profile = try! store.addProfile(displayName: "Host \(index)",
+                                                urlString: url.absoluteString,
+                                                hostKeyB64: hostKey(UInt8(index + 1)),
+                                                fingerprint: "FINGER",
+                                                keyId: "dev_iso\(index)",
+                                                grants: ["read_tail"],
+                                                expiryTs: 1_800_000_000,
+                                                registeredAt: 1)
+            profiles.append(profile)
+        }
+        return (store, profiles)
+    }
+
+    private func agent(_ id: String, state: AgentState, host: String, ts: UInt64) -> Agent {
+        Agent(agentId: id, state: state, ts: ts,
+              capabilities: ["read_tail"], host: host,
+              workspace: Workspace(repo: "corral", branch: "main"))
+    }
+
+    func testEqualRawIdsCoexistAcrossHosts() {
+        suiteName = "corral.h400.iso.\(UUID().uuidString)"
+        defer { cleanup() }
+        let (store, profiles) = makeThreeHostStore()
+        let coordinator = HostStreamCoordinator(
+            // SAFETY: fixed test fixture invariant (see the test's fixture builder); failure here is a harness bug, not a product defect.
+            defaults: UserDefaults(suiteName: suiteName)!,
+            session: URLSession(configuration: .ephemeral),
+            profileStore: store, signerProvider: { nil })
+        defer { coordinator.stopAll() }
+        coordinator.update(profiles: profiles, startStreams: false)
+        let keys = [hostKey(1), hostKey(2), hostKey(3)]
+        for (index, profile) in profiles.enumerated() {
+            let hostStore = try! XCTUnwrap(coordinator.store(profileID: profile.id))
+            hostStore.apply(.snapshot(Snapshot(schemaVersion: 5, rev: 1, generatedAt: 0,
+                                               agents: ["herdr:dup": agent("herdr:dup",
+                                                                           state: .working,
+                                                                           host: keys[index],
+                                                                           ts: 10)])))
+        }
+        // The aggregate board carries THREE distinct composite rows for the
+        // one raw id — never one row silently clobbering the others.
+        let rows = coordinator.aggregateRows(profiles: profiles, activeStoreProvider: { nil })
+        let dups = rows.filter { $0.identity.agentID == "herdr:dup" }
+        XCTAssertEqual(dups.count, 3,
+                       "an equal raw id on three hosts must produce three composite rows")
+        XCTAssertEqual(Set(dups.map(\.identity.hostProfileID)).count, 3)
+        XCTAssertEqual(dups.filter { $0.isStale }.count, 0, "seeded rows are live")
+    }
+
+    func testUpdateDeleteAndStateDurationFromOneHostNeverTouchEqualRawIds() {
+        suiteName = "corral.h400.iso2.\(UUID().uuidString)"
+        defer { cleanup() }
+        let (store, profiles) = makeThreeHostStore()
+        let coordinator = HostStreamCoordinator(
+            // SAFETY: fixed test fixture invariant (see the test's fixture builder); failure here is a harness bug, not a product defect.
+            defaults: UserDefaults(suiteName: suiteName)!,
+            session: URLSession(configuration: .ephemeral),
+            profileStore: store, signerProvider: { nil })
+        defer { coordinator.stopAll() }
+        coordinator.update(profiles: profiles, startStreams: false)
+        let keys = [hostKey(1), hostKey(2), hostKey(3)]
+        for (index, profile) in profiles.enumerated() {
+            let hostStore = try! XCTUnwrap(coordinator.store(profileID: profile.id))
+            hostStore.apply(.snapshot(Snapshot(schemaVersion: 5, rev: 1, generatedAt: 0,
+                                               agents: ["herdr:dup": agent("herdr:dup",
+                                                                           state: .working,
+                                                                           host: keys[index],
+                                                                           ts: 10)])))
+        }
+        // Host A upserts dup → blocked at rev 2. B and C must not move.
+        let storeA = try! XCTUnwrap(coordinator.store(profileID: profiles[0].id))
+        let storeB = try! XCTUnwrap(coordinator.store(profileID: profiles[1].id))
+        let storeC = try! XCTUnwrap(coordinator.store(profileID: profiles[2].id))
+        storeA.apply(.delta(Delta(rev: 2,
+                                  upd: [agent("herdr:dup", state: .blocked,
+                                              host: keys[0], ts: 20)],
+                                  del: [])))
+        XCTAssertEqual(storeA.agent("herdr:dup")?.state, .blocked)
+        XCTAssertEqual(storeB.agent("herdr:dup")?.state, .working,
+                       "host A's update must never touch B's equal raw id")
+        XCTAssertEqual(storeC.agent("herdr:dup")?.state, .working)
+        // State-duration tracking is per host too.
+        XCTAssertNotNil(storeA.stateEnteredAt["herdr:dup"])
+        XCTAssertEqual(storeB.stateEnteredAt["herdr:dup"], 10,
+                       "host B's state clock must not move with host A's update")
+        // Host B DELETES dup at rev 3: only B's row disappears.
+        storeB.apply(.delta(Delta(rev: 3, upd: [], del: ["herdr:dup"])))
+        XCTAssertNil(storeB.agent("herdr:dup"))
+        XCTAssertNotNil(storeA.agent("herdr:dup"), "A's equal raw id survives B's deletion")
+        XCTAssertNotNil(storeC.agent("herdr:dup"))
+        // Tails: same raw id, distinct per-host content.
+        storeA.rememberTail(["from-host-a"], for: "herdr:dup")
+        storeC.rememberTail(["from-host-c"], for: "herdr:dup")
+        XCTAssertEqual(storeA.tail(for: "herdr:dup"), ["from-host-a"])
+        XCTAssertEqual(storeC.tail(for: "herdr:dup"), ["from-host-c"])
+        XCTAssertNil(storeB.tail(for: "herdr:dup"), "the deleted target's tail is purged with it")
+        // The composite aggregate reflects exactly the survivors.
+        let rows = coordinator.aggregateRows(profiles: profiles, activeStoreProvider: { nil })
+        let dupRows = rows.filter { $0.identity.agentID == "herdr:dup" }
+        XCTAssertEqual(Set(dupRows.map(\.identity.hostProfileID)),
+                       Set([profiles[0].id, profiles[2].id]))
+        XCTAssertEqual(dupRows.first { $0.identity.hostProfileID == profiles[0].id }?.agent.state,
+                       .blocked)
+    }
+}
+
+// MARK: - #400 Recent Output composite routing (E1/E2/E3)
+
+/// E1: opening a row resolves EXACTLY one profile and signs read_tail with
+/// THAT profile's key id against THAT profile URL — never another host.
+/// E2: offline keeps loaded output (memory-only) and disables reload.
+/// E3: host removal purges only the composite target's sheet/tails.
+@MainActor
+final class RecentsCompositeRouteTests: XCTestCase {
+    private var suiteName = ""
+    private var model: AppModel?
+    private var session: URLSession?
+
+    static let hostAKey = Data(repeating: 7, count: 32).base64EncodedString()
+    static let hostBKey = Data(repeating: 8, count: 32).base64EncodedString()
+
+    // SAFETY: fixed valid fixture URLs under distinct hostnames.
+    private let urlA = URL(string: "https://route-a.example")!
+    private let urlB = URL(string: "https://route-b.example")!
+
+    private func cleanup() {
+        model?.stopLive()
+        model = nil
+        session?.invalidateAndCancel()
+        session = nil
+        AppDelegate.apnsRegistered = false
+        UserDefaults.standard.removeObject(forKey: AppDelegate.deviceTokenUploadedKey)
+        AppDelegate.shared?.clearRetainedDeviceToken()
+        KeyContinuityGate.reset()
+        HostSwitchURLProtocol.clearScript()
+        if !suiteName.isEmpty {
+            // SAFETY: suiteName was freshly minted per test.
+            UserDefaults(suiteName: suiteName)!.removePersistentDomain(forName: suiteName)
+            suiteName = ""
+        }
+    }
+
+    private func waitUntil(_ condition: @autoclosure () -> Bool,
+                           timeout: TimeInterval = 5) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+    }
+
+    /// Two pinned profiles: A = the ACTIVE host, B = a coordinator host.
+    private func makeModel(seedAgentInB: Bool,
+                           scriptDrive: Bool) -> (AppModel, HostProfile, HostProfile) {
+        suiteName = "corral.h400.route.\(UUID().uuidString)"
+        // SAFETY: a fresh UUID suite name is always a valid suite.
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let store = HostProfileStore(directory: nil, defaults: defaults)
+        let profileA = try! store.addProfile(displayName: "Host A",
+                                             urlString: urlA.absoluteString,
+                                             hostKeyB64: Self.hostAKey,
+                                             fingerprint: "FINGER",
+                                             keyId: "dev_route_a",
+                                             grants: ["read_tail"],
+                                             expiryTs: 1_800_000_000,
+                                             registeredAt: 1)
+        let profileB = try! store.addProfile(displayName: "Host B",
+                                             urlString: urlB.absoluteString,
+                                             hostKeyB64: Self.hostBKey,
+                                             fingerprint: "FINGER",
+                                             keyId: "dev_route_b",
+                                             grants: ["read_tail"],
+                                             expiryTs: 1_800_000_000,
+                                             registeredAt: 1)
+        defaults.set(profileA.id.uuidString, forKey: "fleetnotifier.activeHostProfileID")
+        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        var script: [URL: (Int, Data, Bool)] = [:]
+        for (url, key) in [(urlA, Self.hostAKey), (urlB, Self.hostBKey)] {
+            // SAFETY: fixed fixture JSON from the fixture keys.
+            script[url.appendingPathComponent("/host-key")] = (
+                200, Data(#"{"algorithm":"X25519","public_key":"\#(key)"}"#.utf8), false)
+            script[url.appendingPathComponent("/events")] = (200, Data(), true)
+        }
+        if scriptDrive {
+            // SAFETY: a fixed minimal drive response fixture.
+            let driveOK = Data(#"{"request_id":"r1","ok":true,"rev":5,"result":{"lines":["l1"],"blocks":[]}}"#.utf8)
+            script[urlA.appendingPathComponent("/drive")] = (200, driveOK, false)
+            script[urlB.appendingPathComponent("/drive")] = (200, driveOK, false)
+        }
+        HostSwitchURLProtocol.setScript(script)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [HostSwitchURLProtocol.self]
+        let session = URLSession(configuration: config)
+        self.session = session
+        let model = AppModel(session: session, defaults: defaults,
+                             identityLoader: { (signer, .insecureFallback) },
+                             loadMeta: { nil }, saveMeta: { _ in },
+                             wipeIdentity: {}, profileStore: store)
+        self.model = model
+        // Both hosts verify + stream (active A via its own gate; B via the
+        // coordinator), so composite reads are authorized.
+        model.startLive()
+        return (model, profileA, profileB)
+    }
+
+    private func requests(to url: URL) -> [URLRequest] {
+        HostSwitchURLProtocol.requests.filter { $0.url?.absoluteString == url.absoluteString }
+    }
+
+    private func agent(_ id: String, state: AgentState, host: String, ts: UInt64) -> Agent {
+        Agent(agentId: id, state: state, ts: ts,
+              capabilities: ["read_tail"], host: host,
+              workspace: Workspace(repo: "corral", branch: "main"))
+    }
+
+    private func seed(model: AppModel, profileA: HostProfile, profileB: HostProfile,
+                      seedAgentInB: Bool) async {
+        // Active host A holds the equal raw id too.
+        model.fleet.apply(.snapshot(Snapshot(schemaVersion: 5, rev: 5, generatedAt: 0,
+                                             agents: ["herdr:dup": agent("herdr:dup",
+                                                                         state: .working,
+                                                                         host: Self.hostAKey,
+                                                                         ts: 5)])))
+        // Coordinator host B (verify posture first via its own stream).
+        // SAFETY: fixed test fixture invariant (see the test's fixture builder); failure here is a harness bug, not a product defect.
+        let coordinator = try! XCTUnwrap(model.coordinator)
+        if seedAgentInB {
+            let storeB = try! XCTUnwrap(coordinator.store(profileID: profileB.id))
+            storeB.apply(.snapshot(Snapshot(schemaVersion: 5, rev: 5, generatedAt: 0,
+                                            agents: ["herdr:dup": agent("herdr:dup",
+                                                                        state: .blocked,
+                                                                        host: Self.hostBKey,
+                                                                        ts: 5)])))
+        }
+        await waitUntil(coordinator.allowsLiveWork(profileID: profileB.id))
+        await waitUntil(model.keyContinuityState == .verified)
+    }
+
+    func testRecentsOpensAndRoutesReadTailToTheOwningHostOnly() async {
+        defer { cleanup() }
+        let (model, _, profileB) = makeModel(seedAgentInB: true, scriptDrive: true)
+        // SAFETY: fixed test fixture invariant (see the test's fixture builder); failure here is a harness bug, not a product defect.
+        await seed(model: model, profileA: try! XCTUnwrap(model.activeProfile),
+                   profileB: profileB, seedAgentInB: true)
+        // E1: request for the COMPOSITE target (host B + raw dup).
+        model.requestRecents(for: "herdr:dup", hostProfileID: profileB.id, haptic: false)
+        XCTAssertEqual(model.recentsRequest?.hostProfileID, profileB.id)
+        XCTAssertEqual(model.recentsRequest?.agentId, "herdr:dup",
+                       "the raw agent id stays untouched")
+        let bAgent = try! XCTUnwrap(model.fleetAgent(hostProfileID: profileB.id,
+                                                     agentID: "herdr:dup"))
+        XCTAssertEqual(bAgent.state, .blocked, "the sheet resolves B's row, not A's working row")
+        // Drive with a client bound to host A on purpose: the composite
+        // route must STILL sign against B's URL with B's key id.
+        let clientForA = DriveClient(host: urlA, session: session ?? .shared)
+        model.driveReadTail(agent: bAgent, hostProfileID: profileB.id,
+                            driveClient: clientForA)
+        await waitUntil(!requests(to: urlB.appendingPathComponent("/drive")).isEmpty)
+        XCTAssertTrue(requests(to: urlA.appendingPathComponent("/drive")).isEmpty,
+                      "a read_tail for host B must NEVER reach host A")
+        let driveBody = try! XCTUnwrap(requests(to: urlB.appendingPathComponent("/drive")).first?.httpBody)
+        let json = try! XCTUnwrap(try JSONSerialization.jsonObject(with: driveBody)
+                                  as? [String: Any])
+        XCTAssertEqual(json["key_id"] as? String, "dev_route_b",
+                       "the read must be signed with the OWNING profile's key id")
+        // The canonical signed-drive envelope rides inline under
+        // "envelope" and carries the untouched raw target id.
+        let envelope = try! XCTUnwrap(json["envelope"] as? [String: Any])
+        XCTAssertEqual(envelope["target"] as? String, "herdr:dup",
+                       "the raw agent id is sent untouched")
+        // The loaded tail lands in B's store — never A's.
+        let coordinator = try! XCTUnwrap(model.coordinator)
+        await waitUntil(coordinator.tailPane(profileID: profileB.id, agentID: "herdr:dup") != nil)
+        XCTAssertEqual(coordinator.tailPane(profileID: profileB.id, agentID: "herdr:dup")?.lines,
+                       ["l1"])
+        XCTAssertNil(model.fleet.tailPane(for: "herdr:dup"),
+                     "host B's tail must never land in host A's read model")
+    }
+
+    func testMissingTargetOnOwningHostNeverSearchesAnotherHost() async {
+        defer { cleanup() }
+        // Host A HAS "herdr:dup"; host B does NOT.
+        let (model, _, profileB) = makeModel(seedAgentInB: false, scriptDrive: true)
+        // SAFETY: fixed test fixture invariant (see the test's fixture builder); failure here is a harness bug, not a product defect.
+        await seed(model: model, profileA: try! XCTUnwrap(model.activeProfile),
+                   profileB: profileB, seedAgentInB: false)
+        // E1: opening (B, dup) must NOT resolve A's equal raw id.
+        model.requestRecents(for: "herdr:dup", hostProfileID: profileB.id, haptic: false)
+        XCTAssertNil(model.recentsRequest,
+                     "no other host may satisfy a composite open request")
+        let aDup = try! XCTUnwrap(model.fleetAgent(hostProfileID: nil, agentID: "herdr:dup"))
+        let clientForA = DriveClient(host: urlA, session: session ?? .shared)
+        model.driveReadTail(agent: aDup, hostProfileID: profileB.id,
+                            driveClient: clientForA)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertTrue(requests(to: urlA.appendingPathComponent("/drive")).isEmpty,
+                      "no drive may fall back to another host's row")
+        XCTAssertTrue(requests(to: urlB.appendingPathComponent("/drive")).isEmpty,
+                      "no drive may run against a host that does not own the row")
+    }
+
+    func testOfflineSheetKeepsLoadedOutputAndDisablesReload() async {
+        defer { cleanup() }
+        let (model, _, profileB) = makeModel(seedAgentInB: true, scriptDrive: true)
+        // SAFETY: fixed test fixture invariant (see the test's fixture builder); failure here is a harness bug, not a product defect.
+        await seed(model: model, profileA: try! XCTUnwrap(model.activeProfile),
+                   profileB: profileB, seedAgentInB: true)
+        let coordinator = try! XCTUnwrap(model.coordinator)
+        let storeB = try! XCTUnwrap(coordinator.store(profileID: profileB.id))
+        storeB.rememberTail(["already-loaded"], for: "herdr:dup")
+        XCTAssertEqual(model.recentsRouteState(hostProfileID: profileB.id, agentID: "herdr:dup"),
+                       .live)
+        // Host B goes offline mid-sheet.
+        storeB.noteConnectionError("host offline")
+        XCTAssertEqual(model.recentsRouteState(hostProfileID: profileB.id, agentID: "herdr:dup"),
+                       .offline, "loaded output stays visible with an offline marker")
+        XCTAssertEqual(storeB.tail(for: "herdr:dup"), ["already-loaded"],
+                       "the loaded output is retained (memory-only)")
+        // Reload is disabled while disconnected: no new drive request.
+        let bAgent = try! XCTUnwrap(storeB.agent("herdr:dup"))
+        let clientForB = DriveClient(host: urlB, session: session ?? .shared)
+        model.driveReadTail(agent: bAgent, hostProfileID: profileB.id,
+                            driveClient: clientForB)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertTrue(requests(to: urlB.appendingPathComponent("/drive")).isEmpty,
+                      "reload must be disabled until the host reconnects")
+        // Reconnection restores the live route.
+        storeB.noteConnected()
+        XCTAssertEqual(model.recentsRouteState(hostProfileID: profileB.id, agentID: "herdr:dup"),
+                       .live)
+    }
+
+    func testOfflineWithNothingLoadedIsUnavailableAndNeverSynthesizes() async {
+        defer { cleanup() }
+        let (model, _, profileB) = makeModel(seedAgentInB: true, scriptDrive: true)
+        // SAFETY: fixed test fixture invariant (see the test's fixture builder); failure here is a harness bug, not a product defect.
+        await seed(model: model, profileA: try! XCTUnwrap(model.activeProfile),
+                   profileB: profileB, seedAgentInB: true)
+        let coordinator = try! XCTUnwrap(model.coordinator)
+        let storeB = try! XCTUnwrap(coordinator.store(profileID: profileB.id))
+        storeB.noteConnectionError("host offline")
+        XCTAssertEqual(model.recentsRouteState(hostProfileID: profileB.id, agentID: "herdr:dup"),
+                       .unavailable, "nothing loaded + disconnected = unavailable")
+        XCTAssertNil(storeB.tail(for: "herdr:dup"),
+                     "no synthesized/persisted content may appear")
+    }
+
+    func testRemoveHostPurgesOnlyTheCompositeTargetsSheetAndTails() async {
+        defer { cleanup() }
+        let (model, profileA, profileB) = makeModel(seedAgentInB: true, scriptDrive: true)
+        await seed(model: model, profileA: profileA, profileB: profileB, seedAgentInB: true)
+        // Open B's sheet, then remove host B while it is open (E3).
+        model.requestRecents(for: "herdr:dup", hostProfileID: profileB.id, haptic: false)
+        XCTAssertEqual(model.recentsRequest?.hostProfileID, profileB.id)
+        model.removeHost(profileID: profileB.id)
+        XCTAssertNil(model.recentsRequest,
+                     "removing a host purges its open sheet state")
+        // SAFETY: fixed test fixture invariant (see the test's fixture builder); failure here is a harness bug, not a product defect.
+        let coordinator = try! XCTUnwrap(model.coordinator)
+        XCTAssertNil(coordinator.store(profileID: profileB.id),
+                     "the removed host's session is gone")
+        // The ACTIVE host keeps streaming with its equal raw id intact.
+        XCTAssertNotNil(model.fleet.agent("herdr:dup"),
+                        "host A's equal raw id must survive B's removal")
+        XCTAssertEqual(model.activeProfile?.id, profileA.id)
+        XCTAssertEqual(model.profiles.count, 1)
+    }
+}
+
+// MARK: - #400 push posture + empty-token cleanup (F1/F2 logic)
+
+@MainActor
+final class PushPostureModelTests: XCTestCase {
+    private var suiteName = ""
+    private var model: AppModel?
+    private var session: URLSession?
+
+    static let hostKey = Data(repeating: 9, count: 32).base64EncodedString()
+    static let otherHostKey = Data(repeating: 10, count: 32).base64EncodedString()
+
+    private func cleanup() {
+        model?.stopLive()
+        model = nil
+        session?.invalidateAndCancel()
+        session = nil
+        AppDelegate.apnsRegistered = false
+        UserDefaults.standard.removeObject(forKey: AppDelegate.deviceTokenUploadedKey)
+        AppDelegate.shared?.clearRetainedDeviceToken()
+        KeyContinuityGate.reset()
+        HostSwitchURLProtocol.clearScript()
+        if !suiteName.isEmpty {
+            // SAFETY: suiteName was freshly minted per test.
+            UserDefaults(suiteName: suiteName)!.removePersistentDomain(forName: suiteName)
+            suiteName = ""
+        }
+    }
+
+    private func waitUntil(_ condition: @autoclosure () -> Bool,
+                           timeout: TimeInterval = 5) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+    }
+
+    /// One or two pinned profiles. `recordUpload` pre-records a successful
+    /// APNs upload so the F2 cleanup path is exercised.
+    private func makeModel(profileCount: Int,
+                           recordUpload: Bool = false,
+                           host2DriveStatus: Int = 200) -> (AppModel, HostProfile?) {
+        suiteName = "corral.h400.push.\(UUID().uuidString)"
+        // SAFETY: a fresh UUID suite name is always a valid suite.
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let store = HostProfileStore(directory: nil, defaults: defaults)
+        // SAFETY: fixed valid fixture URLs (distinct hostnames).
+        let urlA = URL(string: "https://push-a.example")!
+        let urlB = URL(string: "https://push-b.example")!
+        let profileA = try! store.addProfile(displayName: "Host A",
+                                             urlString: urlA.absoluteString,
+                                             hostKeyB64: Self.hostKey,
+                                             fingerprint: "FINGER",
+                                             keyId: "dev_push_a",
+                                             grants: ["read_tail"],
+                                             expiryTs: 1_800_000_000,
+                                             registeredAt: 1)
+        var profileB: HostProfile?
+        if profileCount > 1 {
+            profileB = try! store.addProfile(displayName: "Host B",
+                                             urlString: urlB.absoluteString,
+                                             hostKeyB64: Self.otherHostKey,
+                                             fingerprint: "FINGER",
+                                             keyId: "dev_push_b",
+                                             grants: ["read_tail"],
+                                             expiryTs: 1_800_000_000,
+                                             registeredAt: 1)
+        }
+        defaults.set(profileA.id.uuidString, forKey: "fleetnotifier.activeHostProfileID")
+        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        var script: [URL: (Int, Data, Bool)] = [:]
+        for (url, key) in [(urlA, Self.hostKey), (urlB, Self.otherHostKey)] {
+            // SAFETY: fixed fixture JSON from the fixture keys.
+            script[url.appendingPathComponent("/host-key")] = (
+                200, Data(#"{"algorithm":"X25519","public_key":"\#(key)"}"#.utf8), false)
+            script[url.appendingPathComponent("/events")] = (200, Data(), true)
+            script[url.appendingPathComponent("/device-token")] = (
+                url == urlB ? host2DriveStatus : 200,
+                Data(#"{"ok":true,"key_id":"k","push_registered":false}"#.utf8), false)
+        }
+        HostSwitchURLProtocol.setScript(script)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [HostSwitchURLProtocol.self]
+        let session = URLSession(configuration: config)
+        self.session = session
+        // F2: the shared AppDelegate (with the SAME defaults suite) records
+        // whether a token was previously uploaded.
+        let delegate = AppDelegate(identityLifecycle: .shared,
+                                   session: session,
+                                   defaults: defaults,
+                                   identityProvider: { signer })
+        _ = delegate
+        if recordUpload {
+            defaults.set(true, forKey: AppDelegate.deviceTokenUploadedKey)
+        }
+        let model = AppModel(session: session, defaults: defaults,
+                             identityLoader: { (signer, .insecureFallback) },
+                             loadMeta: { nil }, saveMeta: { _ in },
+                             wipeIdentity: {}, profileStore: store)
+        self.model = model
+        return (model, profileB)
+    }
+
+    private func requests(to url: URL) -> [URLRequest] {
+        HostSwitchURLProtocol.requests.filter { $0.url?.absoluteString == url.absoluteString }
+    }
+
+    func testSingleHostPreservesEnrollmentAndDeepLinkRouting() async {
+        defer { cleanup() }
+        let (model, _) = makeModel(profileCount: 1)
+        XCTAssertEqual(model.pushPosture, .singleHost, "F1: one profile keeps single-host posture")
+        model.startLive()
+        await waitUntil(model.keyContinuityState == .verified)
+        let allows = await KeyContinuityGate.allowsPushRegistration()
+        XCTAssertTrue(allows, "F1: a verified single host keeps APNs enrollment")
+        // F1: notification deep-link routing still resolves the single host.
+        model.fleet.apply(.snapshot(Snapshot(schemaVersion: 5, rev: 1, generatedAt: 0,
+                                             agents: ["herdr:a1": Agent(agentId: "herdr:a1",
+                                                                         state: .idle,
+                                                                         ts: 1,
+                                                                         host: Self.hostKey)])))
+        model.openRecents(for: "herdr:a1")
+        XCTAssertEqual(model.recentsRequest?.agentId, "herdr:a1",
+                       "single-host deep links keep working")
+    }
+
+    func testMultiHostDisablesEnrollmentAndDeepLinkRouting() async {
+        defer { cleanup() }
+        let (model, _) = makeModel(profileCount: 2)
+        XCTAssertEqual(model.pushPosture, .multiHostDisabled,
+                       "F2: 2+ profiles disable APNs posture")
+        model.startLive()
+        await waitUntil(model.keyContinuityState == .verified)
+        // The active host is verified and healthy — yet enrollment is off.
+        let allows = await KeyContinuityGate.allowsPushRegistration()
+        XCTAssertFalse(allows, "F2: no push registration may pass with 2+ profiles")
+        model.fleet.apply(.snapshot(Snapshot(schemaVersion: 5, rev: 1, generatedAt: 0,
+                                             agents: ["herdr:a1": Agent(agentId: "herdr:a1",
+                                                                         state: .idle,
+                                                                         ts: 1,
+                                                                         host: Self.hostKey)])))
+        // Notification deep-link routing is disabled: a bare agent_id can
+        // not name a host, so no row opens and no host is guessed.
+        model.openRecents(for: "herdr:a1")
+        XCTAssertNil(model.recentsRequest,
+                     "F2: deep-link routing must not guess a host from agent_id")
+    }
+
+    func testMultiHostBestEffortClearsPreviouslyUploadedTokensPerHost() async {
+        defer { cleanup() }
+        // Host B is REACHABLE (200) at launch: its token clear succeeds.
+        let (model, _) = makeModel(profileCount: 2, recordUpload: true)
+        XCTAssertEqual(model.pushPosture, .multiHostDisabled)
+        // SAFETY: fixed test fixture invariant (see the test's fixture builder); failure here is a harness bug, not a product defect.
+        let coordinator = try! XCTUnwrap(model.coordinator)
+        let profileB = try! XCTUnwrap(model.profiles.first { $0.displayName == "Host B" })
+        // Wait for the two signed empty-token clears to land.
+        let urlB = URL(string: "https://push-b.example")!
+        await waitUntil(!requests(to: urlB.appendingPathComponent("/device-token")).isEmpty)
+        XCTAssertTrue(model.pendingPushTokenClears.isEmpty,
+                      "reachable hosts clear immediately (best-effort)")
+        let body = try! XCTUnwrap(requests(to: urlB.appendingPathComponent("/device-token")).first?.httpBody)
+        let json = try! XCTUnwrap(try JSONSerialization.jsonObject(with: body)
+                                  as? [String: Any])
+        XCTAssertEqual(json["key_id"] as? String, "dev_push_b",
+                       "each host's clear is signed with THAT host's key id")
+        let request = try! XCTUnwrap(json["request"] as? [String: Any])
+        XCTAssertEqual(request["device_token"] as? String, "",
+                       "the clear uses the signed empty-token path")
+        XCTAssertNotNil(coordinator.posture(profileID: profileB.id),
+                        "the coordinator session exists for host B")
+    }
+
+    func testOfflineHostKeepsClearPendingAndRetriesOnReconnect() async {
+        defer { cleanup() }
+        // Host B is UNREACHABLE at launch: its clear stays pending.
+        let (model, _) = makeModel(profileCount: 2, recordUpload: true,
+                                   host2DriveStatus: 500)
+        // SAFETY: fixed test fixture invariant (see the test's fixture builder); failure here is a harness bug, not a product defect.
+        let urlB = URL(string: "https://push-b.example")!
+        // Wait for the failed clear to be recorded.
+        await waitUntil(!model.pendingPushTokenClears.isEmpty)
+        let profileB = try! XCTUnwrap(model.profiles.first { $0.displayName == "Host B" })
+        XCTAssertTrue(model.pendingPushTokenClears.contains(profileB.id),
+                      "an offline host surfaces its pending cleanup")
+        // B reconnects → the pending clear retries (now reachable).
+        let ok = Data(#"{"ok":true,"key_id":"k","push_registered":false}"#.utf8)
+        HostSwitchURLProtocol.setScript([
+            urlB.appendingPathComponent("/device-token"): (200, ok, false),
+        ])
+        model.retryPendingPushTokenClear(profileID: profileB.id)
+        await waitUntil(!requests(to: urlB.appendingPathComponent("/device-token")).isEmpty)
+        await waitUntil(model.pendingPushTokenClears.isEmpty)
+        XCTAssertFalse(model.pendingPushTokenClears.contains(profileB.id),
+                       "the retried clear succeeds on reconnect")
+        let body = try! XCTUnwrap(requests(to: urlB.appendingPathComponent("/device-token")).first?.httpBody)
+        let json = try! XCTUnwrap(try JSONSerialization.jsonObject(with: body)
+                                  as? [String: Any])
+        XCTAssertEqual(json["key_id"] as? String, "dev_push_b")
+        let request = try! XCTUnwrap(json["request"] as? [String: Any])
+        XCTAssertEqual(request["device_token"] as? String, "")
     }
 }

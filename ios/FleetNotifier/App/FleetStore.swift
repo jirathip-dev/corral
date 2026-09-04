@@ -105,7 +105,14 @@ final class FleetStore: ObservableObject {
     /// Review F3: bumped on every `connect()`. Hop closures capture it, so
     /// a report from a PREVIOUS stream cannot land after `disconnect()` —
     /// or worse, after a NEW connect — and flip the state back.
-    private var connectionGeneration = 0
+    /// #400: read externally so the coordinator's per-host reconnect
+    /// generations are observable (one independent generation per host).
+    private(set) var connectionGeneration = 0
+
+    /// #400: whether a stream task is live (the coordinator uses this to
+    /// start exactly one stream per host and to prove host-removal
+    /// cancellation terminates that host's stream).
+    var isStreaming: Bool { streamTask != nil }
     /// Review F4: last reported connection-error reason. The retry ladder
     /// re-raises every attempt (≤30s cadence); report only on change so a
     /// user-dismissed banner is not re-asserted forever and the log does
@@ -580,5 +587,34 @@ final class FleetStore: ObservableObject {
             lastEventId = rev
             cursorBox.write(rev)
         }
+    }
+
+    /// #400: restore a HOST-SCOPED cursor (the per-profile cursor of the
+    /// stream coordinator), never the legacy single-host default. The
+    /// active single-host store keeps the legacy key for parity; every
+    /// coordinator session store restores/advances its own profile cursor.
+    func restoreCursor(rev: UInt64?) {
+        lastEventId = rev
+        cursorBox.write(rev)
+    }
+
+    /// #400 (E3): purge one host's in-memory read state — rows, tails,
+    /// tail panes, transition shadows, and the state clock — WITHOUT
+    /// touching the shared legacy cursor default. `reset()` removes the
+    /// legacy `fleetnotifier.lastEventId` key, which belongs to the
+    /// ACTIVE host's mirror; coordinator sessions persist their cursors
+    /// through the profile store, so their purge must leave that key
+    /// alone or removing one host would erase another host's cursor.
+    /// Stream cancellation stays the CALLER's job (`disconnect()`), so
+    /// host-removal teardown has exactly one cancellation point.
+    func purgeState() {
+        agents = [:]
+        tails = [:]
+        tailPanes = [:]
+        lastEventId = nil
+        cursorBox.write(nil)
+        previousStates = [:]
+        activeAgents = []
+        stateEnteredAt = [:]
     }
 }

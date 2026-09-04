@@ -8,8 +8,8 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    name: release
+  build-macos:
+    name: build-macos
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -89,16 +89,219 @@ jobs:
           echo "Files:"
           tar -tzf "$bundle"
 
+      - name: Verify checksum
+        run: |
+          set -euo pipefail
+          tag_sanitized="$(printf '%s' "$GITHUB_REF_NAME" | tr '/' '_')"
+          bundle="$RUNNER_TEMP/corral-$tag_sanitized-macos.tar.gz"
+          expected="$(cat "$bundle.sha256")"
+          actual="$(shasum -a 256 "$bundle" | awk '{print $1}')"
+          test "$expected" = "$actual"
+          echo "macOS checksum verified: $actual"
+
+      - name: Upload macOS bundle artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: corral-macos-assets
+          path: "${{ runner.temp }}/corral-*-macos.tar.gz*"
+          if-no-files-found: error
+
+  build-linux:
+    name: build-linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Same single-source parse as rust.yml (see build-macos).
+      - name: Read pinned toolchain
+        id: pinned
+        run: |
+          set -euo pipefail
+          channel="$(awk '
+            /^[[:space:]]*\[toolchain\][[:space:]]*$/ { in_tc = 1; next }
+            /^[[:space:]]*\[/                         { in_tc = 0 }
+            in_tc && /^[[:space:]]*channel[[:space:]]*=/ {
+              if (match($0, /"[^"]*"/) || match($0, /'"'"'[^'"'"']*'"'"'/)) {
+                print substr($0, RSTART + 1, RLENGTH - 2)
+                exit
+              }
+            }
+          ' rust-toolchain.toml)"
+          if [ -z "$channel" ]; then
+            echo "::error::could not parse a channel from [toolchain] in rust-toolchain.toml"
+            exit 1
+          fi
+          echo "Pinned toolchain: $channel"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: ${{ steps.pinned.outputs.channel }}
+
+      # libkeyutils-dev is needed by the keyring linux-keyutils store (same
+      # dependency rust.yml installs for the workspace build/link). systemd
+      # provides systemd-analyze for unit-file verification.
+      - name: Install Linux system deps (keyring + systemd-analyze)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libkeyutils-dev systemd
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+
+      - name: Build release binaries (Linux x86_64)
+        run: |
+          set -euo pipefail
+          cargo build --release
+          test -x target/release/corrald
+          # The Linux artifact is built here, never relabeled from the macOS
+          # build: assert the binary is an x86_64 ELF.
+          test "$(head -c 4 target/release/corrald)" = "$(printf '\177ELF')"
+          file target/release/corrald | grep -q 'x86-64'
+          echo "Built:"
+          ls -lh target/release/corrald
+          file target/release/corrald
+
+      - name: Daemon smoke test (loopback healthz)
+        run: |
+          set -euo pipefail
+          home="$RUNNER_TEMP/corral-smoke-home"
+          mkdir -p "$home" "$home/.herdr/worktrees"
+          port=18474
+          HOME="$home" \
+          CORRAL_CONFIG_DIR="$home/.config/corral" \
+          CORRAL_REPO_ROOT="$home/worktrees" \
+          CORRAL_WORKTREES_ROOT="$home/.herdr/worktrees" \
+            ./target/release/corrald \
+            --socket "$home/.config/herdr/herdr.sock" \
+            --bind 127.0.0.1 --port "$port" \
+            >"$home/corrald-smoke.log" 2>&1 &
+          pid=$!
+          ok=0
+          for i in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:$port/healthz" 2>/dev/null | grep -q ok; then
+              ok=1
+              break
+            fi
+            sleep 1
+          done
+          kill "$pid" 2>/dev/null || true
+          wait "$pid" 2>/dev/null || true
+          if [ "$ok" != "1" ]; then
+            echo "::error::corrald smoke test failed: healthz never OK on 127.0.0.1:$port"
+            cat "$home/corrald-smoke.log"
+            exit 1
+          fi
+          echo "daemon smoke OK: loopback healthz answered on 127.0.0.1:$port"
+
+      - name: Installer unit tests + unit verify
+        run: |
+          set -euo pipefail
+          # Shell syntax gate on every tracked shell script this release
+          # bundles (fast; bash -n only).
+          for f in scripts/*.sh; do
+            bash -n "$f"
+          done
+          echo "bash -n: all scripts OK"
+          # G4 hermetic installer suite (fake $HOME, stubbed systemctl/curl/
+          # uname, file:// fixtures). On ubuntu systemd-analyze exists, so the
+          # suite additionally runs `systemd-analyze verify` on the generated
+          # unit file.
+          bash scripts/test-install-corral-linux.sh
+
+      - name: Assemble release bundle
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/corral-release"
+          rm -rf "$stage"
+          mkdir -p "$stage/scripts" "$stage/docs"
+
+          cp target/release/corrald "$stage/corrald"
+          cp scripts/setup-corrald-linux.sh "$stage/scripts/setup-corrald-linux.sh"
+          cp scripts/setup-corrald.sh "$stage/scripts/setup-corrald.sh"
+          cp scripts/install-corral.sh "$stage/scripts/install-corral.sh"
+          cp scripts/update-corral.sh "$stage/scripts/update-corral.sh"
+          cp scripts/lib-corral-update-path.sh "$stage/scripts/lib-corral-update-path.sh"
+          cp scripts/rotate-corral-logs.sh "$stage/scripts/rotate-corral-logs.sh"
+          cp herdr-plugin.toml "$stage/herdr-plugin.toml"
+          cp README.md "$stage/README.md"
+          cp -R docs/. "$stage/docs/"
+          cp LICENSE-APACHE "$stage/LICENSE-APACHE"
+          cp LICENSE-MIT "$stage/LICENSE-MIT"
+
+          chmod +x "$stage/scripts"/*.sh
+          test -x "$stage/corrald"
+          test -d "$stage/docs"
+
+          tag_sanitized="$(printf '%s' "$GITHUB_REF_NAME" | tr '/' '_')"
+          bundle="$RUNNER_TEMP/corral-$tag_sanitized-linux-x86_64.tar.gz"
+          rm -f "$bundle" "$bundle.sha256"
+          tar -C "$stage" -czf "$bundle" \
+            corrald \
+            scripts \
+            herdr-plugin.toml \
+            README.md \
+            docs \
+            LICENSE-APACHE \
+            LICENSE-MIT
+          sha256sum "$bundle" | awk '{print $1}' > "$bundle.sha256"
+          echo "Bundle: $bundle"
+          echo "Checksum: $(cat "$bundle.sha256")"
+          echo "Files:"
+          tar -tzf "$bundle"
+
+      - name: Verify checksum
+        run: |
+          set -euo pipefail
+          tag_sanitized="$(printf '%s' "$GITHUB_REF_NAME" | tr '/' '_')"
+          bundle="$RUNNER_TEMP/corral-$tag_sanitized-linux-x86_64.tar.gz"
+          expected="$(cat "$bundle.sha256")"
+          actual="$(sha256sum "$bundle" | awk '{print $1}')"
+          test "$expected" = "$actual"
+          echo "Linux checksum verified: $actual"
+
+      - name: Upload Linux bundle artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: corral-linux-assets
+          path: "${{ runner.temp }}/corral-*-linux-x86_64.tar.gz*"
+          if-no-files-found: error
+
+  release:
+    name: release
+    needs: [build-macos, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download macOS bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: corral-macos-assets
+          path: "${{ runner.temp }}/macos-assets"
+
+      - name: Download Linux bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: corral-linux-assets
+          path: "${{ runner.temp }}/linux-assets"
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           tag_sanitized="$(printf '%s' "$GITHUB_REF_NAME" | tr '/' '_')"
-          bundle="$RUNNER_TEMP/corral-$tag_sanitized-macos.tar.gz"
+          macos_bundle="$RUNNER_TEMP/macos-assets/corral-$tag_sanitized-macos.tar.gz"
+          macos_sha="$RUNNER_TEMP/macos-assets/corral-$tag_sanitized-macos.tar.gz.sha256"
+          linux_bundle="$RUNNER_TEMP/linux-assets/corral-$tag_sanitized-linux-x86_64.tar.gz"
+          linux_sha="$RUNNER_TEMP/linux-assets/corral-$tag_sanitized-linux-x86_64.tar.gz.sha256"
+          for f in "$macos_bundle" "$macos_sha" "$linux_bundle" "$linux_sha"; do
+            test -s "$f" || { echo "::error::missing release asset: $f"; exit 1; }
+          done
           notes="$RUNNER_TEMP/corral-release-notes.md"
           printf '%s\n' \
-            "## Corral macOS release" \
+            "## Corral macOS + Linux release" \
             "" \
             "This release contains the prebuilt \`corrald\` daemon plus the release" \
             "install scripts and documentation. Corral is an iOS-only product:" \
@@ -110,11 +313,19 @@ jobs:
             "bash <(curl -fsSL https://raw.githubusercontent.com/jirathip-dev/corral/main/scripts/install-corral.sh)" \
             "\`\`\`" \
             "" \
-            "The bundle is checksummed by the adjacent" \
-            "corral-<tag>-macos.tar.gz.sha256 asset;" \
-            "scripts/install-corral.sh verifies it before installing anything." > "$notes"
+            "Per-platform bundles (never relabeled), each checksummed by the" \
+            "adjacent \`.sha256\` asset, which scripts/install-corral.sh verifies" \
+            "before installing anything:" \
+            "" \
+            "- \`corral-$tag_sanitized-macos.tar.gz\` — macOS daemon under launchd" \
+            "  (scripts/setup-corrald.sh)." \
+            "- \`corral-$tag_sanitized-linux-x86_64.tar.gz\` — Linux x86_64 daemon as" \
+            "  a rootless systemd --user service (scripts/setup-corrald-linux.sh;" \
+            "  Bazzite/immutable-OS friendly, no RPM, no container — see" \
+            "  docs/LINUX.md)." > "$notes"
           gh release create "$GITHUB_REF_NAME" \
-            "$bundle" "$bundle.sha256" \
+            "$macos_bundle" "$macos_sha" \
+            "$linux_bundle" "$linux_sha" \
             --title "Corral $GITHUB_REF_NAME" \
             --notes-file "$notes"
           gh release view "$GITHUB_REF_NAME" --json tagName,assets \

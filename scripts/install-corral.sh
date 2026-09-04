@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
-# install-corral.sh — install the prebuilt macOS Corral release (no Rust).
+# install-corral.sh — install the prebuilt Corral release (no Rust).
 #
 # Resolves a GitHub Release (latest by default), verifies the release bundle
-# against its published .sha256, then installs corrald under launchd through
-# scripts/setup-corrald.sh --from-release. The bundle is kept under
-# ~/.local/share/corral so the launchd/update agents keep stable paths. User
-# config and keys in $CORRAL_CONFIG_DIR are never touched.
+# against its published .sha256, then installs corrald as a per-user service:
+# launchd on macOS (scripts/setup-corrald.sh), systemd --user on Linux
+# x86_64 (scripts/setup-corrald-linux.sh — rootless, no RPM, no container;
+# Bazzite-friendly). The bundle is kept under ~/.local/share/corral so the
+# service keeps a stable path. User config and keys in $CORRAL_CONFIG_DIR are
+# never touched.
 #
 # Usage:
 #   bash scripts/install-corral.sh
 #   bash scripts/install-corral.sh --release v0.1.0 --bind 127.0.0.1 --port 8474
 #   RELEASE_URL=https://.../corral-v0.1.0-macos.tar.gz bash scripts/install-corral.sh
+#   RELEASE_URL=https://.../corral-v0.1.0-linux-x86_64.tar.gz bash scripts/install-corral.sh
 #   bash scripts/install-corral.sh --uninstall
 #   bash scripts/install-corral.sh --self-test
 #
@@ -29,8 +32,18 @@ PORT="8474"
 UNINSTALL=0
 SELF_TEST=0
 
+# Release assets are per-platform and never relabeled: corral-<tag>-macos.tar.gz
+# (Darwin) and corral-<tag>-linux-x86_64.tar.gz (Linux). --self-test stays
+# platform-neutral; anything else refuses an unsupported platform up front.
+OS_NAME="$(uname -s)"
+case "$OS_NAME" in
+  Darwin) PLATFORM="macos" ;;
+  Linux) PLATFORM="linux-x86_64" ;;
+  *) PLATFORM="unsupported" ;;
+esac
+
 usage() {
-  sed -n '2,14p' "$0"
+  sed -n '2,21p' "$0"
 }
 
 normalize_path() {
@@ -218,20 +231,39 @@ if [[ "$SELF_TEST" == "1" ]]; then
   exit 0
 fi
 
+if [[ "$PLATFORM" == "unsupported" ]]; then
+  echo "!! unsupported platform: $OS_NAME (Corral release installs support macOS and Linux x86_64)" >&2
+  exit 2
+fi
+
 if [[ "$UNINSTALL" == "1" ]]; then
-  PLIST="$HOME/Library/LaunchAgents/com.corral.corrald.plist"
-  UPDATE_PLIST="$HOME/Library/LaunchAgents/com.corral.corrald-update.plist"
-  LAUNCH_UID="gui/$(id -u)"
   assert_payload_path "$INSTALL_ROOT" "install root" || exit 1
   assert_payload_path "$RELEASE_DIR" "release directory" || exit 1
   CONFIG_DIR="$(normalize_path "$CONFIG_DIR")"
   INSTALL_ROOT="$(normalize_path "$INSTALL_ROOT")"
   RELEASE_DIR="$INSTALL_ROOT/release"
 
-  echo ">> Uninstalling Corral launchd agents"
-  launchctl bootout "$LAUNCH_UID" "$PLIST" 2>/dev/null || true
-  launchctl bootout "$LAUNCH_UID" "$UPDATE_PLIST" 2>/dev/null || true
-  rm -f "$PLIST" "$UPDATE_PLIST"
+  if [[ "$PLATFORM" == "macos" ]]; then
+    PLIST="$HOME/Library/LaunchAgents/com.corral.corrald.plist"
+    UPDATE_PLIST="$HOME/Library/LaunchAgents/com.corral.corrald-update.plist"
+    LAUNCH_UID="gui/$(id -u)"
+
+    echo ">> Uninstalling Corral launchd agents"
+    launchctl bootout "$LAUNCH_UID" "$PLIST" 2>/dev/null || true
+    launchctl bootout "$LAUNCH_UID" "$UPDATE_PLIST" 2>/dev/null || true
+    rm -f "$PLIST" "$UPDATE_PLIST"
+  else
+    # Linux: per-user systemd service (see setup-corrald-linux.sh). Unit
+    # paths are derived from $HOME here so uninstall works even after the
+    # release bundle is gone. Config/keys are NEVER touched.
+    UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+    UNIT="$UNIT_DIR/corrald.service"
+
+    echo ">> Uninstalling corrald systemd user service"
+    systemctl --user disable --now corrald.service 2>/dev/null || true
+    rm -f "$UNIT"
+    systemctl --user daemon-reload 2>/dev/null || true
+  fi
 
   if [[ -e "$RELEASE_DIR" || -L "$RELEASE_DIR" ]]; then
     echo ">> Removing downloaded release files: $RELEASE_DIR"
@@ -250,15 +282,35 @@ assert_payload_path "$RELEASE_DIR" "release directory" || exit 1
 INSTALL_ROOT="$(normalize_path "$INSTALL_ROOT")"
 RELEASE_DIR="$INSTALL_ROOT/release"
 
+if [[ "$PLATFORM" == "linux-x86_64" ]]; then
+  # Linux installs are per-user and rootless by design (systemd --user, no
+  # RPM, no container — immutable-OS friendly). Refuse root and any install
+  # root outside $HOME before anything is downloaded.
+  [[ "$(id -u)" -eq 0 ]] && {
+    echo "!! refusing to run as root: Linux installs use a per-user systemd service; run install-corral.sh as your own user" >&2
+    exit 2
+  }
+  machine="$(uname -m)"
+  if [[ "$machine" != "x86_64" && "$machine" != "amd64" ]]; then
+    echo "!! Linux release installs are x86_64 only (this host: $machine)" >&2
+    exit 2
+  fi
+  home_norm="$(normalize_path "$HOME")" || exit 1
+  if [[ "$INSTALL_ROOT" == "/" ]] || ! is_path_ancestor "$home_norm" "$INSTALL_ROOT"; then
+    echo "!! Linux installs are per-user: CORRAL_INSTALL_DIR must live under \$HOME (got: $INSTALL_ROOT)" >&2
+    exit 2
+  fi
+fi
+
 validate_bind
 validate_port
 require_command curl
 require_command tar
-TAR_SAFE_OPT=""
-tar_version="$(tar --version 2>&1 || true)"
-case "$tar_version" in
-  *GNU*) TAR_SAFE_OPT="--no-absolute-names" ;;
-esac
+# Extraction safety: the tarball listing is checked for absolute/'..' paths
+# before extraction (below), and both BSD tar (macOS) and GNU tar (Linux)
+# strip leading '/' from member names by default — no per-tar option needed.
+# (A former GNU-only --no-absolute-names flag was removed: GNU tar >= 1.34
+# rejects that spelling, which the new ubuntu CI suite exposed.)
 if command -v shasum >/dev/null 2>&1; then
   CHECKSUM_CMD="shasum -a 256"
 elif command -v sha256sum >/dev/null 2>&1; then
@@ -290,7 +342,7 @@ resolve_release_urls() {
   [[ -n "$tag" ]] || { echo "!! could not resolve release from $RELEASE_REPO" >&2; return 1; }
 
   asset_tag="${tag//\//_}"
-  local bundle_name="corral-$asset_tag-macos.tar.gz"
+  local bundle_name="corral-$asset_tag-$PLATFORM.tar.gz"
   local asset_list
   asset_list="$(gh api "repos/$RELEASE_REPO/releases/tags/$tag" --jq '.assets[] | [.name, .browser_download_url] | @tsv')"
   ASSET_URL="$(awk -F '\t' -v name="$bundle_name" '$1 == name {print $2; exit}' <<<"$asset_list")"
@@ -351,13 +403,10 @@ if tar -tzf "$BUNDLE_FILE" | grep -Eq '(^|/)\.\.(/|$)|(^/)'; then
   exit 1
 fi
 
-if [[ -n "$TAR_SAFE_OPT" ]]; then
-  tar "$TAR_SAFE_OPT" -xzf "$BUNDLE_FILE" -C "$STAGE_DIR"
-else
-  # BSD tar (macOS) strips leading / and rejects '..' entries by default;
-  # GNU tar requires the explicit --no-absolute-names flag.
-  tar -xzf "$BUNDLE_FILE" -C "$STAGE_DIR"
-fi
+# BSD tar (macOS) and GNU tar (Linux) both strip leading '/' on extraction
+# by default; the unsafe-path check above already rejected '..' and absolute
+# entries, so no per-tar flag is needed.
+tar -xzf "$BUNDLE_FILE" -C "$STAGE_DIR"
 
 required=(
   "$STAGE_DIR/corrald"
@@ -370,10 +419,39 @@ required=(
 for path in "${required[@]}"; do
   [[ -e "$path" ]] || { echo "!! release bundle is missing $path" >&2; exit 1; }
 done
+if [[ "$PLATFORM" == "linux-x86_64" ]]; then
+  [[ -e "$STAGE_DIR/scripts/setup-corrald-linux.sh" ]] || {
+    echo "!! release bundle is missing scripts/setup-corrald-linux.sh" >&2
+    exit 1
+  }
+fi
 [[ -x "$STAGE_DIR/corrald" ]] || {
   echo "!! release bundle daemon binary is not executable" >&2
   exit 1
 }
+if [[ "$PLATFORM" == "linux-x86_64" ]]; then
+  # Never relabel a macOS artifact: the staged binary must be a Linux ELF.
+  magic="$(head -c 4 "$STAGE_DIR/corrald" 2>/dev/null || true)"
+  if [[ "$magic" != $'\x7fELF' ]]; then
+    echo "!! staged corrald is not a Linux ELF binary (corral-*-linux-x86_64.tar.gz must contain the Linux build) — refusing to install" >&2
+    exit 1
+  fi
+fi
+
+# Linux update semantics: the systemd unit's ExecStart path (RELEASE_DIR/
+# corrald) does not move between releases, so a binary swap alone must not
+# restart the running service. Tell the setup helper whether the binary at
+# that path actually changed since the service last started (installer knows:
+# it is about to swap the release directory). Equal hash -> idempotent
+# reinstall, no restart. Fresh install -> nothing to compare -> "no".
+BINARY_CHANGED="no"
+if [[ "$PLATFORM" == "linux-x86_64" && -e "$RELEASE_DIR/corrald" ]]; then
+  old_hash="$(sha256_of "$RELEASE_DIR/corrald")"
+  new_hash="$(sha256_of "$STAGE_DIR/corrald")"
+  if [[ -n "$old_hash" && -n "$new_hash" && "$old_hash" != "$new_hash" ]]; then
+    BINARY_CHANGED="yes"
+  fi
+fi
 
 if [[ -e "$RELEASE_DIR" || -L "$RELEASE_DIR" ]]; then
   if [[ -e "$RELEASE_DIR.previous" || -L "$RELEASE_DIR.previous" ]]; then
@@ -391,10 +469,25 @@ fi
 STAGE_CLEANED=1
 
 echo ">> Installing prebuilt corrald"
-if ! bash "$RELEASE_DIR/scripts/setup-corrald.sh" \
-  --from-release "$RELEASE_DIR/corrald" \
-  --bind "$BIND" \
-  --port "$PORT"; then
+if [[ "$PLATFORM" == "linux-x86_64" ]]; then
+  setup_ok=0
+  if bash "$RELEASE_DIR/scripts/setup-corrald-linux.sh" \
+    --from-release "$RELEASE_DIR/corrald" \
+    --bind "$BIND" \
+    --port "$PORT" \
+    --changed "$BINARY_CHANGED"; then
+    setup_ok=1
+  fi
+else
+  setup_ok=0
+  if bash "$RELEASE_DIR/scripts/setup-corrald.sh" \
+    --from-release "$RELEASE_DIR/corrald" \
+    --bind "$BIND" \
+    --port "$PORT"; then
+    setup_ok=1
+  fi
+fi
+if [[ "$setup_ok" != "1" ]]; then
   echo "!! setup failed; restoring previous release" >&2
   rm -rf -- "$RELEASE_DIR"
   if [[ -e "$RELEASE_DIR.previous" || -L "$RELEASE_DIR.previous" ]]; then
@@ -410,6 +503,10 @@ rm -rf -- "$RELEASE_DIR.previous"
 
 echo
 echo ">> Installed Corral $ASSET_NAME"
-echo "   daemon:  launchctl print gui/$(id -u)/com.corral.corrald"
+if [[ "$PLATFORM" == "macos" ]]; then
+  echo "   daemon:  launchctl print gui/$(id -u)/com.corral.corrald"
+else
+  echo "   service: systemctl --user status corrald (logs: journalctl --user -u corrald)"
+fi
 echo "   config:  $CONFIG_DIR"
 echo "   re-run:  $0 --uninstall"

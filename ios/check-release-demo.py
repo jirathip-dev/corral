@@ -183,7 +183,17 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # StatusSectionCollapse.collapse(_:) (the .task(id:) hook fires twice
     # on demo entry; a non-idempotent toggle let the second pass undo the
     # first) — re-pinned.
-    "d3a217c3e4684a733f2496662d4133660862f91602d68b65dd8d57b3ab40fd98"
+    # 384: per-row repo name labels hide while a repo pill is active
+    # (WorkspaceLine color-only hue echo keeps row heights; the #384
+    # row-label evidence driver added to FleetViews/FleetNotifierApp) —
+    # re-pinned.
+    # 384: the echo keeps the label chip's caption2 line box via an
+    # invisible spacer (fixed-height frame under-sized the chip) — re-pinned.
+    # 384: spacer is opacity(0), not hidden() (hidden can drop out of
+    # layout and collapse the row under the filter) — re-pinned.
+    # 384: spacer comment corrected (opacity is purely visual; measured
+    # row geometry identical in both filter states) — re-pinned.
+    "391b3122bba938a6ea4b2487755a1e7e9a9e916cded0a073de36dbc5575df509"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #332 R4: pin the focused grant fixture independently from the Release
@@ -248,7 +258,16 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # subgroup pin set rescoped to the non-collapsible caption — re-pinned.
     # #386 r1: idempotent-collapse test added with the evidence-driver fix
     # — re-pinned.
-    "93259593a234d87d91eb2f134e22cb86b37cc76dc061cbb32c9c3611a7ba1f2c"
+    # 384: RepoRowLabelWiringTests added (label hidden under an active repo
+    # pill, chip restored under 'All', color-only height-preserving echo)
+    # — re-pinned.
+    # 384: the echo wiring pins moved to the caption2 line-box spacer
+    # mechanism — re-pinned.
+    # 384: spacer pin updated to the opacity(0) form — re-pinned.
+    # 384: spacer pin message corrected — re-pinned.
+    # 384: test-class docstring corrected (echo keeps the chip's line box)
+    # — re-pinned.
+    "95657ff636fae25371c3098efbfc65a7ead9444a25ce912bf709011901171a5e"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

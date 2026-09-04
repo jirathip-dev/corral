@@ -1,0 +1,97 @@
+#384 per-row repo label visibility — capture log
+
+Native iOS build (this branch, g384-hide-row-repo-label @ working tree):
+  HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild build -project
+  ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination
+  'generic/platform=iOS Simulator' -derivedDataPath /tmp/384-dd build
+  EXIT=0; BUILD SUCCEEDED
+
+Syntax gates: swiftc -parse ios/FleetNotifier/UI/FleetViews.swift
+  ios/FleetNotifier/App/FleetNotifierApp.swift ios/FleetNotifierTests/FleetNotifierTests.swift
+  EXIT=0 (PARSE_OK) — re-run on the final committed-state sources
+
+xcodegen drift check (project.yml untouched): no new files added by this
+  lane -> regenerating only churns the random pbxproj object IDs; project
+  file set identical; no semantic drift from this lane.
+
+Focused discriminating tests (simulator 59DDC0C5-891E-4EC0-91AF-4F50DF68D793,
+iPhone 16 / iOS 26.5):
+  xcodebuild test ... -only-testing:FleetNotifierTests/RepoRowLabelWiringTests
+  EXIT=0; Executed 3 tests, with 0 failures:
+    - flag derives once from the reconciled filter + threads demo AND live
+      boards -> boardSections -> agentRow -> AgentRow -> WorkspaceLine
+    - 'All' keeps the repo label chip (else branch, default false, leading
+      separators suppressed only when hidden)
+    - hidden branch is a color-only echo with the chip's caption2 line-box
+      spacer (no name Text, no capsule shell)
+  Regression-sensitive wiring classes (BoardV2WiringTests 3,
+  ReadOnlySurfaceWiringTests 5): EXIT=0; 8 tests, 0 failures.
+  Bundled-source integrity: sha256(FleetViews.swift.txt in test bundle) ==
+  sha256(ios/FleetNotifier/UI/FleetViews.swift) (17b18414...); BUNDLE_MATCHES_SOURCE.
+
+Full iOS suite (same sim/destination, final committed-state sources):
+  xcodebuild test ... -only-testing:FleetNotifierTests
+  EXIT=0; Executed 202 tests, with 0 failures (All tests passed)
+  (base was 199; +3 from #384: RepoRowLabelWiringTests wiring pins)
+
+anti-slop (advisory):
+  swift run --package-path ios/tools/anti-slop-swift anti-slop
+    ios/FleetNotifier ios/FleetNotifierTests
+  current tree vs base HEAD (git archive + .anti-slop.json): IDENTICAL
+  violation sets — 24 violations across 22 files (17 rules) on BOTH;
+  0 new from #384.
+
+Release-source digest re-pin:
+  python3 -c "from pathlib import Path; from ios.release_source_manifest
+  import release_source_digest; print(release_source_digest(Path('.')))"
+  -> 391b3122bba938a6ea4b2487755a1e7e9a9e916cded0a073de36dbc5575df509
+    (check-release-demo.py #384 comments; FleetViews + FleetNotifierApp
+    changed -> re-pinned across the echo-mechanism iterations)
+  Test source digest (FleetNotifierTests.swift changed):
+  -> 95657ff636fae25371c3098efbfc65a7ead9444a25ce912bf709011901171a5e
+  python3 ios/check-release-demo.py --self-test
+  EXIT=0 (PASS; release + test pins re-pinned for the #384 source set)
+
+Native iOS capture (fresh simulator to avoid the notification-permission
+alert race; no keychain identity):
+  xcrun simctl create g384-repo-label-evidence "iPhone 16"
+    com.apple.CoreSimulator.SimRuntime.iOS-26-5
+  EXIT=0 (UDID 9FFB8DF9-8FD8-4876-A2D2-5804FE1F8162)
+  xcrun simctl boot <udid>; xcrun simctl bootstatus <udid> -b
+  EXIT=0 (fresh boot)
+  xcrun simctl install <udid> /tmp/384-dd/Build/Products/
+    Debug-iphonesimulator/FleetNotifier.app
+  EXIT=0
+  384-capture.sh <udid> com.corral.fleetnotifier <outdir>  (marker poll,
+    screenshot per phase; started BEFORE launch so no marker is pre-written)
+  xcrun simctl launch <udid> com.corral.fleetnotifier -corralDemoRepoLabelEvidence
+  EXIT=0; pid logged
+  captured phase-1-board-mocha-all, phase-2-board-mocha-filtered,
+    phase-3-board-mocha-restored-all, phase-4-board-latte-all,
+    phase-5-board-latte-filtered, phase-6-board-latte-restored-all,
+    phase-7-done; CAPTURE_DONE
+  xcrun simctl io <udid> screenshot -> PNG 1179x2556 (iPhone 16 @3x) per phase
+  sips -z 844 390 phase-N-<name>.png --out phase-N-<name>-390x844.png
+  EXIT=0; resized 390x844 (0.18 % aspect distortion from 393x852 pt native)
+  python3 row-geometry.py (against the raw captures)
+  All vs filtered line-2 spans: 132 px in EVERY frame (Mocha + Latte,
+  All + filtered) -> All - filtered = [0, 0] px -> analysis.txt
+  Frames vision-verified:
+    phase-1/3/4/6 (All): rows carry repo-name capsule chips (demo-garden,
+      demo-orbit, demo-atlas) on line 2
+    phase-2/5 (demo-atlas pill active): the board shows only demo-atlas
+      rows whose line 2 has NO repo-name text — only the small hue dot
+      ('■ demo-recent #9,005 dirty' / '■' for the branchless row)
+  xcrun simctl shutdown <udid> (device deleted after capture)
+
+Design note (why the echo carries the chip's line box): the first attempt
+used a fixed 17 pt min-height frame, but the rendered repo capsule is
+~20.7 pt (SF caption2 line box + 2 pt vertical padding); measuring the
+captures showed a ~4 pt row shrink under the filter. The final echo
+repeats the chip's own caption2 font in a transparent spacer (opacity(0),
+deterministic layout) + the chip's vertical padding, so the row keeps the
+chip's exact height; pixel measurement confirms 0 px delta.
+
+Synthetic-only: DEBUG -corralDemoRepoLabelEvidence over DemoFleet.seed()
+(fictional repos/agents). No live daemon, no physical device, no TestFlight
+claim.

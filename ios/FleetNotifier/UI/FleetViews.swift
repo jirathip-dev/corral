@@ -8,7 +8,9 @@ import Combine
 //   (blocked → working → idle → unknown; done only when herdr reports it),
 //   each section grouping its rows into always-open REPO SUBGROUPS (#371:
 //   alphabetical, Other last). Row = agent name · state chip · time-in-state
-//   · repo chip · branch + small pane ref. NO search, NO actions.
+//   · repo chip · branch + small pane ref — the per-row repo chip hides
+//   while a #384 repo pill is active (the board then shows only that repo).
+//   NO search, NO actions.
 // - Recents: tap a row → bottom sheet with the LIVE tail (auto-scroll,
 //   ≤200-line daemon cap). No load-earlier, no Conversation/Harness
 //   partition, no composer.
@@ -187,7 +189,8 @@ struct RepoLabelChip: View {
 /// The board row (#354 L2, #371 board v2): a tinted per-state chip with the
 /// raw state token + time-in-state, the agent name, the trailing small pane
 /// reference + tool chip, and the repo · branch · basename line under it
-/// (the repo renders as a colored label chip echoing its subgroup hue).
+/// (the repo renders as a colored label chip echoing its subgroup hue —
+/// #384: hidden while a repo pill is active, see WorkspaceLine).
 /// The whole row is a read-only tap target that opens the agent's recents
 /// sheet — there are no action controls anywhere.
 struct AgentRow: View {
@@ -199,6 +202,10 @@ struct AgentRow: View {
     /// #371: the fleet repo set for deterministic row-chip hues (same list
     /// the filter chips + subgroup headers resolve against).
     var repos: [String] = []
+    /// #384: while a repo pill is active the board shows only that repo, so
+    /// the per-row repo name label is redundant and hidden by the
+    /// workspace line (WorkspaceLine renders the color-only echo instead).
+    var hideRepoLabel: Bool = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ScaledMetric(relativeTo: .caption) private var badgeMinWidth: CGFloat = 84
     @EnvironmentObject private var theme: ThemeStore
@@ -222,7 +229,8 @@ struct AgentRow: View {
                     trailingChips
                 }
             }
-            WorkspaceLine(agent: agent, repos: repos)
+            WorkspaceLine(agent: agent, repos: repos,
+                          hideRepoLabel: hideRepoLabel)
         }
         .padding(.vertical, 2)
         .opacity(agent.state == .idle ? 0.65 : 1)
@@ -346,6 +354,13 @@ private func rowSummary(_ agent: Agent) -> String {
 /// Line 2 (D26): repo·branch·worktree basename — no nesting level — with
 /// PR / dirty / one `↑a↓b` badge trailing (D29: not separate columns).
 ///
+/// #384: while a repo pill is active (not 'All') the per-row repo name is
+/// redundant — the board already shows only that repo — so the label chip
+/// is replaced by a COLOR-ONLY hue echo sized to the chip's footprint
+/// (rows keep their height; no layout jump when the pill toggles). The
+/// repo identity is never lost: the active pill + the subgroup caption
+/// name it, and tapping 'All' restores the full label chip instantly.
+///
 /// Each segment is its own `Text` so truncation is per-segment: the
 /// identity segments (branch, worktree basename) middle-truncate within
 /// their own bounds, and the basename sits in the top priority tier so a
@@ -358,6 +373,9 @@ struct WorkspaceLine: View {
     /// renders as a colored label chip on the line; orphan agents (repo
     /// nil) show the gray Other chip.
     var repos: [String] = []
+    /// #384: hide the per-row repo name label while a repo pill is active
+    /// (color-only echo keeps the row height — see the body).
+    var hideRepoLabel: Bool = false
     @EnvironmentObject private var theme: ThemeStore
 
     /// Per-segment truncation + compression policy (G100).
@@ -385,13 +403,26 @@ struct WorkspaceLine: View {
     var body: some View {
         let w = agent.workspace
         HStack(spacing: 4) {
-            // #371: the repo is a colored label chip (hue dot + name,
-            // echoing the subgroup header); orphans carry the Other chip —
-            // the repo identity is never color-only.
-            RepoLabelChip(repo: w.repo, repos: repos)
-                .layoutPriority(SegmentPolicy.priority(for: .repo))
+            if hideRepoLabel {
+                // #384: under an active repo pill the filter + the subgroup
+                // caption already name the repo, so the per-row NAME label
+                // is removed — only the deterministic hue remains as a
+                // color-only echo (no text, no chip chrome) framed to the
+                // label chip's height so rows never jump on pill toggle.
+                repoColorEcho(for: w.repo)
+            } else {
+                // #371: the repo is a colored label chip (hue dot + name,
+                // echoing the subgroup header); orphans carry the Other
+                // chip — the repo identity is never color-only.
+                RepoLabelChip(repo: w.repo, repos: repos)
+                    .layoutPriority(SegmentPolicy.priority(for: .repo))
+            }
             if let branch = w.branch {
-                Text("·").font(.caption2).foregroundStyle(theme.subtext1)
+                // The separator sits BETWEEN segments: with the repo label
+                // hidden the branch leads the line (no stray leading dot).
+                if !hideRepoLabel {
+                    segmentSeparator
+                }
                 Text(branch)
                     .font(.caption2.monospaced())
                     .foregroundStyle(theme.subtext1)
@@ -400,7 +431,11 @@ struct WorkspaceLine: View {
                     .layoutPriority(SegmentPolicy.priority(for: .branch))
             }
             if let basename = Self.worktreeBasename(w) {
-                Text("·").font(.caption2).foregroundStyle(theme.subtext1)
+                // #384: the basename only takes a leading separator when a
+                // segment precedes it (chip under 'All', or a branch).
+                if !hideRepoLabel || w.branch != nil {
+                    segmentSeparator
+                }
                 Text(basename)
                     .font(.caption2.monospaced())
                     .foregroundStyle(theme.subtext1)
@@ -427,6 +462,35 @@ struct WorkspaceLine: View {
                     .layoutPriority(SegmentPolicy.priority(for: .badge))
             }
         }
+    }
+
+    /// #384: the inter-segment separator dot between repo/branch/basename.
+    private var segmentSeparator: some View {
+        Text("·").font(.caption2).foregroundStyle(theme.subtext1)
+    }
+
+    /// #384: the color-only echo of the row's repo hue while a repo pill is
+    /// active — the hue dot WITHOUT any repo name text (the pill + subgroup
+    /// caption carry the identity). An invisible caption2 spacer keeps the
+    /// label chip's EXACT text line box, and the dot carries the chip's
+    /// vertical padding, so the row keeps its exact height under the filter
+    /// (only the name disappears — no layout jump on pill toggle). Voice-
+    /// Over-hidden: the row summary + pill still name the repo.
+    private func repoColorEcho(for repo: String?) -> some View {
+        HStack(spacing: 5) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(theme.repoHueColor(for: repo ?? "", among: repos))
+                .frame(width: 6, height: 6)
+            // Transparent caption2 spacer (same font as the hidden label):
+            // keeps the chip's line box so the row height never changes.
+            // opacity(0) is purely visual — the spacer deterministically
+            // stays in the layout.
+            Text(" ").font(.caption2.weight(.bold)).opacity(0)
+        }
+        .padding(.leading, 5)
+        .padding(.trailing, 7)
+        .padding(.vertical, 2)
+        .accessibilityHidden(true)
     }
 
     /// The worktree basename (D26), suppressed when it just restates the
@@ -551,6 +615,12 @@ struct FleetView: View {
         // list — chips, subgroup headers, and row chips all resolve the
         // same fnv1a32 % 8 assignment (RepoHue, consumed via ThemeStore).
         let repos = chips.map(\.repo)
+        // #384: a repo pill is ACTIVE when the reconciled filter names a
+        // repo — every row then belongs to that repo, so the per-row repo
+        // name labels are redundant and hidden. 'All' (nil filter)
+        // restores them instantly: the flag re-derives from the same pure
+        // reconcile on every body evaluation — no extra state, no timer.
+        let rowRepoLabelsHidden = activeRepoFilter != nil
         // #364 B2: the chips choose WHICH agents the #362 status sections
         // bucket; sections keep their locked order over the filtered set,
         // and #371 splits each section into repo subgroups.
@@ -594,10 +664,12 @@ struct FleetView: View {
                     RegistrationView(model: model)
 #if DEBUG
                 case .demo:
-                    boardSections(sections: sections, repos: repos)
+                    boardSections(sections: sections, repos: repos,
+                                  hideRepoLabels: rowRepoLabelsHidden)
 #endif
                 case .live:
-                    boardSections(sections: sections, repos: repos)
+                    boardSections(sections: sections, repos: repos,
+                                  hideRepoLabels: rowRepoLabelsHidden)
                 }
             }
             .listStyle(.plain)
@@ -777,7 +849,7 @@ struct FleetView: View {
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 
-    /// The #371/#386 board renderer: one section per raw herdr status in
+    /// #371/#386 board renderer: one section per raw herdr status in
     /// the locked attention order (blocked → working → idle → unknown; a
     /// done section renders only when herdr reports it), each section led
     /// by the #386 THICK collapsible status bar. While EXPANDED the
@@ -787,10 +859,13 @@ struct FleetView: View {
     /// the status bar is the only disclosure control. `sections` arrives
     /// ALREADY filtered by the #364 B chip selection; `repos` is the
     /// fleet-wide repo set so subgroup + row hues match the filter chips'
-    /// fnv1a32 % 8 assignment.
+    /// fnv1a32 % 8 assignment. #384: `hideRepoLabels` (true while a repo
+    /// pill is active) is threaded into every row so the per-row repo name
+    /// labels disappear under the filter and reappear under 'All'.
     @ViewBuilder
     private func boardSections(sections: BoardModel.Sections,
-                               repos: [String]) -> some View {
+                               repos: [String],
+                               hideRepoLabels: Bool) -> some View {
         ForEach(sections.statuses) { status in
             Section {
                 // #386: a collapsed status section hides its subgroups and
@@ -800,7 +875,8 @@ struct FleetView: View {
                     ForEach(status.subgroups) { subgroup in
                         repoSubgroupHeader(subgroup, repos: repos)
                         ForEach(subgroup.agents) { agent in
-                            agentRow(agent, repos: repos)
+                            agentRow(agent, repos: repos,
+                                     hideRepoLabel: hideRepoLabels)
                                 // #372: iOS 26 plain lists paint their own
                                 // row background unless each row opts into
                                 // the token surface (a List-level
@@ -907,7 +983,8 @@ struct FleetView: View {
     }
 
     @ViewBuilder
-    private func agentRow(_ agent: Agent, repos: [String]) -> some View {
+    private func agentRow(_ agent: Agent, repos: [String],
+                          hideRepoLabel: Bool) -> some View {
         Button {
             // #364 A.2: a real row tap is a discrete action — one light
             // selection tick (drags that cancel never reach the action).
@@ -915,7 +992,8 @@ struct FleetView: View {
         } label: {
             AgentRow(agent: agent,
                      stateEnteredAt: model.fleet.stateEnteredAt[agent.agentId],
-                     repos: repos)
+                     repos: repos,
+                     hideRepoLabel: hideRepoLabel)
         }
         .buttonStyle(BoardPressStyle())
         .accessibilityElement(children: .combine)
@@ -1035,6 +1113,8 @@ struct FleetView: View {
             await runThemeSequence()
         } else if CorralDemoLaunch.wantsGlassEvidence(arguments: CommandLine.arguments) {
             await runGlassSequence()
+        } else if CorralDemoLaunch.wantsRepoLabelEvidence(arguments: CommandLine.arguments) {
+            await runRepoLabelSequence()
         } else if CorralDemoLaunch.wantsCollapseEvidence(arguments: CommandLine.arguments) {
             await runCollapseSequence()
         }
@@ -1287,6 +1367,48 @@ struct FleetView: View {
         EvidenceMarkers.write("phase-3-all-collapsed-latte")
         guard await themePause(5000) else { return }
         EvidenceMarkers.write("phase-4-done")
+        _ = await themePause(1500)
+    }
+
+    /// #384 evidence: one deterministic launch records the row-label
+    /// visibility rule — Mocha board with EVERY row showing its per-row
+    /// repo label chip ('All'), then the demo-atlas repo pill active (the
+    /// board shows only demo-atlas rows WITHOUT repo name labels — only
+    /// the color-only hue echo stays and rows keep their height), then
+    /// 'All' restored (labels back instantly), and the SAME All →
+    /// filtered → All trio in Latte after a live flavor flip. The driver
+    /// flips the same `model.repoFilter` state the chips row sets and the
+    /// same flavor the Appearance rows set — simctl cannot inject touches.
+    /// Cancellation-aborts like the other drivers, so a raced task can
+    /// never corrupt the captured sequence.
+    private func runRepoLabelSequence() async {
+        guard model.mode == .demo else { return }
+        guard await themePause(0) else { return }
+        theme.setFlavor(.mocha)
+        model.repoFilter = nil
+        EvidenceMarkers.write("phase-1-board-mocha-all")
+        guard await themePause(5000) else { return }
+        model.repoFilter = "demo-atlas"
+        guard await themePause(2000) else { return }
+        EvidenceMarkers.write("phase-2-board-mocha-filtered")
+        guard await themePause(5000) else { return }
+        model.repoFilter = nil
+        guard await themePause(2000) else { return }
+        EvidenceMarkers.write("phase-3-board-mocha-restored-all")
+        guard await themePause(5000) else { return }
+        theme.setFlavor(.latte)
+        guard await themePause(2000) else { return }
+        EvidenceMarkers.write("phase-4-board-latte-all")
+        guard await themePause(5000) else { return }
+        model.repoFilter = "demo-atlas"
+        guard await themePause(2000) else { return }
+        EvidenceMarkers.write("phase-5-board-latte-filtered")
+        guard await themePause(5000) else { return }
+        model.repoFilter = nil
+        guard await themePause(2000) else { return }
+        EvidenceMarkers.write("phase-6-board-latte-restored-all")
+        guard await themePause(5000) else { return }
+        EvidenceMarkers.write("phase-7-done")
         _ = await themePause(1500)
     }
 #endif

@@ -242,6 +242,12 @@ final class AppModel: ObservableObject {
     @Published var recentsRequest: RecentsRequest?
     /// Global notifications on/off (Settings → Notifications pairing).
     @Published var notificationsEnabled: Bool
+    /// #389: the OS notification-permission posture the Settings Notifications
+    /// section renders from. Refreshed when Settings appears / the app
+    /// re-activates and updated by the permission-aware enable flow, so a
+    /// blocked permission shows the why + 'Open iOS Settings' guidance
+    /// instead of the enable toggle silently failing.
+    @Published var notificationPermission: NotificationPermissionState = .notDetermined
 
     var signer: DeviceSigner?
     private var notifier: LocalNotifier?
@@ -272,6 +278,8 @@ final class AppModel: ObservableObject {
 
     private let defaults: UserDefaults
     private let identityLifecycle: IdentityLifecycle
+    /// #389: permission queries/prompts for the notification enable flow.
+    private let notificationPermissionProvider: NotificationPermissionProviding
     private let identityLoader: @Sendable () throws -> (DeviceSigner, DeviceKeyStore.Storage)
     private let loadMeta: @Sendable () -> DeviceKeyStore.DeviceMeta?
     private let saveMeta: @Sendable (DeviceKeyStore.DeviceMeta) -> Void
@@ -365,10 +373,12 @@ final class AppModel: ObservableObject {
          wipeIdentity: @escaping @Sendable () -> Void = {
              DeviceKeyStore.wipe()
          },
-         haptics: @escaping () -> Void = Haptics.selection) {
+         haptics: @escaping () -> Void = Haptics.selection,
+         notificationPermissionProvider: NotificationPermissionProviding = SystemNotificationPermissionProvider()) {
         self.session = session
         self.identityLifecycle = identityLifecycle
         self.defaults = defaults
+        self.notificationPermissionProvider = notificationPermissionProvider
         self.identityLoader = identityLoader
         self.loadMeta = loadMeta
         self.saveMeta = saveMeta
@@ -716,7 +726,65 @@ final class AppModel: ObservableObject {
 
     /// Notification-pairing toggle (Settings). Global on/off only — no
     /// per-agent controls, no catch-up/badge on foreground.
+    ///
+    /// #389: turning notifications ON is permission-aware — a blocked
+    /// permission must never be a silent no-op:
+    /// - .granted → enable immediately.
+    /// - .denied / .restricted → keep the toggle OFF and publish the state;
+    ///   the Settings section then shows WHY + an 'Open iOS Settings'
+    ///   action (the OS will not deliver anything until the user allows it
+    ///   there).
+    /// - .notDetermined → prompt first (alert + sound, the same options the
+    ///   first-live requestAuthorization uses); only a grant enables.
+    /// Disabling stays instant and unconditional.
     func setNotificationsEnabled(_ enabled: Bool) {
+        guard enabled else {
+            applyNotificationsEnabled(false)
+            return
+        }
+        guard !notificationsEnabled else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let permission = await self.notificationPermissionProvider.currentPermission()
+            switch permission {
+            case .granted:
+                self.notificationPermission = .granted
+                self.applyNotificationsEnabled(true)
+            case .denied, .restricted:
+                self.notificationPermission = permission
+            case .notDetermined:
+                let granted = await self.notificationPermissionProvider.requestAuthorization()
+                self.notificationPermission = granted ? .granted : .denied
+                if granted {
+                    self.applyNotificationsEnabled(true)
+                }
+            }
+        }
+    }
+
+    /// #389: re-read the OS notification permission so the Settings
+    /// Notifications section reflects reality — called when Settings
+    /// appears and when the app re-activates (after the user returns from
+    /// iOS Settings, the grant/deny decision is visible immediately).
+    func refreshNotificationPermission() async {
+#if DEBUG
+        // #389 evidence: the denied-state driver forces the blocked posture
+        // in demo mode (a simulator cannot be denied notifications through
+        // simctl privacy — the service list has no notifications entry, and
+        // the OS alert cannot be answered without touch injection).
+        if mode == .demo,
+           CorralDemoLaunch.wantsDeniedNotificationsEvidence(arguments: CommandLine.arguments) {
+            notificationPermission = .denied
+            return
+        }
+#endif
+        notificationPermission = await notificationPermissionProvider.currentPermission()
+    }
+
+    /// Shared write path for the toggle value: publishes, persists, and
+    /// mirrors into the notifier (both the DEBUG local bridge and the APNs
+    /// delivery path honor `isEnabled`).
+    private func applyNotificationsEnabled(_ enabled: Bool) {
         notificationsEnabled = enabled
         defaults.set(enabled, forKey: Self.notificationsKey)
         notifier?.isEnabled = enabled

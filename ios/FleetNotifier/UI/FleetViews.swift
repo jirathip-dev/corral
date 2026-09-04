@@ -1,5 +1,6 @@
 import SwiftUI
 import Combine
+import UIKit
 
 // MARK: - #354/#371 L2 read-only FleetNotifier
 //
@@ -1168,6 +1169,8 @@ struct FleetView: View {
             await runTitleSequence()
         } else if CorralDemoLaunch.wantsConnectionInputsEvidence(arguments: CommandLine.arguments) {
             await runConnectionInputsSequence()
+        } else if CorralDemoLaunch.wantsDeniedNotificationsEvidence(arguments: CommandLine.arguments) {
+            await runDeniedNotificationsSequence()
         }
     }
 
@@ -1560,6 +1563,34 @@ struct FleetView: View {
         EvidenceMarkers.write("phase-7-done")
         _ = await themePause(2000)
     }
+
+    /// #389 evidence: the Notifications section's DENIED guidance — Mocha
+    /// Settings sheet scrolled (by the SettingsView DEBUG scroll task — the
+    /// section sits below Appearance + Connection + Device on 390x844 and
+    /// simctl cannot drag) to the Notifications anchor showing the 'Corral
+    /// can't alert you…' blocked row + the 'Open iOS Settings' action. The
+    /// denied posture is FORCED by the launch argument in demo mode (a
+    /// simulator cannot be denied notifications: `simctl privacy` has no
+    /// notifications service and the OS alert cannot be answered without
+    /// touch injection) — the frame is the synthetic stand-in the unit
+    /// suite pins. Marker AFTER the state settles, then a 9 s hold so the
+    /// host capture always lands inside the named phase. Marker names are
+    /// unique to this driver so the wiring tests can pin single writes.
+    private func runDeniedNotificationsSequence() async {
+        guard model.mode == .demo else { return }
+        guard await themePause(0) else { return }
+        theme.setFlavor(.mocha)
+        EvidenceMarkers.write("phase-1-denied-mocha-board")
+        guard await themePause(2000) else { return }
+        showSettings = true
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("phase-2-denied-settings-notifications")
+        guard await themePause(9000) else { return }
+        showSettings = false
+        guard await themePause(1500) else { return }
+        EvidenceMarkers.write("phase-3-denied-done")
+        _ = await themePause(1500)
+    }
 #endif
 }
 
@@ -1823,6 +1854,9 @@ struct SettingsView: View {
     @ObservedObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var theme: ThemeStore
+    /// #389: the blocked-permission escape hatch — opens THIS app's
+    /// notification permission in the system Settings app.
+    @Environment(\.openURL) private var openURL
 
     @State private var host: String
     @State private var token = ""
@@ -1853,6 +1887,14 @@ struct SettingsView: View {
     /// and the paired Connection status row (first 16 characters).
     private var deviceKeyID: String {
         String((model.keyId ?? "—").prefix(16))
+    }
+
+    /// #389: the blocked-permission escape hatch. `UIApplication
+    /// .openSettingsURLString` is the canonical way to open THIS app's
+    /// notification permission in the system Settings app.
+    private func openAppSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        openURL(url)
     }
 
     var body: some View {
@@ -1941,12 +1983,47 @@ struct SettingsView: View {
                     Section("Notifications") {
                         Toggle("State-change notifications",
                                isOn: Binding(
-                                get: { model.notificationsEnabled },
+                                // #389: while the permission is BLOCKED the
+                                // switch shows OFF regardless of the persisted
+                                // intent — the blocked row below explains why
+                                // and the 'Open iOS Settings' action is the
+                                // path back. When the user allows
+                                // notifications in the system Settings and
+                                // returns, the persisted intent (if it was
+                                // ON) resurfaces automatically.
+                                get: { model.notificationsEnabled
+                                    && !model.notificationPermission.showsBlockedGuidance },
                                 set: { model.setNotificationsEnabled($0) }))
-                        Text("Alerts when an agent starts, blocks, or finishes. No badges or catch-up.")
-                            .font(.caption)
-                            .foregroundStyle(theme.subtext1)
+                        // #389 evidence + DEBUG scroll: the row-level anchor
+                        // (same convention as #379's settings.device) lets
+                        // the denied-state driver bring the Notifications
+                        // section into view — Appearance + Connection +
+                        // Device sit above it on 390x844 and simctl cannot
+                        // scroll the form.
+                        .id("settings.notifications")
+                        // #389: a blocked permission (.denied/.restricted)
+                        // shows WHY + an 'Open iOS Settings' action instead
+                        // of the enable toggle silently failing — iOS
+                        // delivers nothing (no APNs token, no local alert)
+                        // until the user allows notifications there. The
+                        // status is refreshed on Settings appear and on
+                        // every foreground (refreshNotificationPermission).
+                        if model.notificationPermission.showsBlockedGuidance {
+                            Label("Corral can't alert you — notifications are off for this app in iOS Settings.",
+                                  systemImage: "bell.slash")
+                                .font(.caption)
+                                .foregroundStyle(theme.peach)
+                            Button("Open iOS Settings") {
+                                openAppSettings()
+                            }
+                            .font(.subheadline)
+                        } else {
+                            Text("Alerts when an agent starts, blocks, or finishes. No badges or catch-up.")
+                                .font(.caption)
+                                .foregroundStyle(theme.subtext1)
+                        }
                     }
+                    .task { await model.refreshNotificationPermission() }
                 }
                 .navigationTitle("Settings")
                 .toolbar {
@@ -1983,6 +2060,10 @@ struct SettingsView: View {
                 }
 #if DEBUG
                 .task { await scrollDeviceIntoViewForConnectEvidence(proxy) }
+                // #389: the denied-state evidence driver scrolls the
+                // Notifications section into view (its own .task — see
+                // scrollNotificationsIntoViewForDeniedEvidence).
+                .task { await scrollNotificationsIntoViewForDeniedEvidence(proxy) }
 #endif
             }
         }
@@ -2005,6 +2086,22 @@ struct SettingsView: View {
         guard CorralDemoLaunch.wantsConnectEvidence(arguments: CommandLine.arguments) else { return }
         withAnimation(.easeInOut(duration: 0.35)) {
             proxy.scrollTo("settings.device", anchor: .top)
+        }
+    }
+
+    /// #389 evidence: the denied-state Settings frame must show the
+    /// Notifications section's blocked guidance. Appearance + Connection +
+    /// Device push it below the fold on 390x844-class screens and simctl
+    /// cannot scroll the form, so the DEBUG-only launch argument scrolls
+    /// the `settings.notifications` anchor (on the toggle row) into view
+    /// once the sheet settles — the scroll lands at the form's bottom,
+    /// which is exactly the Notifications section.
+    private func scrollNotificationsIntoViewForDeniedEvidence(_ proxy: ScrollViewProxy) async {
+        guard CorralDemoLaunch.wantsDeniedNotificationsEvidence(arguments: CommandLine.arguments) else { return }
+        try? await Task.sleep(for: .milliseconds(1200))
+        guard CorralDemoLaunch.wantsDeniedNotificationsEvidence(arguments: CommandLine.arguments) else { return }
+        withAnimation(.easeInOut(duration: 0.35)) {
+            proxy.scrollTo("settings.notifications", anchor: .top)
         }
     }
 #endif

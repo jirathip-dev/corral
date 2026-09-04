@@ -211,7 +211,13 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # 388 r1: the evidence driver holds each phase 9 s after its marker
     # (the cold-sim screenshot latency raced the original 4 s window and
     # frames drifted into the next phase) — re-pinned.
-    "9866aa83248557c31739f8388523b6693f94362596fb3bc94b67fb0a67993b39"
+    # 389: AppModel gained the permission-aware notification enable flow +
+    # refreshNotificationPermission (NotificationPermissionState), FleetViews
+    # gained the denied-guidance Notifications section + Open-iOS-Settings
+    # action + the #389 evidence driver, AppDelegate's failure comment was
+    # refreshed for the aps-environment entitlement, and the manifest gained
+    # NotificationPermission.swift (Release app source) — re-pinned.
+    "5a8c91903f5d975b1aa10014691d3abfc29a9ae0a49526df9f2b1ad2756c8d81"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #332 R4: pin the focused grant fixture independently from the Release
@@ -295,7 +301,11 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # token pins, #388 evidence-driver markers) added, and the
     # SettingsAccessWiringTests opener count moved 5 -> 6 for the #388
     # connection-inputs evidence driver — re-pinned.
-    "9e25d5ae45c992a0a8da6d754cdb58c1dabc8e1bca8d2b1ba2799ba95e88b7f0"
+    # 389: NotificationPermissionMappingTests + NotificationEnableModelTests
+    # (permission-aware enable flows) + SettingsNotificationWiringTests
+    # (denied guidance pins; opener count 5 -> 6) + DeviceTokenUploadTests
+    # (receiveDeviceToken -> signed /device-token upload) added — re-pinned.
+    "49b381ca954e0f4a01695aa80b8a073868847f41e4ae3f2d5c4cfa205d4e75f0"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

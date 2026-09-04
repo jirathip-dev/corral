@@ -3720,8 +3720,8 @@ final class SettingsAccessWiringTests: XCTestCase {
         // open the same sheet); all required, none release-gated.
         XCTAssertEqual(releaseActionLines.count, 1,
                        "the gear must be the ONLY release-active settings opener")
-        XCTAssertEqual(allActionLines.count - releaseActionLines.count, 5,
-                       "the #365, #372, #379, #385 and #388 DEBUG evidence drivers are the only debug-gated openers")
+        XCTAssertEqual(allActionLines.count - releaseActionLines.count, 6,
+                       "the #365, #372, #379, #385, #388 and #389 DEBUG evidence drivers are the only debug-gated openers")
     }
 
     func testDemoOverflowMenuIsDebugOnlyAndNoLongerHidesSettings() throws {
@@ -5055,5 +5055,413 @@ extension StringProtocol {
             return index + 1
         }
         return nil
+    }
+}
+
+// MARK: - #389 push entitlement: permission mapping + enable flows
+
+final class NotificationPermissionMappingTests: XCTestCase {
+    func testMapsOSStatusesToPosture() {
+        XCTAssertEqual(NotificationPermissionState(status: .notDetermined), .notDetermined)
+        XCTAssertEqual(NotificationPermissionState(status: .denied), .denied)
+        XCTAssertEqual(NotificationPermissionState(status: .authorized), .granted)
+        XCTAssertEqual(NotificationPermissionState(status: .provisional), .granted)
+        XCTAssertEqual(NotificationPermissionState(status: .ephemeral), .granted)
+        // UNAuthorizationStatus has no .restricted member — the enum models
+        // it (spec's blocked bucket) and only the provider can produce it.
+    }
+
+    func testBlockedGuidanceOnlyForDeniedAndRestricted() {
+        XCTAssertTrue(NotificationPermissionState.denied.showsBlockedGuidance)
+        XCTAssertTrue(NotificationPermissionState.restricted.showsBlockedGuidance)
+        XCTAssertFalse(NotificationPermissionState.notDetermined.showsBlockedGuidance)
+        XCTAssertFalse(NotificationPermissionState.granted.showsBlockedGuidance)
+    }
+}
+
+/// #389: the Settings toggle's enable path is permission-aware — a blocked
+/// permission (.denied/.restricted) NEVER silently enables (the state lands
+/// in `notificationPermission` for the section's why + 'Open iOS Settings'
+/// guidance) and .notDetermined prompts exactly once, enabling only on a
+/// grant. The provider is stubbed so the real UNUserNotificationCenter (and
+/// its system prompt) is never touched in the test host.
+@MainActor
+final class NotificationEnableModelTests: XCTestCase {
+
+    private final class StubPermissionProvider: NotificationPermissionProviding,
+                                                @unchecked Sendable {
+        var status: NotificationPermissionState = .notDetermined
+        var promptResult = false
+        private(set) var promptCount = 0
+
+        func currentPermission() async -> NotificationPermissionState {
+            status
+        }
+
+        func requestAuthorization() async -> Bool {
+            promptCount += 1
+            return promptResult
+        }
+    }
+
+    private var suiteName = ""
+
+    private func makeModel(provider: StubPermissionProvider,
+                           notificationsOn: Bool) -> AppModel {
+        suiteName = "corral.notifications389.\(UUID().uuidString)"
+        // SAFETY: a fresh UUID-based suite name is always a valid suite.
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.set(notificationsOn, forKey: AppModel.notificationsKey)
+        return AppModel(defaults: defaults,
+                        identityLoader: {
+                            (DeviceSigner(key: Curve25519.Signing.PrivateKey()),
+                             .insecureFallback)
+                        },
+                        loadMeta: { nil },
+                        saveMeta: { _ in },
+                        wipeIdentity: {},
+                        notificationPermissionProvider: provider)
+    }
+
+    private func persisted(_ model: AppModel) -> Bool? {
+        guard let suite = UserDefaults(suiteName: suiteName) else { return nil }
+        return suite.object(forKey: AppModel.notificationsKey) as? Bool
+    }
+
+    private func waitUntil(_ condition: @escaping () -> Bool) async {
+        for _ in 0..<150 where !condition() {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
+    override func tearDown() {
+        if !suiteName.isEmpty {
+            UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName)
+            suiteName = ""
+        }
+        super.tearDown()
+    }
+
+    func testEnableWhenGrantedPersistsImmediately() async {
+        let provider = StubPermissionProvider()
+        provider.status = .granted
+        let model = makeModel(provider: provider, notificationsOn: false)
+
+        model.setNotificationsEnabled(true)
+        await waitUntil { model.notificationsEnabled }
+
+        XCTAssertTrue(model.notificationsEnabled, "a granted permission enables right away")
+        XCTAssertEqual(persisted(model), true, "the enable must persist")
+        XCTAssertEqual(provider.promptCount, 0, "granted never prompts")
+        XCTAssertEqual(model.notificationPermission, .granted)
+    }
+
+    func testEnableWhileDeniedStaysOffAndShowsBlockedState() async {
+        let provider = StubPermissionProvider()
+        provider.status = .denied
+        let model = makeModel(provider: provider, notificationsOn: false)
+
+        model.setNotificationsEnabled(true)
+        await waitUntil { model.notificationPermission == .denied }
+
+        XCTAssertFalse(model.notificationsEnabled,
+                       "a denied permission must never silently enable the toggle")
+        XCTAssertEqual(persisted(model), false)
+        XCTAssertEqual(provider.promptCount, 0, "denied never prompts")
+    }
+
+    func testEnableWhileRestrictedStaysOffAndShowsBlockedState() async {
+        let provider = StubPermissionProvider()
+        provider.status = .restricted
+        let model = makeModel(provider: provider, notificationsOn: false)
+
+        model.setNotificationsEnabled(true)
+        await waitUntil { model.notificationPermission == .restricted }
+
+        XCTAssertFalse(model.notificationsEnabled,
+                       "a restricted permission must never silently enable the toggle")
+        XCTAssertEqual(persisted(model), false)
+        XCTAssertEqual(provider.promptCount, 0, "restricted never prompts")
+    }
+
+    func testEnableWhenNotDeterminedPromptsOnceAndEnablesOnGrant() async {
+        let provider = StubPermissionProvider()
+        provider.status = .notDetermined
+        provider.promptResult = true
+        let model = makeModel(provider: provider, notificationsOn: false)
+
+        model.setNotificationsEnabled(true)
+        await waitUntil { model.notificationsEnabled }
+
+        XCTAssertTrue(model.notificationsEnabled, "a grant after the prompt enables")
+        XCTAssertEqual(persisted(model), true)
+        XCTAssertEqual(provider.promptCount, 1, "exactly one prompt for .notDetermined")
+        XCTAssertEqual(model.notificationPermission, .granted)
+    }
+
+    func testEnableWhenNotDeterminedAndPromptDeniedStaysOff() async {
+        let provider = StubPermissionProvider()
+        provider.status = .notDetermined
+        provider.promptResult = false
+        let model = makeModel(provider: provider, notificationsOn: false)
+
+        model.setNotificationsEnabled(true)
+        await waitUntil { model.notificationPermission == .denied }
+
+        XCTAssertFalse(model.notificationsEnabled, "a prompt denial must not enable")
+        XCTAssertEqual(persisted(model), false)
+        XCTAssertEqual(provider.promptCount, 1)
+        XCTAssertEqual(model.notificationPermission, .denied,
+                       "the prompt denial lands in the blocked guidance state")
+    }
+
+    func testRepeatedEnableDoesNotPromptAgainOnceAlreadyOn() async {
+        let provider = StubPermissionProvider()
+        provider.status = .notDetermined
+        provider.promptResult = true
+        let model = makeModel(provider: provider, notificationsOn: false)
+
+        model.setNotificationsEnabled(true)
+        await waitUntil { model.notificationsEnabled }
+        XCTAssertEqual(provider.promptCount, 1)
+
+        // Second enable while already ON is a no-op — no second prompt.
+        model.setNotificationsEnabled(true)
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(provider.promptCount, 1, "an already-enabled toggle must not re-prompt")
+    }
+
+    func testDisableStaysInstantAndUnconditional() async {
+        let provider = StubPermissionProvider()
+        provider.status = .denied
+        let model = makeModel(provider: provider, notificationsOn: true)
+
+        model.setNotificationsEnabled(false)
+
+        XCTAssertFalse(model.notificationsEnabled, "disabling is immediate")
+        XCTAssertEqual(persisted(model), false)
+    }
+
+    func testRefreshNotificationPermissionPublishesProviderStatus() async {
+        let provider = StubPermissionProvider()
+        provider.status = .restricted
+        let model = makeModel(provider: provider, notificationsOn: false)
+
+        await model.refreshNotificationPermission()
+
+        XCTAssertEqual(model.notificationPermission, .restricted)
+    }
+}
+
+// MARK: - #389: Settings Notifications section wiring (source pins)
+
+/// Source-wiring pins over the bundled `FleetViews.swift.txt`: the Settings
+/// Notifications section must (a) derive its toggle from the permission
+/// posture (a blocked permission displays OFF and routes through the
+/// permission-aware setter), (b) show the blocked guidance + 'Open iOS
+/// Settings' action on .denied/.restricted instead of a silent caption, and
+/// (c) refresh the permission when Settings appears. Decoy rule: the pins
+/// are structurally ordered inside the SettingsView slice — a helper
+/// anywhere else carrying the strings does not satisfy the ordering.
+final class SettingsNotificationWiringTests: XCTestCase {
+
+    private func bundledSource() throws -> String {
+        let bundle = Bundle(for: SettingsNotificationWiringTests.self)
+        let url = try XCTUnwrap(bundle.url(forResource: "FleetViews",
+                                           withExtension: "swift.txt"))
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    private func lineNumbers(of needle: String, in text: String) -> [Int] {
+        text.split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+            .filter { $0.element.contains(needle) }
+            .map { $0.offset + 1 }
+    }
+
+    /// The Settings sheet's own region: SettingsView → How-to-connect MARK.
+    private func settingsSlice(_ source: String) throws -> String {
+        let start = try XCTUnwrap(source.range(of: "\nstruct SettingsView: View {"),
+                                  "SettingsView declaration must exist")
+        let end = try XCTUnwrap(source.range(of: "\n// MARK: - How to connect"),
+                                "the How-to-connect MARK must follow SettingsView")
+        return String(source[start.lowerBound..<end.lowerBound])
+    }
+
+    private func firstLine(of needle: String, in text: String) throws -> Int {
+        try XCTUnwrap(lineNumbers(of: needle, in: text).first,
+                      "\(needle) must exist in the slice")
+    }
+
+    func testNotificationsSectionShowsBlockedGuidanceWithOpenSettingsAction() throws {
+        let slice = try settingsSlice(try bundledSource())
+        let section = try firstLine(of: "Section(\"Notifications\")", in: slice)
+        let toggle = try firstLine(of: "Toggle(\"State-change notifications\"", in: slice)
+        let blockedGate = try firstLine(
+            of: "model.notificationPermission.showsBlockedGuidance", in: slice)
+        let why = try firstLine(of: "Corral can't alert you", in: slice)
+        let openAction = try firstLine(of: "Button(\"Open iOS Settings\")", in: slice)
+        let caption = try firstLine(of: "No badges or catch-up.", in: slice)
+        let refresh = try firstLine(
+            of: ".task { await model.refreshNotificationPermission() }", in: slice)
+
+        XCTAssertLessThan(section, toggle, "the section must contain the toggle")
+        // The toggle's DISPLAYED value derives from the permission posture:
+        // the blocked gate sits inside the Binding get, before the setter.
+        let setter = try firstLine(of: "model.setNotificationsEnabled(", in: slice)
+        let anchor = try firstLine(of: ".id(\"settings.notifications\")", in: slice)
+        XCTAssertLessThan(toggle, blockedGate, "the binding get must consult the blocked gate")
+        XCTAssertLessThan(blockedGate, setter, "the gate precedes the setter in the binding")
+        XCTAssertLessThan(setter, anchor,
+                          "the scroll anchor must sit on the toggle row, after the setter")
+        // The blocked branch shows WHY then the action; the plain caption
+        // only survives on the UNblocked branch (after the action).
+        XCTAssertLessThan(blockedGate, why)
+        XCTAssertLessThan(anchor, why, "the blocked branch must follow the toggle row")
+        XCTAssertLessThan(why, openAction, "the 'why' row must precede the Open iOS Settings action")
+        XCTAssertLessThan(openAction, caption,
+                          "the plain caption must live on the unblocked branch, after the action")
+        XCTAssertLessThan(caption, refresh, "the section must refresh the permission on appear")
+        // The action routes through the canonical system-Settings URL.
+        XCTAssertEqual(lineNumbers(of: "UIApplication.openSettingsURLString", in: slice).count, 1,
+                       "the Open iOS Settings action must use the canonical URL exactly once")
+        XCTAssertTrue(slice.contains("openAppSettings()"),
+                      "the action must route through the openAppSettings helper")
+    }
+
+    func testDeniedNotificationsEvidenceDriverWritesUniqueMarkers() throws {
+        let source = try bundledSource()
+        for marker in ["phase-1-denied-mocha-board",
+                       "phase-2-denied-settings-notifications",
+                       "phase-3-denied-done"] {
+            XCTAssertEqual(lineNumbers(of: marker, in: source).count, 1,
+                           "the \(marker) evidence marker must be written exactly once")
+        }
+        XCTAssertEqual(lineNumbers(of: "private func runDeniedNotificationsSequence()",
+                                   in: source).count, 1)
+        XCTAssertEqual(lineNumbers(of: "await runDeniedNotificationsSequence()",
+                                   in: source).count, 1,
+                       "the driver must be dispatched from runDemoEvidenceIfNeeded exactly once")
+        // The Settings scroll stand-in reaches the SAME anchor the section
+        // carries, so the captured frame really shows the Notifications row.
+        XCTAssertEqual(lineNumbers(of: ".id(\"settings.notifications\")", in: source).count, 1)
+        XCTAssertEqual(lineNumbers(of: "proxy.scrollTo(\"settings.notifications\"",
+                                   in: source).count, 1)
+    }
+}
+
+// MARK: - #389: receiveDeviceToken → daemon registry upload (D16 path)
+
+/// #389 AC: the APNs token callback path — `AppDelegate.receiveDeviceToken`
+/// must enroll the token on the daemon (signed POST /device-token) once per
+/// token, and a duplicate OS callback for the SAME identity + token is
+/// suppressed (DeviceTokenState). The delegate's injectable URLSession +
+/// IdentityLifecycle + signer let the upload run against a URLProtocol stub
+/// — no APNs, no keychain.
+@MainActor
+final class DeviceTokenUploadTests: XCTestCase {
+
+    private final class TokenUploadURLProtocol: URLProtocol {
+        private static let lock = NSLock()
+        private static var requestsStorage: [URLRequest] = []
+
+        static var requests: [URLRequest] {
+            lock.lock()
+            defer { lock.unlock() }
+            return requestsStorage
+        }
+
+        static func reset() {
+            lock.lock()
+            defer { lock.unlock() }
+            requestsStorage = []
+        }
+
+        override class func canInit(with request: URLRequest) -> Bool { true }
+        override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+        override func startLoading() {
+            Self.lock.lock()
+            // Materialize the body (URLSession may deliver it as a stream —
+            // see requestBodyData) so assertions read it off the copy.
+            var copy = request
+            copy.httpBody = requestBodyData(request)
+            Self.requestsStorage.append(copy)
+            Self.lock.unlock()
+            guard let url = request.url else {
+                client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+                return
+            }
+            // SAFETY: fixed literal URL + HTTP status of a test-only response.
+            let response = HTTPURLResponse(url: url, statusCode: 200,
+                                           httpVersion: nil, headerFields: nil)!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data(#"{"ok":true}"#.utf8))
+            client?.urlProtocolDidFinishLoading(self)
+        }
+
+        override func stopLoading() {}
+    }
+
+    private func uploadSession() -> URLSession {
+        TokenUploadURLProtocol.reset()
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [TokenUploadURLProtocol.self]
+        return URLSession(configuration: config)
+    }
+
+    private func makeDelegate(signer: DeviceSigner) -> AppDelegate {
+        let lifecycle = IdentityLifecycle()
+        lifecycle.setCurrent(mode: .live,
+                             hostURL: URL(string: "http://daemon"),
+                             keyId: "dev_1",
+                             signerPublicKeyB64: signer.publicKeyB64)
+        return AppDelegate(identityLifecycle: lifecycle,
+                           session: uploadSession(),
+                           identityProvider: { signer })
+    }
+
+    func testReceiveDeviceTokenUploadsSignedTokenToDaemon() async throws {
+        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        let delegate = makeDelegate(signer: signer)
+        defer { AppDelegate.apnsRegistered = false }
+
+        let token = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2"
+        let task = delegate.receiveDeviceToken(token)
+        await task?.value
+
+        XCTAssertTrue(AppDelegate.apnsRegistered,
+                      "a received token marks the device as APNs-registered")
+        let requests = TokenUploadURLProtocol.requests
+        XCTAssertEqual(requests.map { $0.url?.path }, ["/device-token"],
+                       "exactly one signed upload must reach the daemon")
+        let body = try XCTUnwrap(requests.first?.httpBody,
+                                 "the upload must carry the canonical body")
+        let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: body)
+                                 as? [String: Any])
+        XCTAssertEqual(json["key_id"] as? String, "dev_1")
+        XCTAssertFalse((json["signature"] as? String)?.isEmpty ?? true,
+                       "the upload must be signed proof of possession")
+        let request = try XCTUnwrap(json["request"] as? [String: Any],
+                                    "the canonical request bytes ride in the body")
+        XCTAssertEqual(request["device_token"] as? String, token,
+                       "the canonical request must carry the APNs token")
+        XCTAssertEqual(request["key_id"] as? String, "dev_1")
+    }
+
+    func testDuplicateCallbackForSameTokenIsSuppressed() async throws {
+        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        let delegate = makeDelegate(signer: signer)
+        defer { AppDelegate.apnsRegistered = false }
+
+        let token = "cafe1234cafe1234cafe1234cafe1234cafe1234cafe1234cafe1234cafe1234"
+        let first = delegate.receiveDeviceToken(token)
+        let second = delegate.receiveDeviceToken(token)
+        await first?.value
+        await second?.value
+
+        XCTAssertEqual(TokenUploadURLProtocol.requests.map { $0.url?.path },
+                       ["/device-token"],
+                       "a duplicate OS callback for the same identity + token must not re-upload")
     }
 }

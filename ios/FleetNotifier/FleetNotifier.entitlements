@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- #389: real APNs push requires the aps-environment entitlement. Debug
+	     (development profile / ad-hoc simulator) uses the development value;
+	     Release signs with the production value (FleetNotifier-Release.entitlements
+	     wired via CODE_SIGN_ENTITLEMENTS in project.yml). Xcode AUTOMATIC
+	     signing (team 9244PWFYD7) auto-provisions — no portal action. -->
+	<key>aps-environment</key>
+	<string>development</string>
+</dict>
+</plist>

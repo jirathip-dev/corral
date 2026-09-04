@@ -17,6 +17,10 @@ RELEASE_SOURCE_FILES = (
     "ios/FleetNotifier/Network/SSEParser.swift",
     "ios/FleetNotifier/Notifications/AppDelegate.swift",
     "ios/FleetNotifier/Notifications/LocalNotifier.swift",
+    # #389: the permission posture enum + UNUserNotificationCenter seam is
+    # Release app source (the Settings guidance + enable flow compile into
+    # Release builds) — added to the manifest.
+    "ios/FleetNotifier/Notifications/NotificationPermission.swift",
     "ios/FleetNotifier/Notifications/PushPayload.swift",
     "ios/FleetNotifier/UI/AppTheme.swift",
     "ios/FleetNotifier/UI/BoardModel.swift",

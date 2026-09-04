@@ -3688,7 +3688,7 @@ final class SettingsConnectWiringTests: XCTestCase {
         return String(source[start.lowerBound..<end.lowerBound])
     }
 
-    /// #379 A.1/A.2: the Device section shows Key id, the Keychain storage
+    /// #379 A.1/A.2: the Device section shows Key ID, the Keychain storage
     /// note, the read-only signed device label, the paired/registration
     /// state, and the Remove/revoke action — and NO grants list, NO stale
     /// capability language, and no standalone Reset section.
@@ -3698,8 +3698,8 @@ final class SettingsConnectWiringTests: XCTestCase {
         // as the #372 Appearance section), so its header text marks it.
         XCTAssertTrue(slice.contains("Text(\"Device\")"),
                       "the Device section must exist")
-        XCTAssertTrue(slice.contains("LabeledContent(\"Key id\""),
-                      "the Device section must show the Key id")
+        XCTAssertTrue(slice.contains("LabeledContent(\"Key ID\""),
+                      "the Device section must show the Key ID")
         XCTAssertTrue(slice.contains("LabeledContent(\"Key storage\""),
                       "the Device section must show the Keychain storage note")
         XCTAssertTrue(slice.contains("Read-only signed device"),
@@ -3736,7 +3736,7 @@ final class SettingsConnectWiringTests: XCTestCase {
                                                in: slice).first)
         let notifications = try XCTUnwrap(lineNumbers(of: "Section(\"Notifications\")",
                                                       in: slice).first)
-        let keyIdRow = try XCTUnwrap(lineNumbers(of: "LabeledContent(\"Key id\"",
+        let keyIdRow = try XCTUnwrap(lineNumbers(of: "LabeledContent(\"Key ID\"",
                                                  in: slice).first)
         let remove = try XCTUnwrap(lineNumbers(of: "Button(\"Remove device\"",
                                                in: slice).first)

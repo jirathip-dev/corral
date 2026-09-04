@@ -161,12 +161,12 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # re-pinned.
     # 2026-09-04 (#379): Settings cleanup + How-to-connect — the Settings
     # Device section lost the grants list/stale capability language for the
-    # identity read-out (Key id, Keychain note, read-only signed device
+    # identity read-out (Key ID, Keychain note, read-only signed device
     # label, paired/registration state, Remove action), the shared
     # HowToConnectSheet + Settings '?' entry + unpaired-launch auto-present
     # landed in FleetViews, and FleetNotifierApp gained the DEBUG
     # -corralDemoConnectEvidence route — re-pinned.
-    "25d936c0869cb92009843e659e7b65ec6def67bf7bfc6f425c812222ed9387fd"
+    "209db196e2f84a53dcd4f2a29f9c4a7c3cb15e5c61bbf343e9f9f14af677936e"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #332 R4: pin the focused grant fixture independently from the Release
@@ -219,7 +219,7 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # 2026-09-04 (#379 R1): the #379 opener pins unwrap their line numbers
     # with XCTUnwrap so a mutated (missing-opener) source fails cleanly
     # instead of crashing on an empty array — re-pinned.
-    "5f6f0ddb1778d26df274af3cf0590455f0e03cd532e5c6f58a6d5c15c8c60127"
+    "4ff4f27cee1bcbc56a5b14f532dd7cb58598300382afe3e3516882ffabecb9cc"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

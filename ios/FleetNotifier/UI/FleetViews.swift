@@ -1345,7 +1345,7 @@ struct SettingsView: View {
                         // frame scrolls this anchor into view (the Device
                         // read-out sits below Appearance + Connection and
                         // simctl cannot scroll the form).
-                        LabeledContent("Key id", value: String((model.keyId ?? "—").prefix(16)))
+                        LabeledContent("Key ID", value: String((model.keyId ?? "—").prefix(16)))
                             .id("settings.device")
                         LabeledContent("Key storage",
                                        value: DeviceKeyStore.storageLocation == .keychain

@@ -232,7 +232,10 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # F1/F2 push posture + empty-token clears), AppDelegate (upload
     # record), FleetStore (host-scoped cursor restore/purge), and
     # FleetViews (composite recents sheet target) changed — re-pinned.
-    "311b6558056adbe189a9cab0747f197224f1b0fe1217108be5c1bc042f52ea56"
+    # 400 r1: the 02:50 self-test PASS predated the final wiring/plumbing
+    # edits to the Release sources (03:03); digest re-pinned to the tree
+    # actually committed at 39e4c83 and built below.
+    "2379f5cb5e94f7ee5aa9c5bd3cfd75545a33fcff5d55e6c035805c5f135383d7"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #332 R4: pin the focused grant fixture independently from the Release

@@ -3502,13 +3502,13 @@ final class SettingsAccessWiringTests: XCTestCase {
                            "\(needle) must be release-active (gear on the board in Release)")
         }
         // The sheet-open action: one release-active (the gear) + the
-        // DEBUG-only recorded-evidence drivers (#365 settings sequence and
-        // the #372 theme sequence both open the same sheet); all required,
-        // none release-gated.
+        // DEBUG-only recorded-evidence drivers (#365 settings, #372 theme
+        // and #379 connect sequences all open the same sheet); all
+        // required, none release-gated.
         XCTAssertEqual(releaseActionLines.count, 1,
                        "the gear must be the ONLY release-active settings opener")
-        XCTAssertEqual(allActionLines.count - releaseActionLines.count, 2,
-                       "the #365 and #372 DEBUG evidence drivers are the only debug-gated openers")
+        XCTAssertEqual(allActionLines.count - releaseActionLines.count, 3,
+                       "the #365, #372 and #379 DEBUG evidence drivers are the only debug-gated openers")
     }
 
     func testDemoOverflowMenuIsDebugOnlyAndNoLongerHidesSettings() throws {
@@ -3582,8 +3582,8 @@ final class SettingsAccessWiringTests: XCTestCase {
         let source = try bundledSource()
         let start = try XCTUnwrap(source.range(of: "\nstruct SettingsView: View {"),
                                   "SettingsView declaration must exist")
-        let nextMark = try XCTUnwrap(source.range(of: "\n// MARK: - Recents"),
-                                     "a section mark must follow SettingsView")
+        let nextMark = try XCTUnwrap(source.range(of: "\n// MARK: - How to connect"),
+                                     "the How-to-connect section mark must follow SettingsView")
         let slice = String(source[start.lowerBound..<nextMark.lowerBound])
 
         // Connection pairing surface: host field + registration token +
@@ -3598,10 +3598,12 @@ final class SettingsAccessWiringTests: XCTestCase {
                       "the Settings register action must disable on empty host/token")
         XCTAssertTrue(slice.contains("model.hostURL?.absoluteString"),
                       "the host field must pre-fill from the ACTIVE host on a paired device")
-        // Notifications pairing + reset (retained #354 surfaces).
+        // Notifications pairing + the Device Remove/revoke action (retained
+        // #354 destructive reset, relocated into the Device section by #379).
         XCTAssertTrue(slice.contains("Toggle(\"State-change notifications\""))
         XCTAssertTrue(slice.contains("model.setNotificationsEnabled("))
-        XCTAssertTrue(slice.contains("Button(\"Reset device identity\""))
+        XCTAssertTrue(slice.contains("Button(\"Remove device\", role: .destructive)"),
+                      "the Device section must carry the Remove/revoke action (#379)")
         XCTAssertTrue(slice.contains("model.resetDevice()"))
         // The sheet is a plain form — no overflow-menu / demo chrome inside.
         XCTAssertEqual(slice.components(separatedBy: "NavigationStack {").count - 1, 1,
@@ -3611,6 +3613,247 @@ final class SettingsAccessWiringTests: XCTestCase {
             XCTAssertFalse(slice.contains(hidden),
                            "\(hidden) must not be wired into the Settings sheet")
         }
+    }
+}
+
+// MARK: - #379 Settings cleanup + How-to-connect sheet
+
+/// #379 wiring pins (bundled FleetViews source — the #316 decoy-resistant
+/// mechanism): the Device section is the identity read-out WITHOUT the
+/// grants list or any stale capability language; the Settings-header '?'
+/// opens the shared How-to-connect sheet; an unpaired first launch
+/// auto-presents that sheet once; and the sheet lists the five numbered
+/// steps with the copy-host control and the README Setup link. A
+/// compile-capable bypass of any of those call sites goes RED here.
+final class SettingsConnectWiringTests: XCTestCase {
+
+    private func bundledSource() throws -> String {
+        let bundle = Bundle(for: SettingsConnectWiringTests.self)
+        let url = try XCTUnwrap(bundle.url(forResource: "FleetViews",
+                                           withExtension: "swift.txt"))
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    /// 1-based line numbers of every `#if DEBUG`-active line (flat
+    /// non-nested pairs — same depth scan as the #365/#372 wiring tests).
+    private func debugActiveLines(_ source: String) -> Set<Int> {
+        var active: Set<Int> = []
+        var depth = 0
+        for (index, line) in source.split(separator: "\n",
+                                          omittingEmptySubsequences: false)
+            .enumerated() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("#if DEBUG") {
+                depth += 1
+            } else if trimmed.hasPrefix("#endif") {
+                depth = max(0, depth - 1)
+            }
+            if depth > 0 { active.insert(index + 1) }
+        }
+        return active
+    }
+
+    private func lineNumbers(of needle: String, in text: String) -> [Int] {
+        text.split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+            .filter { $0.element.contains(needle) }
+            .map { $0.offset + 1 }
+    }
+
+    /// The Settings sheet's own region: SettingsView → How-to-connect MARK.
+    private func settingsSlice(_ source: String) throws -> String {
+        let start = try XCTUnwrap(source.range(of: "\nstruct SettingsView: View {"),
+                                  "SettingsView declaration must exist")
+        let end = try XCTUnwrap(source.range(of: "\n// MARK: - How to connect"),
+                                "the How-to-connect MARK must follow SettingsView")
+        return String(source[start.lowerBound..<end.lowerBound])
+    }
+
+    /// The shared connect sheet's region: How-to-connect MARK → Recents.
+    private func connectSheetSlice(_ source: String) throws -> String {
+        let start = try XCTUnwrap(source.range(of: "\n// MARK: - How to connect"),
+                                  "the How-to-connect MARK must exist")
+        let end = try XCTUnwrap(source.range(of: "\n// MARK: - Recents"),
+                                "the Recents MARK must follow the connect sheet")
+        return String(source[start.lowerBound..<end.lowerBound])
+    }
+
+    /// The board's region: FleetView → Banner MARK (what the #365/#372
+    /// board tests slice).
+    private func fleetSlice(_ source: String) throws -> String {
+        let start = try XCTUnwrap(source.range(of: "\nstruct FleetView: View {"),
+                                  "FleetView declaration must exist")
+        let end = try XCTUnwrap(source.range(of: "\n// MARK: - Banner"),
+                                "the Banner MARK must follow FleetView")
+        return String(source[start.lowerBound..<end.lowerBound])
+    }
+
+    /// #379 A.1/A.2: the Device section shows Key ID, the Keychain storage
+    /// note, the read-only signed device label, the paired/registration
+    /// state, and the Remove/revoke action — and NO grants list, NO stale
+    /// capability language, and no standalone Reset section.
+    func testSettingsDeviceSectionShowsIdentityWithoutGrantsList() throws {
+        let slice = try settingsSlice(try bundledSource())
+        // The Device section uses the custom header form (same convention
+        // as the #372 Appearance section), so its header text marks it.
+        XCTAssertTrue(slice.contains("Text(\"Device\")"),
+                      "the Device section must exist")
+        XCTAssertTrue(slice.contains("LabeledContent(\"Key ID\""),
+                      "the Device section must show the Key ID")
+        XCTAssertTrue(slice.contains("LabeledContent(\"Key storage\""),
+                      "the Device section must show the Keychain storage note")
+        XCTAssertTrue(slice.contains("Read-only signed device"),
+                      "the Device section must carry the read-only signed device label")
+        XCTAssertTrue(slice.contains("\"Paired\" : \"Not paired\""),
+                      "the Device section must show the paired/registration state")
+        XCTAssertTrue(slice.contains("Button(\"Remove device\", role: .destructive)"),
+                      "the Device section must carry the Remove/revoke action")
+        // The grants LIST row is gone; the model grant set is never
+        // enumerated in Settings; the old Reset section merged into Device.
+        XCTAssertFalse(slice.contains("LabeledContent(\"Grants\""),
+                       "the grants list row must not exist in Settings")
+        XCTAssertFalse(slice.contains("model.grants"),
+                       "Settings must not enumerate the grant set")
+        XCTAssertFalse(slice.contains("Section(\"Reset\")"),
+                       "the standalone Reset section is gone")
+        XCTAssertFalse(slice.contains("Button(\"Reset device identity\""),
+                       "the old Reset identity button is gone")
+        XCTAssertFalse(slice.contains("LabeledContent(\"Name\""),
+                       "the cosmetic device-name row is not part of the read-out")
+        // Stale capability language: nothing but read_tail + pairing
+        // exists in the product now — none of the cut grant names may
+        // surface in the Settings sheet.
+        for stale in ["prompt", "read_diff", "start_worktree", "kill"] {
+            XCTAssertFalse(slice.contains(stale),
+                           "stale capability language '\(stale)' must not appear in Settings")
+        }
+        // Section order stays Connection → Device → Notifications, and the
+        // Remove action sits inside the Device region (after its identity
+        // rows, before the Notifications section — no Reset section between).
+        let connection = try XCTUnwrap(lineNumbers(of: "Section(\"Connection\")",
+                                                   in: slice).first)
+        let device = try XCTUnwrap(lineNumbers(of: "Text(\"Device\")",
+                                               in: slice).first)
+        let notifications = try XCTUnwrap(lineNumbers(of: "Section(\"Notifications\")",
+                                                      in: slice).first)
+        let keyIdRow = try XCTUnwrap(lineNumbers(of: "LabeledContent(\"Key ID\"",
+                                                 in: slice).first)
+        let remove = try XCTUnwrap(lineNumbers(of: "Button(\"Remove device\"",
+                                               in: slice).first)
+        XCTAssertLessThan(connection, device, "Connection must precede Device")
+        XCTAssertLessThan(device, notifications, "Device must precede Notifications")
+        XCTAssertLessThan(keyIdRow, remove, "the Remove/revoke action must follow the Device identity rows")
+        XCTAssertLessThan(remove, notifications,
+                          "the Remove/revoke action must live before the Notifications section")
+    }
+
+    /// #379 B.1: the '?' Help button sits in the Settings header and
+    /// presents the shared How-to-connect sheet with the LIVE host field
+    /// text (the copy control's source).
+    func testSettingsHeaderQuestionButtonPresentsTheConnectSheet() throws {
+        let slice = try settingsSlice(try bundledSource())
+        XCTAssertEqual(lineNumbers(of: "Image(systemName: \"questionmark.circle\")",
+                                   in: slice).count, 1,
+                       "the Settings header must carry exactly one '?' Help button")
+        XCTAssertEqual(lineNumbers(of: ".accessibilityLabel(\"How to connect\")",
+                                   in: slice).count, 1,
+                       "the Help button must be VoiceOver-labeled")
+        let openers = lineNumbers(of: "showConnectHelp = true", in: slice)
+        XCTAssertEqual(openers.count, 1,
+                       "the '?' button must be the Settings sheet's only help opener")
+        // The debug scan runs over the SAME slice so line numbers agree.
+        let debug = debugActiveLines(slice)
+        let openerLine = try XCTUnwrap(openers.first,
+                                       "the '?' opener must exist (see count pin above)")
+        XCTAssertFalse(debug.contains(openerLine),
+                       "the '?' help entry must be release-active")
+        XCTAssertEqual(lineNumbers(of: ".sheet(isPresented: $showConnectHelp)",
+                                   in: slice).count, 1,
+                       "SettingsView must present the connect sheet from inside its own stack")
+        XCTAssertTrue(slice.contains("HowToConnectSheet(host: host)"),
+                      "the '?'-opened sheet must receive the LIVE host field text")
+    }
+
+    /// #379 B.1: an unpaired first launch auto-presents the connect sheet
+    /// over the board — once per board lifetime, gated on needsSetup.
+    func testUnpairedLaunchAutoPresentsTheConnectSheet() throws {
+        let source = try bundledSource()
+        let slice = try fleetSlice(source)
+        XCTAssertEqual(lineNumbers(of: ".sheet(isPresented: $showConnectHelp)",
+                                   in: slice).count, 1,
+                       "the board must attach exactly one connect-help sheet")
+        XCTAssertTrue(slice.contains("HowToConnectSheet(host: model.hostURL?.absoluteString ?? \"\")"),
+                      "the board-level sheet must pass the registered host (empty when unpaired)")
+        // The AUTO-present: exactly one release-active opener, gated on the
+        // unpaired mode, one-shot per board lifetime. The debug scan runs
+        // over the SAME slice so line numbers agree.
+        let openers = lineNumbers(of: "showConnectHelp = true", in: slice)
+        let debug = debugActiveLines(slice)
+        let releaseOpeners = openers.filter { !debug.contains($0) }
+        XCTAssertEqual(releaseOpeners.count, 1,
+                       "exactly one RELEASE-active connect-sheet opener must exist (the unpaired auto-present)")
+        let releaseOpener = try XCTUnwrap(releaseOpeners.first,
+                                          "the auto-present opener must exist (see count pin above)")
+        let firstGuard = try XCTUnwrap(lineNumbers(of: "model.mode == .needsSetup",
+                                                   in: slice).first,
+                                       "the auto-present must gate on the unpaired mode")
+        XCTAssertLessThan(firstGuard, releaseOpener,
+                          "the auto-present opener must sit behind a needsSetup gate")
+        XCTAssertTrue(slice.contains("autoPresentedConnectHelp"),
+                      "the auto-present must be one-shot (never re-pop on a later device removal)")
+        let idTasks = lineNumbers(of: ".task(id: model.mode)", in: slice)
+        XCTAssertEqual(idTasks.filter { !debug.contains($0) }.count, 1,
+                       "a release-active mode-keyed task must drive the auto-present")
+    }
+
+    /// #379 B.2/B.3: the connect sheet carries the five numbered steps
+    /// with their locked titles, the summarized daemon setup + healthz +
+    /// README Setup link (step 1), and the copy-host control (step 2).
+    func testConnectSheetListsNumberedStepsCopyHostAndReadmeLink() throws {
+        let slice = try connectSheetSlice(try bundledSource())
+        XCTAssertEqual(slice.components(separatedBy: "struct HowToConnectSheet: View {").count - 1, 1,
+                       "exactly one shared HowToConnectSheet must exist")
+        // The five locked step headers, numbered 1...5 in order.
+        let steps: [(Int, String)] = [
+            (1, "Run the daemon on your Mac"),
+            (2, "Reach it from the phone"),
+            (3, "Open Settings and paste the Host"),
+            (4, "Register with the pairing token"),
+            (5, "Enable state-change notifications"),
+        ]
+        for (number, title) in steps {
+            XCTAssertTrue(slice.contains("stepHeader(number: \(number), title: \"\(title)\")"),
+                          "step \(number) header must be wired with its locked title")
+        }
+        // Numbered badges render the digit (structure pin — the runtime
+        // digits are what a reviewer sees in the sheet).
+        XCTAssertEqual(slice.components(separatedBy: "struct StepNumberBadge: View {").count - 1, 1,
+                       "the step-number badge view must exist")
+        XCTAssertTrue(slice.contains("Text(\"\\(number)\")"),
+                      "the badge must render the step digit")
+        // Step 1: summarized daemon setup (launchd/one command), the
+        // healthz check, and the README Setup link (#376 target exists).
+        XCTAssertTrue(slice.contains("setup-corrald.sh"),
+                      "step 1 must summarize the launchd setup script")
+        XCTAssertTrue(slice.contains("healthz"),
+                      "step 1 must mention the healthz verification")
+        XCTAssertTrue(slice.contains("github.com/jirathip-dev/corral#setup"),
+                      "step 1 must link the README Setup section (#376 link target)")
+        XCTAssertTrue(slice.contains("Open the README Setup section"),
+                      "the README link must carry a visible label")
+        // Step 2: reach-it-from-the-phone copy-host control.
+        XCTAssertTrue(slice.contains("Label(\"Copy host\", systemImage: \"doc.on.doc\")"),
+                      "step 2 must offer a Copy host control")
+        XCTAssertTrue(slice.contains("UIPasteboard.general.string = host"),
+                      "Copy host must write the host string to the pasteboard")
+        XCTAssertTrue(slice.contains(".disabled(host.isEmpty)"),
+                      "Copy host must disable until a host actually exists")
+        // Step 4 copy names the read-only signed pairing outcome.
+        XCTAssertTrue(slice.contains("Register device (read-only)"),
+                      "step 4 must reference the read-only register action")
+        // The sheet never enumerates the grant set either.
+        XCTAssertFalse(slice.contains("model.grants"),
+                       "the connect sheet must not enumerate grants")
     }
 }
 
@@ -3838,8 +4081,8 @@ final class ThemeWiringTests: XCTestCase {
         let source = try bundledSource()
         let start = try XCTUnwrap(source.range(of: "\nstruct SettingsView: View {"),
                                   "SettingsView declaration must exist")
-        let nextMark = try XCTUnwrap(source.range(of: "\n// MARK: - Recents"),
-                                     "a section mark must follow SettingsView")
+        let nextMark = try XCTUnwrap(source.range(of: "\n// MARK: - How to connect"),
+                                     "the How-to-connect section mark must follow SettingsView")
         let slice = String(source[start.lowerBound..<nextMark.lowerBound])
 
         // The Appearance section is the FIRST form section and is the only
@@ -3874,7 +4117,7 @@ final class ThemeWiringTests: XCTestCase {
                                     "the Appearance picker must persist a flavor choice")
         let settingsStartLine = lineNumbers(of: "struct SettingsView: View {",
                                             in: source).first ?? 0
-        let settingsEndLine = lineNumbers(of: "// MARK: - Recents",
+        let settingsEndLine = lineNumbers(of: "// MARK: - How to connect",
                                           in: source).first ?? Int.max
         for line in flavorLines {
             let isRelease = !debug.contains(line)

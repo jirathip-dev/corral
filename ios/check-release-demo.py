@@ -159,7 +159,14 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # all, Latte recess panels, DEBUG recents-evidence driver), and the demo
     # seed was rebuilt to the block-per-run evidence shape (DemoFleet) —
     # re-pinned.
-    "272e75b7448dfe446ca7d538d041c9616e7cb30e050dbd06f7d45b60329ed9ed"
+    # 2026-09-04 (#379): Settings cleanup + How-to-connect — the Settings
+    # Device section lost the grants list/stale capability language for the
+    # identity read-out (Key ID, Keychain note, read-only signed device
+    # label, paired/registration state, Remove action), the shared
+    # HowToConnectSheet + Settings '?' entry + unpaired-launch auto-present
+    # landed in FleetViews, and FleetNotifierApp gained the DEBUG
+    # -corralDemoConnectEvidence route — re-pinned.
+    "209db196e2f84a53dcd4f2a29f9c4a7c3cb15e5c61bbf343e9f9f14af677936e"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #332 R4: pin the focused grant fixture independently from the Release
@@ -202,7 +209,17 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # RecentsBlockSessionTests (default-expanded, toggle, reveal, reset), the
     # demo fixture pin asserts the block-per-run treatments, and the
     # wiring/theme pins moved onto the block renderer — re-pinned.
-    "808c2699ee40a28ef3039fb647c513a45b787acd694b6d8c250e10465ffcea26"
+    # 2026-09-04 (#379): the Settings-device and Settings-wiring pins were
+    # updated for the post-cut identity read-out (Remove action instead of
+    # the Reset section, How-to-connect MARK boundary), and
+    # SettingsConnectWiringTests was added (grants list/stale capability
+    # absence, Device identity rows, Settings '?' entry, unpaired-launch
+    # auto-present, numbered connect-sheet steps + copy-host + README link)
+    # — re-pinned.
+    # 2026-09-04 (#379 R1): the #379 opener pins unwrap their line numbers
+    # with XCTUnwrap so a mutated (missing-opener) source fails cleanly
+    # instead of crashing on an empty array — re-pinned.
+    "4ff4f27cee1bcbc56a5b14f532dd7cb58598300382afe3e3516882ffabecb9cc"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

@@ -202,7 +202,16 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # 387 r1: the evidence scroll fires from a .task(id:) settle (the
     # #379 recipe) — an onChange-driven scrollTo does not move an iOS 26
     # plain List — re-pinned.
-    "627e5522e89ac1d33b94aab90051771f1113cf64732a9f3f95b0137a36fa3f02"
+    # 388: the Settings Connection inputs became theme-token fields
+    # (ConnectionField surface1 fill, subtext0 placeholder, hairline
+    # surface2/accent-focus border), the section hides the token field +
+    # shows the paired status row while the device is REGISTERED
+    # (AppModel.isRegistered), and the #388 connection-inputs evidence
+    # driver was added to FleetViews/FleetNotifierApp — re-pinned.
+    # 388 r1: the evidence driver holds each phase 9 s after its marker
+    # (the cold-sim screenshot latency raced the original 4 s window and
+    # frames drifted into the next phase) — re-pinned.
+    "9866aa83248557c31739f8388523b6693f94362596fb3bc94b67fb0a67993b39"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #332 R4: pin the focused grant fixture independently from the Release
@@ -280,7 +289,13 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # NavigationHeaderWiringTests was added (no 'Fleet' navigationTitle,
     # exactly one empty title + inline lock, gear chrome survives) —
     # re-pinned.
-    "ab8d03e411c31b1a93a34a51d606de7db9c0cf8be75f1fb7dd2afd9b13698d4a"
+    # 388: ConnectionRegistrationModelTests (isRegistered key-id predicate)
+    # and ConnectionSectionWiringTests (paired-state gate hides the token
+    # field + status row + Re-register reveal, themed ConnectionField
+    # token pins, #388 evidence-driver markers) added, and the
+    # SettingsAccessWiringTests opener count moved 5 -> 6 for the #388
+    # connection-inputs evidence driver — re-pinned.
+    "9e25d5ae45c992a0a8da6d754cdb58c1dabc8e1bca8d2b1ba2799ba95e88b7f0"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

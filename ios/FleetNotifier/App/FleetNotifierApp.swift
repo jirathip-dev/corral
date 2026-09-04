@@ -46,6 +46,7 @@ struct FleetNotifierApp: App {
                                 || CorralDemoLaunch.wantsRepoLabelEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsCollapseEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsTitleEvidence(arguments: CommandLine.arguments)
+                                || CorralDemoLaunch.wantsConnectionInputsEvidence(arguments: CommandLine.arguments)
                                 || CommandLine.arguments.contains("-demoMode") {
                         model.enterDemo()
                     }
@@ -103,6 +104,10 @@ struct FleetNotifierApp: App {
 /// `-corralDemoTitleEvidence` (#387) seeds the demo fleet and records the
 /// chrome-only board header — no 'Fleet' title text in the top OR scrolled
 /// nav-bar states (Mocha + Latte), via the board ScrollViewReader driver.
+/// `-corralDemoConnectionInputsEvidence` (#388) seeds the demo fleet and
+/// records the Settings Connection section — themed surface1 inputs on
+/// Macchiato/Mocha/Latte in the unpaired state, then the paired status row
+/// (token field hidden) after the driver seeds a demo registration key id.
 enum CorralDemoLaunch {
     static let detailArgument = "-corralDemoDetail"
     static let reopenEvidenceArgument = "-corralDemoUXEvidence"
@@ -114,6 +119,7 @@ enum CorralDemoLaunch {
     static let repoLabelEvidenceArgument = "-corralDemoRepoLabelEvidence"
     static let collapseEvidenceArgument = "-corralDemoCollapseEvidence"
     static let titleEvidenceArgument = "-corralDemoTitleEvidence"
+    static let connectionInputsEvidenceArgument = "-corralDemoConnectionInputsEvidence"
 
     static var detailAgentID: String {
         DemoFleet.featuredAgentID
@@ -171,6 +177,14 @@ enum CorralDemoLaunch {
     /// see `FleetView.runTitleSequence()`.
     static func wantsTitleEvidence(arguments: [String]) -> Bool {
         arguments.contains(titleEvidenceArgument)
+    }
+
+    /// #388: records the Settings Connection inputs — unpaired (themed
+    /// host + token + Register) then paired (status row, no token field)
+    /// across Macchiato/Mocha/Latte — see
+    /// `FleetView.runConnectionInputsSequence()`.
+    static func wantsConnectionInputsEvidence(arguments: [String]) -> Bool {
+        arguments.contains(connectionInputsEvidenceArgument)
     }
 }
 #endif

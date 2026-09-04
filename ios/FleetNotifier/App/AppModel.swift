@@ -300,6 +300,15 @@ final class AppModel: ObservableObject {
         return Set(grants.compactMap(Capability.init(rawValue:)))
     }
 
+    /// #388: the device is REGISTERED once it holds an identity key — set
+    /// by a successful registration (or a restored live identity) and
+    /// cleared by Remove device. The Connection section reads this to hide
+    /// the pointless Registration-token field once paired. The published
+    /// key id IS the registration truth — a DEBUG demo launch over a
+    /// paired keychain keeps the registered posture without implying a
+    /// live transport (mode stays .demo, so no live networking starts).
+    var isRegistered: Bool { keyId != nil }
+
     /// #166 review F13: single shared DriveClient constructor for the view
     /// layer's read call sites. Uses the registered host URL, falling back
     /// to the documented localhost default, and the default `.shared`

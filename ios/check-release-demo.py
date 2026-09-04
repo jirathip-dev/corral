@@ -193,7 +193,16 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # layout and collapse the row under the filter) — re-pinned.
     # 384: spacer comment corrected (opacity is purely visual; measured
     # row geometry identical in both filter states) — re-pinned.
-    "391b3122bba938a6ea4b2487755a1e7e9a9e916cded0a073de36dbc5575df509"
+    # 387: the board header became chrome-only — FleetViews drops the
+    # 'Fleet' navigation title for an EMPTY title locked to INLINE display
+    # mode (no title text in the top or scrolled nav-bar states), the
+    # board list rides a passive ScrollViewReader with row/chips ids, and
+    # FleetNotifierApp gained the DEBUG -corralDemoTitleEvidence route —
+    # re-pinned.
+    # 387 r1: the evidence scroll fires from a .task(id:) settle (the
+    # #379 recipe) — an onChange-driven scrollTo does not move an iOS 26
+    # plain List — re-pinned.
+    "627e5522e89ac1d33b94aab90051771f1113cf64732a9f3f95b0137a36fa3f02"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #332 R4: pin the focused grant fixture independently from the Release
@@ -267,7 +276,11 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # 384: spacer pin message corrected — re-pinned.
     # 384: test-class docstring corrected (echo keeps the chip's line box)
     # — re-pinned.
-    "95657ff636fae25371c3098efbfc65a7ead9444a25ce912bf709011901171a5e"
+    # 387: the #365 shell test pins the EMPTY/INLINE title contract and
+    # NavigationHeaderWiringTests was added (no 'Fleet' navigationTitle,
+    # exactly one empty title + inline lock, gear chrome survives) —
+    # re-pinned.
+    "ab8d03e411c31b1a93a34a51d606de7db9c0cf8be75f1fb7dd2afd9b13698d4a"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

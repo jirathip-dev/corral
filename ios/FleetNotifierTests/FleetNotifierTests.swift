@@ -3770,6 +3770,9 @@ final class SettingsAccessWiringTests: XCTestCase {
         // cut deleted the board's NavigationStack, orphaning
         // .navigationTitle/.toolbar — the top bar (and with it Settings)
         // never appeared on the board. FleetView must own a stack again.
+        // #387: the title inside that shell is EMPTY + INLINE — the board
+        // header is chrome-only, so neither the top-of-board state nor the
+        // scrolled collapsed bar can render 'Fleet' text.
         let boardMarker = "\nstruct FleetView: View {"
         let boardStart = try XCTUnwrap(source.range(of: boardMarker),
                                        "FleetView declaration must exist")
@@ -3780,12 +3783,19 @@ final class SettingsAccessWiringTests: XCTestCase {
                        "FleetView must wrap its board in exactly one NavigationStack")
 
         let stackLine = try XCTUnwrap(lineNumbers(of: "NavigationStack {", in: slice).first)
-        let titleLine = try XCTUnwrap(lineNumbers(of: ".navigationTitle(\"Fleet\")", in: slice).first)
+        let titleLine = try XCTUnwrap(lineNumbers(of: ".navigationTitle(\"\")", in: slice).first,
+                                      "the board must declare the EMPTY title (#387)")
+        let inlineLine = try XCTUnwrap(lineNumbers(of: ".navigationBarTitleDisplayMode(.inline)", in: slice).first,
+                                       "the board must lock INLINE display mode (#387)")
         let toolbarLine = try XCTUnwrap(lineNumbers(of: ".toolbar {", in: slice).first)
         let sheetLine = try XCTUnwrap(lineNumbers(of: ".sheet(isPresented: $showSettings)", in: slice).first)
+        XCTAssertEqual(lineNumbers(of: ".navigationTitle(\"Fleet\")", in: slice).count, 0,
+                       "the 'Fleet' navigation title must be gone (#387)")
         XCTAssertLessThan(stackLine, titleLine,
                           "the stack must open before the navigation chrome")
-        XCTAssertLessThan(titleLine, toolbarLine,
+        XCTAssertLessThan(titleLine, inlineLine,
+                          "the empty title must precede its inline display-mode lock")
+        XCTAssertLessThan(inlineLine, toolbarLine,
                           "the toolbar must be configured inside the stack")
         XCTAssertLessThan(toolbarLine, sheetLine,
                           "the settings sheet binding must follow the toolbar")
@@ -3826,6 +3836,96 @@ final class SettingsAccessWiringTests: XCTestCase {
             XCTAssertFalse(slice.contains(hidden),
                            "\(hidden) must not be wired into the Settings sheet")
         }
+    }
+}
+
+// MARK: - #387 chrome-only board header (no 'Fleet' title text)
+
+/// Pins the #387 chrome-only header over the bundled FleetViews source
+/// (the #316/#365 mechanism): the board declares NO 'Fleet' title text —
+/// the navigation title is EMPTY and the bar is locked INLINE, so neither
+/// the top-of-board state nor the scrolled collapsed bar can render title
+/// text, while the Settings gear toolbar (release-active, >=44 pt, accent
+/// tinted) stays exactly as #365 pinned it. Re-adding any titled
+/// navigationTitle to the board — or a large-title display mode that
+/// could return a title band — goes RED here.
+final class NavigationHeaderWiringTests: XCTestCase {
+
+    private func bundledSource() throws -> String {
+        let bundle = Bundle(for: NavigationHeaderWiringTests.self)
+        let url = try XCTUnwrap(bundle.url(forResource: "FleetViews",
+                                           withExtension: "swift.txt"))
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    private func lineNumbers(of needle: String, in text: String) -> [Int] {
+        text.split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+            .filter { $0.element.contains(needle) }
+            .map { $0.offset + 1 }
+    }
+
+    /// The board's own region: FleetView declaration → Banner MARK (the
+    /// same boundary the #365/#386 wiring tests slice).
+    private func boardSlice(from source: String) throws -> String {
+        let boardStart = try XCTUnwrap(source.range(of: "\nstruct FleetView: View {"),
+                                       "FleetView declaration must exist")
+        let boardEnd = try XCTUnwrap(source.range(of: "\n// MARK: - Banner"),
+                                     "the banner section must follow FleetView")
+        return String(source[boardStart.lowerBound..<boardEnd.lowerBound])
+    }
+
+    func testBoardDeclaresNoFleetTitleTextInAnyNavState() throws {
+        let source = try bundledSource()
+        let slice = try boardSlice(from: source)
+        // The pre-#387 titled chrome is GONE: no .navigationTitle("Fleet")
+        // anywhere in the board region — that spelling rendered 'Fleet'
+        // in the large-title state AND inline once scrolled.
+        XCTAssertEqual(lineNumbers(of: ".navigationTitle(\"Fleet\")", in: slice).count, 0,
+                       "the board must not declare the 'Fleet' navigation title (#387)")
+        XCTAssertFalse(slice.contains(".navigationBarTitleDisplayMode(.large)"),
+                       "no large-title display mode may return a title band to the board")
+        // The board region declares EXACTLY ONE navigation title — the
+        // empty one — followed by the inline display-mode lock.
+        XCTAssertEqual(lineNumbers(of: ".navigationTitle(", in: slice).count, 1,
+                       "exactly one navigation title may exist in the board region (#387)")
+        XCTAssertTrue(slice.contains(".navigationTitle(\"\")"),
+                      "the board title must be the EMPTY title (#387)")
+        let inlineLines = lineNumbers(of: ".navigationBarTitleDisplayMode(.inline)", in: slice)
+        XCTAssertEqual(inlineLines.count, 1,
+                       "the board must force the INLINE display mode exactly once (#387)")
+        let titleLine = try XCTUnwrap(lineNumbers(of: ".navigationTitle(\"\")", in: slice).first)
+        XCTAssertGreaterThan(inlineLines[0], titleLine,
+                             "the inline lock must follow the empty title in the modifier chain")
+        // The top-bar chrome still rides the active flavor's accent (the
+        // #372 tint that colors the gear in Mocha AND Latte).
+        XCTAssertTrue(slice.contains(".tint(theme.accent)"),
+                      "the board toolbar chrome must ride the active flavor's accent (#372/#387)")
+    }
+
+    func testToolbarGearChromeSurvivesTheTitleFreeHeader() throws {
+        let source = try bundledSource()
+        let slice = try boardSlice(from: source)
+        let titleLine = try XCTUnwrap(lineNumbers(of: ".navigationTitle(\"\")", in: slice).first)
+        let toolbarLine = try XCTUnwrap(lineNumbers(of: ".toolbar {", in: slice).first)
+        let gearLine = try XCTUnwrap(lineNumbers(of: "gearshape", in: slice).first)
+        let labelLine = try XCTUnwrap(lineNumbers(of: ".accessibilityLabel(\"Settings\")", in: slice).first)
+        let frameLine = try XCTUnwrap(lineNumbers(of: ".frame(minWidth: 44, minHeight: 44)", in: slice).first)
+        let sheetLine = try XCTUnwrap(lineNumbers(of: ".sheet(isPresented: $showSettings)", in: slice).first)
+        // Chrome order is unchanged from #365: empty title → inline lock →
+        // gear toolbar → settings sheet, with the gear's >=44 pt target +
+        // VoiceOver label still release-active (pinned by the sibling #365
+        // tests; here we prove it sits AFTER the title-free chrome).
+        XCTAssertLessThan(titleLine, toolbarLine,
+                          "the gear toolbar must follow the title-free header chrome")
+        XCTAssertLessThan(toolbarLine, gearLine,
+                          "the gear must live inside the board toolbar")
+        XCTAssertLessThan(gearLine, labelLine,
+                          "the gear keeps its VoiceOver label right after the shape")
+        XCTAssertLessThan(labelLine, frameLine,
+                          "the gear keeps its >=44 pt hit target in the same label chain")
+        XCTAssertLessThan(toolbarLine, sheetLine,
+                          "the settings sheet binding must follow the toolbar")
     }
 }
 

@@ -45,6 +45,7 @@ struct FleetNotifierApp: App {
                                 || CorralDemoLaunch.wantsGlassEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsRepoLabelEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsCollapseEvidence(arguments: CommandLine.arguments)
+                                || CorralDemoLaunch.wantsTitleEvidence(arguments: CommandLine.arguments)
                                 || CommandLine.arguments.contains("-demoMode") {
                         model.enterDemo()
                     }
@@ -99,6 +100,9 @@ struct FleetNotifierApp: App {
 /// the board hierarchy change — thick collapsible status bars vs demoted
 /// repo subgroup captions — with the blocked section collapsed and the
 /// working section expanded (Mocha + Latte), then all sections collapsed.
+/// `-corralDemoTitleEvidence` (#387) seeds the demo fleet and records the
+/// chrome-only board header — no 'Fleet' title text in the top OR scrolled
+/// nav-bar states (Mocha + Latte), via the board ScrollViewReader driver.
 enum CorralDemoLaunch {
     static let detailArgument = "-corralDemoDetail"
     static let reopenEvidenceArgument = "-corralDemoUXEvidence"
@@ -109,6 +113,7 @@ enum CorralDemoLaunch {
     static let glassEvidenceArgument = "-corralDemoGlassEvidence"
     static let repoLabelEvidenceArgument = "-corralDemoRepoLabelEvidence"
     static let collapseEvidenceArgument = "-corralDemoCollapseEvidence"
+    static let titleEvidenceArgument = "-corralDemoTitleEvidence"
 
     static var detailAgentID: String {
         DemoFleet.featuredAgentID
@@ -159,6 +164,13 @@ enum CorralDemoLaunch {
     /// `FleetView.runCollapseSequence()`.
     static func wantsCollapseEvidence(arguments: [String]) -> Bool {
         arguments.contains(collapseEvidenceArgument)
+    }
+
+    /// #387: records the chrome-only board header — Mocha + Latte at the
+    /// top AND scrolled (no 'Fleet' title text in either nav-bar state) —
+    /// see `FleetView.runTitleSequence()`.
+    static func wantsTitleEvidence(arguments: [String]) -> Bool {
+        arguments.contains(titleEvidenceArgument)
     }
 }
 #endif

@@ -320,9 +320,10 @@ jobs:
             "  Bazzite/immutable-OS friendly, no RPM, no container — see" \
             "  docs/LINUX.md)." > "$notes"
           gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
             "$macos_bundle" "$macos_sha" \
             "$linux_bundle" "$linux_sha" \
             --title "Corral $GITHUB_REF_NAME" \
             --notes-file "$notes"
-          gh release view "$GITHUB_REF_NAME" --json tagName,assets \
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json tagName,assets \
             --jq '{tagName, assets: [.assets[].name]}'

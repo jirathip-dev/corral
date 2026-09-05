@@ -1,0 +1,74 @@
+# 415 capture log — Add Host draft/error lifecycle evidence (a/b/c)
+
+2026-09-05 ~18:11 +0700 (final committed-state Debug build, fresh Corral415
+simulator). Fresh simulator `Corral415` (iPhone 14, iOS 26.5 — native
+390x844 pt/px device class, UDID DC542703-D599-46DC-8797-7E1446D937E5),
+DEBUG build from branch g415-add-host-draft at commit f908e5f (+ the
+post-capture evidence-driver marker fix, see git log), launch-arg evidence
+drivers, marker polling, simctl screenshots.
+
+The simulator was ERASED before the evidence runs (fresh keychain/container:
+no leftover identity, no OS permission state), and each driver run
+uninstalls the app first so the container + ux-evidence dir start empty.
+The iPhone 14 screen is 390x844 pt = 1179x2556 px @3x; frames are the raw
+screenshot downscaled with `sips -z 844 390` to the repo's 390x844 px
+evidence standard (0.0 % aspect distortion — same device aspect).
+
+Build (after all #415 source edits):
+
+$ HERDR_XCODEBUILD_DIRECT=1 xcodebuild build \
+    -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier \
+    -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/415-dd build
+** BUILD SUCCEEDED **  (log: /tmp/415-build4.log)
+
+App: /tmp/415-dd/Build/Products/Debug-iphonesimulator/FleetNotifier.app
+Bundle id: com.corral.fleetnotifier (lowercase — simctl launch uses the
+Info.plist GENERATE_INFOPLIST_FILE id).
+Markers: <data>/Documents/ux-evidence/<phase>.marker (app writes per phase
+and holds >=9 s after each marker so the host capture always lands inside
+the named phase; the capture script removes the app first so stale markers
+from an earlier driver are never re-captured).
+
+Seeding (DEBUG AppModel.enterAddHostEvidenceSeed, synthetic): ONE original
+"Mac" profile (pinned fixture X25519 key Data(repeating: 21, count: 32)
+base64 — never a real key), mode .demo, no live fleet rows.
+
+Driver (a) — background-return with populated fields (AC6a):
+$ /tmp/415-evidence.sh <udid> -corral415BgReturnEvidence
+Driver types Bazzite + demo-host-d.tail0123.ts.net into the scene-scoped
+draft (the REAL bindings), marks phase-a-415-bg-filled, then holds. The
+host script backgrounds the app via `simctl launch com.apple.Preferences`
+and returns via `simctl launch com.corral.fleetnotifier` inside the hold,
+then captures:
+  phase-a-415-bg-return-390x844.png  — sheet STILL open, name "Bazzite"
+                                       and URL populated after a REAL
+                                       app-switch/return cycle; no alert.
+Driver then marks phase-a-415-bg-returned / phase-a-415-done and cancels.
+
+Driver (b) — failed submission, sheet open + actionable error (AC6b):
+$ /tmp/415-evidence.sh <udid> -corral415FailedSubmitEvidence
+Driver types Bazzite + http://127.0.0.1:1 and calls model.verifyAddHostDraft()
+— the SAME verify path the button invokes — against a connection-refused
+loopback URL (real transport failure; no daemon on the evidence sim):
+  phase-b-415-failed-sheet-open-390x844.png — sheet open, values retained,
+  red phase error "Could not verify this host's key — Could not connect to
+  the server." (no secrets), Verify host key button available for retry.
+Driver then marks phase-b-415-done and cancels.
+
+Driver (c) — successful new-host commit, original Mac host still present
+(AC6c): the app instance is launched with -corral415CommitEvidence, which
+wires a DEBUG fixture URLSession (AddHostCommitEvidenceURLProtocol) so the
+REAL prepare/register/commit flow resolves deterministically without a
+daemon (transport only is synthetic; the token never leaves the fixture
+request and is never logged).
+$ /tmp/415-evidence.sh <udid> -corral415CommitEvidence
+  phase-c-415-confirm-before-submit-390x844.png — fingerprint confirmation
+  with the masked token filled, before the submit.
+  phase-c-415-committed-390x844.png — after the REAL submit + exactly-one
+  profile commit + single dismissal: Settings Hosts list shows the ORIGINAL
+  "Mac" host (dev_evidence_mac, still paired) AND the new "Bazzite" host
+  (dev_evidence_add, Active). No alert overlay (the evidence seed marks the
+  one-shot notification setup done; no OS prompt fires on the fresh sim).
+  phase-c-415-done-390x844.png — driver settled state.
+
+Frames: /tmp/415-evidence/*.png, copied below as ios/evidence/issue-415-add-host-lifecycle/.

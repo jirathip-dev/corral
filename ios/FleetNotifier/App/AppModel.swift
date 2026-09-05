@@ -319,6 +319,16 @@ final class AppModel: ObservableObject {
     /// #399 B6: non-nil while a profile is paused awaiting fingerprint
     /// confirmation (legacy migration) — the board presents the sheet.
     @Published var fingerprintConfirmation: FingerprintConfirmationRequest?
+    /// #415: the scene-scoped Add Host draft — host name, URL, the
+    /// one-time registration token, and the current host-key verification
+    /// phase (`prepared` non-nil = fingerprint confirmation). Owned by the
+    /// MODEL (never sheet @State) so app-switch/return and sheet
+    /// view-identity churn from normal scene lifecycle updates cannot wipe
+    /// a partially entered pairing; the draft lives as long as the app
+    /// scene. The token is TRANSIENT in-memory state — never persisted,
+    /// never logged, never printed. Cleared on Cancel and only AFTER a
+    /// successful profile commit.
+    @Published var addHostDraft = AddHostDraft()
     /// #400: the per-host stream coordinator for every NON-active profile
     /// (the ACTIVE profile keeps the legacy single-host runtime fields
     /// below for F1 parity). Each coordinator session owns one independent
@@ -1423,6 +1433,62 @@ final class AppModel: ObservableObject {
         var fingerprint: String
     }
 
+    /// #415: scene-scoped Add Host sheet state (see `addHostDraft`):
+    /// `prepared` non-nil = the host key was fetched and the sheet is on
+    /// the fingerprint-confirmation phase; `errorMessage` is a
+    /// phase-identifying, secret-free failure shown inside the sheet;
+    /// `isWorking` drives the phase buttons' spinner/disabled state.
+    struct AddHostDraft: Equatable {
+        var name = ""
+        var urlString = ""
+        var token = ""
+        var prepared: PreparedHostPairing?
+        var errorMessage: String?
+        var isWorking = false
+    }
+
+    /// #415: the phase that rejected an Add Host attempt, carrying a
+    /// phase-identifying, secret-free message for the sheet.
+    enum AddHostFailure: Equatable {
+        /// A submit arrived while a registration was already in flight.
+        case inProgress
+        /// Entry/duplicate rejection (empty name, bad URL, already-paired
+        /// name/URL/identity).
+        case conflict(String)
+        /// `/host-key` fetch failed or returned an unusable key.
+        case hostKeyFetch(String)
+        /// `/register` failed (rejected token, unreachable host, ...).
+        case registrationFailed(String)
+        /// The committed profile could not be persisted.
+        case profileStore(String)
+
+        var message: String {
+            switch self {
+            case .inProgress:
+                return "Registration is already in progress — wait for it to finish, then retry."
+            case .conflict(let detail):
+                return "Could not add this host — \(detail)"
+            case .hostKeyFetch(let detail):
+                return "Could not verify this host's key — \(detail)"
+            case .registrationFailed(let detail):
+                return "Registration failed — \(detail)"
+            case .profileStore(let detail):
+                return "Could not save the paired host profile — \(detail)"
+            }
+        }
+    }
+
+    /// #415: the result of one Add Host submit attempt. `.success` means
+    /// the daemon accepted registration AND exactly one profile was
+    /// committed AND the scene-scoped draft was cleared — the sheet
+    /// dismisses exactly once, on success only. `.failure` never clears
+    /// the draft and never dismisses: every value stays available for
+    /// correction/retry.
+    enum AddHostOutcome: Equatable {
+        case success
+        case failure(AddHostFailure)
+    }
+
     /// B3 phase 1: validate name/URL and fetch `/host-key`, validating the
     /// X25519 key form. The caller shows the derived fingerprint for
     /// explicit confirmation BEFORE any registration token is accepted.
@@ -1453,31 +1519,48 @@ final class AppModel: ObservableObject {
 
     /// B3 phase 2: the user CONFIRMED the fingerprint. Register with the
     /// existing phone Ed25519 key, persist the FULL pinned key + returned
-    /// grants/expiry as the ACTIVE profile record (URL change = remove-
-    /// and-re-pair), then open the live stream. The key was verified
-    /// moments ago, so no second `/host-key` fetch runs before the first
-    /// stream; every later launch/foreground re-checks (B4).
-    func completeAddHost(_ prepared: PreparedHostPairing, token: String) async {
+    /// grants/expiry as the ACTIVE profile record (a same-URL re-pair
+    /// replaces only that URL's record; every OTHER profile — including a
+    /// previously active Mac host — stays untouched, #415), then open the
+    /// live stream. The key was verified moments ago, so no second
+    /// `/host-key` fetch runs before the first stream; every later
+    /// launch/foreground re-checks (B4).
+    ///
+    /// #415: `.success` = the daemon accepted registration AND exactly one
+    /// profile was committed AND the scene-scoped draft was cleared (the
+    /// sheet dismisses once). `.failure` never clears the draft and never
+    /// dismisses — the draft carries a phase-identifying, secret-free
+    /// error and every value stays available for correction/retry.
+    /// Repeated submits cannot duplicate a profile: an in-flight
+    /// registration returns `.failure(.inProgress)` without a second
+    /// `/register`, and the store's duplicate + same-URL purge guards keep
+    /// exactly one record per URL/identity.
+    func completeAddHost(_ prepared: PreparedHostPairing, token: String) async -> AddHostOutcome {
         guard registrationTaskId == nil else {
-            banner = .info("Registration is already in progress.")
-            return
+            return failAddHostDraft(.inProgress)
         }
-        guard let store = profileStore else { return }
+        guard let store = profileStore else {
+            return failAddHostDraft(.profileStore("the host profile store is unavailable"))
+        }
         guard let url = URL(string: prepared.urlString) else {
-            banner = .error("bad_host", "Host must be an http(s) URL or host:port")
-            return
+            return failAddHostDraft(.conflict("host must be an http(s) URL or host:port"))
         }
         do {
             try store.validateCandidate(displayName: prepared.displayName,
                                         urlString: prepared.urlString)
             try store.validateCandidateIdentity(hostKeyB64: prepared.hostKey.publicKey)
         } catch {
-            banner = .error("host_conflict", error.localizedDescription)
-            return
+            return failAddHostDraft(.conflict(error.localizedDescription))
         }
+        var outcome: AddHostOutcome = .failure(.inProgress)
         // Re-validate against the ACTIVE profile before switching (same
-        // host-switch semantics as the legacy register flow, #365).
+        // host-switch semantics as the legacy register flow, #365). The
+        // ACTIVE BINDING moves to the new host; #415: its PROFILE record
+        // is never removed — multi-host keeps every other host paired and
+        // streaming through the coordinator.
         let switchingHost = activeProfile.map { $0.urlString != prepared.urlString } ?? false
+        addHostDraft.isWorking = true
+        addHostDraft.errorMessage = nil
         cancelLifecycleTasks()
         if switchingHost {
             stopLive()
@@ -1490,7 +1573,10 @@ final class AppModel: ObservableObject {
         let sharedRegistrationContext = identityLifecycle.current()
         do {
             let (candidateSigner, storage) = try identityLoader()
-            guard isCurrent(baseContext), identityLifecycle.isCurrent(sharedRegistrationContext) else { return }
+            guard isCurrent(baseContext),
+                  identityLifecycle.isCurrent(sharedRegistrationContext) else {
+                return failAddHostDraft(.inProgress)
+            }
             let taskId = UUID()
             registrationTaskId = taskId
             let task = Task { @MainActor [weak self] in
@@ -1500,6 +1586,11 @@ final class AppModel: ObservableObject {
                     if self.registrationTaskId == taskId {
                         self.registrationTaskId = nil
                     }
+                    // #415: every exit path settles the draft's working
+                    // flag (success already cleared the whole draft; a
+                    // superseded/cancelled registration must not leave the
+                    // sheet spinning forever).
+                    self.addHostDraft.isWorking = false
                 }
                 guard self.isCurrent(baseContext),
                       self.identityLifecycle.isCurrent(sharedRegistrationContext),
@@ -1515,17 +1606,14 @@ final class AppModel: ObservableObject {
                     // removal-clear for the same URL (the new enrollment
                     // writes the token the shared key record should hold).
                     self.supersedePendingClear(urlString: url.absoluteString)
-                    // Persist the fingerprint-confirmed pairing (B3/B5);
-                    // the previous active record goes first (URL change =
-                    // remove-and-re-pair). A same-URL re-pair carries the
-                    // replaced record's per-host notification state.
+                    // Persist the fingerprint-confirmed pairing (B3/B5).
+                    // #415: only the SAME-URL record is replaced (the
+                    // store's own purge in commitActivePairing) — no
+                    // other profile is ever removed by an Add Host commit.
                     let now = UInt64(Date().timeIntervalSince1970)
                     let carriedNotifications = self.activeProfile?.urlString == url.absoluteString
                         ? (self.activeProfile?.notificationsEnabled ?? true)
                         : true
-                    if let oldActive = self.activeProfile {
-                        store.removeProfile(id: oldActive.id)
-                    }
                     let profile = try store.commitActivePairing(
                         displayName: prepared.displayName,
                         urlString: prepared.urlString,
@@ -1557,6 +1645,11 @@ final class AppModel: ObservableObject {
                     self.fleet.restoreCursor()
                     self.startLive()
                     self.banner = .info("Paired \(profile.displayName) · fingerprint confirmed")
+                    // #415: the commit succeeded — ONLY now is the draft
+                    // cleared (values survive every failure; the caller
+                    // dismisses exactly once, on success).
+                    self.addHostDraft = AddHostDraft()
+                    outcome = .success
                 } catch is CancellationError {
                     return
                 } catch {
@@ -1567,9 +1660,18 @@ final class AppModel: ObservableObject {
                         mode: self.sharedMode(for: baseContext.mode),
                         hostURL: baseContext.hostURL, keyId: baseContext.keyId,
                         signerPublicKeyB64: baseContext.signerPublicKeyB64)
-                    self.banner = .error("add_host_failed", error.localizedDescription)
                     if baseContext.mode == .live {
                         self.startLive()
+                    }
+                    if error is HostProfileError || error is HostProfileValidationError {
+                        // The only throwers past the successful /register
+                        // are the store-commit validations — the
+                        // profile-store phase.
+                        outcome = self.failAddHostDraft(.profileStore(
+                            error.localizedDescription))
+                    } else {
+                        outcome = self.failAddHostDraft(.registrationFailed(
+                            error.localizedDescription))
                     }
                 }
             }
@@ -1577,16 +1679,83 @@ final class AppModel: ObservableObject {
             await task.value
         } catch {
             guard !Task.isCancelled, isCurrent(baseContext),
-                  identityLifecycle.isCurrent(sharedRegistrationContext) else { return }
+                  identityLifecycle.isCurrent(sharedRegistrationContext) else {
+                return failAddHostDraft(.inProgress)
+            }
             identityLifecycle.setCurrent(mode: sharedMode(for: baseContext.mode),
                                          hostURL: baseContext.hostURL,
                                          keyId: baseContext.keyId,
                                          signerPublicKeyB64: baseContext.signerPublicKeyB64)
-            banner = .error("add_host_failed", error.localizedDescription)
             if baseContext.mode == .live {
                 startLive()
             }
+            return failAddHostDraft(.registrationFailed(error.localizedDescription))
         }
+        return outcome
+    }
+
+    // MARK: - Add Host draft + outcome (#415)
+
+    /// #415: clear the scene-scoped Add Host draft. Called on Cancel and
+    /// by the SUCCESS path AFTER the profile commit — never on failure,
+    /// where every draft value must stay available for correction/retry.
+    func clearAddHostDraft() {
+        addHostDraft = AddHostDraft()
+    }
+
+    /// #415: phase-1 "Verify host key" run against the scene-scoped
+    /// draft. On success the draft moves to the fingerprint-confirmation
+    /// phase (`prepared` set, name/URL/token retained); on failure the
+    /// draft keeps every value and carries a phase-identifying,
+    /// secret-free error. Sheet identity churn during the fetch cannot
+    /// lose state — the draft is model-owned.
+    func verifyAddHostDraft() async {
+        guard !addHostDraft.isWorking else { return }
+        addHostDraft.isWorking = true
+        addHostDraft.errorMessage = nil
+        defer { addHostDraft.isWorking = false }
+        do {
+            let pairing = try await prepareHostPairing(
+                displayName: addHostDraft.name,
+                rawURL: addHostDraft.urlString)
+            addHostDraft.prepared = pairing
+        } catch is CancellationError {
+            // Flow/teardown cancelled the verify: the draft keeps its
+            // values and there is nothing to report to a gone sheet.
+            Self.log.info("Add Host verification cancelled")
+        } catch {
+            addHostDraft.errorMessage = Self.addHostPrepareFailure(for: error).message
+        }
+    }
+
+    /// #415: map a phase-1 (name/URL entry + `/host-key` fetch) error to
+    /// its failure phase. Entry/duplicate errors are user-correctable
+    /// conflicts; transport and malformed-key failures are the fetch
+    /// phase. Messages never carry secrets (tokens are never echoed).
+    static func addHostPrepareFailure(for error: Error) -> AddHostFailure {
+        if let validation = error as? HostProfileValidationError {
+            return .conflict(validation.errorDescription ?? "duplicate host")
+        }
+        if let profileError = error as? HostProfileError {
+            switch profileError {
+            case .invalidHostKeyForm:
+                return .hostKeyFetch(profileError.errorDescription ?? "malformed host key")
+            default:
+                return .conflict(profileError.errorDescription ?? "invalid entry")
+            }
+        }
+        return .hostKeyFetch(error.localizedDescription)
+    }
+
+    /// #415: record a failure on the scene-scoped draft (the sheet stays
+    /// open; every draft value stays editable/retryable) and return its
+    /// outcome. Never clears the draft.
+    private func failAddHostDraft(_ failure: AddHostFailure) -> AddHostOutcome {
+        var draft = addHostDraft
+        draft.errorMessage = failure.message
+        draft.isWorking = false
+        addHostDraft = draft
+        return .failure(failure)
     }
 
     // MARK: - Grants refresh (#101)
@@ -2604,6 +2773,67 @@ final class AppModel: ObservableObject {
                                     keyId: nil,
                                     signerPublicKeyB64: signer?.publicKeyB64)
     }
+
+    /// #415 evidence: seeds the Add Host lifecycle evidence state — ONE
+    /// pre-existing "Mac" profile (the original host that must survive an
+    /// Add Host commit) and no live fleet. The bg-return / failed-submit
+    /// evidence drivers never reach a live stream (mode stays .demo); the
+    /// successful-commit driver runs the REAL prepare/register/commit flow
+    /// against a DEBUG fixture URLSession (AddHostCommitEvidenceURLProtocol)
+    /// and transitions to .live at the end — the OS notification
+    /// authorization prompt is pre-suppressed on the evidence sim so the
+    /// captured frames show the pairing result, not the permission alert.
+    func enterAddHostEvidenceSeed() {
+        guard let store = profileStore, coordinator != nil else { return }
+        cancelLifecycleTasks()
+        fleet.disconnect()
+        store.removeAll()
+        reloadProfiles(from: store)
+        let nowSeconds = UInt64(Date().timeIntervalSince1970)
+        if let mac = try? store.addProfile(
+            displayName: "Mac",
+            urlString: Self.addHostEvidenceMacURL,
+            hostKeyB64: Self.addHostEvidenceMacKey,
+            fingerprint: HostKeyTrust.fingerprint(forBase64: Self.addHostEvidenceMacKey)
+                ?? "FINGER-MAC",
+            keyId: "dev_evidence_mac",
+            grants: ["read_tail"],
+            expiryTs: nowSeconds + 90 * 86_400,
+            registeredAt: 1) {
+            store.noteLastSuccessfulConnection(id: mac.id)
+        }
+        reloadProfiles(from: store)
+        if let mac = store.orderedProfiles.first {
+            persistActiveProfileID(mac.id)
+        }
+        mode = .demo
+        demoDetailAgentId = nil
+        fingerprintConfirmation = nil
+        hostFilter = nil
+        repoFilter = nil
+        keyContinuityState = .notPinned
+        identityLifecycle.setCurrent(mode: .demo, hostURL: nil,
+                                     keyId: nil,
+                                     signerPublicKeyB64: signer?.publicKeyB64)
+        // #415 evidence (c): completeAddHost's success path calls
+        // startLive(); mark the one-shot notification setup done so the
+        // evidence sim never presents the OS authorization alert over the
+        // frames (DEBUG fixture transport; no daemon, no push).
+        notificationsConfigured = true
+    }
+
+    /// #415 evidence: fixture URL of the Mac host (bg-return / failed /
+    /// commit drivers seed this profile; see AddHostCommitEvidenceURLProtocol).
+    static let addHostEvidenceMacURL = "https://mac-evidence.tail0000.ts.net"
+    /// #415 evidence: fixture URL of the NEW host the commit driver pairs.
+    static let addHostEvidenceNewHostURL = "https://g415-bazzite.tail0000.ts.net"
+    /// #415 evidence: the original Mac host's fixture X25519 key (32-byte
+    /// fill — synthetic, never a real key).
+    static let addHostEvidenceMacKey = Data(repeating: 21, count: 32).base64EncodedString()
+    /// #415 evidence: fixture registration token for the commit driver.
+    /// Synthetic + DEBUG-only; the register body is consumed by the
+    /// fixture URLProtocol and never logged or persisted.
+    static let addHostEvidenceToken = "g415-evidence-registration-token"
 
     /// Leave demo through the same identity boundary as reset/registration.
     /// Demo rows and their cursor are discarded before a live identity is

@@ -1617,7 +1617,24 @@ struct FleetView: View {
             await runMultiHostSettingsSequence()
         } else if CorralDemoLaunch.wantsMultiHostAddEvidence(arguments: CommandLine.arguments) {
             await runMultiHostAddSequence()
+        } else if CorralDemoLaunch.wantsAddHostBgReturnEvidence(arguments: CommandLine.arguments)
+                    || CorralDemoLaunch.wantsAddHostFailedEvidence(arguments: CommandLine.arguments)
+                    || CorralDemoLaunch.wantsAddHostCommitEvidence(arguments: CommandLine.arguments) {
+            await runAddHostLifecycleSequence()
         }
+    }
+
+    /// #415 evidence: opens the Settings sheet so its DEBUG task presents
+    /// the AddHostSheet, whose own DEBUG task records the bg-return /
+    /// failed-submit / successful-commit phases (simctl cannot tap the
+    /// gear or the Add host row). The board itself stays behind the
+    /// sheets — the frames only ever show the pairing surfaces.
+    private func runAddHostLifecycleSequence() async {
+        guard model.mode == .demo else { return }
+        guard await themePause(0) else { return }
+        theme.setFlavor(.mocha)
+        showSettings = true
+        _ = await themePause(1000)
     }
 
     /// #364 C: open A → dismiss → open B → dismiss → open A in one
@@ -2654,6 +2671,17 @@ struct SettingsView: View {
                 // presentAddHostForMultiHostEvidence).
                 .task { await scrollHostsIntoViewForMultiHostEvidence(proxy) }
                 .task { await presentAddHostForMultiHostEvidence() }
+                // #415 evidence: the Add Host lifecycle drivers (bg-return
+                // / failed-submit / successful-commit) present the same
+                // sheet from the Settings state.
+                .task { await presentAddHostForLifecycleEvidence() }
+                // #415 evidence (c): when the AddHostSheet dismisses after
+                // the successful commit, scroll the Hosts rows into view
+                // for the "original Mac host still present" frame.
+                .onChange(of: showAddHost) { _, presented in
+                    guard !presented else { return }
+                    Task { await scrollHostsForAddHostCommitEvidence(proxy) }
+                }
 #endif
             }
         }
@@ -2709,6 +2737,24 @@ struct SettingsView: View {
         }
     }
 
+    /// #415 evidence (c): after the successful commit's AddHostSheet
+    /// dismissal, scroll the Hosts rows into view so the frame shows the
+    /// original Mac host PLUS the exactly-one new host (simctl cannot
+    /// drag; the hosts section sits below Connection). The sheet's own
+    /// driver task is CANCELLED by its dismissal, so this Settings-owned
+    /// task (which outlives the sheet) writes the remaining markers.
+    private func scrollHostsForAddHostCommitEvidence(_ proxy: ScrollViewProxy) async {
+        guard CorralDemoLaunch.wantsAddHostCommitEvidence(arguments: CommandLine.arguments) else { return }
+        try? await Task.sleep(for: .milliseconds(1200))
+        guard CorralDemoLaunch.wantsAddHostCommitEvidence(arguments: CommandLine.arguments) else { return }
+        withAnimation(.easeInOut(duration: 0.35)) {
+            proxy.scrollTo("settings.hosts", anchor: .top)
+        }
+        EvidenceMarkers.write("phase-c-415-committed")
+        try? await Task.sleep(for: .milliseconds(9000))
+        EvidenceMarkers.write("phase-c-415-done")
+    }
+
     /// #401 evidence: the Add Host sheet driver presents the AddHostSheet
     /// from the multi-host Settings state (the sheet's own DEBUG task then
     /// records the entry + confirmation phases — simctl cannot tap the Add
@@ -2717,6 +2763,20 @@ struct SettingsView: View {
         guard CorralDemoLaunch.wantsMultiHostAddEvidence(arguments: CommandLine.arguments) else { return }
         try? await Task.sleep(for: .milliseconds(3500))
         guard CorralDemoLaunch.wantsMultiHostAddEvidence(arguments: CommandLine.arguments) else { return }
+        showAddHost = true
+    }
+
+    /// #415 evidence: presents the AddHostSheet from the Settings state
+    /// for the bg-return / failed / commit drivers (simctl cannot tap the
+    /// Add host row; the FleetView-level driver opened Settings first).
+    private func presentAddHostForLifecycleEvidence() async {
+        guard CorralDemoLaunch.wantsAddHostBgReturnEvidence(arguments: CommandLine.arguments)
+                || CorralDemoLaunch.wantsAddHostFailedEvidence(arguments: CommandLine.arguments)
+                || CorralDemoLaunch.wantsAddHostCommitEvidence(arguments: CommandLine.arguments) else { return }
+        try? await Task.sleep(for: .milliseconds(3500))
+        guard CorralDemoLaunch.wantsAddHostBgReturnEvidence(arguments: CommandLine.arguments)
+                || CorralDemoLaunch.wantsAddHostFailedEvidence(arguments: CommandLine.arguments)
+                || CorralDemoLaunch.wantsAddHostCommitEvidence(arguments: CommandLine.arguments) else { return }
         showAddHost = true
     }
 #endif
@@ -3146,22 +3206,22 @@ private struct StepNumberBadge: View {
 /// the registration token and calls `/register` with the shared phone
 /// Ed25519 key. Full pinned key + returned grants/expiry persist in the
 /// active host profile.
+///
+/// #415: every field/phase binds to the MODEL-owned scene-scoped draft
+/// (`model.addHostDraft`) — never sheet `@State` — so app-switch/return
+/// and sheet view-identity churn from normal scene lifecycle updates
+/// preserve the entered host name, URL, token, and the current host-key
+/// verification phase. A failed submit keeps the sheet open with a
+/// phase-identifying error; only a successful commit dismisses.
 struct AddHostSheet: View {
     @ObservedObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var theme: ThemeStore
 
-    @State private var name = ""
-    @State private var urlString = ""
-    @State private var token = ""
-    @State private var prepared: AppModel.PreparedHostPairing?
-    @State private var working = false
-    @State private var errorMessage: String?
-
     var body: some View {
         NavigationStack {
             Form {
-                if let prepared {
+                if let prepared = model.addHostDraft.prepared {
                     confirmationSection(prepared)
                 } else {
                     entrySection
@@ -3171,7 +3231,27 @@ struct AddHostSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel") {
+                        // #415: Cancel abandons the pairing — the
+                        // scene-scoped draft (incl. the transient token)
+                        // is cleared. Failure never dismisses here.
+                        model.clearAddHostDraft()
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .topBarLeading) {
+                    if model.addHostDraft.prepared != nil {
+                        Button {
+                            // #415: back to the entry phase for
+                            // CORRECTION — name/URL/token all stay in the
+                            // draft; the confirmed pairing is dropped.
+                            model.addHostDraft.prepared = nil
+                            model.addHostDraft.errorMessage = nil
+                        } label: {
+                            Label("Edit host details", systemImage: "chevron.backward")
+                        }
+                        .accessibilityLabel("Edit host details")
+                    }
                 }
             }
             .scrollContentBackground(.hidden)
@@ -3181,9 +3261,10 @@ struct AddHostSheet: View {
             // typed (Tailscale first label) until the user has entered a
             // name — the reviewed gap where the sheet bound `name` but
             // never used the existing HostURLForm.displayNameCandidate.
-            .onChange(of: urlString) { _, newValue in
-                guard name.isEmpty else { return }
-                name = HostURLForm.displayNameCandidate(for: newValue)
+            // #415: the prefill writes into the model-owned draft.
+            .onChange(of: model.addHostDraft.urlString) { _, newValue in
+                guard model.addHostDraft.name.isEmpty else { return }
+                model.addHostDraft.name = HostURLForm.displayNameCandidate(for: newValue)
             }
         }
         .presentationDragIndicator(.visible)
@@ -3195,35 +3276,144 @@ struct AddHostSheet: View {
         // the name), (2) the fingerprint confirmation phase fed by the
         // synthetic fixture (no network on the evidence sim). Mocha entry,
         // Latte confirmation — representative light/dark per locked H.
+        // #415: the driver writes through the model-owned draft (the
+        // same bindings the user's typing uses).
         .task {
-            guard CorralDemoLaunch.wantsMultiHostAddEvidence(arguments: CommandLine.arguments) else { return }
-            guard await settingsSettle() else { return }
-            theme.setFlavor(.mocha)
-            urlString = DemoFleet.DemoHosts.addHostURL
-            guard await settingsSettle() else { return }
-            EvidenceMarkers.write("phase-1-mh-add-entry-mocha")
-            guard await hold() else { return }
-            theme.setFlavor(.latte)
-            guard await settingsSettle() else { return }
-            prepared = AppModel.PreparedHostPairing(
-                displayName: name.isEmpty ? "demo-host-d" : name,
-                urlString: urlString,
-                hostKey: HostKeyResponse(algorithm: "X25519",
-                                         publicKey: DemoFleet.DemoHosts.addHostKey,
-                                         note: nil),
-                fingerprint: HostKeyTrust.fingerprint(
-                    forBase64: DemoFleet.DemoHosts.addHostKey) ?? "FINGER-DEMO")
-            guard await settingsSettle() else { return }
-            EvidenceMarkers.write("phase-2-mh-add-confirm-latte")
-            _ = await hold()
-            try? await Task.sleep(for: .milliseconds(1500))
-            EvidenceMarkers.write("phase-3-mh-add-done")
-            dismiss()
+            if CorralDemoLaunch.wantsMultiHostAddEvidence(arguments: CommandLine.arguments) {
+                await runMultiHostAddSheetEvidence()
+            } else if CorralDemoLaunch.wantsAddHostBgReturnEvidence(arguments: CommandLine.arguments) {
+                await runBgReturnEvidence()
+            } else if CorralDemoLaunch.wantsAddHostFailedEvidence(arguments: CommandLine.arguments) {
+                await runFailedSubmitEvidence()
+            } else if CorralDemoLaunch.wantsAddHostCommitEvidence(arguments: CommandLine.arguments) {
+                await runCommitEvidence()
+            }
         }
 #endif
     }
 
 #if DEBUG
+    /// #401 evidence: entry (name prefill) + fingerprint-confirmation
+    /// phases via the synthetic fixture — see the .task comment above.
+    private func runMultiHostAddSheetEvidence() async {
+        guard await settingsSettle() else { return }
+        theme.setFlavor(.mocha)
+        model.addHostDraft.urlString = DemoFleet.DemoHosts.addHostURL
+        guard await settingsSettle() else { return }
+        EvidenceMarkers.write("phase-1-mh-add-entry-mocha")
+        guard await hold() else { return }
+        theme.setFlavor(.latte)
+        guard await settingsSettle() else { return }
+        model.addHostDraft.prepared = AppModel.PreparedHostPairing(
+            displayName: model.addHostDraft.name.isEmpty ? "demo-host-d" : model.addHostDraft.name,
+            urlString: model.addHostDraft.urlString,
+            hostKey: HostKeyResponse(algorithm: "X25519",
+                                     publicKey: DemoFleet.DemoHosts.addHostKey,
+                                     note: nil),
+            fingerprint: HostKeyTrust.fingerprint(
+                forBase64: DemoFleet.DemoHosts.addHostKey) ?? "FINGER-DEMO")
+        guard await settingsSettle() else { return }
+        EvidenceMarkers.write("phase-2-mh-add-confirm-latte")
+        _ = await hold()
+        try? await Task.sleep(for: .milliseconds(1500))
+        EvidenceMarkers.write("phase-3-mh-add-done")
+        model.clearAddHostDraft()
+        dismiss()
+    }
+
+    /// #415 evidence (a): a partially entered draft survives an
+    /// app-switch/return cycle. The driver types the real name/URL into
+    /// the draft, marks the state, then HOLDS across the host's
+    /// background (Settings app launch) + return (app relaunch); the
+    /// frame captured after the return must show every field populated.
+    private func runBgReturnEvidence() async {
+        guard await settingsSettle() else { return }
+        model.addHostDraft.name = "Bazzite"
+        model.addHostDraft.urlString = DemoFleet.DemoHosts.addHostURL
+        guard await settingsSettle() else { return }
+        EvidenceMarkers.write("phase-a-415-bg-filled")
+        // Hold ~24 s: the host backgrounds this app and relaunches it
+        // inside this window, then captures the returned frame.
+        guard await hold() else { return }
+        guard await hold() else { return }
+        guard await hold() else { return }
+        EvidenceMarkers.write("phase-a-415-bg-returned")
+        _ = await hold()
+        EvidenceMarkers.write("phase-a-415-done")
+        model.clearAddHostDraft()
+        dismiss()
+    }
+
+    /// #415 evidence (b): a FAILED submit keeps the sheet open with a
+    /// phase-identifying error and every draft value intact. The driver
+    /// calls the SAME verify path the button invokes against a
+    /// connection-refused loopback URL (real transport failure; no
+    /// daemon on the evidence sim).
+    private func runFailedSubmitEvidence() async {
+        guard await settingsSettle() else { return }
+        model.addHostDraft.name = "Bazzite"
+        model.addHostDraft.urlString = "http://127.0.0.1:1"
+        guard await settingsSettle() else { return }
+        await model.verifyAddHostDraft()
+        // Wait for the failure to land (fast: connection refused).
+        var attempts = 0
+        while model.addHostDraft.errorMessage == nil, attempts < 40 {
+            try? await Task.sleep(for: .milliseconds(250))
+            attempts += 1
+        }
+        guard await settingsSettle() else { return }
+        EvidenceMarkers.write("phase-b-415-failed-sheet-open")
+        guard await hold() else { return }
+        EvidenceMarkers.write("phase-b-415-done")
+        model.clearAddHostDraft()
+        dismiss()
+    }
+
+    /// #415 evidence (c): a SUCCESSFUL submit commits exactly one new
+    /// host profile and clears the draft; the follow-up Settings frame
+    /// shows the original Mac host still present. The app was launched
+    /// with a DEBUG fixture URLSession (see
+    /// AddHostCommitEvidenceURLProtocol) so /host-key + /register +
+    /// /events resolve deterministically — the flow code below is the
+    /// REAL prepare/complete path, transport only is fixture.
+    private func runCommitEvidence() async {
+        guard await settingsSettle() else { return }
+        model.addHostDraft.name = "Bazzite"
+        model.addHostDraft.urlString = AppModel.addHostEvidenceNewHostURL
+        guard await settingsSettle() else { return }
+        await model.verifyAddHostDraft()
+        var attempts = 0
+        while model.addHostDraft.prepared == nil, attempts < 40 {
+            try? await Task.sleep(for: .milliseconds(250))
+            attempts += 1
+        }
+        guard await settingsSettle() else { return }
+        // The confirmation phase WITH the token filled (SecureField dots;
+        // the token itself is never rendered in full or logged).
+        model.addHostDraft.token = AppModel.addHostEvidenceToken
+        EvidenceMarkers.write("phase-c-415-confirm-before-submit")
+        guard await hold() else { return }
+        // Real submit through the model outcome — dismisses only on
+        // success, exactly once.
+        guard let pairing = model.addHostDraft.prepared else {
+            EvidenceMarkers.write("phase-c-415-no-pairing")
+            return
+        }
+        let outcome = await model.completeAddHost(pairing, token: model.addHostDraft.token)
+        guard case .success = outcome else {
+            EvidenceMarkers.write("phase-c-415-commit-failed")
+            model.clearAddHostDraft()
+            dismiss()
+            return
+        }
+        // Success: dismiss exactly once (the same action the register
+        // button takes). Dismissal cancels THIS sheet-owned task, so the
+        // remaining commit-evidence markers (hosts list with the Mac host
+        // still present) are written by the Settings-level driver —
+        // scrollHostsForAddHostCommitEvidence — which outlives the sheet.
+        dismiss()
+    }
+
     private func settingsSettle() async -> Bool {
         do {
             try await Task.sleep(for: .milliseconds(2500))
@@ -3243,28 +3433,32 @@ struct AddHostSheet: View {
     }
 #endif
 
-    /// Phase 1: name + URL entry.
+    /// Phase 1: name + URL entry. #415: fields bind straight to the
+    /// model-owned scene-scoped draft, so churn can never clear them.
     private var entrySection: some View {
         Section {
-            ConnectionField(title: "Host name", secure: false, text: $name)
+            ConnectionField(title: "Host name", secure: false,
+                            text: $model.addHostDraft.name)
             ConnectionField(title: "https://host (Tailscale serve URL or loopback)",
-                            secure: false, text: $urlString)
-            if let errorMessage {
+                            secure: false,
+                            text: $model.addHostDraft.urlString)
+            if let errorMessage = model.addHostDraft.errorMessage {
                 Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(theme.red)
             }
             Button {
-                verifyHostKey()
+                Task { await model.verifyAddHostDraft() }
             } label: {
-                if working {
+                if model.addHostDraft.isWorking {
                     ProgressView().controlSize(.small)
                 } else {
                     Text("Verify host key")
                 }
             }
-            .disabled(working || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                      || urlString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(model.addHostDraft.isWorking
+                      || model.addHostDraft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                      || model.addHostDraft.urlString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             Text("Corral fetches the host's X25519 identity key and shows its fingerprint BEFORE any registration token is accepted. Nothing is saved yet.")
                 .font(.caption)
                 .foregroundStyle(theme.subtext1)
@@ -3305,18 +3499,19 @@ struct AddHostSheet: View {
             Text("Confirm the host identity")
         }
         Section {
-            ConnectionField(title: "Registration token", secure: true, text: $token)
+            ConnectionField(title: "Registration token", secure: true,
+                            text: $model.addHostDraft.token)
             Button {
                 complete(pairing)
             } label: {
-                if working {
+                if model.addHostDraft.isWorking {
                     ProgressView().controlSize(.small)
                 } else {
                     Text("Confirm fingerprint & register")
                 }
             }
-            .disabled(working || token.isEmpty)
-            if let errorMessage {
+            .disabled(model.addHostDraft.isWorking || model.addHostDraft.token.isEmpty)
+            if let errorMessage = model.addHostDraft.errorMessage {
                 Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(theme.red)
@@ -3326,27 +3521,19 @@ struct AddHostSheet: View {
         }
     }
 
-    private func verifyHostKey() {
-        errorMessage = nil
-        working = true
-        Task {
-            defer { working = false }
-            do {
-                prepared = try await model.prepareHostPairing(displayName: name,
-                                                              rawURL: urlString)
-            } catch {
-                errorMessage = error.localizedDescription
-            }
-        }
-    }
-
+    /// #415: submit the confirmed pairing through the model. The model
+    /// clears the draft ONLY after the commit succeeds and returns the
+    /// outcome; this sheet dismisses exactly once — on success. A failure
+    /// keeps the sheet open with the draft's phase-identifying error and
+    /// every value available for correction/retry.
     private func complete(_ pairing: AppModel.PreparedHostPairing) {
-        errorMessage = nil
-        working = true
+        guard !model.addHostDraft.isWorking else { return }
         Task {
-            defer { working = false }
-            await model.completeAddHost(pairing, token: token)
-            dismiss()
+            let outcome = await model.completeAddHost(pairing,
+                                                      token: model.addHostDraft.token)
+            if case .success = outcome {
+                dismiss()
+            }
         }
     }
 }

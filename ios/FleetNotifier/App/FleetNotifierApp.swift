@@ -7,8 +7,7 @@ struct FleetNotifierApp: App {
     // legacy single-host data migrates into it on the first upgraded
     // launch and every pairing (Add Host or legacy Connection) mirrors
     // into the ordered profile list.
-    @StateObject private var model = AppModel(profileStore: HostProfileStore(
-        directory: HostProfileStore.defaultDirectory()))
+    @StateObject private var model: AppModel
     // #372: the app-wide theme (flavor + Reduce Motion). Owned here so the
     // flavor's color scheme/tint reach every sheet and the picker's choice
     // persists across launches. #371: the DEBUG-only launch argument
@@ -24,6 +23,27 @@ struct FleetNotifierApp: App {
         return UIAccessibility.isReduceMotionEnabled
     })
     @Environment(\.scenePhase) private var scenePhase
+
+    init() {
+#if DEBUG
+        // #415 evidence (c): the successful-commit driver runs the REAL
+        // Add Host prepare/register/commit flow against a fixture
+        // transport (no daemon exists on the evidence simulator) — the
+        // URLProtocol answers /host-key + /register + /events for the
+        // fixture host URLs only.
+        if CorralDemoLaunch.wantsAddHostCommitEvidence(arguments: CommandLine.arguments) {
+            let config = URLSessionConfiguration.ephemeral
+            config.protocolClasses = [AddHostCommitEvidenceURLProtocol.self]
+            let session = URLSession(configuration: config)
+            _model = StateObject(wrappedValue: AppModel(
+                session: session,
+                profileStore: HostProfileStore(directory: HostProfileStore.defaultDirectory())))
+            return
+        }
+#endif
+        _model = StateObject(wrappedValue: AppModel(
+            profileStore: HostProfileStore(directory: HostProfileStore.defaultDirectory())))
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -56,6 +76,9 @@ struct FleetNotifierApp: App {
                                 || CorralDemoLaunch.wantsMultiHostBoardEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsMultiHostSettingsEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsMultiHostAddEvidence(arguments: CommandLine.arguments)
+                                || CorralDemoLaunch.wantsAddHostBgReturnEvidence(arguments: CommandLine.arguments)
+                                || CorralDemoLaunch.wantsAddHostFailedEvidence(arguments: CommandLine.arguments)
+                                || CorralDemoLaunch.wantsAddHostCommitEvidence(arguments: CommandLine.arguments)
                                 || CommandLine.arguments.contains("-demoMode") {
                         // #401: the multi-host evidence drivers seed three
                         // synthetic profiles (live/offline/key-mismatch)
@@ -64,6 +87,13 @@ struct FleetNotifierApp: App {
                             || CorralDemoLaunch.wantsMultiHostSettingsEvidence(arguments: CommandLine.arguments)
                             || CorralDemoLaunch.wantsMultiHostAddEvidence(arguments: CommandLine.arguments) {
                             model.enterMultiHostDemo()
+                        } else if CorralDemoLaunch.wantsAddHostBgReturnEvidence(arguments: CommandLine.arguments)
+                                    || CorralDemoLaunch.wantsAddHostFailedEvidence(arguments: CommandLine.arguments)
+                                    || CorralDemoLaunch.wantsAddHostCommitEvidence(arguments: CommandLine.arguments) {
+                            // #415: the Add Host lifecycle evidence seeds
+                            // ONE original "Mac" profile (bg-return /
+                            // failed-submit / successful-commit drivers).
+                            model.enterAddHostEvidenceSeed()
                         } else {
                             model.enterDemo()
                         }
@@ -166,6 +196,19 @@ enum CorralDemoLaunch {
     /// name/URL entry with the B3 URL-derived name prefill, then the
     /// fingerprint confirmation phase (Mocha + Latte).
     static let multiHostAddEvidenceArgument = "-corralDemoMultiHostAddEvidence"
+    /// #415: Add Host draft/error lifecycle evidence (a) — a partially
+    /// entered Add Host draft survives an app-switch/return cycle (the
+    /// host backgrounds this app via the Settings app and relaunches it).
+    static let addHostBgReturnEvidenceArgument = "-corral415BgReturnEvidence"
+    /// #415: Add Host draft/error lifecycle evidence (b) — a FAILED
+    /// submit keeps the sheet open with a phase-identifying error and
+    /// every draft value intact.
+    static let addHostFailedEvidenceArgument = "-corral415FailedSubmitEvidence"
+    /// #415: Add Host draft/error lifecycle evidence (c) — a SUCCESSFUL
+    /// submit commits exactly one new host profile and the original Mac
+    /// host stays present (fixture transport; see
+    /// AddHostCommitEvidenceURLProtocol).
+    static let addHostCommitEvidenceArgument = "-corral415CommitEvidence"
 
     static var detailAgentID: String {
         DemoFleet.featuredAgentID
@@ -251,6 +294,21 @@ enum CorralDemoLaunch {
     /// #401: the multi-host Add Host sheet evidence driver.
     static func wantsMultiHostAddEvidence(arguments: [String]) -> Bool {
         arguments.contains(multiHostAddEvidenceArgument)
+    }
+
+    /// #415: Add Host draft survives app-switch/return (evidence a).
+    static func wantsAddHostBgReturnEvidence(arguments: [String]) -> Bool {
+        arguments.contains(addHostBgReturnEvidenceArgument)
+    }
+
+    /// #415: failed Add Host submit keeps the sheet open (evidence b).
+    static func wantsAddHostFailedEvidence(arguments: [String]) -> Bool {
+        arguments.contains(addHostFailedEvidenceArgument)
+    }
+
+    /// #415: successful Add Host commit + original host present (evidence c).
+    static func wantsAddHostCommitEvidence(arguments: [String]) -> Bool {
+        arguments.contains(addHostCommitEvidenceArgument)
     }
 }
 #endif

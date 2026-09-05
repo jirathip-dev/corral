@@ -3782,8 +3782,8 @@ final class SettingsAccessWiringTests: XCTestCase {
         // open the same sheet); all required, none release-gated.
         XCTAssertEqual(releaseActionLines.count, 1,
                        "the gear must be the ONLY release-active settings opener")
-        XCTAssertEqual(allActionLines.count - releaseActionLines.count, 8,
-                       "the #365, #372, #379, #385, #388, #389, #401-settings and #401-add DEBUG evidence drivers are the only debug-gated openers")
+        XCTAssertEqual(allActionLines.count - releaseActionLines.count, 9,
+                       "the #365, #372, #379, #385, #388, #389, #401-settings, #401-add and #415 add-host-lifecycle DEBUG evidence drivers are the only debug-gated openers")
     }
 
     func testDemoOverflowMenuIsDebugOnlyAndNoLongerHidesSettings() throws {
@@ -6244,6 +6244,432 @@ final class HostKeyContinuityModelTests: XCTestCase {
     }
 }
 
+/// #415: Add Host flow URLProtocol with per-URL status/body scripts plus
+/// an OPTIONAL per-URL gate (in-flight duplicate-submit test). Delivery
+/// after a gate mirrors DeterministicDriveURLProtocol's proven queue
+/// mechanics. Unscripted URLs fail like an unreachable host.
+private final class AddHostFlowURLProtocol: URLProtocol {
+    private static let lock = NSLock()
+    private static var scriptStorage: [URL: (statusCode: Int, body: Data, holdOpen: Bool)] = [:]
+    private static var gatesStorage: [URL: DriveRequestGate] = [:]
+    private static var requestsStorage: [URLRequest] = []
+    private static let deliveryQueue = DispatchQueue(label: "corral.415.urlprotocol.delivery")
+
+    static func setScript(_ script: [URL: (Int, Data, Bool)],
+                          gates: [URL: DriveRequestGate] = [:]) {
+        lock.lock()
+        scriptStorage = script
+        gatesStorage = gates
+        requestsStorage = []
+        lock.unlock()
+    }
+
+    static var requests: [URLRequest] {
+        lock.lock()
+        defer { lock.unlock() }
+        return requestsStorage
+    }
+
+    static func clearScript() {
+        setScript([:])
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.lock.lock()
+        guard let url = request.url else {
+            Self.lock.unlock()
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        var copy = request
+        if let body = requestBodyData(request) {
+            copy.httpBody = body
+        }
+        Self.requestsStorage.append(copy)
+        let scripted = Self.scriptStorage[url]
+        let gate = Self.gatesStorage[url]
+        Self.lock.unlock()
+        guard let (statusCode, body, holdOpen) = scripted else {
+            client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost))
+            return
+        }
+        Task { [self] in
+            let canRespond: Bool
+            if let gate {
+                canRespond = await gate.wait()
+            } else {
+                canRespond = true
+            }
+            Self.deliveryQueue.async {
+                guard canRespond else {
+                    self.client?.urlProtocol(self, didFailWithError: URLError(.cancelled))
+                    return
+                }
+                // SAFETY: fixed HTTP response construction from a scripted URL.
+                let response = HTTPURLResponse(
+                    url: url, statusCode: statusCode, httpVersion: "HTTP/1.1",
+                    headerFields: holdOpen
+                        ? ["Content-Type": "text/event-stream"]
+                        : ["Content-Type": "application/json"])!
+                self.client?.urlProtocol(self, didReceive: response,
+                                         cacheStoragePolicy: .notAllowed)
+                if !body.isEmpty {
+                    self.client?.urlProtocol(self, didLoad: body)
+                }
+                if !holdOpen {
+                    self.client?.urlProtocolDidFinishLoading(self)
+                }
+            }
+        }
+    }
+
+    override func stopLoading() {}
+}
+
+// MARK: - #415 Add Host draft + error lifecycle
+
+/// #415: the Add Host draft lives on the MODEL (scene-scoped, in-memory)
+/// and completeAddHost returns an outcome the sheet acts on:
+/// - a failed submit keeps every draft value + a phase-identifying,
+///   secret-free error, never dismisses and never commits a profile;
+/// - a successful submit commits EXACTLY ONE new profile, keeps the
+///   previously active Mac profile, clears the draft only after the
+///   commit, and lets the caller dismiss exactly once;
+/// - repeated submit/retry cannot duplicate profiles and cannot disturb
+///   the existing Mac profile.
+@MainActor
+final class AddHostDraftLifecycleTests: XCTestCase {
+    /// SAFETY: fixed synthetic X25519 fixture keys (32-byte fills).
+    static let macKey = Data(repeating: 1, count: 32).base64EncodedString()
+    static let newKey = Data(repeating: 2, count: 32).base64EncodedString()
+    static let registerOK = Data(#"{"key_id":"dev_add","grants":["read_tail"],"expiry_ts":1800000000,"revoked":false,"algorithm":"Ed25519"}"#.utf8)
+    static let registerRejected = Data(#"{"kind":"bad_token","message":"registration token is invalid","request_id":"r1"}"#.utf8)
+
+    private var suiteName = ""
+    private var model: AppModel?
+    private var session: URLSession?
+
+    // SAFETY: fixed valid fixture URL literals (distinct hostnames).
+    private var macURL: URL { URL(string: "https://mac.example")! }
+    // SAFETY: fixed valid fixture URL literal (distinct hostname).
+    private var newURL: URL { URL(string: "https://bazzite.example")! }
+    private var token = "tok-415-fixture"
+
+    private func cleanup() {
+        model?.stopLive()
+        model = nil
+        session?.invalidateAndCancel()
+        session = nil
+        AddHostFlowURLProtocol.clearScript()
+        if !suiteName.isEmpty {
+            // SAFETY: suiteName was freshly minted per test.
+            UserDefaults(suiteName: suiteName)!.removePersistentDomain(forName: suiteName)
+            suiteName = ""
+        }
+    }
+
+    private func waitUntil(_ condition: @autoclosure () -> Bool,
+                           timeout: TimeInterval = 6) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+    }
+
+    private func requests(to url: URL) -> [URLRequest] {
+        AddHostFlowURLProtocol.requests.filter { $0.url?.absoluteString == url.absoluteString }
+    }
+
+    /// One pinned ACTIVE "Mac" profile + scripted endpoints for both
+    /// hosts (mac key matches the Mac pin; the new host serves `newKey`).
+    private func makeModel(registerResponse: (Int, Data, Bool)? = nil,
+                           gates: [URL: DriveRequestGate] = [:]) -> AppModel {
+        suiteName = "corral.g415.addhost.\\(UUID().uuidString)"
+        // SAFETY: a fresh UUID suite name is always a valid suite.
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let store = HostProfileStore(directory: nil, defaults: defaults)
+        // SAFETY: fixed fixture URL + key literals from the constants above.
+        let mac = try! store.addProfile(
+            displayName: "Mac",
+            urlString: macURL.absoluteString,
+            hostKeyB64: Self.macKey,
+            fingerprint: "FINGER-MAC",
+            keyId: "dev_mac",
+            grants: ["read_tail"],
+            expiryTs: 1_800_000_000,
+            registeredAt: 1)
+        defaults.set(mac.id.uuidString, forKey: "fleetnotifier.activeHostProfileID")
+        var script: [URL: (Int, Data, Bool)] = [
+            macURL.appendingPathComponent("/host-key"): (200,
+                Data(#"{"algorithm":"X25519","public_key":"\#(Self.macKey)"}"#.utf8), false),
+            newURL.appendingPathComponent("/host-key"): (200,
+                Data(#"{"algorithm":"X25519","public_key":"\#(Self.newKey)"}"#.utf8), false),
+            // /events hold open (SSE) so post-commit startLive connects.
+            macURL.appendingPathComponent("/events"): (200, Data(), true),
+            newURL.appendingPathComponent("/events"): (200, Data(), true),
+        ]
+        if let registerResponse {
+            script[newURL.appendingPathComponent("/register")] = registerResponse
+        } else {
+            script[newURL.appendingPathComponent("/register")] = (200, Self.registerOK, false)
+        }
+        AddHostFlowURLProtocol.setScript(script, gates: gates)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AddHostFlowURLProtocol.self]
+        let session = URLSession(configuration: config)
+        self.session = session
+        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        let model = AppModel(session: session, defaults: defaults,
+                             identityLoader: { (signer, .insecureFallback) },
+                             loadMeta: { nil }, saveMeta: { _ in },
+                             wipeIdentity: {},
+                             profileStore: store)
+        self.model = model
+        return model
+    }
+
+    /// Drive the draft through the SAME model entry points the sheet's
+    /// buttons call: values into the scene-scoped draft, then the
+    /// phase-1 verification (scripted host key).
+    private func primeDraft(model: AppModel,
+                            name: String = "Bazzite",
+                            rawURL: String? = nil) async throws -> AppModel.PreparedHostPairing {
+        model.addHostDraft.name = name
+        model.addHostDraft.urlString = rawURL ?? newURL.absoluteString
+        model.addHostDraft.token = token
+        await model.verifyAddHostDraft()
+        let pairing = try XCTUnwrap(model.addHostDraft.prepared,
+                                    "the scripted /host-key must reach the confirmation phase")
+        XCTAssertEqual(model.addHostDraft.name, name, "the draft keeps the name")
+        XCTAssertEqual(model.addHostDraft.token, token, "the draft keeps the token")
+        return pairing
+    }
+
+    func testFailedRegistrationKeepsDraftWithPhaseErrorAndCommitsNothing() async throws {
+        defer { cleanup() }
+        let model = makeModel(registerResponse: (401, Self.registerRejected, false))
+        let macID = try XCTUnwrap(model.activeProfile?.id)
+        let pairing = try await primeDraft(model: model)
+
+        let outcome = await model.completeAddHost(pairing, token: model.addHostDraft.token)
+
+        guard case .failure(let failure) = outcome else {
+            return XCTFail("a rejected registration must fail, got \\(outcome)")
+        }
+        XCTAssertEqual(failure, .registrationFailed(
+            "HTTP 401 bad_token: registration token is invalid"))
+        XCTAssertFalse(model.addHostDraft.errorMessage?.contains(token) ?? false,
+                       "the visible error must never expose the registration token")
+        // The sheet stays open: every draft value remains available.
+        XCTAssertEqual(model.addHostDraft.name, "Bazzite")
+        XCTAssertEqual(model.addHostDraft.urlString, newURL.absoluteString)
+        XCTAssertEqual(model.addHostDraft.token, token)
+        XCTAssertNotNil(model.addHostDraft.prepared, "the confirmation phase stays current")
+        XCTAssertFalse(model.addHostDraft.isWorking)
+        // Nothing committed; the original Mac profile is untouched.
+        XCTAssertEqual(model.profiles.count, 1)
+        XCTAssertEqual(model.profiles.first?.id, macID)
+        XCTAssertEqual(model.activeProfileID, macID)
+        XCTAssertEqual(requests(to: newURL.appendingPathComponent("/register")).count, 1)
+    }
+
+    func testSuccessCommitsExactlyOneProfileKeepsMacAndClearsDraftAfterCommit() async throws {
+        defer { cleanup() }
+        let model = makeModel()
+        let macID = try XCTUnwrap(model.activeProfile?.id)
+        let pairing = try await primeDraft(model: model)
+
+        let outcome = await model.completeAddHost(pairing, token: model.addHostDraft.token)
+
+        XCTAssertEqual(outcome, .success)
+        // Draft cleared ONLY after the commit succeeded.
+        XCTAssertEqual(model.addHostDraft, AppModel.AddHostDraft(),
+                       "a successful commit clears the whole scene-scoped draft")
+        // EXACTLY ONE new host profile, and the original Mac host is
+        // still present with its ORIGINAL record id.
+        XCTAssertEqual(model.profiles.count, 2)
+        XCTAssertEqual(model.profiles.first { $0.id == macID }?.displayName, "Mac",
+                       "the previously active Mac profile must survive the Add Host commit")
+        let added = model.profiles.filter { $0.urlString == newURL.absoluteString }
+        XCTAssertEqual(added.count, 1, "exactly one profile for the new host")
+        XCTAssertEqual(added.first?.keyId, "dev_add")
+        XCTAssertEqual(added.first?.hostKeyB64, Self.newKey,
+                       "the pinned host key persists with the new profile")
+        XCTAssertEqual(model.activeProfileID, added.first?.id,
+                       "the runtime binds the freshly paired host as active")
+        XCTAssertEqual(requests(to: newURL.appendingPathComponent("/register")).count, 1)
+    }
+
+    func testDuplicateSubmitWhileInFlightSendsExactlyOneRegister() async throws {
+        defer { cleanup() }
+        let gate = DriveRequestGate()
+        let model = makeModel(gates: [newURL.appendingPathComponent("/register"): gate])
+        let pairing = try await primeDraft(model: model)
+        let registerURL = newURL.appendingPathComponent("/register")
+
+        var firstOutcome: AppModel.AddHostOutcome?
+        let first = Task { @MainActor in
+            firstOutcome = await model.completeAddHost(pairing, token: model.addHostDraft.token)
+        }
+        await waitUntil(!requests(to: registerURL).isEmpty)
+        XCTAssertEqual(requests(to: registerURL).count, 1, "the first submit is in flight")
+
+        // A second submit while the registration is in flight is refused
+        // — no second /register, no dismissable success.
+        let secondOutcome = await model.completeAddHost(pairing, token: model.addHostDraft.token)
+        XCTAssertEqual(secondOutcome, .failure(.inProgress))
+        XCTAssertEqual(requests(to: registerURL).count, 1,
+                       "an in-flight registration must never duplicate /register")
+        XCTAssertEqual(model.profiles.count, 1, "nothing commits while the first runs")
+
+        gate.release()
+        await first.value
+        XCTAssertEqual(firstOutcome, .success)
+        XCTAssertEqual(model.profiles.count, 2)
+        XCTAssertEqual(model.profiles.filter { $0.urlString == newURL.absoluteString }.count, 1,
+                       "repeated submit cannot create duplicate host profiles")
+    }
+
+    func testRetryAfterRejectionCommitsExactlyOneProfile() async throws {
+        defer { cleanup() }
+        let model = makeModel(registerResponse: (500, Data("boom".utf8), false))
+        let pairing = try await primeDraft(model: model)
+        let registerURL = newURL.appendingPathComponent("/register")
+
+        let first = await model.completeAddHost(pairing, token: model.addHostDraft.token)
+        guard case .failure = first else {
+            return XCTFail("the first attempt must fail against a 500")
+        }
+        XCTAssertEqual(model.profiles.count, 1, "a failed attempt commits nothing")
+        XCTAssertEqual(model.activeProfile?.displayName, "Mac")
+        // Values still present for the retry (no re-priming needed).
+        XCTAssertEqual(model.addHostDraft.name, "Bazzite")
+        XCTAssertEqual(model.addHostDraft.token, token)
+
+        // The host recovers: the retry succeeds and still commits ONE
+        // profile for the new host (never two).
+        AddHostFlowURLProtocol.setScript([
+            macURL.appendingPathComponent("/host-key"): (200,
+                Data(#"{"algorithm":"X25519","public_key":"\#(Self.macKey)"}"#.utf8), false),
+            newURL.appendingPathComponent("/host-key"): (200,
+                Data(#"{"algorithm":"X25519","public_key":"\#(Self.newKey)"}"#.utf8), false),
+            macURL.appendingPathComponent("/events"): (200, Data(), true),
+            newURL.appendingPathComponent("/events"): (200, Data(), true),
+            registerURL: (200, Self.registerOK, false),
+        ])
+        let retry = await model.completeAddHost(pairing, token: model.addHostDraft.token)
+        XCTAssertEqual(retry, .success)
+        XCTAssertEqual(model.profiles.count, 2)
+        XCTAssertEqual(model.profiles.filter { $0.urlString == newURL.absoluteString }.count, 1,
+                       "retry after a rejection must not duplicate the profile")
+        XCTAssertEqual(model.profiles.first { $0.displayName == "Mac" }?.keyId, "dev_mac")
+        XCTAssertEqual(requests(to: registerURL).count, 1)
+    }
+
+    func testHostKeyFetchFailureKeepsDraftWithPhaseError() async throws {
+        defer { cleanup() }
+        let model = makeModel(registerResponse: nil)
+        // The new host stops answering /host-key (500).
+        AddHostFlowURLProtocol.setScript([
+            macURL.appendingPathComponent("/host-key"): (200,
+                Data(#"{"algorithm":"X25519","public_key":"\#(Self.macKey)"}"#.utf8), false),
+            newURL.appendingPathComponent("/host-key"): (500, Data("boom".utf8), false),
+        ])
+        let macID = try XCTUnwrap(model.activeProfile?.id)
+        model.addHostDraft.name = "Bazzite"
+        model.addHostDraft.urlString = newURL.absoluteString
+        model.addHostDraft.token = token
+
+        await model.verifyAddHostDraft()
+
+        let message = try XCTUnwrap(model.addHostDraft.errorMessage)
+        XCTAssertTrue(message.contains("Could not verify this host's key"),
+                      "the failure must name the host-key phase: \\(message)")
+        XCTAssertFalse(message.contains(token), "the visible error must never expose the token")
+        XCTAssertNil(model.addHostDraft.prepared, "no confirmation phase after a failed fetch")
+        XCTAssertEqual(model.addHostDraft.name, "Bazzite")
+        XCTAssertEqual(model.addHostDraft.urlString, newURL.absoluteString)
+        XCTAssertEqual(model.addHostDraft.token, token)
+        XCTAssertFalse(model.addHostDraft.isWorking)
+        XCTAssertEqual(model.profiles.count, 1)
+        XCTAssertEqual(model.profiles.first?.id, macID)
+    }
+
+    func testDuplicateIdentityConflictNeverRegistersOrCommits() async throws {
+        defer { cleanup() }
+        // The new URL serves the MAC's already-pinned key: the duplicate
+        // identity check must stop the flow before any /register.
+        let model = makeModel(registerResponse: (200, Self.registerOK, false))
+        AddHostFlowURLProtocol.setScript([
+            macURL.appendingPathComponent("/host-key"): (200,
+                Data(#"{"algorithm":"X25519","public_key":"\#(Self.macKey)"}"#.utf8), false),
+            newURL.appendingPathComponent("/host-key"): (200,
+                Data(#"{"algorithm":"X25519","public_key":"\#(Self.macKey)"}"#.utf8), false),
+        ])
+        let macID = try XCTUnwrap(model.activeProfile?.id)
+        let registerURL = newURL.appendingPathComponent("/register")
+
+        // Phase 1 already rejects the duplicate identity: the real verify
+        // path never reaches the confirmation phase.
+        model.addHostDraft.name = "Bazzite"
+        model.addHostDraft.urlString = newURL.absoluteString
+        model.addHostDraft.token = token
+        await model.verifyAddHostDraft()
+        let verifyMessage = try XCTUnwrap(model.addHostDraft.errorMessage)
+        XCTAssertTrue(verifyMessage.contains("already paired"),
+                      "phase 1 must name the already-paired host: \(verifyMessage)")
+        XCTAssertNil(model.addHostDraft.prepared)
+        XCTAssertTrue(requests(to: registerURL).isEmpty)
+        XCTAssertEqual(model.addHostDraft.name, "Bazzite")
+        XCTAssertEqual(model.addHostDraft.token, token)
+
+        // Phase 2 re-checks the same identity (race guard): a prepared
+        // pairing that somehow passed phase 1 is refused again before any
+        // /register — never a commit, never a duplicate.
+        let forged = AppModel.PreparedHostPairing(
+            displayName: "Bazzite",
+            urlString: newURL.absoluteString,
+            hostKey: HostKeyResponse(algorithm: "X25519",
+                                     publicKey: Self.macKey,
+                                     note: nil),
+            fingerprint: "FINGER")
+        model.clearAddHostDraft()
+        model.addHostDraft.token = token
+        let outcome = await model.completeAddHost(forged, token: model.addHostDraft.token)
+
+        guard case .failure(let failure) = outcome else {
+            return XCTFail("a duplicate host identity must be rejected, got \(outcome)")
+        }
+        XCTAssertTrue(failure.message.contains("already paired"),
+                      "the conflict must name the already-paired host: \(failure.message)")
+        XCTAssertTrue(failure.message.contains("Could not add this host"),
+                      "conflicts are user-correctable, in-phase failures")
+        XCTAssertTrue(requests(to: registerURL).isEmpty,
+                      "a duplicate identity must never reach /register")
+        XCTAssertEqual(model.profiles.count, 1)
+        XCTAssertEqual(model.profiles.first?.id, macID)
+        XCTAssertEqual(model.activeProfileID, macID)
+        XCTAssertEqual(model.addHostDraft.token, token)
+    }
+
+    func testCancelClearsTheDraftAndValuesSurviveUntilThen() async throws {
+        defer { cleanup() }
+        let model = makeModel(registerResponse: (401, Self.registerRejected, false))
+        _ = try await primeDraft(model: model)
+        // The draft (incl. the failed submit's values) is what Cancel
+        // clears — the same clearAddHostDraft call the sheet's Cancel
+        // button invokes. Until then every value is retained.
+        model.clearAddHostDraft()
+        XCTAssertEqual(model.addHostDraft, AppModel.AddHostDraft())
+        XCTAssertNil(model.addHostDraft.prepared)
+        XCTAssertNil(model.addHostDraft.errorMessage)
+        XCTAssertFalse(model.addHostDraft.isWorking)
+    }
+}
+
 // MARK: - #399 feed integrity + durable cache (C1/C5)
 
 /// Frame-level pinned-identity acceptance (C1): a frame stamped with a
@@ -6449,16 +6875,74 @@ final class HostProfileWiringTests: XCTestCase {
         let slice = String(source[start.lowerBound..<end.lowerBound])
         XCTAssertTrue(slice.contains("Text(\"Verify host key\")"),
                       "phase 1 fetches the host key before any token")
-        XCTAssertTrue(slice.contains("model.prepareHostPairing(displayName: name"),
-                      "phase 1 must route through prepareHostPairing")
+        // #415: phase 1 runs through the model's verifyAddHostDraft (the
+        // scene-scoped draft owns name/URL/token/phase state).
+        XCTAssertTrue(slice.contains("model.verifyAddHostDraft()"),
+                      "phase 1 must route through the model's draft verify path")
         XCTAssertTrue(slice.contains("Text(\"Confirm fingerprint & register\")"),
                       "phase 2 requires explicit fingerprint confirmation")
-        XCTAssertTrue(slice.contains("model.completeAddHost(pairing, token: token)"),
+        XCTAssertTrue(slice.contains("model.completeAddHost(pairing,"),
                       "registration runs only after confirmation")
         XCTAssertTrue(slice.contains("Registration token"),
                       "the token field appears at the confirmation step")
         XCTAssertTrue(slice.contains("UIPasteboard.general.string = pairing.fingerprint"),
                       "the full fingerprint stays copyable")
+        // #415: the sheet dismisses EXACTLY ONCE per outcome — on Cancel
+        // and on a successful commit; the old unconditional
+        // dismiss-after-submit is gone (a failed submit keeps the sheet
+        // open with the draft's error). Scope the pins to the complete()
+        // action: the DEBUG evidence drivers above it may dismiss too.
+        let completeLine = try XCTUnwrap(
+            lineNumbers(of: "private func complete(_ pairing", in: slice).first)
+        let callLines = lineNumbers(of: "let outcome = await model.completeAddHost", in: slice)
+            .filter { $0 > completeLine }
+        XCTAssertEqual(callLines.count, 1, "the submit must await the model outcome once")
+        // SAFETY: callLines was asserted non-empty immediately above.
+        let successLine = try XCTUnwrap(
+            lineNumbers(of: "if case .success = outcome {", in: slice)
+                .first { $0 > completeLine },
+            "the submit must branch on the model outcome")
+        let dismissLines = lineNumbers(of: "dismiss()", in: slice).filter { $0 > completeLine }
+        XCTAssertTrue(dismissLines.contains { $0 > successLine && $0 - successLine <= 6 },
+                      "a successful commit dismisses the sheet (once)")
+        let nearestDismiss = dismissLines
+            .map { abs($0 - callLines[0]) }
+            .min() ?? 0
+        XCTAssertGreaterThan(nearestDismiss, 2,
+                             "dismiss() must never directly follow the submit call")
+        let cancelLine = try XCTUnwrap(
+            lineNumbers(of: "Button(\"Cancel\")", in: slice).first)
+        XCTAssertTrue(lineNumbers(of: "dismiss()", in: slice).contains { $0 - cancelLine <= 5 },
+                      "Cancel clears the draft and dismisses")
+    }
+
+    func testAddHostSheetBindsTheSceneScopedDraft() throws {
+        // #415 AC1: every Add Host field/phase lives on the MODEL-owned
+        // scene-scoped draft ($model.addHostDraft.*), never sheet @State —
+        // a recreated sheet view over the same model (scene lifecycle
+        // churn) must render the same name/URL/token/phase.
+        let source = try bundledSource()
+        let start = try XCTUnwrap(source.range(of: "struct AddHostSheet: View {"))
+        let end = try XCTUnwrap(source.range(of: "/// #399 B6: the launch-time fingerprint confirmation"))
+        let slice = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(slice.contains("text: $model.addHostDraft.name"),
+                      "the host-name field must bind the scene-scoped draft")
+        XCTAssertTrue(slice.contains("text: $model.addHostDraft.urlString"),
+                      "the URL field must bind the scene-scoped draft")
+        XCTAssertTrue(slice.contains("text: $model.addHostDraft.token"),
+                      "the token field must bind the scene-scoped draft")
+        XCTAssertTrue(slice.contains("if let prepared = model.addHostDraft.prepared"),
+                      "the current verification phase must come from the draft")
+        XCTAssertTrue(slice.contains("model.clearAddHostDraft()"),
+                      "Cancel clears the scene-scoped draft")
+        XCTAssertTrue(slice.contains("Edit host details"),
+                      "the confirmation phase keeps a correction affordance")
+        XCTAssertFalse(slice.contains("@State private var name"),
+                       "the draft must never live in sheet @State")
+        XCTAssertFalse(slice.contains("@State private var token"),
+                       "the token must never live in sheet @State")
+        XCTAssertFalse(slice.contains("var urlString = \"\""),
+                       "the URL must never be sheet-local")
     }
 
     func testBoardPresentsFingerprintConfirmationForPausedProfiles() throws {
@@ -8254,11 +8738,12 @@ final class MultiHostSurfaceWiringTests: XCTestCase {
         let slice = String(source[start.lowerBound..<end.lowerBound])
         // #399 rev B3: the sheet must prefill the NAME from the entered URL
         // through the existing candidate helper — never leave `name` dead.
-        XCTAssertTrue(slice.contains("name = HostURLForm.displayNameCandidate(for: newValue)"),
+        // #415: the prefill writes into the model-owned scene-scoped draft.
+        XCTAssertTrue(slice.contains("model.addHostDraft.name = HostURLForm.displayNameCandidate(for: newValue)"),
                       "B3: the sheet must prefill the host name from the URL")
-        XCTAssertTrue(slice.contains("guard name.isEmpty else { return }"),
+        XCTAssertTrue(slice.contains("guard model.addHostDraft.name.isEmpty else { return }"),
                       "B3: a hand-entered name must never be overwritten")
-        XCTAssertTrue(slice.contains("onChange(of: urlString)"),
+        XCTAssertTrue(slice.contains("onChange(of: model.addHostDraft.urlString)"),
                       "B3: the prefill must track URL entry")
     }
 

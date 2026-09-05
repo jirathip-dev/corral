@@ -2522,72 +2522,61 @@ struct SettingsView: View {
                             .foregroundStyle(theme.subtext1)
                     }
                     Section("Notifications") {
-                        // #401 F2: with 2+ configured profiles APNs
-                        // enrollment + deep-link routing are DISABLED and
-                        // Settings explains why — a bare lane id cannot name
-                        // a host, so Corral never guesses one. Pending
-                        // empty-token cleanups (offline hosts) surface here
-                        // and retry on that host's next reconnect.
-                        if model.pushPosture == .multiHostDisabled {
-                            Label("With 2+ hosts, notifications and alert deep links are disabled — a lane id can't name a host, so Corral never guesses one.",
+                        // #397: with 2+ hosts every host enrolls and
+                        // notifies INDEPENDENTLY — per-host state lives on
+                        // each Hosts row below (enroll / clear that host's
+                        // token); this is the retained GLOBAL control.
+                        // Pending empty-token cleanups (per-host disable or
+                        // host removal while the host was unreachable)
+                        // surface here and clear when that host reconnects.
+                        Toggle("State-change notifications",
+                               isOn: Binding(
+                                // #389: while the permission is BLOCKED the
+                                // switch shows OFF regardless of the persisted
+                                // intent — the blocked row below explains why
+                                // and the 'Open iOS Settings' action is the
+                                // path back. When the user allows
+                                // notifications in the system Settings and
+                                // returns, the persisted intent (if it was
+                                // ON) resurfaces automatically.
+                                get: { model.notificationsEnabled
+                                    && !model.notificationPermission.showsBlockedGuidance },
+                                set: { model.setNotificationsEnabled($0) }))
+                        // #389 evidence + DEBUG scroll: the row-level anchor
+                        // (same convention as #379's settings.device) lets
+                        // the denied-state driver bring the Notifications
+                        // section into view — Appearance + Connection +
+                        // Device sit above it on 390x844 and simctl cannot
+                        // scroll the form.
+                        .id("settings.notifications")
+                        // #389: a blocked permission (.denied/.restricted)
+                        // shows WHY + an 'Open iOS Settings' action instead
+                        // of the enable toggle silently failing — iOS
+                        // delivers nothing (no APNs token, no local alert)
+                        // until the user allows notifications there. The
+                        // status is refreshed on Settings appear and on
+                        // every foreground (refreshNotificationPermission).
+                        if model.notificationPermission.showsBlockedGuidance {
+                            Label("Corral can't alert you — notifications are off for this app in iOS Settings.",
                                   systemImage: "bell.slash")
                                 .font(.caption)
-                                .foregroundStyle(theme.subtext1)
-                                .id("settings.notifications.multi-host")
-                            Text("Notifications re-enable automatically when exactly one host remains.")
+                                .foregroundStyle(theme.peach)
+                            Button("Open iOS Settings") {
+                                openAppSettings()
+                            }
+                            .font(.subheadline)
+                        } else {
+                            Text("Alerts when an agent starts, blocks, or finishes on any paired host. Each host's own state is on its row in the Hosts section. No badges or catch-up.")
                                 .font(.caption)
                                 .foregroundStyle(theme.subtext1)
-                            if !model.pendingPushTokenClears.isEmpty {
-                                let names = model.profiles
-                                    .filter { model.pendingPushTokenClears.contains($0.id) }
-                                    .map(\.displayName)
-                                Label("Previously uploaded token cleanup still pending for: \(names.joined(separator: ", ")). It clears when that host reconnects, or remove the host host-side.",
-                                      systemImage: "arrow.triangle.2.circlepath")
-                                    .font(.caption)
-                                    .foregroundStyle(theme.peach)
-                            }
-                        } else {
-                            Toggle("State-change notifications",
-                                   isOn: Binding(
-                                    // #389: while the permission is BLOCKED the
-                                    // switch shows OFF regardless of the persisted
-                                    // intent — the blocked row below explains why
-                                    // and the 'Open iOS Settings' action is the
-                                    // path back. When the user allows
-                                    // notifications in the system Settings and
-                                    // returns, the persisted intent (if it was
-                                    // ON) resurfaces automatically.
-                                    get: { model.notificationsEnabled
-                                        && !model.notificationPermission.showsBlockedGuidance },
-                                    set: { model.setNotificationsEnabled($0) }))
-                            // #389 evidence + DEBUG scroll: the row-level anchor
-                            // (same convention as #379's settings.device) lets
-                            // the denied-state driver bring the Notifications
-                            // section into view — Appearance + Connection +
-                            // Device sit above it on 390x844 and simctl cannot
-                            // scroll the form.
-                            .id("settings.notifications")
-                            // #389: a blocked permission (.denied/.restricted)
-                            // shows WHY + an 'Open iOS Settings' action instead
-                            // of the enable toggle silently failing — iOS
-                            // delivers nothing (no APNs token, no local alert)
-                            // until the user allows notifications there. The
-                            // status is refreshed on Settings appear and on
-                            // every foreground (refreshNotificationPermission).
-                            if model.notificationPermission.showsBlockedGuidance {
-                                Label("Corral can't alert you — notifications are off for this app in iOS Settings.",
-                                      systemImage: "bell.slash")
-                                    .font(.caption)
-                                    .foregroundStyle(theme.peach)
-                                Button("Open iOS Settings") {
-                                    openAppSettings()
-                                }
-                                .font(.subheadline)
-                            } else {
-                                Text("Alerts when an agent starts, blocks, or finishes. No badges or catch-up.")
-                                    .font(.caption)
-                                    .foregroundStyle(theme.subtext1)
-                            }
+                        }
+                        if !model.pendingPushTokenClears.isEmpty {
+                            let names = model.pendingPushClearNames()
+                            Label("Notification enrollment cleanup pending for: \(names.joined(separator: ", ")). It clears when that host reconnects; a removed host that never returns must be dropped host-side.",
+                                  systemImage: "arrow.triangle.2.circlepath")
+                                .font(.caption)
+                                .foregroundStyle(theme.peach)
+                                .id("settings.notifications.pending-clear")
                         }
                     }
                     .task { await model.refreshNotificationPermission() }
@@ -2861,6 +2850,24 @@ struct SettingsView: View {
                                value: profile.grants.isEmpty
                                    ? "\(expiryText) (no grants)"
                                    : expiryText)
+            }
+            // #397: per-host notification state (enroll + DEBUG-bridge for
+            // THIS host) under the retained global Notifications control.
+            // Disabling clears the host's enrolled APNs token best-effort;
+            // a paused/mismatched host cannot enroll — its toggle renders
+            // OFF (the persisted intent stays true and resurfaces once the
+            // host can connect) and is disabled.
+            if profile.keyId != nil {
+                Toggle("Notify about this host",
+                       isOn: Binding(
+                        get: { profile.mayConnect
+                                && profile.notificationsEnabled },
+                        set: { model.setHostNotificationsEnabled(profileID: profile.id,
+                                                                  enabled: $0) }))
+                    .disabled(!profile.mayConnect)
+                    .accessibilityLabel("Notify about \(profile.displayName)")
+                    .accessibilityHint("Controls whether this host may send state-change alerts")
+                    .id("settings.hosts.notify.\(profile.id.uuidString)")
             }
             if profile.connectionState == .awaitingFingerprintConfirmation
                 || (profile.hostKeyB64 == nil && model.keyContinuityState == .pending) {

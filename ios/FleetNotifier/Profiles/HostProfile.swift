@@ -52,6 +52,11 @@ struct HostProfile: Codable, Equatable, Identifiable, Sendable {
     /// Epoch millis of the last successful HTTP/SSE connection (C6) —
     /// updated on a successful connection, not only on data events.
     var lastSuccessfulConnectionTs: UInt64?
+    /// #397: per-host state-change notification enrollment. The global
+    /// Notifications control is retained; this flag decides whether THIS
+    /// host may enroll the APNs token (and fire the DEBUG bridge). True by
+    /// default — absent on pre-#397 profile documents, decoded as true.
+    var notificationsEnabled: Bool
 
     /// Whether this profile is allowed to open a live stream right now.
     var mayConnect: Bool {
@@ -71,7 +76,8 @@ struct HostProfile: Codable, Equatable, Identifiable, Sendable {
          order: Int,
          connectionState: ProfileConnectionState = .disconnected,
          cursorRev: UInt64? = nil,
-         lastSuccessfulConnectionTs: UInt64? = nil) {
+         lastSuccessfulConnectionTs: UInt64? = nil,
+         notificationsEnabled: Bool = true) {
         self.id = id
         self.displayName = displayName
         self.urlString = urlString
@@ -85,6 +91,73 @@ struct HostProfile: Codable, Equatable, Identifiable, Sendable {
         self.connectionState = connectionState
         self.cursorRev = cursorRev
         self.lastSuccessfulConnectionTs = lastSuccessfulConnectionTs
+        self.notificationsEnabled = notificationsEnabled
+    }
+}
+
+// MARK: - Codable (additive #397 field, backward-compatible decode)
+
+extension HostProfile {
+    /// Custom CodingKeys keep the stored document's JSON key names
+    /// identical to the pre-#397 form for every EXISTING field; the
+    /// additive `notificationsEnabled` key decodes as true when absent so
+    /// an old `host-profiles-v1.json` loads unchanged (per-host state was
+    /// introduced after that document format shipped).
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case displayName
+        case urlString
+        case hostKeyB64
+        case fingerprint
+        case keyId
+        case grants
+        case expiryTs
+        case registeredAt
+        case order
+        case connectionState
+        case cursorRev
+        case lastSuccessfulConnectionTs
+        case notificationsEnabled
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        displayName = try c.decode(String.self, forKey: .displayName)
+        urlString = try c.decode(String.self, forKey: .urlString)
+        hostKeyB64 = try c.decodeIfPresent(String.self, forKey: .hostKeyB64)
+        fingerprint = try c.decodeIfPresent(String.self, forKey: .fingerprint)
+        keyId = try c.decodeIfPresent(String.self, forKey: .keyId)
+        grants = try c.decodeIfPresent([String].self, forKey: .grants) ?? []
+        expiryTs = try c.decodeIfPresent(UInt64.self, forKey: .expiryTs)
+        registeredAt = try c.decode(UInt64.self, forKey: .registeredAt)
+        order = try c.decode(Int.self, forKey: .order)
+        connectionState = try c.decodeIfPresent(ProfileConnectionState.self,
+                                                 forKey: .connectionState) ?? .disconnected
+        cursorRev = try c.decodeIfPresent(UInt64.self, forKey: .cursorRev)
+        lastSuccessfulConnectionTs = try c.decodeIfPresent(UInt64.self,
+                                                           forKey: .lastSuccessfulConnectionTs)
+        // #397 additive: pre-#397 documents have no key — default ON.
+        notificationsEnabled = try c.decodeIfPresent(Bool.self,
+                                                     forKey: .notificationsEnabled) ?? true
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(displayName, forKey: .displayName)
+        try c.encode(urlString, forKey: .urlString)
+        try c.encodeIfPresent(hostKeyB64, forKey: .hostKeyB64)
+        try c.encodeIfPresent(fingerprint, forKey: .fingerprint)
+        try c.encodeIfPresent(keyId, forKey: .keyId)
+        try c.encode(grants, forKey: .grants)
+        try c.encodeIfPresent(expiryTs, forKey: .expiryTs)
+        try c.encode(registeredAt, forKey: .registeredAt)
+        try c.encode(order, forKey: .order)
+        try c.encode(connectionState, forKey: .connectionState)
+        try c.encodeIfPresent(cursorRev, forKey: .cursorRev)
+        try c.encodeIfPresent(lastSuccessfulConnectionTs, forKey: .lastSuccessfulConnectionTs)
+        try c.encode(notificationsEnabled, forKey: .notificationsEnabled)
     }
 }
 

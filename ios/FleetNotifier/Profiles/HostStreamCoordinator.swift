@@ -229,6 +229,13 @@ final class HostStreamCoordinator: ObservableObject {
     /// HTTP/SSE connection (C6 last-seen + F2 pending-clear retry).
     var onSessionConnected: (@MainActor (UUID) -> Void)?
 
+    /// #397: fired when one of this coordinator's host stores observes a
+    /// state-change transition (started / blocked / finished) for an agent
+    /// — the composite (host profile, raw agent id) notification surface
+    /// for the DEBUG local bridge. AppModel consumes it per host; equal
+    /// raw agent ids on different hosts fire independently.
+    var onAgentTransition: (@MainActor (PushPayload.PushType, String, UUID) -> Void)?
+
     init(defaults: UserDefaults = .standard,
          session: URLSession = .shared,
          profileStore: HostProfileStore? = nil,
@@ -345,6 +352,18 @@ final class HostStreamCoordinator: ObservableObject {
             self.persistMetadata(for: profile, session: session)
             self.onSessionConnected?(profile.id)
             self.objectWillChange.send()
+        }
+        // #397: per-host state-change notification hooks — each session's
+        // store owns its own transition shadow, so an equal raw agent id
+        // on another host fires as an independent composite event.
+        session.store.onStarted = { @MainActor [weak self] agentID in
+            self?.onAgentTransition?(.started, agentID, profile.id)
+        }
+        session.store.onBlocked = { @MainActor [weak self] agentID in
+            self?.onAgentTransition?(.blocked, agentID, profile.id)
+        }
+        session.store.onFinished = { @MainActor [weak self] agentID in
+            self?.onAgentTransition?(.finished, agentID, profile.id)
         }
         session.store.connect(client: client)
         objectWillChange.send()

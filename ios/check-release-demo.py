@@ -243,7 +243,14 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # (per-host transition hooks), AppModel (per-host enrollment/clears,
     # composite notification routing), FleetViews (per-host Settings state)
     # — re-pinned over the #397 source set.
-    "ffd8dfa4099659a40db35a3bc0ee2042417c2b4b73efd112e469352b93d74e5a"
+    # 415: Add Host draft/error lifecycle — AppModel (scene-scoped
+    # AddHostDraft + AddHostOutcome + phase failures + no-active-removal
+    # commit + evidence seed), FleetViews (draft-bound AddHostSheet +
+    # dismiss-on-success + evidence drivers), FleetNotifierApp (evidence
+    # launch args + fixture-session init), DemoFleet-free evidence
+    # transport (Demo/AddHostCommitEvidenceURLProtocol) — re-pinned over
+    # the #415 source set.
+    "7d917e1d2012d5587a37007805934629776a3f9c39123af29ca68d937b1db67f"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -347,7 +354,13 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # RecentsCompositeRouteTests, PushPostureModelTests) added to
     # FleetNotifierTests.swift, and two wiring pins updated for the
     # composite recents target — re-pinned.
-    "28fc4640c6165f3b204f8d6165876adecfef433b51fade9138aa0b282f34c80a"
+    # 415: AddHostDraftLifecycleTests (7 model-level tests: draft
+    # retention, failure-without-dismissal, success-only commit/clear,
+    # duplicate-submit protection, retry idempotence, Mac-profile
+    # preservation) + AddHostFlowURLProtocol + updated AddHostSheet
+    # wiring pins (scene-scoped draft bindings, dismiss-on-success-only)
+    # — re-pinned over the #415 test source.
+    "2338ec261e3637ba74fed37ceace6a250e7920347267d286fe64ec159ad7068c"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

@@ -185,6 +185,43 @@ enum BoardModel {
         return subgroups
     }
 
+    // MARK: - #386 status-section collapse (per-session view state)
+
+    /// Which status sections the user collapsed during THIS board session.
+    /// A fresh state has every section EXPANDED; `toggle(_:)` collapses an
+    /// expanded section and expands a collapsed one. The state is
+    /// in-memory only and is NEVER persisted (consistent with #373 recents
+    /// blocks): the board owns one instance per session, so a relaunch
+    /// always starts fully expanded. Sections are keyed by
+    /// `AgentState.rawValue` — the same stable id `StatusSection` exposes —
+    /// so no wire model needs new conformances.
+    struct StatusSectionCollapse: Equatable, Sendable {
+        private(set) var collapsed: Set<String> = []
+
+        /// A fresh board session: every status section expanded.
+        static let fresh = StatusSectionCollapse()
+
+        func isCollapsed(_ state: AgentState) -> Bool {
+            collapsed.contains(state.rawValue)
+        }
+
+        /// Collapse an expanded section / expand a collapsed one.
+        mutating func toggle(_ state: AgentState) {
+            if collapsed.contains(state.rawValue) {
+                collapsed.remove(state.rawValue)
+            } else {
+                collapsed.insert(state.rawValue)
+            }
+        }
+
+        /// Collapse a section (no-op when already collapsed). Idempotent —
+        /// the deterministic evidence driver uses this so a re-fired task
+        /// can never undo a collapse (toggle stays the interactive path).
+        mutating func collapse(_ state: AgentState) {
+            collapsed.insert(state.rawValue)
+        }
+    }
+
     // MARK: - Persistent connection indicator (#166 review F1)
 
     /// The persistent board connection indicator, modeled as a pure function
@@ -221,4 +258,253 @@ enum FleetConnectionStatus: Equatable, Sendable {
 
     /// True when the view should show the small spinner (not text).
     var isSpinner: Bool { self == .connecting }
+}
+
+// MARK: - #401 multi-host board projections (D1-D7 view-model, consumes #400 rows)
+
+/// #401: the multi-host board consumes `HostBoardRow` (the #400 composite
+/// read-model row with staleness + last-seen facts) and NEVER re-derives
+/// ranking: rows arrive in `HostBoardProjection`'s canonical + live-first
+/// order. The projections below are pure view-model helpers over those rows
+/// plus per-host runtime facts — host/repo filters, host chips (D2/D3/D4),
+/// the board-level outage summary (D7), and the status-section → repo-
+/// subgroup buckets that MERGE equal repo names across hosts (D5).
+extension BoardModel {
+
+    /// Per-host runtime facts the host-filter chips and Settings host rows
+    /// render from (D3/D7). Produced by the model from #399/#400 state
+    /// (`connectionState`/posture/continuity) — never re-derived here.
+    struct HostRuntimeFacts: Equatable, Sendable {
+        var isConnected = false
+        var isConnecting = false
+        var keyMismatch = false
+        var awaitingFingerprint = false
+    }
+
+    /// The health posture of one host chip (D3/D7). Textual label ALWAYS
+    /// rides with the color — color is never the only channel (D8).
+    enum HostChipHealth: Equatable, Sendable {
+        case live
+        case connecting
+        case offline
+        case keyMismatch
+        case awaitingFingerprint
+
+        var label: String {
+            switch self {
+            case .live: return "live"
+            case .connecting: return "connecting"
+            case .offline: return "offline"
+            case .keyMismatch: return "key mismatch"
+            case .awaitingFingerprint: return "awaiting fingerprint"
+            }
+        }
+    }
+
+    /// Classify one host's runtime facts into the chip health vocabulary.
+    /// Mismatch and unconfirmed pins fail closed and OUT-rank any store
+    /// connection state (B4/B6: such a host is never live).
+    static func hostChipHealth(for facts: HostRuntimeFacts) -> HostChipHealth {
+        if facts.keyMismatch { return .keyMismatch }
+        if facts.awaitingFingerprint { return .awaitingFingerprint }
+        if facts.isConnected { return .live }
+        if facts.isConnecting { return .connecting }
+        return .offline
+    }
+
+    /// #401 D8: the Catppuccin TOKEN for each host health posture — the
+    /// single mapping both the board chips and the Settings host rows
+    /// resolve, so the four themes can never diverge. Color is NEVER the
+    /// only channel: the textual health label and VoiceOver values always
+    /// accompany it.
+    static func hostHealthToken(_ health: HostChipHealth) -> CatppuccinToken {
+        switch health {
+        case .live: return .green
+        case .connecting: return .yellow
+        case .offline: return .peach
+        case .keyMismatch: return .red
+        case .awaitingFingerprint: return .surface2
+        }
+    }
+
+    /// One host-filter chip (D2/D3): a profile in user-controlled order, its
+    /// TOTAL lane count (independent of the repo filter), and its health.
+    /// `profileID == nil` is the All chip carrying the UNIFIED lane count and
+    /// the aggregate (partial) health of every host.
+    struct HostFilterChip: Identifiable, Equatable, Sendable {
+        let profileID: UUID?
+        let displayName: String
+        let laneCount: Int
+        let health: HostChipHealth
+
+        var isAll: Bool { profileID == nil }
+        var id: String { profileID?.uuidString ?? "all-hosts" }
+    }
+
+    /// Lane counts per host profile over an aggregate row set (D3).
+    static func laneCounts(_ rows: [HostBoardRow]) -> [UUID: Int] {
+        rows.reduce(into: [:]) { counts, row in
+            counts[row.identity.hostProfileID, default: 0] += 1
+        }
+    }
+
+    /// The host chip row in render order: All first, then every host in the
+    /// given (user-controlled) order — zero-lane and offline hosts stay
+    /// visible (D3). The All chip shows the unified count and the aggregate
+    /// partial health: live only when EVERY host is live; otherwise the
+    /// worst posture (mismatch > awaiting > offline > connecting) so the
+    /// chip can never claim full health during a partial outage (D3/D7).
+    static func hostChips(hosts: [HostFilterChip]) -> [HostFilterChip] {
+        let allLaneCount = hosts.reduce(0) { $0 + $1.laneCount }
+        let kinds = Set(hosts.map(\.health))
+        let allHealth: HostChipHealth
+        if kinds.isEmpty || kinds == [.live] {
+            allHealth = .live
+        } else if kinds.contains(.keyMismatch) {
+            allHealth = .keyMismatch
+        } else if kinds.contains(.awaitingFingerprint) {
+            allHealth = .awaitingFingerprint
+        } else if kinds.contains(.offline) {
+            allHealth = .offline
+        } else {
+            allHealth = .connecting
+        }
+        return [HostFilterChip(profileID: nil, displayName: "All",
+                               laneCount: allLaneCount, health: allHealth)]
+            + hosts
+    }
+
+    /// The compact board-level outage summary (D7): nil when every host is
+    /// live; otherwise "1 host offline"-style text naming each unreachable
+    /// kind. Never a full-width reconnect banner.
+    static func hostOutageSummary(hosts: [HostFilterChip]) -> String? {
+        var parts: [String] = []
+        let offline = hosts.filter { $0.health == .offline }.count
+        if offline == 1 {
+            parts.append("1 host offline")
+        } else if offline > 1 {
+            parts.append("\(offline) hosts offline")
+        }
+        let mismatch = hosts.filter { $0.health == .keyMismatch }.count
+        if mismatch == 1 {
+            parts.append("1 host key mismatch")
+        } else if mismatch > 1 {
+            parts.append("\(mismatch) hosts key mismatch")
+        }
+        let awaiting = hosts.filter { $0.health == .awaitingFingerprint }.count
+        if awaiting == 1 {
+            parts.append("1 host awaiting fingerprint")
+        } else if awaiting > 1 {
+            parts.append("\(awaiting) hosts awaiting fingerprint")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// D2/D4: keep the rows of ONE host (nil = every host).
+    static func rows(_ rows: [HostBoardRow], forHost hostProfileID: UUID?) -> [HostBoardRow] {
+        guard let hostProfileID else { return rows }
+        return rows.filter { $0.identity.hostProfileID == hostProfileID }
+    }
+
+    /// D4: keep the rows of one repo (nil = every repo). Host + repo both
+    /// apply because the caller filters by host first, then repo.
+    static func rows(_ rows: [HostBoardRow], in repo: String?) -> [HostBoardRow] {
+        guard let repo else { return rows }
+        return rows.filter { $0.agent.workspace.repo == repo }
+    }
+
+    /// D4: the repo chip set over the ROWS of the selected host (All Hosts =
+    /// the unified set). Choices AND counts recalculate when the host
+    /// selection changes; chips never zero other chips' counts.
+    static func repoFilters(_ rows: [HostBoardRow]) -> [RepoFilterChip] {
+        let counts = rows.reduce(into: [String: Int]()) { counts, row in
+            guard let repo = row.agent.workspace.repo else { return }
+            counts[repo, default: 0] += 1
+        }
+        return counts.keys.sorted()
+            .map { RepoFilterChip(repo: $0, count: counts[$0] ?? 0) }
+    }
+
+    /// #401 D5/C6/C7: one always-open repo subgroup INSIDE a host-status
+    /// section. Rows from SEVERAL hosts sharing one repo name land in the
+    /// same subgroup (no host sections/tabs — D5); the subgroup preserves
+    /// the incoming #400 ranking (live rows before stale rows inside the
+    /// same (state, repo) bucket — C7) and the raw state tokens are never
+    /// recast.
+    struct HostRepoSubgroup: Equatable, Identifiable, Sendable {
+        /// The workspace repo; `nil` = the Other subgroup (no repo /
+        /// unknown repo), always rendered last.
+        let repo: String?
+        let rows: [HostBoardRow]
+
+        var id: String { repo ?? BoardModel.otherRepoLabel }
+        var displayName: String { repo ?? BoardModel.otherRepoLabel }
+        var header: String { "\(displayName) (\(rows.count))" }
+    }
+
+    /// #401 D5: one status section of the multi-host board — raw herdr state
+    /// in the locked attention order, holding its repo subgroups.
+    struct HostStatusSection: Equatable, Identifiable, Sendable {
+        let state: AgentState
+        let subgroups: [HostRepoSubgroup]
+
+        var id: String { state.rawValue }
+        var total: Int { subgroups.reduce(0) { $0 + $1.rows.count } }
+        var header: String { "\(state.displayName) (\(total))" }
+    }
+
+    struct HostSections: Equatable, Sendable {
+        let statuses: [HostStatusSection]
+    }
+
+    /// Bucket ALREADY-RANKED rows into the locked status sections and repo
+    /// subgroups. The incoming order is #400's canonical + live-first order;
+    /// this partition is a STABLE filter/bucket pass (D5/C7) — it never
+    /// re-sorts rows or recasts a state.
+    static func hostSections(_ rows: [HostBoardRow]) -> HostSections {
+        let lockedOrder: [AgentState] = [.blocked, .working, .idle, .done, .unknown]
+        let statuses = lockedOrder.compactMap { state -> HostStatusSection? in
+            let members = rows.filter { $0.agent.state == state }
+            guard !members.isEmpty else { return nil }
+            return HostStatusSection(state: state, subgroups: hostSubgroups(of: members))
+        }
+        return HostSections(statuses: statuses)
+    }
+
+    /// Bucket one status partition into repo subgroups: named repos in
+    /// alphabetical order, then the Other subgroup (no repo / unknown repo)
+    /// LAST. Equal repo names from several hosts share one subgroup (D5);
+    /// each subgroup preserves the incoming row order.
+    static func hostSubgroups(of rows: [HostBoardRow]) -> [HostRepoSubgroup] {
+        var byRepo: [String: [HostBoardRow]] = [:]
+        var orphans: [HostBoardRow] = []
+        for row in rows {
+            if let repo = repoKey(of: row.agent) {
+                byRepo[repo, default: []].append(row)
+            } else {
+                orphans.append(row)
+            }
+        }
+        var subgroups = byRepo.keys.sorted()
+            .map { HostRepoSubgroup(repo: $0, rows: byRepo[$0] ?? []) }
+        if !orphans.isEmpty {
+            subgroups.append(HostRepoSubgroup(repo: nil, rows: orphans))
+        }
+        return subgroups
+    }
+
+    /// Grants/expiry read-out text for a host Settings row (D7). Expiry is
+    /// the daemon epoch-seconds grant deadline, rendered in UTC date text so
+    /// the copy is locale-independent and testable.
+    static func expiryText(epochSeconds: UInt64?) -> String? {
+        guard let epochSeconds, epochSeconds > 0 else { return nil }
+        let date = Date(timeIntervalSince1970: TimeInterval(epochSeconds))
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC") ?? calendar.timeZone
+        let parts = calendar.dateComponents([.year, .month, .day], from: date)
+        guard let year = parts.year, let month = parts.month, let day = parts.day else {
+            return nil
+        }
+        return String(format: "%04d-%02d-%02d", year, month, day)
+    }
 }

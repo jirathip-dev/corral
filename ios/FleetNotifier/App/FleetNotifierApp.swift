@@ -3,7 +3,12 @@ import SwiftUI
 @main
 struct FleetNotifierApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var model = AppModel()
+    // #399: the production app always configures the host-profile store —
+    // legacy single-host data migrates into it on the first upgraded
+    // launch and every pairing (Add Host or legacy Connection) mirrors
+    // into the ordered profile list.
+    @StateObject private var model = AppModel(profileStore: HostProfileStore(
+        directory: HostProfileStore.defaultDirectory()))
     // #372: the app-wide theme (flavor + Reduce Motion). Owned here so the
     // flavor's color scheme/tint reach every sheet and the picker's choice
     // persists across launches. #371: the DEBUG-only launch argument
@@ -42,8 +47,26 @@ struct FleetNotifierApp: App {
                                 || CorralDemoLaunch.wantsFilterEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsSettingsEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsThemeEvidence(arguments: CommandLine.arguments)
+                                || CorralDemoLaunch.wantsGlassEvidence(arguments: CommandLine.arguments)
+                                || CorralDemoLaunch.wantsRepoLabelEvidence(arguments: CommandLine.arguments)
+                                || CorralDemoLaunch.wantsCollapseEvidence(arguments: CommandLine.arguments)
+                                || CorralDemoLaunch.wantsTitleEvidence(arguments: CommandLine.arguments)
+                                || CorralDemoLaunch.wantsConnectionInputsEvidence(arguments: CommandLine.arguments)
+                                || CorralDemoLaunch.wantsDeniedNotificationsEvidence(arguments: CommandLine.arguments)
+                                || CorralDemoLaunch.wantsMultiHostBoardEvidence(arguments: CommandLine.arguments)
+                                || CorralDemoLaunch.wantsMultiHostSettingsEvidence(arguments: CommandLine.arguments)
+                                || CorralDemoLaunch.wantsMultiHostAddEvidence(arguments: CommandLine.arguments)
                                 || CommandLine.arguments.contains("-demoMode") {
-                        model.enterDemo()
+                        // #401: the multi-host evidence drivers seed three
+                        // synthetic profiles (live/offline/key-mismatch)
+                        // instead of the single-host demo fleet.
+                        if CorralDemoLaunch.wantsMultiHostBoardEvidence(arguments: CommandLine.arguments)
+                            || CorralDemoLaunch.wantsMultiHostSettingsEvidence(arguments: CommandLine.arguments)
+                            || CorralDemoLaunch.wantsMultiHostAddEvidence(arguments: CommandLine.arguments) {
+                            model.enterMultiHostDemo()
+                        } else {
+                            model.enterDemo()
+                        }
                     }
 #endif
                 }
@@ -61,6 +84,12 @@ struct FleetNotifierApp: App {
                             // reset (idempotent; never blocks the stream).
                             Task { await model.refreshGrants() }
                         }
+                        // #389: re-read the OS notification permission on
+                        // every foreground so the Settings Notifications
+                        // guidance reflects a grant/denial the user just
+                        // made in the system Settings app (the Settings
+                        // sheet stays up across that trip).
+                        Task { await model.refreshNotificationPermission() }
                     @unknown default:
                         break
                     }
@@ -84,6 +113,29 @@ struct FleetNotifierApp: App {
 /// launch is UNPAIRED, then records the auto-presented How-to-connect
 /// sheet, the Settings sheet (Device section without the grants list), and
 /// the shared connect sheet content.
+/// `-corralDemoGlassEvidence` (#385) seeds the demo fleet and records the
+/// translucent recents + Settings sheets (Mocha + Latte) over the busy
+/// board.
+/// `-corralDemoRepoLabelEvidence` (#384) seeds the demo fleet and records
+/// the per-row repo label visibility rule — All rows WITH their repo label
+/// chips vs the demo-atlas repo pill active (rows WITHOUT repo name labels,
+/// color-only hue echo, same row heights), then All restored, in Mocha and
+/// Latte.
+/// `-corralDemoCollapseEvidence` (#386) seeds the demo fleet and records
+/// the board hierarchy change — thick collapsible status bars vs demoted
+/// repo subgroup captions — with the blocked section collapsed and the
+/// working section expanded (Mocha + Latte), then all sections collapsed.
+/// `-corralDemoTitleEvidence` (#387) seeds the demo fleet and records the
+/// chrome-only board header — no 'Fleet' title text in the top OR scrolled
+/// nav-bar states (Mocha + Latte), via the board ScrollViewReader driver.
+/// `-corralDemoConnectionInputsEvidence` (#388) seeds the demo fleet and
+/// records the Settings Connection section — themed surface1 inputs on
+/// Macchiato/Mocha/Latte in the unpaired state, then the paired status row
+/// (token field hidden) after the driver seeds a demo registration key id.
+/// `-corralDemoDeniedNotificationsEvidence` (#389) seeds the demo fleet in
+/// MOCHA and forces the DENIED notification permission posture so the
+/// Settings Notifications section's blocked guidance + 'Open iOS Settings'
+/// action can be captured (a simulator cannot be denied notifications).
 enum CorralDemoLaunch {
     static let detailArgument = "-corralDemoDetail"
     static let reopenEvidenceArgument = "-corralDemoUXEvidence"
@@ -91,6 +143,29 @@ enum CorralDemoLaunch {
     static let settingsEvidenceArgument = "-corralDemoSettingsEvidence"
     static let themeEvidenceArgument = "-corralDemoThemeEvidence"
     static let connectEvidenceArgument = "-corralDemoConnectEvidence"
+    static let glassEvidenceArgument = "-corralDemoGlassEvidence"
+    static let repoLabelEvidenceArgument = "-corralDemoRepoLabelEvidence"
+    static let collapseEvidenceArgument = "-corralDemoCollapseEvidence"
+    static let titleEvidenceArgument = "-corralDemoTitleEvidence"
+    static let connectionInputsEvidenceArgument = "-corralDemoConnectionInputsEvidence"
+    /// #389: forces the DENIED notification permission posture in demo mode
+    /// so the Settings Notifications section's blocked guidance + 'Open iOS
+    /// Settings' action can be captured (a simulator cannot be denied
+    /// notifications through simctl privacy — no notifications service).
+    static let deniedNotificationsEvidenceArgument = "-corralDemoDeniedNotificationsEvidence"
+    /// #401: seeds the deterministic MULTI-HOST demo state (Host A live,
+    /// Host B offline with retained stale rows, Host C key mismatch) and
+    /// records the All Hosts / one-host-filtered / partial-offline board
+    /// frames (Mocha + Latte).
+    static let multiHostBoardEvidenceArgument = "-corralDemoMultiHostBoardEvidence"
+    /// #401: same multi-host demo state, recording the Settings Hosts list
+    /// (per-host rows with error/last-seen/retry/rename/remove + the
+    /// mismatch row) in Mocha + Latte.
+    static let multiHostSettingsEvidenceArgument = "-corralDemoMultiHostSettingsEvidence"
+    /// #401: same multi-host demo state, recording the Add Host sheet —
+    /// name/URL entry with the B3 URL-derived name prefill, then the
+    /// fingerprint confirmation phase (Mocha + Latte).
+    static let multiHostAddEvidenceArgument = "-corralDemoMultiHostAddEvidence"
 
     static var detailAgentID: String {
         DemoFleet.featuredAgentID
@@ -118,6 +193,64 @@ enum CorralDemoLaunch {
 
     static func wantsConnectEvidence(arguments: [String]) -> Bool {
         arguments.contains(connectEvidenceArgument)
+    }
+
+    /// #385: records the translucent recents + Settings sheets over the
+    /// busy demo board (Mocha + Latte) behind marker files — see
+    /// `FleetView.runGlassSequence()`.
+    static func wantsGlassEvidence(arguments: [String]) -> Bool {
+        arguments.contains(glassEvidenceArgument)
+    }
+
+    /// #384: records the per-row repo label visibility rule — All rows
+    /// with their repo label chips vs the demo-atlas pill active (rows
+    /// without repo name labels, same row heights), then All restored, in
+    /// Mocha and Latte — see `FleetView.runRepoLabelSequence()`.
+    static func wantsRepoLabelEvidence(arguments: [String]) -> Bool {
+        arguments.contains(repoLabelEvidenceArgument)
+    }
+
+    /// #386: records the board-hierarchy change — thick collapsible
+    /// status bars vs demoted repo captions, one section collapsed and
+    /// one expanded (Mocha + Latte) — see
+    /// `FleetView.runCollapseSequence()`.
+    static func wantsCollapseEvidence(arguments: [String]) -> Bool {
+        arguments.contains(collapseEvidenceArgument)
+    }
+
+    /// #387: records the chrome-only board header — Mocha + Latte at the
+    /// top AND scrolled (no 'Fleet' title text in either nav-bar state) —
+    /// see `FleetView.runTitleSequence()`.
+    static func wantsTitleEvidence(arguments: [String]) -> Bool {
+        arguments.contains(titleEvidenceArgument)
+    }
+
+    /// #388: records the Settings Connection inputs — unpaired (themed
+    /// host + token + Register) then paired (status row, no token field)
+    /// across Macchiato/Mocha/Latte — see
+    /// `FleetView.runConnectionInputsSequence()`.
+    static func wantsConnectionInputsEvidence(arguments: [String]) -> Bool {
+        arguments.contains(connectionInputsEvidenceArgument)
+    }
+
+    /// #389: the denied-notifications Settings evidence driver.
+    static func wantsDeniedNotificationsEvidence(arguments: [String]) -> Bool {
+        arguments.contains(deniedNotificationsEvidenceArgument)
+    }
+
+    /// #401: the multi-host board evidence driver.
+    static func wantsMultiHostBoardEvidence(arguments: [String]) -> Bool {
+        arguments.contains(multiHostBoardEvidenceArgument)
+    }
+
+    /// #401: the multi-host Settings evidence driver.
+    static func wantsMultiHostSettingsEvidence(arguments: [String]) -> Bool {
+        arguments.contains(multiHostSettingsEvidenceArgument)
+    }
+
+    /// #401: the multi-host Add Host sheet evidence driver.
+    static func wantsMultiHostAddEvidence(arguments: [String]) -> Bool {
+        arguments.contains(multiHostAddEvidenceArgument)
     }
 }
 #endif

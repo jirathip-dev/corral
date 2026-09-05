@@ -42,7 +42,14 @@ targets:
           - "$(SRCROOT)/FleetNotifier/Network/SSEParser.swift"
           - "$(SRCROOT)/FleetNotifier/Notifications/AppDelegate.swift"
           - "$(SRCROOT)/FleetNotifier/Notifications/LocalNotifier.swift"
+          - "$(SRCROOT)/FleetNotifier/Notifications/NotificationPermission.swift"
           - "$(SRCROOT)/FleetNotifier/Notifications/PushPayload.swift"
+          - "$(SRCROOT)/FleetNotifier/Profiles/BoardCache.swift"
+          - "$(SRCROOT)/FleetNotifier/Profiles/HostKeyTrust.swift"
+          - "$(SRCROOT)/FleetNotifier/Profiles/HostProfile.swift"
+          - "$(SRCROOT)/FleetNotifier/Profiles/HostProfileStore.swift"
+          - "$(SRCROOT)/FleetNotifier/Profiles/HostStreamCoordinator.swift"
+          - "$(SRCROOT)/FleetNotifier/Profiles/KeyContinuityGate.swift"
           - "$(SRCROOT)/FleetNotifier/UI/AppTheme.swift"
           - "$(SRCROOT)/FleetNotifier/UI/BoardModel.swift"
           - "$(SRCROOT)/FleetNotifier/UI/FleetViews.swift"
@@ -90,7 +97,15 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS: YES
       configs:
+        # #389: real APNs push needs the aps-environment entitlement. Debug
+        # signs with development, Release with production (Xcode's standard
+        # split). AUTOMATIC signing (CODE_SIGN_STYLE Automatic + team
+        # 9244PWFYD7 above) auto-provisions the App ID capability — no Apple
+        # portal action is needed or allowed from this lane.
+        Debug:
+          CODE_SIGN_ENTITLEMENTS: FleetNotifier/FleetNotifier.entitlements
         Release:
+          CODE_SIGN_ENTITLEMENTS: FleetNotifier/FleetNotifier-Release.entitlements
           OTHER_LDFLAGS:
             - "-Xlinker"
             - "-sectcreate"

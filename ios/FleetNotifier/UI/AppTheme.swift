@@ -582,3 +582,99 @@ extension ThemeStore {
         }
     }
 }
+
+// MARK: - #385 translucent sheet backdrop (constants + WCAG math)
+
+/// The #385 translucent-sheet contract: RecentOutputSheet and the Settings
+/// sheet sit over a backdrop that lets the board content show through
+/// softly (the approved terminal-transparency look; #373 AC that #378/#381
+/// missed). Below iOS 26 the backdrop is the active flavor's base tinted at
+/// `fallbackTintAlpha` over an ultra-thin material blur; iOS 26+ renders the
+/// NATIVE Liquid Glass surface instead (see FleetViews.swift
+/// `TranslucentSheetBackdrop`). Text layers that need guaranteed AA keep
+/// their opaque token backing; the backdrop itself is verified against the
+/// spec's 4.5:1 minimum in the worst underlying-content case by
+/// `SheetBackdropTests`.
+enum SheetBackdrop {
+    /// Spec lock (#385): the fallback tint alpha must sit in this
+    /// terminal-transparency band.
+    static let fallbackTintAlphaRange: ClosedRange<Double> = 0.85...0.90
+
+    /// The locked fallback tint alpha: theme base at 88 % over the backdrop
+    /// blur material (inside the 0.85–0.90 spec band; tests assert both).
+    static let fallbackTintAlpha: Double = 0.88
+
+    /// The iOS 26+ Native Liquid Glass tint strength: the flavor's base
+    /// token is applied to the glass at this opacity. A FULLY opaque tint
+    /// paints the glass into a solid flat color (no board visible through
+    /// the sheet — measured on the iOS 26.5 sim), so the theme hook stays
+    /// a tint over the still-translucent glass material. Tests lock it to
+    /// the 0.2–0.4 band and re-verify the sheet AC.
+    static let glassTintOpacity: Double = 0.3
+    static let glassTintOpacityRange: ClosedRange<Double> = 0.2...0.4
+
+    /// The spec's minimum contrast for sheet content over the translucent
+    /// backdrop (WCAG AA).
+    static let minimumContrast: Double = 4.5
+
+    /// `top` at `alpha` over `bottom` (sRGB component lerp), returning the
+    /// composite `#rrggbb`. Rounding matches the palette mix helpers
+    /// (half-boundary components round to even), so the tests' worst-case
+    /// math equals what the renderer composites.
+    static func blend(_ top: String, alpha: Double, over bottom: String) -> String {
+        func component(_ hex: String, _ index: Int) -> Double {
+            let body = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
+            let start = body.index(body.startIndex, offsetBy: index * 2)
+            let end = body.index(start, offsetBy: 2)
+            return Double(UInt32(body[start..<end], radix: 16) ?? 0)
+        }
+        let t = min(max(alpha, 0), 1)
+        var out = "#"
+        for index in 0..<3 {
+            let value = (component(top, index) * t
+                         + component(bottom, index) * (1 - t))
+                .rounded(.toNearestOrEven)
+            out += String(format: "%02x", Int(value))
+        }
+        return out
+    }
+
+    /// WCAG 2.x relative luminance of a `#RRGGBB` hex.
+    static func relativeLuminance(_ hex: String) -> Double {
+        func channel(_ value: Double) -> Double {
+            let s = value / 255
+            return s <= 0.04045 ? s / 12.92 : pow((s + 0.055) / 1.055, 2.4)
+        }
+        func component(_ index: Int) -> Double {
+            let body = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
+            let start = body.index(body.startIndex, offsetBy: index * 2)
+            let end = body.index(start, offsetBy: 2)
+            return Double(UInt32(body[start..<end], radix: 16) ?? 0)
+        }
+        return 0.2126 * channel(component(0))
+            + 0.7152 * channel(component(1))
+            + 0.0722 * channel(component(2))
+    }
+
+    /// WCAG contrast ratio (1…21) between two `#RRGGBB` hexes.
+    static func contrastRatio(_ first: String, _ second: String) -> Double {
+        let a = relativeLuminance(first)
+        let b = relativeLuminance(second)
+        let lighter = max(a, b)
+        let darker = min(a, b)
+        return (lighter + 0.05) / (darker + 0.05)
+    }
+
+    /// The worst contrast `ink` holds over the translucent sheet tint: the
+    /// tint composite is `tint` at `fallbackTintAlpha` over each candidate
+    /// underlying hex, and the worst (lowest) ratio wins. Used by the tests
+    /// to prove the spec's 4.5:1 minimum on the darkest underlying-content
+    /// case for every palette token the sheet could float over.
+    static func worstContrast(ink: String, tint: String,
+                              over candidates: [String]) -> Double {
+        candidates
+            .map { contrastRatio(ink, blend(tint, alpha: fallbackTintAlpha,
+                                            over: $0)) }
+            .min() ?? 0
+    }
+}

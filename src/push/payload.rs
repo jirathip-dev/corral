@@ -17,9 +17,21 @@
 //! ## Wire shape
 //!
 //! The payload is the APNs body: `aps` (alert/category/thread) plus the
-//! custom `type`/`agent_id`/… keys the iOS app parses. The DEBUG-only iOS
-//! local-notification bridge embeds the same keys so one handler serves
-//! both paths.
+//! custom `type`/`agent_id`/`host_id`/… keys the iOS app parses. The
+//! DEBUG-only iOS local-notification bridge embeds the same keys so one
+//! handler serves both paths.
+//!
+//! ## Composite target (#397)
+//!
+//! Every payload carries the daemon's stable X25519 host identity as
+//! `host_id` (the same base64 key `GET /host-key` publishes and the phone
+//! pins per host profile). The notification TARGET is the composite
+//! `(host_id, agent_id)`: `agent_id` stays the raw wire id for the selected
+//! host's read requests, while `aps.thread-id` is namespaced
+//! `host_id::agent_id` so equal raw agent ids on two independent hosts
+//! group as separate notification threads on the phone. The iOS side
+//! routes taps by matching `host_id` against the pinned host key of
+//! exactly one profile — a display name/URL is never a routing identity.
 //!
 //! ## Device-token registration request
 //!
@@ -117,13 +129,16 @@ pub fn canonical_grants_read_bytes(request: &GrantsReadRequest) -> Vec<u8> {
 
 /// APNs push body for a blocked agent (D16 surface 1).
 ///
-/// `prompt` is redacted here, at the machine boundary, before any byte
-/// leaves the daemon. `approval_id` + `prompt_hash` come from the store
-/// record (itself derived by the adapter); the phone binds its reply to
-/// this hash.
+/// `host_id` is the daemon's pinned X25519 host identity (#397) — the
+/// composite target `(host_id, agent_id)` keeps equal raw agent ids on
+/// independent hosts distinct on the phone. `prompt` is redacted at the
+/// machine boundary before any byte leaves the daemon, and the
+/// `approval_id` + `prompt_hash` pair comes from the store record
+/// (derived by the adapter); the phone binds its reply to this hash.
 #[allow(clippy::too_many_arguments)]
 pub fn blocked_payload(
     agent_id: &str,
+    host_id: &str,
     display_name: Option<&str>,
     workspace: &Workspace,
     kind: WaitingOnKind,
@@ -136,6 +151,9 @@ pub fn blocked_payload(
         &redact(display_name.filter(|s| !s.is_empty()).unwrap_or(agent_id)),
         MAX_TITLE_BYTES,
     );
+    // #397: the aps thread-id is the composite target — equal raw agent
+    // ids from two hosts never share a Notification Center thread.
+    let thread_id = composite_thread_id(host_id, agent_id);
     let choices: Vec<String> = choices
         .iter()
         .take(MAX_CHOICES)
@@ -158,9 +176,10 @@ pub fn blocked_payload(
                 },
                 "sound": "default",
                 "category": "AGENT_BLOCKED",
-                "thread-id": agent_id,
+                "thread-id": thread_id,
             },
             "type": "blocked",
+            "host_id": host_id,
             "agent_id": agent_id,
             "prompt_hash": prompt_hash,
             "approval_id": approval_id,
@@ -194,6 +213,7 @@ pub fn blocked_payload(
 /// notification. No category → iOS renders it without action buttons.
 pub fn done_payload(
     agent_id: &str,
+    host_id: &str,
     display_name: Option<&str>,
     workspace: &Workspace,
 ) -> serde_json::Value {
@@ -212,17 +232,32 @@ pub fn done_payload(
                 "body": redact(&body),
             },
             "sound": "default",
-            "thread-id": agent_id,
+            "thread-id": composite_thread_id(host_id, agent_id),
         },
         "type": "done",
+        "host_id": host_id,
         "agent_id": agent_id,
         "ts": now_secs(),
     })
 }
 
+/// #397: the composite `aps.thread-id` of a notification target. The two
+/// halves are joined with the same `::` separator the iOS composite
+/// identity uses; host keys are fixed-width base64 so the agent id — which
+/// may itself contain `:` — can never be confused for the host half.
+fn composite_thread_id(host_id: &str, agent_id: &str) -> String {
+    format!("{host_id}::{agent_id}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #397 fixture host identity: base64 of 32 bytes — the wire form of
+    /// the daemon's X25519 public key (any 32-byte value is a valid
+    /// X25519 public-key byte string; fixture only).
+    const TEST_HOST_ID: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    const OTHER_HOST_ID: &str = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
 
     fn workspace() -> Workspace {
         Workspace {
@@ -252,6 +287,7 @@ mod tests {
         let choices: Vec<String> = (0..20).map(|i| format!("choice {i}")).collect();
         let p = blocked_payload(
             "herdr:ses-1",
+            TEST_HOST_ID,
             Some("builder"),
             &workspace(),
             WaitingOnKind::Menu,
@@ -261,6 +297,7 @@ mod tests {
             &choices,
         );
         assert_eq!(p["type"], "blocked");
+        assert_eq!(p["host_id"], TEST_HOST_ID);
         assert_eq!(p["agent_id"], "herdr:ses-1");
         assert_eq!(p["prompt_hash"], "sha256:abc");
         assert_eq!(p["approval_id"], "herdr:ses-1:sha256:abc");
@@ -268,7 +305,10 @@ mod tests {
         assert_eq!(p["aps"]["category"], "AGENT_BLOCKED");
         assert_eq!(p["aps"]["alert"]["title"], "builder");
         assert_eq!(p["aps"]["alert"]["body"], "proceed?");
-        assert_eq!(p["aps"]["thread-id"], "herdr:ses-1");
+        assert_eq!(
+            p["aps"]["thread-id"],
+            format!("{TEST_HOST_ID}::herdr:ses-1")
+        );
         assert_eq!(p["repo"], "jirathip-k/corral");
         assert_eq!(p["branch"], "g26/apns-push");
         assert_eq!(
@@ -279,12 +319,50 @@ mod tests {
     }
 
     #[test]
+    fn payloads_namespace_thread_and_host_by_composite_target() {
+        // #397: the same raw agent id on two hosts is the SAME target's
+        // agent half but a DIFFERENT composite target — distinct host_id
+        // values and distinct thread ids, raw agent_id preserved.
+        let choices = vec!["y".to_string()];
+        let p = blocked_payload(
+            "herdr:ses-dup",
+            TEST_HOST_ID,
+            None,
+            &workspace(),
+            WaitingOnKind::Menu,
+            "proceed?",
+            "sha256:abc",
+            "herdr:ses-dup:sha256:abc",
+            &choices,
+        );
+        let q = blocked_payload(
+            "herdr:ses-dup",
+            OTHER_HOST_ID,
+            None,
+            &workspace(),
+            WaitingOnKind::Menu,
+            "proceed?",
+            "sha256:abc",
+            "herdr:ses-dup:sha256:abc",
+            &choices,
+        );
+        assert_eq!(p["agent_id"], "herdr:ses-dup", "raw agent id preserved");
+        assert_eq!(q["agent_id"], "herdr:ses-dup", "raw agent id preserved");
+        assert_ne!(p["host_id"], q["host_id"]);
+        assert_ne!(p["aps"]["thread-id"], q["aps"]["thread-id"]);
+        let d = done_payload("herdr:ses-dup", TEST_HOST_ID, None, &workspace());
+        let e = done_payload("herdr:ses-dup", OTHER_HOST_ID, None, &workspace());
+        assert_ne!(d["aps"]["thread-id"], e["aps"]["thread-id"]);
+    }
+
+    #[test]
     fn blocked_payload_redacts_secret_shaped_prompt() {
         // The store holds redacted text by construction, but the push
         // boundary must not depend on that: inject a raw secret-shaped
         // prompt and assert the delivered body is clean (D13/D16).
         let p = blocked_payload(
             "herdr:ses-1",
+            TEST_HOST_ID,
             None,
             &workspace(),
             WaitingOnKind::ApproveTool,
@@ -308,8 +386,9 @@ mod tests {
 
     #[test]
     fn done_payload_is_plain_without_actions() {
-        let p = done_payload("herdr:ses-1", Some("builder"), &workspace());
+        let p = done_payload("herdr:ses-1", TEST_HOST_ID, Some("builder"), &workspace());
         assert_eq!(p["type"], "done");
+        assert_eq!(p["host_id"], TEST_HOST_ID);
         assert_eq!(p["agent_id"], "herdr:ses-1");
         assert!(p.get("category").is_none(), "done has no action category");
         assert!(
@@ -327,6 +406,7 @@ mod tests {
         let huge = "a".repeat(10 * 1024);
         let p = blocked_payload(
             "herdr:ses-1",
+            TEST_HOST_ID,
             Some("builder"),
             &workspace(),
             WaitingOnKind::ApproveTool,
@@ -366,6 +446,7 @@ mod tests {
         let choices: Vec<String> = vec![huge_choice.clone(); 20];
         let p = blocked_payload(
             "herdr:ses-1",
+            TEST_HOST_ID,
             None,
             &workspace(),
             WaitingOnKind::Menu,

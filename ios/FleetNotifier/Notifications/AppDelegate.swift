@@ -86,6 +86,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 
     private let identityLifecycle: IdentityLifecycle
     private let session: URLSession
+    private let defaults: UserDefaults
     private let identityProvider: @Sendable () -> DeviceSigner?
     private let beforeDeviceTokenUpload: @Sendable () async -> Void
     private let deviceTokenState = DeviceTokenState()
@@ -105,17 +106,48 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     /// the device key store.
     init(identityLifecycle: IdentityLifecycle = .shared,
          session: URLSession = .shared,
+         defaults: UserDefaults = .standard,
          identityProvider: @escaping @Sendable () -> DeviceSigner? = {
              try? DeviceKeyStore.loadOrCreate().0
          },
          beforeDeviceTokenUpload: @escaping @Sendable () async -> Void = {}) {
         self.identityLifecycle = identityLifecycle
         self.session = session
+        self.defaults = defaults
         self.identityProvider = identityProvider
         self.beforeDeviceTokenUpload = beforeDeviceTokenUpload
         super.init()
         Self.shared = self
     }
+
+    /// #400 F2: records that a device token was ever uploaded under the
+    /// current keychain identity. Persisted across launches so the
+    /// 2+-profile safety gate can best-effort CLEAR a previously uploaded
+    /// token even when this process never received a fresh OS token.
+    static let deviceTokenUploadedKey = "fleetnotifier.deviceTokenUploaded"
+
+    /// Whether this device holds a token a daemon may have enrolled (this
+    /// process received an OS token, or a previous process recorded a
+    /// successful signed upload). The 2+-profile gate uses this to decide
+    /// that empty-token cleanup is warranted.
+    func hasUploadedDeviceToken() -> Bool {
+        defaults.bool(forKey: Self.deviceTokenUploadedKey)
+            || Self.apnsRegistered
+    }
+
+    /// #397: the APNs token retained by this process (nil before the OS
+    /// callback). AppModel reads it to enroll every NON-active host with
+    /// that host profile's own signed registration record.
+    var retainedDeviceToken: String? {
+        deviceTokenState.pending
+    }
+
+    /// #397: fired when the OS hands this process a device token, so
+    /// AppModel can fan the token out to every paired host (the delegate
+    /// itself only uploads for the ACTIVE lifecycle identity). Installed
+    /// by AppModel when the model is live; a token received before that is
+    /// still retained and picked up by the next startLive() fan-out.
+    var onDeviceTokenReceived: (@Sendable (String) -> Void)?
 
     func application(_ application: UIApplication,
                      didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
@@ -130,14 +162,17 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     func receiveDeviceToken(_ hex: String) -> Task<Void, Never>? {
         Self.apnsRegistered = true
         deviceTokenState.remember(hex)
+        onDeviceTokenReceived?(hex)
         return startDeviceTokenUploadIfPossible(hex)
     }
 
     func application(_ application: UIApplication,
                      didFailToRegisterForRemoteNotificationsWithError error: Error) {
-        // Simulator / missing aps-environment entitlement: keep the DEBUG
-        // local bridge; on release builds this is a silent no-op (the
-        // notifier just won't deliver until the profile has the entitlement).
+        // #389: the target now carries aps-environment (development Debug /
+        // production Release — CODE_SIGN_ENTITLEMENTS in project.yml), so on
+        // a real device this fires only for a genuine APNs failure. The
+        // SIMULATOR has no push service and always fails here: keep the
+        // DEBUG local bridge (PushBridge) as the exercisable fallback.
         Self.apnsRegistered = false
     }
 
@@ -164,6 +199,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     func clearRetainedDeviceToken() {
         deviceTokenState.clear()
         Self.apnsRegistered = false
+        // #400 F2: a reset wipes the identity that authorized any upload,
+        // so the persisted upload record dies with it.
+        defaults.removeObject(forKey: Self.deviceTokenUploadedKey)
     }
 
     @discardableResult
@@ -179,7 +217,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
               lifecycle.isCurrent(expected) else {
             return nil
         }
-        guard deviceTokenState.begin(expected, token: hex) else { return nil }
+        guard lifecycle.current() == expected,
+              let signer = self.identityProvider(),
+              signer.publicKeyB64 == expected.signerPublicKeyB64 else {
+            return nil
+        }
         let session = self.session
         let beforeUpload = self.beforeDeviceTokenUpload
         let tokenState = self.deviceTokenState
@@ -193,6 +235,17 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                   lifecycle.isCurrent(context) else { return }
             await beforeUpload()
             guard !Task.isCancelled, lifecycle.isCurrent(context) else { return }
+            // #399 B4: never enroll an APNs token with a host whose
+            // pinned identity is unverified or mismatched — a token is a
+            // write to the daemon and must not reach a replacement
+            // identity. The gate defaults to allow (legacy flows/tests);
+            // AppModel installs the continuity predicate when pinned.
+            // The gate runs BEFORE the claim is taken, so a denial leaves
+            // no accepted claim behind — the next startLive retry (after
+            // verification) can upload instead of being suppressed.
+            guard await KeyContinuityGate.allowsPushRegistration() else { return }
+            guard !Task.isCancelled, lifecycle.isCurrent(context) else { return }
+            guard tokenState.begin(context, token: hex) else { return }
             let client = DriveClient(host: hostURL, session: session)
             // Keep the identity check adjacent to the request. Reset/demo
             // can invalidate the context while the preflight boundary was
@@ -202,6 +255,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                 _ = try await client.registerDeviceToken(hex, keyId: keyId, signer: signer)
                 guard !Task.isCancelled, lifecycle.isCurrent(context) else { return }
                 tokenState.succeeded(context, token: hex)
+                // #400 F2: persist the upload fact so the 2+-profile safety
+                // gate can clear this token after a relaunch (a fresh
+                // process never re-receives the OS token once enrollment is
+                // disabled).
+                self.defaults.set(true, forKey: Self.deviceTokenUploadedKey)
             } catch {
                 guard !Task.isCancelled, lifecycle.isCurrent(context) else { return }
                 tokenState.failed(context, token: hex)

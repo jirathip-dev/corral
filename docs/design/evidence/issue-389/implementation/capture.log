@@ -1,0 +1,51 @@
+# 389 capture log — 2026-09-04 20:43 +0700 (final committed-state build, fresh Corral389 sim)
+
+Fresh simulator `Corral389` (iPhone 16, iOS 26.5, UDID A2C34DBD-C297-470D-82CB-F6EA0CF6051F),
+DEBUG build from this branch, `-corralDemoDeniedNotificationsEvidence` launch.
+Driver markers are written 2.5 s AFTER each phase's state settles, each phase
+HOLDS 9 s, and the host polls markers at 0.5 s (warm screenshot service) so the
+capture always lands inside the phase it names.
+
+[20:43:24] terminated previous instance; cleared stale markers
+[20:43:24] launched with -corralDemoDeniedNotificationsEvidence
+[20:43:26] captured phase-1-denied-mocha-board
+[20:43:26] xcrun simctl io screenshot -> phase-1-denied-mocha-board-raw.png
+[20:43:26] sips -z 844 390 -> phase-1-denied-mocha-board-390x844.png
+[20:43:31] captured phase-2-denied-settings-notifications
+[20:43:31] xcrun simctl io screenshot -> phase-2-denied-settings-notifications-raw.png
+[20:43:31] sips -z 844 390 -> phase-2-denied-settings-notifications-390x844.png
+[20:43:42] captured phase-3-denied-done
+[20:43:42] xcrun simctl io screenshot -> phase-3-denied-done-raw.png
+[20:43:42] sips -z 844 390 -> phase-3-denied-done-390x844.png
+[20:43:43] DONE
+
+# Entitlement evidence (AC a) — built app, per-config values
+
+Debug build (generic/platform=iOS Simulator, derivedDataPath /tmp/389-dd) then:
+
+$ codesign -d --entitlements - /tmp/389-dd/Build/Products/Debug-iphonesimulator/FleetNotifier.app
+Executable=/tmp/389-dd/Build/Products/Debug-iphonesimulator/FleetNotifier.app/FleetNotifier
+[Dict]                       <- Xcode 26 simulator signing context: signature dict empty
+                               (ENTITLEMENTS_ALLOWED=NO; entitlements are linker-injected
+                               into the binary's __TEXT,__entitlements section, which is
+                               what the simulator runtime reads)
+
+$ otool -arch x86_64 -s __TEXT __entitlements <app>/FleetNotifier  (decoded plist)
+{application-identifier: 9244PWFYD7.com.corral.fleetnotifier,
+ aps-environment: development}
+
+$ codesign --force --sign - --entitlements <Xcode-generated FleetNotifier.app-Simulated.xcent> \
+    /tmp/389-re-signed.app && codesign -d --entitlements - /tmp/389-re-signed.app
+[Key] aps-environment
+[Value] development
+[Key] application-identifier
+[Value] 9244PWFYD7.com.corral.fleetnotifier
+
+Release build (generic/platform=iOS Simulator, -configuration Release,
+derivedDataPath /tmp/389-rel-dd) — embedded __TEXT,__entitlements section:
+{application-identifier: 9244PWFYD7.com.corral.fleetnotifier,
+ aps-environment: production}
+
+=> Debug signs development, Release signs production (per-config
+CODE_SIGN_ENTITLEMENTS in ios/project.yml); Xcode AUTOMATIC signing (team
+9244PWFYD7) injects application-identifier; NO Apple-portal action was taken.

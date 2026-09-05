@@ -1,0 +1,108 @@
+#387 chrome-only board header (no 'Fleet' title) — capture log
+
+Native iOS build (this branch, g387-remove-fleet-title @ working tree):
+  HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild build -project
+  ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination
+  'generic/platform=iOS Simulator' -derivedDataPath /tmp/387-dd build
+  EXIT=0; BUILD SUCCEEDED (0 errors; warnings pre-existing classes only)
+
+Syntax gates: swiftc -parse (plain AND -D DEBUG) on FleetViews.swift,
+  FleetNotifierApp.swift, FleetNotifierTests.swift — EXIT=0 both
+  (PARSE_OK / PARSE_DEBUG_OK).
+
+xcodegen drift check: project.yml untouched (no new files; the test target
+  preBuildScript already bundles FleetViews.swift -> FleetViews.swift.txt).
+
+Focused discriminating tests (simulator 59DDC0C5-891E-4EC0-91AF-4F50DF68D793,
+iPhone 16 / iOS 26.5):
+  xcodebuild test ... -only-testing:FleetNotifierTests/NavigationHeaderWiringTests
+    -only-testing:FleetNotifierTests/SettingsAccessWiringTests
+  EXIT=0; Executed 6 tests, 0 failures (NavigationHeaderWiringTests 2:
+  no-'Fleet'-title + empty/inline pins, gear chrome survives; the #365 shell
+  test re-pinned to the EMPTY/INLINE title contract).
+
+Full iOS suite (same sim/destination):
+  xcodebuild test ... -only-testing:FleetNotifierTests
+  EXIT=0; Executed 204 tests, with 0 failures (All tests passed)
+  (base 202; +2 from #387 = the two NavigationHeaderWiringTests; re-run at
+  final head after the scroll-mechanism r1: 204/0 again)
+
+anti-slop (advisory):
+  swift run --package-path ios/tools/anti-slop-swift anti-slop
+    ios/FleetNotifier ios/FleetNotifierTests
+  current tree vs base HEAD (git archive): identical violation sets —
+  24 violations across 22 files (17 rules) on BOTH; 0 new from #387.
+
+Release-source digest re-pin:
+  python3 -c "from pathlib import Path; from ios.release_source_manifest
+  import release_source_digest; print(release_source_digest(Path('.')))"
+  -> 627e5522e89ac1d33b94aab90051771f1113cf64732a9f3f95b0137a36fa3f02
+    (check-release-demo.py #387 + #387 r1 comments)
+  Test source digest (FleetNotifierTests.swift changed):
+  -> ab8d03e411c31b1a93a34a51d606de7db9c0cf8be75f1fb7dd2afd9b13698d4a
+  python3 ios/check-release-demo.py --self-test
+  EXIT=0 (PASS; release + test pins re-pinned for the #387 source set)
+
+Native iOS capture (fresh simulator to avoid the notification-permission
+alert race; no keychain identity):
+  xcrun simctl create g387-title-evidence "iPhone 16"
+    com.apple.CoreSimulator.SimRuntime.iOS-26-5
+  EXIT=0 (UDID 24B6023C-9E7B-445E-9D28-57433BAEAD56)
+  xcrun simctl boot <udid>; xcrun simctl bootstatus <udid> -b
+  EXIT=0
+  xcrun simctl install <udid> /tmp/387-dd/Build/Products/
+    Debug-iphonesimulator/FleetNotifier.app
+  EXIT=0
+  387-capture.sh <udid> com.corral.fleetnotifier <outdir>  (marker poll,
+    screenshot per phase; started BEFORE launch so no marker is pre-written)
+  xcrun simctl launch <udid> com.corral.fleetnotifier -corralDemoTitleEvidence
+  EXIT=0; pid logged
+  captured phase-1-board-mocha-top, phase-2-board-mocha-scrolled,
+    phase-3-board-latte-scrolled, phase-4-board-latte-top, phase-5-done;
+    CAPTURE_DONE
+  xcrun simctl io <udid> screenshot -> PNG 1179x2556 (iPhone 16 @3x) per phase
+  sips -z 844 390 phase-N-<name>.png --out phase-N-<name>-390x844.png
+  EXIT=0; resized 390x844 (0.18 % aspect distortion from 393x852 pt native)
+  xcrun simctl shutdown <udid> (device deleted after capture)
+
+Scroll mechanism note (#387 r1): the first driver attempt scrolled through
+  an .onChange(of:)-driven proxy.scrollTo — the onChange fired (probe
+  markers) but an iOS 26 plain List did NOT move; the #379 settings-scroll
+  recipe (.task(id:) + short settle + proxy.scrollTo, withAnimation) DOES
+  move this List, so the driver fires from .task(id: evidenceScrollTarget).
+
+Header audit (Vision OCR tool compiled locally: swiftc -O with
+  VNRecognizeTextRequest, accurate, en-US, confidence >= 0.4):
+  /tmp/387-ocr phase-N-<name>-390x844.png 0.4 > phase-N-<name>.ocr.txt
+  grep -ci "fleet" on every phase -> 0 (0, 0, 0, 0, 0)
+  base comparison: docs/design/evidence/issue-386/implementation/
+    phase-1-board-mocha-390x844.png -> 'Fleet' at conf=1.00 (~134 pt from
+    top; pull-to-refresh hint at ~170 pt)
+  after frames: no OCR text between the status-bar clock (~21 pt) and the
+    first board content (~94 pt); the nav-bar band is empty in all phases.
+  gear pixel probe (python3, PIL): 374 mauve-accent px in the top-right
+    160x230 raw-px toolbar region in ALL phases (Mocha + Latte, top +
+    scrolled) — the accent-tinted gear glyph.
+  frames vision-inspected: phase-1/4 top = empty left/center bar + gear
+    top-right + chips row beneath; phase-2/3 scrolled = working/idle/done
+    sections under the same chrome-only bar + gear.
+
+OCR dumps (phase-N-<name>.ocr.txt, abbreviated to the audit-significant
+lines):
+phase-1-board-mocha-top: [clock 6:32 conf=1.00] (nav band: NO TEXT)
+  "pull to refresh - updates stream in automatically" ~94 pt | All 8 |
+  demo-atlas 2 | demo-garden 2 | blocked (2) | demo-garden rows ...
+phase-2-board-mocha-scrolled: [clock conf=1.00] (nav band: NO TEXT)
+  "working (3)" ~128 pt | Other | idle (1) | demo-ledger | demo-ledger-idle
+  | done (1) ... (mid-board sections in view)
+phase-3-board-latte-scrolled: same geometry as phase 2 on the latte
+  palette (working/idle/done sections; nav band empty)
+phase-4-board-latte-top: [clock conf=1.00] (nav band: NO TEXT)
+  "pull to refresh - updates stream in automatically" ~95 pt | All 8 |
+  demo-atlas 2 | demo-garden 2 | blocked (2) ...
+phase-5-done: identical rest state to phase 4 (latte top)
+
+Synthetic-only: DEBUG -corralDemoTitleEvidence over DemoFleet.seed()
+(fictional repos/agents). No live daemon, no physical device, no TestFlight
+claim. The board chrome in DEBUG shows the demo-overflow icon beside the
+gear (release-active gear alone in Release — #365 pins).

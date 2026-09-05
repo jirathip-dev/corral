@@ -31,6 +31,14 @@ enum RelativeTime {
         let h = (total % 86400) / 3600
         return "\(d)d \(h)h"
     }
+
+    /// #401 C6: the retained STALE row's last-seen copy — "last seen 6m
+    /// ago". Pure and locale-independent like the other relative-time text;
+    /// a clock-skewed future stamp renders as 0s rather than a negative age.
+    static func lastSeenLabel(lastSeenMs: UInt64, nowMs: UInt64) -> String {
+        let age = nowMs >= lastSeenMs ? nowMs - lastSeenMs : 0
+        return "last seen \(duration(milliseconds: age)) ago"
+    }
 }
 
 /// Time-in-state derivation. The daemon snapshot carries `agent.ts`

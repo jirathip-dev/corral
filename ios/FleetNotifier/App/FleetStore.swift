@@ -87,13 +87,32 @@ final class FleetStore: ObservableObject {
     /// `apply()` would never run to clear a stale `.error` indicator.
     var onConnected: (@MainActor @Sendable () -> Void)?
 
+    /// #399 B4/C1: when a pinned host identity is set, any agent record in
+    /// an applied frame whose NON-NIL host differs from the pin is a
+    /// feed-integrity failure — the frame is REJECTED (fail closed) and
+    /// the hook fires so the owner can surface the mismatch and stop the
+    /// stream. Host-less records (a transitional pre-#399 daemon) are
+    /// tolerated; the URL-level `/host-key` check is the continuity gate.
+    /// Fired only when `acceptedHostIdentity` is non-nil.
+    var onHostIntegrityMismatch: (@MainActor @Sendable () -> Void)?
+    /// The pinned host identity the live feed must conform to (nil =
+    /// legacy single-host flows without a pin).
+    var acceptedHostIdentity: String?
+
     private static let log = Logger(subsystem: "com.corral.fleetnotifier", category: "stream")
 
     private var streamTask: Task<Void, Never>?
     /// Review F3: bumped on every `connect()`. Hop closures capture it, so
     /// a report from a PREVIOUS stream cannot land after `disconnect()` —
     /// or worse, after a NEW connect — and flip the state back.
-    private var connectionGeneration = 0
+    /// #400: read externally so the coordinator's per-host reconnect
+    /// generations are observable (one independent generation per host).
+    private(set) var connectionGeneration = 0
+
+    /// #400: whether a stream task is live (the coordinator uses this to
+    /// start exactly one stream per host and to prove host-removal
+    /// cancellation terminates that host's stream).
+    var isStreaming: Bool { streamTask != nil }
     /// Review F4: last reported connection-error reason. The retry ladder
     /// re-raises every attempt (≤30s cadence); report only on change so a
     /// user-dismissed banner is not re-asserted forever and the log does
@@ -148,6 +167,18 @@ final class FleetStore: ObservableObject {
     }
 
     private func apply(withoutDiff event: FleetEvent) {
+        // #399 B4/C1: fail closed when the frame carries records from a
+        // DIFFERENT host identity than the one this store was pinned to.
+        // The prior (stale) snapshot stays untouched — nothing is applied.
+        if let pinned = acceptedHostIdentity,
+           !Self.conformsToPinnedHost(event, pin: pinned) {
+            Self.log.error(
+                "frame rejected: agent host does not match pinned host identity"
+            )
+            connectionState = .error("host_identity_mismatch")
+            onHostIntegrityMismatch?()
+            return
+        }
         guard accepts(event) else { return }
         switch event {
         case .snapshot(let snapshot):
@@ -270,6 +301,23 @@ final class FleetStore: ObservableObject {
 
     func agent(_ id: String) -> Agent? {
         agents[id]
+    }
+
+    /// #399 B4/C1: does every agent record in this frame conform to the
+    /// pinned host identity? Records WITHOUT a host (transitional
+    /// pre-#399 daemon) pass; a record stamped with a DIFFERENT host
+    /// fails the whole frame closed.
+    static func conformsToPinnedHost(_ event: FleetEvent, pin: String) -> Bool {
+        func conforms(_ agent: Agent) -> Bool {
+            guard let host = agent.host else { return true }
+            return host == pin
+        }
+        switch event {
+        case .snapshot(let snapshot):
+            return snapshot.agents.values.allSatisfy(conforms)
+        case .delta(let delta):
+            return delta.upd.allSatisfy(conforms)
+        }
     }
 
     func tail(for id: String) -> [String]? {
@@ -539,5 +587,34 @@ final class FleetStore: ObservableObject {
             lastEventId = rev
             cursorBox.write(rev)
         }
+    }
+
+    /// #400: restore a HOST-SCOPED cursor (the per-profile cursor of the
+    /// stream coordinator), never the legacy single-host default. The
+    /// active single-host store keeps the legacy key for parity; every
+    /// coordinator session store restores/advances its own profile cursor.
+    func restoreCursor(rev: UInt64?) {
+        lastEventId = rev
+        cursorBox.write(rev)
+    }
+
+    /// #400 (E3): purge one host's in-memory read state — rows, tails,
+    /// tail panes, transition shadows, and the state clock — WITHOUT
+    /// touching the shared legacy cursor default. `reset()` removes the
+    /// legacy `fleetnotifier.lastEventId` key, which belongs to the
+    /// ACTIVE host's mirror; coordinator sessions persist their cursors
+    /// through the profile store, so their purge must leave that key
+    /// alone or removing one host would erase another host's cursor.
+    /// Stream cancellation stays the CALLER's job (`disconnect()`), so
+    /// host-removal teardown has exactly one cancellation point.
+    func purgeState() {
+        agents = [:]
+        tails = [:]
+        tailPanes = [:]
+        lastEventId = nil
+        cursorBox.write(nil)
+        previousStates = [:]
+        activeAgents = []
+        stateEnteredAt = [:]
     }
 }

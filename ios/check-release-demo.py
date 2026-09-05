@@ -62,6 +62,7 @@ TEST_SOURCE_FILE = "ios/FleetNotifierTests/FleetNotifierTests.swift"
 # #315: canonical transcript provenance — Models (unknown kind + prompt_request_id),
 # RecentOutputModel (client reclassification removed), FleetViews (unknown rendering).
 APPROVED_RELEASE_SOURCE_DIGEST = (
+    # #401: multi-host board + Settings UX — BoardModel host-chip/host-section projections, AppModel host filter/aggregate accessors + N2 recents-route fix, FleetViews multi-host renderer + Settings per-host rows + F2 text + Add-Host prefill, DemoFleet multi-host seed, TimeInState last-seen label — re-pinned over the #401 source set.
     # #315: re-pinned after the canonical provenance read-model change.
     # #316 V3 context split: canonical-kind partition, structured session
     # status, and locked accessibility roles updated RecentOutputModel,
@@ -166,9 +167,86 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # HowToConnectSheet + Settings '?' entry + unpaired-launch auto-present
     # landed in FleetViews, and FleetNotifierApp gained the DEBUG
     # -corralDemoConnectEvidence route — re-pinned.
-    "209db196e2f84a53dcd4f2a29f9c4a7c3cb15e5c61bbf343e9f9f14af677936e"
+    # 2026-09-04 (#385): Liquid Glass / translucent sheets —
+    # TranslucentSheetBackdrop + translucentSheetBackdrop(_:) (native
+    # glassEffect(.clear.tint) on iOS 26+, ultraThinMaterial + 88 % base
+    # tint fallback below), both sheets re-pointed at it, the #385
+    # glass-evidence driver (FleetNotifierApp/FleetViews), and the
+    # SheetBackdrop WCAG/blend constants (AppTheme) — re-pinned.
+    # 2026-09-04 (#386): board hierarchy — status sections became THICK
+    # collapsible bars (BoardModel.StatusSectionCollapse session state +
+    # FleetViews statusSectionBar whole-bar toggle + surface1 tier +
+    # chevron, instant collapse so Reduce Motion is unaffected), repo
+    # subgroup headers demoted to caption2/subtext1 captions, and the
+    # FleetNotifierApp/FleetViews #386 collapse-evidence driver
+    # (-corralDemoCollapseEvidence) — re-pinned.
+    # #386 r1: the evidence driver collapses through the idempotent
+    # StatusSectionCollapse.collapse(_:) (the .task(id:) hook fires twice
+    # on demo entry; a non-idempotent toggle let the second pass undo the
+    # first) — re-pinned.
+    # 384: per-row repo name labels hide while a repo pill is active
+    # (WorkspaceLine color-only hue echo keeps row heights; the #384
+    # row-label evidence driver added to FleetViews/FleetNotifierApp) —
+    # re-pinned.
+    # 384: the echo keeps the label chip's caption2 line box via an
+    # invisible spacer (fixed-height frame under-sized the chip) — re-pinned.
+    # 384: spacer is opacity(0), not hidden() (hidden can drop out of
+    # layout and collapse the row under the filter) — re-pinned.
+    # 384: spacer comment corrected (opacity is purely visual; measured
+    # row geometry identical in both filter states) — re-pinned.
+    # 387: the board header became chrome-only — FleetViews drops the
+    # 'Fleet' navigation title for an EMPTY title locked to INLINE display
+    # mode (no title text in the top or scrolled nav-bar states), the
+    # board list rides a passive ScrollViewReader with row/chips ids, and
+    # FleetNotifierApp gained the DEBUG -corralDemoTitleEvidence route —
+    # re-pinned.
+    # 387 r1: the evidence scroll fires from a .task(id:) settle (the
+    # #379 recipe) — an onChange-driven scrollTo does not move an iOS 26
+    # plain List — re-pinned.
+    # 388: the Settings Connection inputs became theme-token fields
+    # (ConnectionField surface1 fill, subtext0 placeholder, hairline
+    # surface2/accent-focus border), the section hides the token field +
+    # shows the paired status row while the device is REGISTERED
+    # (AppModel.isRegistered), and the #388 connection-inputs evidence
+    # driver was added to FleetViews/FleetNotifierApp — re-pinned.
+    # 388 r1: the evidence driver holds each phase 9 s after its marker
+    # (the cold-sim screenshot latency raced the original 4 s window and
+    # frames drifted into the next phase) — re-pinned.
+    # 389: AppModel gained the permission-aware notification enable flow +
+    # refreshNotificationPermission (NotificationPermissionState), FleetViews
+    # gained the denied-guidance Notifications section + Open-iOS-Settings
+    # action + the #389 evidence driver, AppDelegate's failure comment was
+    # refreshed for the aps-environment entitlement, and the manifest gained
+    # NotificationPermission.swift (Release app source) — re-pinned.
+    # 399: host profiles V1 — the Profiles/ layer (HostProfile model +
+    # HostProfileStore with legacy migration + remove-host purge,
+    # HostKeyTrust X25519 validation/fingerprints, BoardCache allowlisted
+    # DTO store, KeyContinuityGate) joined the Release source set, and
+    # AppModel (profile restore/migration/Add-Host/key-continuity gates),
+    # FleetStore (pinned feed acceptance), CorraldClient (fetchHostKey),
+    # AppDelegate (push gate), FleetViews (Hosts section + AddHostSheet +
+    # FingerprintConfirmationSheet) and FleetNotifierApp (profile-store
+    # wiring) changed — re-pinned over the new 25-file Release source set.
+    # 400: per-host stream coordinator + composite identity + Recent Output
+    # composite routing — HostStreamCoordinator.swift added to the Release
+    # source set; AppModel (coordinator wiring, composite read routes,
+    # F1/F2 push posture + empty-token clears), AppDelegate (upload
+    # record), FleetStore (host-scoped cursor restore/purge), and
+    # FleetViews (composite recents sheet target) changed — re-pinned.
+    # 400 r1: the 02:50 self-test PASS predated the final wiring/plumbing
+    # edits to the Release sources (03:03); digest re-pinned to the tree
+    # actually committed at 39e4c83 and built below.
+    # 397: host-aware APNs — PushPayload (host_id composite identifiers),
+    # AppDelegate (retained token + fan-out hook + gate-denial retry),
+    # LocalNotifier (composite identifiers + per-host removal), HostProfile/
+    # HostProfileStore (per-host notificationsEnabled), HostStreamCoordinator
+    # (per-host transition hooks), AppModel (per-host enrollment/clears,
+    # composite notification routing), FleetViews (per-host Settings state)
+    # — re-pinned over the #397 source set.
+    "ffd8dfa4099659a40db35a3bc0ee2042417c2b4b73efd112e469352b93d74e5a"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
+    # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
     # #332 R4: pin the focused grant fixture independently from the Release
     # app source manifest so a test-source mutation cannot be green-on-green.
     # R6: integration's #319/#320 FleetNotifierTests changes are included;
@@ -219,7 +297,57 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # 2026-09-04 (#379 R1): the #379 opener pins unwrap their line numbers
     # with XCTUnwrap so a mutated (missing-opener) source fails cleanly
     # instead of crashing on an empty array — re-pinned.
-    "4ff4f27cee1bcbc56a5b14f532dd7cb58598300382afe3e3516882ffabecb9cc"
+    # 2026-09-04 (#385): SheetBackdropTests (WCAG/blend/band locks) landed
+    # in ThemeTests.swift (not a pinned file) and SheetTranslucencyWiringTests
+    # was added to FleetNotifierTests.swift; the SettingsAccessWiringTests
+    # opener count moved 3 -> 4 for the #385 glass evidence driver —
+    # re-pinned.
+    # 2026-09-04 (#386): BoardStatusSectionCollapseTests (fresh
+    # default-expanded, per-section toggle, per-session independence) and
+    # StatusSectionCollapseWiringTests (thick-bar toggle pins, demoted
+    # caption pins, no-animation pins) added; the #371 BoardV2WiringTests
+    # subgroup pin set rescoped to the non-collapsible caption — re-pinned.
+    # #386 r1: idempotent-collapse test added with the evidence-driver fix
+    # — re-pinned.
+    # 384: RepoRowLabelWiringTests added (label hidden under an active repo
+    # pill, chip restored under 'All', color-only height-preserving echo)
+    # — re-pinned.
+    # 384: the echo wiring pins moved to the caption2 line-box spacer
+    # mechanism — re-pinned.
+    # 384: spacer pin updated to the opacity(0) form — re-pinned.
+    # 384: spacer pin message corrected — re-pinned.
+    # 384: test-class docstring corrected (echo keeps the chip's line box)
+    # — re-pinned.
+    # 387: the #365 shell test pins the EMPTY/INLINE title contract and
+    # NavigationHeaderWiringTests was added (no 'Fleet' navigationTitle,
+    # exactly one empty title + inline lock, gear chrome survives) —
+    # re-pinned.
+    # 388: ConnectionRegistrationModelTests (isRegistered key-id predicate)
+    # and ConnectionSectionWiringTests (paired-state gate hides the token
+    # field + status row + Re-register reveal, themed ConnectionField
+    # token pins, #388 evidence-driver markers) added, and the
+    # SettingsAccessWiringTests opener count moved 5 -> 6 for the #388
+    # connection-inputs evidence driver — re-pinned.
+    # 389: NotificationPermissionMappingTests + NotificationEnableModelTests
+    # (permission-aware enable flows) + SettingsNotificationWiringTests
+    # (denied guidance pins; opener count 5 -> 6) + DeviceTokenUploadTests
+    # (receiveDeviceToken -> signed /device-token upload) added — re-pinned.
+    # 389 r1: the first DeviceTokenUploadTests token fixture became a
+    # deterministic String(repeating:) composition (the 64-hex literal
+    # tripped hosted CI gitleaks generic-api-key) — re-pinned.
+    # 399: the #399 suite (HostKeyTrustTests, HostURLFormTests,
+    # HostProfileStoreTests, HostProfileMigrationModelTests,
+    # HostKeyContinuityModelTests, PinnedFeedIntegrityTests,
+    # BoardMetadataCacheTests, HostProfileWiringTests) added to
+    # FleetNotifierTests.swift — re-pinned.
+    # 399 r1: SAFETY comments added above the new fixture force-unwraps
+    # (anti-slop advisory) — re-pinned.
+    # 400: the #400 suite (CompositeIdentityTests, HostBoardProjectionTests,
+    # HostStreamCoordinatorTests, MultiHostIsolationTests,
+    # RecentsCompositeRouteTests, PushPostureModelTests) added to
+    # FleetNotifierTests.swift, and two wiring pins updated for the
+    # composite recents target — re-pinned.
+    "28fc4640c6165f3b204f8d6165876adecfef433b51fade9138aa0b282f34c80a"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(
@@ -281,7 +409,11 @@ RELEASE_SOURCE_REQUIRED: dict[str, tuple[str, ...]] = {
         # drive, and the notification deep link.
         "func refreshGrants(",
         "func driveReadTail(",
-        "func openRecents(",
+        # #397: host-aware composite deep link — every notification tap
+        # (APNs or the DEBUG local bridge) funnels through the SAME
+        # model-owned openNotification, which routes by the payload's
+        # (host_id, agent_id) composite target.
+        "func openNotification(",
     ),
     "ios/FleetNotifier/UI/FleetViews.swift": (
         "model.driveReadTail(",

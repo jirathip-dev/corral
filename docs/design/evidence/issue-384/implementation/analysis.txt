@@ -1,0 +1,27 @@
+#384 row geometry (row-heights under a repo pill vs All) — from the raw
+1179x2556 captures (iPhone 16 @3x; 393x852 pt native; 1 pt = 3 px).
+
+Anchor method (row-geometry.py): for the demo-output row in each frame,
+measure the vertical span from the row's line-1 state-chip fill TOP to the
+bottom of the row's line-2 trailing 'dirty' badge text (the SAME elements
+exist in both filter states — the badge sits on line 2 at a fixed offset
+below the line-1 chip when the row height is unchanged).
+
+phase-1-board-mocha-all.png:        state-chip top 2208 | 'dirty' bottom 2340 | span 132px
+phase-2-board-mocha-filtered.png:   state-chip top 1171 | 'dirty' bottom 1303 | span 132px
+phase-4-board-latte-all.png:        state-chip top 2208 | 'dirty' bottom 2340 | span 132px
+phase-5-board-latte-filtered.png:   state-chip top 1171 | 'dirty' bottom 1303 | span 132px
+
+All frames spans    = [132, 132]
+Filtered spans      = [132, 132]
+All - filtered      = [0, 0] px
+
+RESULT: line-2 text geometry is IDENTICAL (0 px) between 'All' and an
+active repo pill in BOTH flavors — rows keep their exact height when the
+per-row repo label disappears (the color-only echo carries the label
+chip's caption2 line box; only the name text is removed). No layout jump.
+
+(Note: the mocha state-chip fill scan also matches a few darker pixels
+below the chip, so its reported fill BOTTOM overruns; the span metric uses
+the chip fill TOP, which is exact in every frame — and the latte pair is
+fully clean with the same 0 px result.)

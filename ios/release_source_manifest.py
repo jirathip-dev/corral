@@ -17,7 +17,24 @@ RELEASE_SOURCE_FILES = (
     "ios/FleetNotifier/Network/SSEParser.swift",
     "ios/FleetNotifier/Notifications/AppDelegate.swift",
     "ios/FleetNotifier/Notifications/LocalNotifier.swift",
+    # #389: the permission posture enum + UNUserNotificationCenter seam is
+    # Release app source (the Settings guidance + enable flow compile into
+    # Release builds) — added to the manifest.
+    "ios/FleetNotifier/Notifications/NotificationPermission.swift",
     "ios/FleetNotifier/Notifications/PushPayload.swift",
+    # #399: host-profile store/trust layer — host profiles (id/name/URL/
+    # pinned X25519 key + fingerprint/registration metadata), the profile
+    # store with legacy migration + remove-host purge, the allowlisted
+    # board-cache DTO, the host-key trust helpers, and the push gate.
+    "ios/FleetNotifier/Profiles/BoardCache.swift",
+    "ios/FleetNotifier/Profiles/HostKeyTrust.swift",
+    "ios/FleetNotifier/Profiles/HostProfile.swift",
+    "ios/FleetNotifier/Profiles/HostProfileStore.swift",
+    # #400: the per-host stream coordinator (composite identity, per-host
+    # stream/tail lifecycle + cleanup, offline/stale board projection) is
+    # Release app source — added to the manifest.
+    "ios/FleetNotifier/Profiles/HostStreamCoordinator.swift",
+    "ios/FleetNotifier/Profiles/KeyContinuityGate.swift",
     "ios/FleetNotifier/UI/AppTheme.swift",
     "ios/FleetNotifier/UI/BoardModel.swift",
     "ios/FleetNotifier/UI/FleetViews.swift",

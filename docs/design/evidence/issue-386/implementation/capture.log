@@ -1,0 +1,95 @@
+#386 board hierarchy (thick collapsible status bars + demoted repo captions) — capture log
+
+Native iOS build (this branch, g386-status-collapse-bars @ working tree):
+  HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild build -project
+  ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination
+  'generic/platform=iOS Simulator' -derivedDataPath /tmp/386-dd build
+  EXIT=0; BUILD SUCCEEDED
+
+Syntax gate: swiftc -parse ios/FleetNotifier/UI/FleetViews.swift
+  ios/FleetNotifier/UI/BoardModel.swift ios/FleetNotifier/App/FleetNotifierApp.swift
+  ios/FleetNotifierTests/FleetNotifierTests.swift
+  EXIT=0 (PARSE_OK)
+
+xcodegen drift check (project.yml untouched): regenerating only churns the
+  random pbxproj object IDs (file set identical) -> project.pbxproj
+  restored; no semantic drift from this lane.
+
+Focused discriminating tests (simulator 59DDC0C5-891E-4EC0-91AF-4F50DF68D793,
+iPhone 16 / iOS 26.5):
+  xcodebuild test ... -only-testing:FleetNotifierTests/BoardStatusSectionCollapseTests
+    -only-testing:FleetNotifierTests/StatusSectionCollapseWiringTests
+    -only-testing:FleetNotifierTests/BoardModelBoardV2Tests
+    -only-testing:FleetNotifierTests/BoardV2WiringTests
+    -only-testing:FleetNotifierTests/ReadOnlySurfaceWiringTests
+  EXIT=0; Executed 28 tests, with 0 failures:
+    BoardStatusSectionCollapseTests 6 (fresh default-expanded, toggle
+    round-trip, per-section independence, per-session independence,
+    rawStateId keying, idempotent collapse),
+    StatusSectionCollapseWiringTests 4 (session-only @State pin, gate +
+    subgroups-visible-when-expanded pin, thick whole-bar toggle pins,
+    single-gate pin),
+    BoardModelBoardV2Tests 11, BoardV2WiringTests 3 (subgroup pin set
+    rescoped to the non-collapsible demoted caption), ReadOnlySurfaceWiringTests 5.
+
+Full iOS suite (same sim/destination):
+  xcodebuild test ... -only-testing:FleetNotifierTests
+  EXIT=0; Executed 199 tests, with 0 failures (All tests passed)
+  (base was 189; +10 from #386: 6 pure collapse + 4 wiring)
+
+anti-slop (advisory):
+  swift run --package-path ios/tools/anti-slop-swift anti-slop
+    ios/FleetNotifier ios/FleetNotifierTests
+  current tree vs base HEAD (git archive): identical violation sets —
+  24 violations across 22 files (17 rules) on BOTH; 0 new from #386.
+
+Release-source digest re-pin:
+  python3 -c "from pathlib import Path; from ios.release_source_manifest
+  import release_source_digest; print(release_source_digest(Path('.')))"
+  -> d3a217c3e4684a733f2496662d4133660862f91602d68b65dd8d57b3ab40fd98
+    (check-release-demo.py #386 + #386 r1 comments)
+  Test source digest (FleetNotifierTests.swift changed):
+  -> 93259593a234d87d91eb2f134e22cb86b37cc76dc061cbb32c9c3611a7ba1f2c
+  python3 ios/check-release-demo.py --self-test
+  EXIT=0 (PASS; release + test pins re-pinned for the #386 source set)
+
+Native iOS capture (fresh simulator to avoid the notification-permission
+alert race; no keychain identity):
+  xcrun simctl create g386-collapse-evidence "iPhone 16"
+    com.apple.CoreSimulator.SimRuntime.iOS-26-5
+  EXIT=0 (UDID 1485C983-46FA-4CB7-A660-EC3B45F596EB)
+  xcrun simctl boot <udid>; xcrun simctl bootstatus <udid> -b
+  EXIT=0 (fresh boot ~90 s under load: data-migration plugins)
+  xcrun simctl install <udid> /tmp/386-dd/Build/Products/
+    Debug-iphonesimulator/FleetNotifier.app
+  EXIT=0
+  386-capture.sh <udid> com.corral.fleetnotifier <outdir>  (marker poll,
+    screenshot per phase; started BEFORE launch so no marker is pre-written)
+  xcrun simctl launch <udid> com.corral.fleetnotifier -corralDemoCollapseEvidence
+  EXIT=0; pid logged
+  captured phase-1-board-mocha, phase-2-board-latte,
+    phase-3-all-collapsed-latte, phase-4-done; CAPTURE_DONE
+  xcrun simctl io <udid> screenshot -> PNG 1179x2556 (iPhone 16 @3x) per phase
+  sips -z 844 390 phase-N-<name>.png --out phase-N-<name>-390x844.png
+  EXIT=0; resized 390x844 (0.18 % aspect distortion from 393x852 pt native)
+  python3 collapse-analysis.py phase-1-board-mocha.png
+    phase-2-board-latte.png phase-3-all-collapsed-latte.png
+  phase 1+2: two full 48.3 pt surface1 bars (collapsed blocked + expanded
+  working, identical thickness) + idle bar edge at frame bottom
+  phase 3: FIVE 48.3 pt bars, nothing between them (empty sections keep
+  their bars/counts) -> analysis.txt
+  Frames vision-verified: phase-1/2 show the blocked bar ALONE (chevron
+  right) directly above the expanded working section with small repo
+  captions + rows; phase-3 shows five bars only.
+  xcrun simctl shutdown <udid> (device deleted after capture)
+
+Driver determinism note: the .task(id: model.mode) evidence hook fires
+TWICE on demo entry (visible with temporary prints; prior drivers' state
+assignments were idempotent so the double-fire was invisible). The #386
+driver therefore collapses through the idempotent
+StatusSectionCollapse.collapse(_:) (never toggle), and a repeated pass
+cannot undo the captured state; the interactive bar keeps toggle.
+
+Synthetic-only: DEBUG -corralDemoCollapseEvidence over DemoFleet.seed()
+(fictional repos/agents). No live daemon, no physical device, no TestFlight
+claim.

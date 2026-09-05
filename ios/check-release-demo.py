@@ -246,11 +246,12 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # 415: Add Host draft/error lifecycle — AppModel (scene-scoped
     # AddHostDraft + AddHostOutcome + phase failures + no-active-removal
     # commit + evidence seed), FleetViews (draft-bound AddHostSheet +
-    # dismiss-on-success + evidence drivers), FleetNotifierApp (evidence
-    # launch args + fixture-session init), DemoFleet-free evidence
-    # transport (Demo/AddHostCommitEvidenceURLProtocol) — re-pinned over
-    # the #415 source set.
-    "7d917e1d2012d5587a37007805934629776a3f9c39123af29ca68d937b1db67f"
+    # dismiss-on-success + evidence drivers + Settings-owned commit
+    # markers), FleetNotifierApp (evidence launch args + fixture-session
+    # init), DemoFleet-free evidence transport
+    # (Demo/AddHostCommitEvidenceURLProtocol) — re-pinned over the #415
+    # source set.
+    "4175f179866d9220e3ddf3db8b2da8a8efc9c02da44212444b2c8b49e2120611"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -360,7 +361,7 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # preservation) + AddHostFlowURLProtocol + updated AddHostSheet
     # wiring pins (scene-scoped draft bindings, dismiss-on-success-only)
     # — re-pinned over the #415 test source.
-    "2338ec261e3637ba74fed37ceace6a250e7920347267d286fe64ec159ad7068c"
+    "a138af999650e7fb63573995373026dc2022051a8d2c642bab75da9cf6813073"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

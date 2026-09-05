@@ -2740,7 +2740,9 @@ struct SettingsView: View {
     /// #415 evidence (c): after the successful commit's AddHostSheet
     /// dismissal, scroll the Hosts rows into view so the frame shows the
     /// original Mac host PLUS the exactly-one new host (simctl cannot
-    /// drag; the hosts section sits below Connection).
+    /// drag; the hosts section sits below Connection). The sheet's own
+    /// driver task is CANCELLED by its dismissal, so this Settings-owned
+    /// task (which outlives the sheet) writes the remaining markers.
     private func scrollHostsForAddHostCommitEvidence(_ proxy: ScrollViewProxy) async {
         guard CorralDemoLaunch.wantsAddHostCommitEvidence(arguments: CommandLine.arguments) else { return }
         try? await Task.sleep(for: .milliseconds(1200))
@@ -2748,6 +2750,9 @@ struct SettingsView: View {
         withAnimation(.easeInOut(duration: 0.35)) {
             proxy.scrollTo("settings.hosts", anchor: .top)
         }
+        EvidenceMarkers.write("phase-c-415-committed")
+        try? await Task.sleep(for: .milliseconds(9000))
+        EvidenceMarkers.write("phase-c-415-done")
     }
 
     /// #401 evidence: the Add Host sheet driver presents the AddHostSheet
@@ -3402,14 +3407,11 @@ struct AddHostSheet: View {
             return
         }
         // Success: dismiss exactly once (the same action the register
-        // button takes) — the Settings Hosts list behind the sheet then
-        // shows the ORIGINAL Mac host plus exactly one new host (the
-        // SettingsView driver scrolls settings.hosts into view).
+        // button takes). Dismissal cancels THIS sheet-owned task, so the
+        // remaining commit-evidence markers (hosts list with the Mac host
+        // still present) are written by the Settings-level driver —
+        // scrollHostsForAddHostCommitEvidence — which outlives the sheet.
         dismiss()
-        guard await settingsSettle() else { return }
-        EvidenceMarkers.write("phase-c-415-committed")
-        guard await hold() else { return }
-        EvidenceMarkers.write("phase-c-415-done")
     }
 
     private func settingsSettle() async -> Bool {

@@ -79,7 +79,7 @@ jobs:
       # and must be updated manually with a deliberate baseline/toolchain
       # check.
       - name: Install Rust CLI gates
-        uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
         with:
           tool: cargo-deny,cargo-audit,cargo-llvm-cov@0.8.7
           fallback: none
@@ -257,7 +257,7 @@ jobs:
       # empty reports fail the report step, and cancellation suppresses upload.
       - name: Upload Rust coverage artifact
         if: ${{ always() && !cancelled() && steps.coverage_reports.outcome == 'success' && (steps.client_coverage.outcome == 'success' || steps.client_coverage.outcome == 'failure') }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rust-core-coverage
           path: target/coverage

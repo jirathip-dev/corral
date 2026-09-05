@@ -373,12 +373,19 @@ final class BoardV2ChipMixTests: XCTestCase {
     }
 }
 
-// MARK: - #385 translucent sheet backdrop tests
+// MARK: - #385/#416 translucent sheet backdrop tests
 
-/// Locks the #385 translucent-sheet contract (RecentOutputSheet + Settings
-/// sheet float over a backdrop that shows the board through softly):
-/// - the <26 fallback tint alpha sits in the spec's 0.85–0.90 band,
-/// - the iOS 26+ native-glass theme tint sits in its locked 0.2–0.4 band,
+/// Locks the #385/#416 sheet-backdrop constants and their WCAG math
+/// (RecentOutputSheet, the Settings sheet, and the Add Host sheet float
+/// over the shared translucent backdrop that shows the board through
+/// softly):
+///
+/// - the <26 fallback tint alpha sits in the #416 0.75–0.85 band (re-locked
+///   down from #385's 0.88 so the material blur keeps a visible share of
+///   the sheet surface),
+/// - the iOS 26+ native-glass theme tint sits in its re-locked 0.05–0.2
+///   band (down from #385's 0.3 — a heavier tint paints the clear glass
+///   into a flat solid),
 /// - the WCAG math primitives (blend + contrast) are exact,
 /// - the sheet's full text tier keeps >= 4.5:1 contrast over the tinted
 ///   backdrop in the WORST underlying-content case (any palette token the
@@ -387,22 +394,22 @@ final class BoardV2ChipMixTests: XCTestCase {
 final class SheetBackdropTests: XCTestCase {
 
     func testFallbackTintAlphaSitsInTheSpecBand() {
-        XCTAssertEqual(SheetBackdrop.fallbackTintAlpha, 0.88,
-                       "the <26 fallback tint is locked at 88 %")
+        XCTAssertEqual(SheetBackdrop.fallbackTintAlpha, 0.8,
+                       "the <26 fallback tint is locked at 80 %")
         XCTAssertTrue(SheetBackdrop.fallbackTintAlphaRange
                         .contains(SheetBackdrop.fallbackTintAlpha),
-                      "88 % must sit inside the spec's 0.85–0.90 band")
-        XCTAssertEqual(SheetBackdrop.fallbackTintAlphaRange.lowerBound, 0.85)
-        XCTAssertEqual(SheetBackdrop.fallbackTintAlphaRange.upperBound, 0.90)
+                      "80 % must sit inside the #416 0.75–0.85 band")
+        XCTAssertEqual(SheetBackdrop.fallbackTintAlphaRange.lowerBound, 0.75)
+        XCTAssertEqual(SheetBackdrop.fallbackTintAlphaRange.upperBound, 0.85)
     }
 
     func testGlassTintOpacitySitsInItsLockedBand() {
-        XCTAssertEqual(SheetBackdrop.glassTintOpacity, 0.3,
-                       "the iOS 26 glass theme tint is locked at 30 %")
+        XCTAssertEqual(SheetBackdrop.glassTintOpacity, 0.1,
+                       "the iOS 26 glass theme tint is locked at 10 %")
         XCTAssertTrue(SheetBackdrop.glassTintOpacityRange
                         .contains(SheetBackdrop.glassTintOpacity))
-        XCTAssertEqual(SheetBackdrop.glassTintOpacityRange.lowerBound, 0.2)
-        XCTAssertEqual(SheetBackdrop.glassTintOpacityRange.upperBound, 0.4)
+        XCTAssertEqual(SheetBackdrop.glassTintOpacityRange.lowerBound, 0.05)
+        XCTAssertEqual(SheetBackdrop.glassTintOpacityRange.upperBound, 0.2)
     }
 
     func testBlendMathIsExact() {
@@ -412,8 +419,8 @@ final class SheetBackdropTests: XCTestCase {
                        "#ffffff")
         XCTAssertEqual(SheetBackdrop.blend("#000000", alpha: 0.0, over: "#ff0000"),
                        "#ff0000")
-        XCTAssertEqual(SheetBackdrop.blend("#1e1e2e", alpha: 0.88, over: "#11111b"),
-                       "#1c1c2c", "mocha base at 88 % over mocha crust (hand-computed)")
+        XCTAssertEqual(SheetBackdrop.blend("#1e1e2e", alpha: 0.8, over: "#11111b"),
+                       "#1b1b2a", "mocha base at 80 % over mocha crust (hand-computed)")
     }
 
     func testWcagContrastMathMatchesTheReferenceValues() {
@@ -439,7 +446,7 @@ final class SheetBackdropTests: XCTestCase {
                 ink: palette.hex(.text), tint: palette.hex(.base),
                 over: candidates)
             XCTAssertGreaterThanOrEqual(worst, SheetBackdrop.minimumContrast,
-                                        "\(flavor.rawValue) text over the 88 % "
+                                        "\(flavor.rawValue) text over the 80 % "
                                         + "tinted backdrop must hold 4.5:1 in the "
                                         + "worst underlying-content case (got "
                                         + String(format: "%.2f", worst) + ")")

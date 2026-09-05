@@ -62,7 +62,6 @@ jobs:
           cp scripts/update-corral.sh "$stage/scripts/update-corral.sh"
           cp scripts/lib-corral-update-path.sh "$stage/scripts/lib-corral-update-path.sh"
           cp scripts/rotate-corral-logs.sh "$stage/scripts/rotate-corral-logs.sh"
-          cp herdr-plugin.toml "$stage/herdr-plugin.toml"
           cp README.md "$stage/README.md"
           cp -R docs/. "$stage/docs/"
           cp LICENSE-APACHE "$stage/LICENSE-APACHE"
@@ -78,7 +77,6 @@ jobs:
           tar -C "$stage" -czf "$bundle" \
             corrald \
             scripts \
-            herdr-plugin.toml \
             README.md \
             docs \
             LICENSE-APACHE \
@@ -225,7 +223,6 @@ jobs:
           cp scripts/update-corral.sh "$stage/scripts/update-corral.sh"
           cp scripts/lib-corral-update-path.sh "$stage/scripts/lib-corral-update-path.sh"
           cp scripts/rotate-corral-logs.sh "$stage/scripts/rotate-corral-logs.sh"
-          cp herdr-plugin.toml "$stage/herdr-plugin.toml"
           cp README.md "$stage/README.md"
           cp -R docs/. "$stage/docs/"
           cp LICENSE-APACHE "$stage/LICENSE-APACHE"
@@ -241,7 +238,6 @@ jobs:
           tar -C "$stage" -czf "$bundle" \
             corrald \
             scripts \
-            herdr-plugin.toml \
             README.md \
             docs \
             LICENSE-APACHE \

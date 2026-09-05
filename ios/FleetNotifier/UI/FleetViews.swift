@@ -1601,6 +1601,8 @@ struct FleetView: View {
             await runThemeSequence()
         } else if CorralDemoLaunch.wantsGlassEvidence(arguments: CommandLine.arguments) {
             await runGlassSequence()
+        } else if Corral416Evidence.wantsDriver {
+            await runTranslucencySequence()
         } else if CorralDemoLaunch.wantsRepoLabelEvidence(arguments: CommandLine.arguments) {
             await runRepoLabelSequence()
         } else if CorralDemoLaunch.wantsCollapseEvidence(arguments: CommandLine.arguments) {
@@ -1836,6 +1838,54 @@ struct FleetView: View {
         showSettings = false
         guard await themePause(1500) else { return }
         EvidenceMarkers.write("phase-7-done")
+    }
+
+    /// #416 evidence: one deterministic launch records the RE-LOCKED
+    /// translucent treatment over the same synthetic busy board the #385
+    /// glass evidence used — Recent Output at the MEDIUM detent (the
+    /// board stays visible above/behind the sheet), then Settings at the
+    /// evidence-forced medium detent (see
+    /// `Corral416Evidence.wantsMediumDetents`), in Mocha + Latte. Run with
+    /// `-corral416ForceFallbackBackdrop` to capture the SAME sequence on
+    /// the iOS 17–25 tinted-material branch (forced on the 26.5 runtime —
+    /// see the evidence README for why). Markers are `phase-416-*` so the
+    /// host capture script never re-captures stale #385 markers.
+    private func runTranslucencySequence() async {
+        guard model.mode == .demo else { return }
+        guard await themePause(0) else { return }
+        theme.setFlavor(.mocha)
+        EvidenceMarkers.write("phase-416-1-board-mocha")
+        guard await themePause(4000) else { return }
+        model.requestRecents(for: DemoFleet.featuredAgentID, haptic: false)
+        guard await themePause(4000) else { return }
+        EvidenceMarkers.write("phase-416-2-recents-mocha")
+        guard await themePause(6000) else { return }
+        theme.setFlavor(.latte)
+        guard await themePause(4000) else { return }
+        EvidenceMarkers.write("phase-416-3-recents-latte")
+        guard await themePause(6000) else { return }
+        model.recentsRequest = nil
+        guard await themePause(2000) else { return }
+        // Latte board A/B control at the same scroll position (the recents
+        // frame's underlying content for the pixel analysis).
+        EvidenceMarkers.write("phase-416-4-board-latte")
+        guard await themePause(4000) else { return }
+        theme.setFlavor(.mocha)
+        guard await themePause(1000) else { return }
+        // Settings at the MEDIUM detent (the evidence arg) so the busy
+        // board stays in view above the form surface.
+        showSettings = true
+        guard await themePause(4000) else { return }
+        EvidenceMarkers.write("phase-416-5-settings-mocha")
+        guard await themePause(6000) else { return }
+        theme.setFlavor(.latte)
+        guard await themePause(4000) else { return }
+        EvidenceMarkers.write("phase-416-6-settings-latte")
+        guard await themePause(6000) else { return }
+        showSettings = false
+        guard await themePause(1500) else { return }
+        EvidenceMarkers.write("phase-416-7-done")
+        _ = await themePause(1500)
     }
 
     /// Sleep that reports cancellation: `false` (and stops the caller) when
@@ -2256,23 +2306,32 @@ struct RegistrationView: View {
     }
 }
 
-// MARK: - #385 Liquid Glass / translucent sheet backdrop
+// MARK: - #385/#416 Liquid Glass / translucent sheet backdrop
 
-/// The shared #385 sheet backdrop: RecentOutputSheet and the Settings sheet
-/// float over this so the board content behind shows through softly (the
-/// approved terminal-transparency look). The sheets' TEXT layers keep their
-/// opaque token backing (cards, native cells, the recents header strip's
-/// caption row) — the translucency lives in the sheet background between
-/// and around them, so every text tier keeps its current AA contrast while
-/// the board reads through the glass.
+/// The shared #385 sheet backdrop: RecentOutputSheet, the Settings sheet,
+/// and the Add Host sheet float over this so the board content behind
+/// shows through softly (the approved terminal-transparency look). The
+/// sheets' TEXT layers keep their opaque token backing (cards, native
+/// cells, the recents header strip's caption row) — the translucency lives
+/// in the sheet background between and around them, so every text tier
+/// keeps its current AA contrast while the board reads through the glass.
+///
+/// #416: the original recipe's tint levels (glass 30 %, fallback 88 %)
+/// painted the sheet surface into a near-flat theme base — the physical
+/// sheet read as an opaque dark slab with no perceptible through-show.
+/// The constants are re-locked at the perceptible end of the scale
+/// (`SheetBackdrop.glassTintOpacity` / `.fallbackTintAlpha`) so the glass
+/// and the material — not a tint fill — are what the eye meets first.
 ///
 /// - iOS 26+: the NATIVE Liquid Glass surface — SwiftUI `glassEffect`,
-///   availability-gated at compile time, tinted with the active flavor's
-///   base token through the API's theme hook (`Glass.tint`).
+///   availability-gated at compile time, with only a whisper of the active
+///   flavor's base token through the API's theme hook (`Glass.tint`).
 /// - iOS 17–25: the translucent fallback — the flavor's base at the locked
-///   `SheetBackdrop.fallbackTintAlpha` (0.85–0.90 spec band) over an
-///   ultra-thin material blur. Deployment target is 17.0, so this is what
-///   older runtimes actually render; `SheetBackdropTests` locks the
+///   `SheetBackdrop.fallbackTintAlpha` OVER an ultra-thin material blur,
+///   tinted at the lowest value the preserved WCAG floor allows so the
+///   material's own blur keeps a visible share of the surface (the board
+///   content keeps showing through it). Deployment target is 17.0, so this
+///   is what older runtimes actually render; `SheetBackdropTests` locks the
 ///   constants and the 4.5:1 worst-case contrast math.
 private struct TranslucentSheetBackdrop: View {
     /// The active flavor's base token (resolved by the caller so a live
@@ -2281,22 +2340,26 @@ private struct TranslucentSheetBackdrop: View {
 
     var body: some View {
         ZStack {
-            if #available(iOS 26.0, *) {
-                // #385 iOS 26+: Native Liquid Glass. The tint stays at
-                // `SheetBackdrop.glassTintOpacity` — a full-opacity tint
-                // paints the glass into a flat solid (measured on the 26.5
-                // sim) and hides the board behind the sheet entirely. The
-                // CLEAR style is used rather than `.regular`: over the
+            if #available(iOS 26.0, *), !Corral416Evidence.forceFallbackBackdrop {
+                // #385/#416 iOS 26+: Native Liquid Glass. The tint stays a
+                // WHISPER at `SheetBackdrop.glassTintOpacity` — a heavy
+                // tint paints the glass into a flat solid (measured on the
+                // 26.5 sim) and hides whatever the glass could reveal; the
+                // CLEAR style is used rather than `.regular` (over the
                 // system dimming scrim the regular glass reads as an
-                // opaque dark slab; clear glass keeps the terminal
-                // transparency the approved spec calls for (board content
-                // visibly through the sheet — pixel-verified).
+                // opaque dark slab).
                 Rectangle()
                     .fill(Color.clear)
                     .glassEffect(.clear
                         .tint(tint.opacity(SheetBackdrop.glassTintOpacity)),
                         in: Rectangle())
             } else {
+                // #416: the fallback tint was re-locked DOWN from 0.88
+                // (which left only ~12 % of the material visible — the
+                // sheet read as a flat painted slab) to the lowest value
+                // the preserved WCAG floor allows; the ultra-thin blur now
+                // holds a fifth of the surface and the sheet reads as
+                // tinted frosted glass, not a paint fill.
                 Rectangle().fill(.ultraThinMaterial)
                 tint.opacity(SheetBackdrop.fallbackTintAlpha)
             }
@@ -2304,6 +2367,50 @@ private struct TranslucentSheetBackdrop: View {
         .accessibilityHidden(true)
     }
 }
+
+/// #416 evidence plumbing (DEBUG): the iOS 17–25 material fallback cannot
+/// be runtime-captured on this host (only the iOS 26.5 runtime exists), so
+/// `-corral416ForceFallbackBackdrop` makes the shared backdrop take the
+/// SAME `else` branch a 17–25 runtime executes (identical source — the
+/// availability check is the only difference). `-corral416TranslucencyEvidence`
+/// runs the deterministic sheet-over-busy-board capture sequence.
+enum Corral416Evidence {
+    static let driverArgument = "-corral416TranslucencyEvidence"
+    static let fallbackBackdropArgument = "-corral416ForceFallbackBackdrop"
+    static let recentsMediumArgument = "-corral416MediumDetents"
+
+    static var wantsDriver: Bool {
+        CommandLine.arguments.contains(driverArgument)
+    }
+
+    static var wantsMediumDetents: Bool {
+        CommandLine.arguments.contains(recentsMediumArgument)
+    }
+
+    /// Release never forces the fallback: the availability branch decides.
+    static var forceFallbackBackdrop: Bool {
+#if DEBUG
+        CommandLine.arguments.contains(fallbackBackdropArgument)
+#else
+        false
+#endif
+    }
+}
+
+#if DEBUG
+/// #416 evidence: under `-corral416MediumDetents` the Settings / Add Host
+/// sheets present at the MEDIUM detent (release keeps the system LARGE
+/// detent) so the capture frames show the busy board above the form.
+struct MediumDetentsForEvidence: ViewModifier {
+    func body(content: Content) -> some View {
+        if Corral416Evidence.wantsMediumDetents {
+            content.presentationDetents([.medium, .large])
+        } else {
+            content
+        }
+    }
+}
+#endif
 
 extension View {
     /// #385: give a sheet presentation the shared translucent backdrop
@@ -2685,11 +2792,19 @@ struct SettingsView: View {
 #endif
             }
         }
-        // #385: the Settings sheet floats over the shared translucent
+        // #385/#416: the Settings sheet floats over the shared translucent
         // backdrop (Liquid Glass on iOS 26+, tinted-material fallback
         // below) instead of painting an opaque base fill over the
         // presentation.
         .translucentSheetBackdrop(theme.base)
+#if DEBUG
+        // #416 evidence: the LARGE system detent never renders the
+        // presenting board behind the card (the sheet fills the screen),
+        // so the translucency evidence frames force the MEDIUM detent —
+        // the busy board then stays visible above/behind the form surface
+        // (release launches keep the system LARGE detent).
+        .modifier(MediumDetentsForEvidence())
+#endif
     }
 
 #if DEBUG
@@ -3255,7 +3370,13 @@ struct AddHostSheet: View {
                 }
             }
             .scrollContentBackground(.hidden)
-            .background(theme.base)
+            // #416: the old opaque `.background(theme.base)` here is gone —
+            // it painted the WHOLE Add Host surface over the shared
+            // translucent backdrop (the #385 modifier below), masking it
+            // into a flat opaque slab. The form now floats over the
+            // backdrop like the Settings sheet; the text rows keep their
+            // token ink over the glass/material (SheetBackdropTests locks
+            // the worst-case AA).
             .preferredColorScheme(theme.flavor.isLight ? .light : .dark)
             // #401 rev B3: prefill the host NAME from the URL as it is
             // typed (Tailscale first label) until the user has entered a
@@ -3269,6 +3390,12 @@ struct AddHostSheet: View {
         }
         .presentationDragIndicator(.visible)
         .translucentSheetBackdrop(theme.base)
+#if DEBUG
+        // #416 evidence: medium detent under the evidence arg (see
+        // SettingsView — the Add Host frames then show the Settings form
+        // + the busy board behind/above the pairing sheet).
+        .modifier(MediumDetentsForEvidence())
+#endif
 #if DEBUG
         // #401 evidence: the Add Host sheet records its two phases — (1)
         // name/URL entry with the B3 URL-derived NAME PREFILL (the driver
@@ -3669,7 +3796,11 @@ struct FingerprintConfirmationSheet: View {
                 }
             }
             .scrollContentBackground(.hidden)
-            .background(theme.base)
+            // #416: the opaque whole-sheet `.background(theme.base)` is
+            // gone — this form floats over the shared translucent backdrop
+            // like the Add Host sheet (its rows carry their own token ink;
+            // SheetBackdropTests locks the worst-case AA over the
+            // glass/material).
             .preferredColorScheme(theme.flavor.isLight ? .light : .dark)
         }
         .presentationDragIndicator(.visible)
@@ -3799,7 +3930,7 @@ struct RecentOutputSheet: View {
         // #372: scheme forced at the SHEET level (covers the nav bar +
         // drag chrome of the presented stack).
         .preferredColorScheme(theme.flavor.isLight ? .light : .dark)
-        // #385: the recents sheet floats over the shared translucent
+        // #385/#416: the recents sheet floats over the shared translucent
         // backdrop (Liquid Glass on iOS 26+, tinted-material fallback
         // below) so the busy board behind shows through the sheet surface
         // between the blocks.

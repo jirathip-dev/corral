@@ -68,6 +68,7 @@ struct FleetNotifierApp: App {
                                 || CorralDemoLaunch.wantsSettingsEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsThemeEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsGlassEvidence(arguments: CommandLine.arguments)
+                                || Corral416Evidence.wantsDriver
                                 || CorralDemoLaunch.wantsRepoLabelEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsCollapseEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsTitleEvidence(arguments: CommandLine.arguments)

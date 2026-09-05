@@ -251,7 +251,17 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # init), DemoFleet-free evidence transport
     # (Demo/AddHostCommitEvidenceURLProtocol) — re-pinned over the #415
     # source set.
-    "4175f179866d9220e3ddf3db8b2da8a8efc9c02da44212444b2c8b49e2120611"
+    # 416: perceptible translucent treatment — AppTheme (SheetBackdrop
+    # constants re-locked: glassTintOpacity 0.3 -> 0.1 band 0.05-0.2,
+    # fallbackTintAlpha 0.88 -> 0.8 band 0.75-0.85), FleetViews (shared
+    # TranslucentSheetBackdrop consumes the re-locked constants, the
+    # whole-sheet opaque base fills removed from AddHostSheet +
+    # FingerprintConfirmationSheet, #416 translucency evidence driver +
+    # medium-detent evidence hook + fallback-forcing hook), FleetNotifierApp
+    # (evidence launch-arg routing) — re-pinned over the #416 source set.
+    # 416 doc: backdrop comment wording corrected (material share, not
+    # dominance) — re-pinned.
+    "b072eb49a86bec6746bf0c66285bcba8cbf8cd2eb64105153c7f300a8ca6850f"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -361,7 +371,14 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # preservation) + AddHostFlowURLProtocol + updated AddHostSheet
     # wiring pins (scene-scoped draft bindings, dismiss-on-success-only)
     # — re-pinned over the #415 test source.
-    "a138af999650e7fb63573995373026dc2022051a8d2c642bab75da9cf6813073"
+    # 416: SheetBackdropTests re-locked to the #416 constants (glass tint
+    # 0.1 band 0.05-0.2, fallback tint 0.8 band 0.75-0.85, exact blend at
+    # 0.8) and SheetTranslucencyWiringTests extended to the THREE fixed
+    # parity sheets (AddHostSheet wiring + no-opaque-whole-sheet-fill
+    # probe, backdrop overlay pin) — re-pinned over the #416 test source.
+    # 416 fix: SettingsAccessWiringTests debug-gated settings-opener count
+    # 9 -> 10 for the #416 translucency evidence driver — re-pinned.
+    "90156c585db3223d15a0a13ded6463397c282a6fae08ac88a5b4077d77e70799"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

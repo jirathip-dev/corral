@@ -3778,12 +3778,13 @@ final class SettingsAccessWiringTests: XCTestCase {
         }
         // The sheet-open action: one release-active (the gear) + the
         // DEBUG-only recorded-evidence drivers (#365 settings, #372 theme,
-        // #379 connect, #385 glass and #388 connection-inputs sequences all
-        // open the same sheet); all required, none release-gated.
+        // #379 connect, #385 glass, #388 connection-inputs and #416
+        // translucency sequences all open the same sheet); all required,
+        // none release-gated.
         XCTAssertEqual(releaseActionLines.count, 1,
                        "the gear must be the ONLY release-active settings opener")
-        XCTAssertEqual(allActionLines.count - releaseActionLines.count, 9,
-                       "the #365, #372, #379, #385, #388, #389, #401-settings, #401-add and #415 add-host-lifecycle DEBUG evidence drivers are the only debug-gated openers")
+        XCTAssertEqual(allActionLines.count - releaseActionLines.count, 10,
+                       "the #365, #372, #379, #385, #388, #389, #401-settings, #401-add, #415 add-host-lifecycle and #416 translucency DEBUG evidence drivers are the only debug-gated openers")
     }
 
     func testDemoOverflowMenuIsDebugOnlyAndNoLongerHidesSettings() throws {
@@ -4677,12 +4678,13 @@ final class LegacyHexAuditTests: XCTestCase {
 
 // MARK: - #385 translucent-sheet wiring tests
 
-/// Pins the #385 translucent-sheet WIRING in the bundled FleetViews source:
-/// both sheets (RecentOutputSheet + SettingsView) must float over the SHARED
-/// translucent backdrop modifier, and that backdrop must carry BOTH the iOS
-/// 26+ native Liquid Glass branch (availability-gated) and the <26
-/// tinted-material fallback — so a future "simplification" that drops one
-/// path (or bypasses the modifier with an opaque fill) fails here. Uses the
+/// Pins the #385/#416 translucent-sheet WIRING in the bundled FleetViews
+/// source: the THREE fixed-parity sheets (RecentOutputSheet, SettingsView,
+/// and AddHostSheet) must float over the SHARED translucent backdrop
+/// modifier — a re-point of any of them to an opaque whole-sheet
+/// `theme.base` fill (or a bypass of the shared modifier) fails here — and
+/// that backdrop must carry BOTH the iOS 26+ native Liquid Glass branch
+/// (availability-gated) and the <26 tinted-material fallback. Uses the
 /// same bundled-source pattern as the #316/#364 wiring tests.
 final class SheetTranslucencyWiringTests: XCTestCase {
 
@@ -4704,6 +4706,19 @@ final class SheetTranslucencyWiringTests: XCTestCase {
         return String(source[start.lowerBound..<end])
     }
 
+    /// True when an APPLIED (non-comment) `.background(theme.base)` line
+    /// exists in the slice — i.e. someone painted an opaque whole-sheet
+    /// base fill over the translucent backdrop.
+    private func hasAppliedOpaqueBaseFill(_ slice: String) -> Bool {
+        slice
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .contains { line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                return !trimmed.hasPrefix("//")
+                    && trimmed.contains(".background(theme.base)")
+            }
+    }
+
     func testRecentOutputSheetFloatsOverTheSharedTranslucentBackdrop() throws {
         let source = try bundledSource()
         let sheet = try slice(from: source,
@@ -4712,7 +4727,7 @@ final class SheetTranslucencyWiringTests: XCTestCase {
         XCTAssertEqual(sheet.components(separatedBy: "struct RecentOutputSheet:").count - 1, 1,
                        "exactly one RecentOutputSheet declaration")
         XCTAssertTrue(sheet.contains(".translucentSheetBackdrop(theme.base)"),
-                      "the recents sheet must present over the #385 translucent backdrop")
+                      "the recents sheet must present over the #385/#416 translucent backdrop")
     }
 
     func testSettingsSheetFloatsOverTheSharedTranslucentBackdrop() throws {
@@ -4723,23 +4738,32 @@ final class SheetTranslucencyWiringTests: XCTestCase {
         XCTAssertEqual(settings.components(separatedBy: "struct SettingsView:").count - 1, 1,
                        "exactly one SettingsView declaration")
         XCTAssertTrue(settings.contains(".translucentSheetBackdrop(theme.base)"),
-                      "the Settings sheet must present over the #385 translucent backdrop")
-        let appliedOpaqueFill = settings
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .contains { line in
-                let trimmed = line.trimmingCharacters(in: .whitespaces)
-                return !trimmed.hasPrefix("//")
-                    && trimmed.contains(".background(theme.base)")
-            }
-        XCTAssertFalse(appliedOpaqueFill,
+                      "the Settings sheet must present over the #385/#416 translucent backdrop")
+        XCTAssertFalse(hasAppliedOpaqueBaseFill(settings),
                        "the Settings form must NOT paint an opaque base fill over "
                        + "the translucent backdrop (the sheet surface shows through)")
+    }
+
+    func testAddHostSheetFloatsOverTheSharedTranslucentBackdrop() throws {
+        let source = try bundledSource()
+        let sheet = try slice(from: source,
+                              startMarker: "struct AddHostSheet: View {",
+                              endMarker: "/// #399 B6: the launch-time fingerprint confirmation")
+        XCTAssertEqual(sheet.components(separatedBy: "struct AddHostSheet:").count - 1, 1,
+                       "exactly one AddHostSheet declaration")
+        XCTAssertTrue(sheet.contains(".translucentSheetBackdrop(theme.base)"),
+                      "the Add Host sheet must present over the #385/#416 translucent backdrop")
+        XCTAssertFalse(hasAppliedOpaqueBaseFill(sheet),
+                       "the Add Host form must NOT paint an opaque base fill over "
+                       + "the translucent backdrop (#416: the old whole-sheet "
+                       + "`.background(theme.base)` masked the shared backdrop "
+                       + "into a flat opaque slab)")
     }
 
     func testBackdropCarriesBothTheGlassAndTheMaterialFallbackPaths() throws {
         let source = try bundledSource()
         let backdrop = try slice(from: source,
-                                 startMarker: "// MARK: - #385 Liquid Glass / translucent sheet backdrop",
+                                 startMarker: "// MARK: - #385/#416 Liquid Glass / translucent sheet backdrop",
                                  endMarker: "// MARK: - Settings (Appearance")
         XCTAssertTrue(backdrop.contains("struct TranslucentSheetBackdrop: View"),
                       "the shared backdrop view must exist")
@@ -4758,6 +4782,11 @@ final class SheetTranslucencyWiringTests: XCTestCase {
                       "the fallback must apply a backdrop blur material")
         XCTAssertTrue(backdrop.contains("SheetBackdrop.fallbackTintAlpha"),
                       "the fallback must tint the material with the locked alpha")
+        // #416: the fallback tint must be applied as an OVERLAY on the
+        // material (never a full-opacity paint — an opaque re-point of the
+        // backdrop to plain theme.base fails the SheetBackdropTests bands).
+        XCTAssertTrue(backdrop.contains("tint.opacity(SheetBackdrop.fallbackTintAlpha)"),
+                      "the fallback must overlay the tint at the locked alpha")
     }
 }
 

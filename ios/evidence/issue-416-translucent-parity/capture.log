@@ -1,0 +1,73 @@
+# 416 capture log — perceptible translucent treatment evidence (glass + forced fallback)
+
+2026-09-05 ~21:48 +0700 (final #416 Debug build, iPhone 16 / iOS 26.5
+simulator UDID 59DDC0C5-891E-4EC0-91AF-4F50DF68D793 — the host's only iOS
+runtime; no keychain identity on the evidence installs). DEBUG build from
+branch g416-translucent-parity at the working tree of the #416 change:
+
+$ HERDR_XCODEBUILD_DIRECT=1 xcodebuild build \
+    -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier \
+    -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/416-dd build
+** BUILD SUCCEEDED ** (log: /tmp/416-fix-build.log)
+
+App: /tmp/416-dd/Build/Products/Debug-iphonesimulator/FleetNotifier.app
+Bundle id: com.corral.fleetnotifier (lowercase — simctl launch uses the
+Info.plist GENERATE_INFOPLIST_FILE id).
+Markers: <data>/Documents/ux-evidence/<phase>.marker written per phase
+(app holds >= 4 s after each marker); the host capture script
+(/tmp/416-capture.sh — marker poll + `simctl io screenshot` per new
+marker, `sips -z 844 390` downscale) removes the app container first so
+stale markers are never re-captured.
+
+Seeding: DemoFleet.seed() (single-host busy demo board) for the
+recents/settings sequence; the #401 multi-host seed for the Add Host
+frames. All synthetic fixtures; no live daemon, no secrets.
+
+Run 1 — native glass (recents + settings, medium detent):
+$ xcrun simctl launch <udid> com.corral.fleetnotifier \
+    -corral416TranslucencyEvidence -corral416MediumDetents
+  phase-416-1-board-mocha  -> phase-1-board-mocha-390x844.png
+  phase-416-2-recents-mocha -> phase-2-recents-mocha-390x844.png
+  phase-416-3-recents-latte -> phase-3-recents-latte-390x844.png
+  phase-416-4-board-latte  -> phase-4-board-latte-390x844.png
+  phase-416-5-settings-mocha -> phase-5-settings-mocha-390x844.png
+  phase-416-6-settings-latte -> phase-6-settings-latte-390x844.png
+  (driver ends; EXIT ok)
+
+Run 2 — forced material fallback (same sequence):
+$ xcrun simctl launch <udid> com.corral.fleetnotifier \
+    -corral416TranslucencyEvidence -corral416MediumDetents \
+    -corral416ForceFallbackBackdrop
+  phase-416-1..6 -> the *-fallback-390x844.png set (board controls
+  duplicated as phase-1/4 controls only in run 1).
+
+Run 3 — Add Host over the multi-host board (native glass):
+$ xcrun simctl launch <udid> com.corral.fleetnotifier \
+    -corralDemoMultiHostAddEvidence -corral416MediumDetents
+  phase-1-mh-add-entry-mocha   -> phase-7-addhost-entry-mocha-390x844.png
+  phase-2-mh-add-confirm-latte -> phase-8-addhost-confirm-latte-390x844.png
+  phase-3-mh-add-done (driver ends)
+
+Run 4 — Add Host, forced material fallback:
+$ xcrun simctl launch <udid> com.corral.fleetnotifier \
+    -corralDemoMultiHostAddEvidence -corral416MediumDetents \
+    -corral416ForceFallbackBackdrop
+  phase-1-mh-add-entry-mocha   -> phase-7-addhost-entry-mocha-fallback-390x844.png
+  phase-2-mh-add-confirm-latte -> phase-8-addhost-confirm-latte-fallback-390x844.png
+
+All four runs captured with /tmp/416-capture.sh (per-marker screenshots;
+no marker collisions — each launch starts from a wiped container).
+
+Analysis:
+$ cd ios/evidence/issue-416-translucent-parity && python3 translucency-analysis.py
+  -> analysis.txt (geometry + branch A/B surface deltas + opaque controls)
+
+Mechanism probes (same branch build, launch-arg backdrop recipes —
+investigative, removed before commit): green-fill probe (surface paints
+green -> the backdrop view owns the sheet surface), clear-only probe +
+undimmed-medium probe (row-band correlation ~0 vs the board frame behind
+the card -> the iOS 26.5 SIM never composites the presenter behind the
+sheet card; see README mechanism appendix).
+
+Synthetic-only: DEBUG drivers over the demo seeds. No live daemon, no
+physical device, no TestFlight claim.

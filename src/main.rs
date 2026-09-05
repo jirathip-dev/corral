@@ -344,9 +344,14 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr, cors_origins: Vec<St
     // side effect of router() (which is also the test constructor; reading
     // CORRAL_APNS_* inside it made every API test read the ambient env and
     // race the config tests). Disabled (unconfigured / bad p8) -> the
-    // daemon runs exactly as before, with a startup warning.
-    if let Some(notifier) = corrald::push::Notifier::from_env(store.clone(), auth.registry.clone())
-    {
+    // daemon runs exactly as before, with a startup warning. #397: the
+    // notifier stamps its host identity (auth.host's X25519 public key)
+    // into every payload as the composite target's host_id.
+    if let Some(notifier) = corrald::push::Notifier::from_env(
+        store.clone(),
+        auth.registry.clone(),
+        auth.host.public_key_b64(),
+    ) {
         notifier.start();
     } else {
         tracing::info!("push notifier not configured (set CORRAL_APNS_* to enable APNs)");

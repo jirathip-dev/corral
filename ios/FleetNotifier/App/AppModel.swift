@@ -185,21 +185,6 @@ final class AppModel: ObservableObject {
         case mismatch
     }
 
-    /// #400 F1/F2: the app-wide push posture (behavior + state model; the
-    /// Settings text/state rendering is #401's surface).
-    enum PushPosture: Equatable, Sendable {
-        /// Exactly one configured profile: the existing single-host APNs
-        /// enrollment and notification behavior is preserved (F1).
-        case singleHost
-        /// Two or more profiles: APNs enrollment and notification
-        /// deep-link routing are DISABLED — the app never guesses a host
-        /// from a bare agent_id. Previously uploaded tokens are cleared
-        /// best-effort from every reachable host via the signed
-        /// empty-token path; offline hosts carry a pending clear that is
-        /// retried on reconnect (F2).
-        case multiHostDisabled
-    }
-
     /// #399 B6/B3: the sheet request that pauses a host profile on the
     /// fingerprint confirmation. Presented by the board until answered.
     struct FingerprintConfirmationRequest: Identifiable, Equatable, Sendable {
@@ -340,13 +325,26 @@ final class AppModel: ObservableObject {
     /// stream/cursor/generation/task set (C3); nil when no profile store
     /// is configured (legacy-only fixtures).
     @Published private(set) var coordinator: HostStreamCoordinator?
-    /// #400 F1/F2: notification posture of the whole app, derived from the
-    /// configured profile count.
-    @Published private(set) var pushPosture: PushPosture = .singleHost
-    /// #400 F2: host profiles whose previously uploaded APNs token could
-    /// not be cleared because the host was offline — the clear retries on
-    /// that host's next successful connection.
+    /// #397: host profiles whose APNs token clear is still pending because
+    /// the host was unreachable when enrollment was disabled / the host
+    /// was removed. Retried when that host reconnects (see
+    /// `retryPendingPushTokenClear`); Settings surfaces the guidance.
     @Published private(set) var pendingPushTokenClears: Set<UUID> = []
+
+    /// #397: the enrollment target of every pending token clear, captured
+    /// at schedule time — a REMOVED profile can no longer be resolved
+    /// through the store, but its clear/guidance needs the URL, key id,
+    /// and display name.
+    private struct PendingPushClearTarget: Equatable, Sendable {
+        let urlString: String
+        let keyId: String
+        let displayName: String
+    }
+
+    private var pendingPushClearTargets: [UUID: PendingPushClearTarget] = [:]
+    /// #397: per-host dedupe of APNs token uploads (the token this process
+    /// retained was already enrolled with a host under this key id).
+    private var enrolledTokenPerHost: [UUID: String] = [:]
 
     var signer: DeviceSigner?
     private var notifier: LocalNotifier?
@@ -506,15 +504,17 @@ final class AppModel: ObservableObject {
         // #399 B4: the APNs upload path consults the app-wide continuity
         // gate; install the model predicate only when a profile store is
         // configured (legacy-only fixtures keep the default allow).
-        // #400 F2: with 2+ configured profiles the predicate DENIES
-        // everything — enrollment is disabled and no token can reach any
-        // daemon (an old daemon may still hold a previously uploaded token
-        // until the explicit empty-token cleanup clears it).
+        // #397: the gate now reflects the ACTIVE host's OWN posture — the
+        // 2+-profile blanket denial is gone (every paired host enrolls
+        // independently); a token still never reaches a host whose pinned
+        // identity is unverified/mismatched, and a per-host notification
+        // DISABLE also stops the active host from enrolling.
         if profileStore != nil {
             KeyContinuityGate.setPushPredicate { [weak self] in
                 guard let self else { return true }
                 return await MainActor.run {
-                    self.profiles.count <= 1 && self.keyContinuityAllowsLiveWork
+                    guard self.keyContinuityAllowsLiveWork else { return false }
+                    return self.activeProfile?.notificationsEnabled ?? true
                 }
             }
         }
@@ -531,6 +531,17 @@ final class AppModel: ObservableObject {
             coordinator.activeProfileID = activeProfileID
             coordinator.onSessionConnected = { [weak self] profileID in
                 self?.retryPendingPushTokenClear(profileID: profileID)
+                // #397: a coordinator host that JUST verified + opened its
+                // stream may have missed the launch-time fan-out — enroll
+                // the retained token now (per-host dedupe makes this a
+                // no-op for already-enrolled hosts).
+                self?.uploadRetainedTokenToHosts()
+            }
+            // #397: per-host state-change notifications fire through the
+            // same model path as the ACTIVE host's store hooks — composite
+            // (profile, raw agent id) payloads, per-host enable honored.
+            coordinator.onAgentTransition = { [weak self] type, agentID, profileID in
+                self?.notifyTransition(type, agentId: agentID, hostProfileID: profileID)
             }
             self.coordinator = coordinator
         }
@@ -548,7 +559,6 @@ final class AppModel: ObservableObject {
             identityLifecycle.setCurrent(mode: .needsSetup, hostURL: nil,
                                          keyId: nil, signerPublicKeyB64: nil)
         }
-        refreshPushPosture()
     }
 
     // MARK: - #399 host profiles (B1-B7)
@@ -557,10 +567,8 @@ final class AppModel: ObservableObject {
     private func reloadProfiles(from store: HostProfileStore) {
         profiles = store.orderedProfiles
         // #400: profile mutations reconcile the coordinator's sessions
-        // (removal cancels only that host's tasks — E3) and refresh the
-        // F1/F2 notification posture.
+        // (removal cancels only that host's tasks — E3).
         syncCoordinator(startStreams: false)
-        refreshPushPosture()
     }
 
     /// #400 C3/E3: reconcile the coordinator's per-host sessions against
@@ -577,47 +585,65 @@ final class AppModel: ObservableObject {
                            startStreams: startStreams)
     }
 
-    /// #400 F1/F2: derive the notification posture from the configured
-    /// profile count. Crossing INTO multi-host (2+) disables APNs
-    /// enrollment + deep-link routing and schedules best-effort
-    /// empty-token clears of any previously uploaded token; crossing back
-    /// to exactly one profile re-arms the single-host notification half
-    /// (the next startLive() runs enrollment again).
-    private func refreshPushPosture() {
-        let posture: PushPosture = profiles.count > 1 ? .multiHostDisabled : .singleHost
-        if pushPosture != posture {
-            pushPosture = posture
-            if posture == .singleHost {
-                notificationsConfigured = false
-            }
-        }
-        if posture == .multiHostDisabled {
-            schedulePushTokenClearsIfPreviouslyUploaded()
-        }
-    }
-
-    /// #400 F2: best-effort CLEAR each host's previously uploaded APNs
-    /// token via the existing signed empty-token path. Only runs when this
-    /// device actually holds/recorded a token (a fresh process with no
-    /// upload history has nothing to clear). Reachable hosts clear
-    /// immediately; unreachable hosts land in `pendingPushTokenClears` and
-    /// retry on that host's next successful connection.
-    private func schedulePushTokenClearsIfPreviouslyUploaded() {
-        guard pushPosture == .multiHostDisabled else { return }
-        guard let delegate = AppDelegate.shared, delegate.hasUploadedDeviceToken() else {
+    /// #397: per-host notification enrollment toggle (Settings host row).
+    /// The GLOBAL Notifications control is retained; this flag is scoped
+    /// per host profile. Disabling stops the DEBUG bridge for the host AND
+    /// clears that host's enrolled APNs token best-effort (an unreachable
+    /// host lands in `pendingPushTokenClears` with host-side guidance and
+    /// a retry on reconnect). Re-enabling re-enrolls the retained token
+    /// when this device holds one.
+    func setHostNotificationsEnabled(profileID: UUID, enabled: Bool) {
+        guard let store = profileStore, let profile = store.profile(id: profileID) else { return }
+        guard profile.notificationsEnabled != enabled else { return }
+        do {
+            try store.setNotificationsEnabled(enabled, id: profileID)
+        } catch {
             return
         }
-        guard signer != nil else { return }
-        for profile in profiles {
-            guard profile.keyId != nil,
-                  let url = URL(string: profile.urlString) else { continue }
-            clearUploadedToken(profileID: profile.id, hostURL: url,
-                               profileKeyId: profile.keyId ?? "")
+        reloadProfiles(from: store)
+        guard let url = URL(string: profile.urlString) else { return }
+        if enabled {
+            // Re-enable: enroll the retained token with THIS host again
+            // (per-host dedupe lets the fan-out decide). Any pending clear
+            // from an earlier disable is superseded by the new intent.
+            enrolledTokenPerHost.removeValue(forKey: profileID)
+            pendingPushTokenClears.remove(profileID)
+            pendingPushClearTargets.removeValue(forKey: profileID)
+            // The ACTIVE host's enrollment is the delegate's lifecycle
+            // path — retry it too (its own dedupe suppresses repeats).
+            AppDelegate.shared?.retryPendingDeviceTokenUpload()
+            uploadRetainedTokenToHosts()
+            if AppDelegate.shared?.retainedDeviceToken == nil {
+                // Fresh process with no OS callback yet: ask again — the
+                // callback re-enters the fan-out.
+                Task { @MainActor in
+                    UIApplication.shared.registerForRemoteNotifications()
+                }
+            }
+        } else {
+            notifier?.removeAll(forHostId: profile.hostKeyB64)
+            enrolledTokenPerHost.removeValue(forKey: profileID)
+            clearHostToken(profile: profile, hostURL: url)
         }
     }
 
-    private func clearUploadedToken(profileID: UUID, hostURL: URL, profileKeyId: String) {
+    /// #397: clear ONE host's enrolled APNs token via the signed
+    /// empty-token path. A reachable host clears immediately; an
+    /// unreachable host lands in `pendingPushTokenClears` (target captured
+    /// so a REMOVED profile's clear can still surface guidance and be
+    /// superseded by a re-pair) and retries on that host's next successful
+    /// connection. The pending marker is set SYNCHRONOUSLY before the
+    /// attempt and only removed by a confirmed success — a clear that
+    /// races an identity boundary (e.g. removing the ACTIVE host while it
+    /// is unreachable) can never lose its guidance record.
+    private func clearHostToken(profile: HostProfile, hostURL: URL) {
         guard let signer else { return }
+        guard let keyId = profile.keyId, !keyId.isEmpty else { return }
+        let target = PendingPushClearTarget(urlString: profile.urlString,
+                                            keyId: keyId,
+                                            displayName: profile.displayName)
+        pendingPushTokenClears.insert(profile.id)
+        pendingPushClearTargets[profile.id] = target
         let context = lifecycleContext()
         let taskId = UUID()
         let task = Task { @MainActor [weak self] in
@@ -627,32 +653,106 @@ final class AppModel: ObservableObject {
             let client = DriveClient(host: hostURL, session: self.session)
             do {
                 // Empty token = the daemon's documented clear path.
-                _ = try await client.registerDeviceToken("", keyId: profileKeyId,
-                                                         signer: signer)
+                _ = try await client.registerDeviceToken("", keyId: keyId, signer: signer)
                 guard !Task.isCancelled, self.isCurrent(context) else { return }
-                self.pendingPushTokenClears.remove(profileID)
+                self.pendingPushTokenClears.remove(profile.id)
+                self.pendingPushClearTargets.removeValue(forKey: profile.id)
             } catch {
                 guard !Task.isCancelled, self.isCurrent(context) else { return }
-                // Offline host: keep the clear pending and retry on the
-                // host's next successful connection (F2).
-                self.pendingPushTokenClears.insert(profileID)
+                // Offline host: keep the clear pending — Settings shows
+                // the host-side guidance and the next successful
+                // connection to this host retries it.
             }
         }
         lifecycleTasks[taskId] = task
     }
 
-    /// #400 F2: retry one host's pending token clear when it reconnects.
+    /// #397: retry one host's pending token clear when it reconnects.
+    /// Existing profiles retry through the store; a REMOVED profile's
+    /// pending clear stays listed (host-side guidance) until the same URL
+    /// is paired again, which supersedes it.
     func retryPendingPushTokenClear(profileID: UUID) {
         guard pendingPushTokenClears.contains(profileID) else { return }
         guard let store = profileStore,
               let profile = store.profile(id: profileID),
-              let url = URL(string: profile.urlString),
-              let keyId = profile.keyId else {
-            pendingPushTokenClears.remove(profileID)
+              let url = URL(string: profile.urlString) else {
             return
         }
-        pendingPushTokenClears.remove(profileID)
-        clearUploadedToken(profileID: profileID, hostURL: url, profileKeyId: keyId)
+        clearHostToken(profile: profile, hostURL: url)
+    }
+
+    /// #397: a fresh pairing with the same URL replaces the enrollment
+    /// intent — the old registration record is the SAME deterministic
+    /// key_id, and the new enrollment writes the token it should hold, so
+    /// any pending removal-clear for that URL is superseded.
+    private func supersedePendingClear(urlString: String) {
+        for (id, target) in pendingPushClearTargets where target.urlString == urlString {
+            pendingPushTokenClears.remove(id)
+            pendingPushClearTargets.removeValue(forKey: id)
+        }
+    }
+
+    /// Settings guidance names for every pending clear — current profiles
+    /// resolve live, removed profiles fall back to the captured target.
+    func pendingPushClearNames() -> [String] {
+        pendingPushTokenClears.sorted(by: { $0.uuidString < $1.uuidString }).compactMap { id in
+            profiles.first { $0.id == id }?.displayName
+                ?? pendingPushClearTargets[id]?.displayName
+        }
+    }
+
+    /// #397: enroll the retained APNs token with every NON-active host
+    /// whose per-host notifications are enabled — each upload is signed
+    /// with THAT host profile's key id (per-host grants/expiry stay
+    /// independent because each host daemon holds its own registry
+    /// record). The ACTIVE host is enrolled by the AppDelegate's own
+    /// lifecycle path; per-host dedupe prevents repeat posts per token.
+    func uploadRetainedTokenToHosts() {
+        guard mode == .live, signer != nil else { return }
+        guard let hex = AppDelegate.shared?.retainedDeviceToken, !hex.isEmpty else { return }
+        for profile in profiles {
+            guard profile.id != activeProfileID else { continue }
+            guard let url = URL(string: profile.urlString) else { continue }
+            uploadRetainedToken(hex, to: profile, hostURL: url)
+        }
+    }
+
+    private func uploadRetainedToken(_ hex: String, to profile: HostProfile, hostURL: URL) {
+        guard mode == .live,
+              profile.notificationsEnabled,
+              profile.mayConnect,
+              let signer,
+              let keyId = profile.keyId,
+              enrolledTokenPerHost[profile.id] != hex else { return }
+        if profile.hostKeyB64 != nil {
+            // #397 AC7: a pinned coordinator host must be VERIFIED before
+            // a token may reach it (unchanged/unverified keys never
+            // enroll) — posture .verifying/.mismatch denies.
+            guard coordinator?.allowsLiveWork(profileID: profile.id) == true else { return }
+        }
+        uploadToken(hex, profileID: profile.id, hostURL: hostURL,
+                    keyId: keyId, signer: signer)
+    }
+
+    private func uploadToken(_ hex: String, profileID: UUID, hostURL: URL,
+                             keyId: String, signer: DeviceSigner) {
+        let context = lifecycleContext()
+        let taskId = UUID()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.lifecycleTasks.removeValue(forKey: taskId) }
+            guard !Task.isCancelled, self.isCurrent(context) else { return }
+            let client = DriveClient(host: hostURL, session: self.session)
+            do {
+                _ = try await client.registerDeviceToken(hex, keyId: keyId, signer: signer)
+                guard !Task.isCancelled, self.isCurrent(context) else { return }
+                self.enrolledTokenPerHost[profileID] = hex
+            } catch {
+                _ = error  // Offline host: the next startLive / foreground
+                           // fan-out retries (per-host dedupe never recorded).
+            }
+        }
+        lifecycleTasks[taskId] = task
     }
 
     /// The profile the single-host runtime is bound to: the persisted
@@ -969,12 +1069,21 @@ final class AppModel: ObservableObject {
 
     /// Remove Host (B7, local unlink): purge the profile, its cursor, its
     /// durable cache and in-memory tails. The shared phone signing key and
-    /// every other profile stay intact. The daemon's registry entry
-    /// remains until the host removes it. If the removed profile was the
-    /// active one, the next ordered profile activates (or the app returns
-    /// to setup when none remains).
+    /// every other profile stay intact.
+    /// #397: removal also clears the removed host's enrolled APNs token
+    /// (signed empty-token path) when the host is reachable; an
+    /// unreachable host lands in `pendingPushTokenClears` with host-side
+    /// cleanup guidance, and the pending clear is superseded if the same
+    /// URL is paired again. The daemon's registry entry itself remains
+    /// until the host removes it. If the removed profile was the active
+    /// one, the next ordered profile activates (or the app returns to
+    /// setup when none remains).
     func removeHost(profileID: UUID) {
         guard let store = profileStore else { return }
+        // #397: capture the profile BEFORE the unlink — the token clear
+        // needs its key id/URL, and a failed clear must keep its target
+        // even though the profile record is gone.
+        let removedProfile = store.profile(id: profileID)
         let wasActive = activeProfile?.id == profileID
         if wasActive {
             // Removing the ACTIVE host tears down the whole single-host
@@ -984,8 +1093,16 @@ final class AppModel: ObservableObject {
             cancelLifecycleTasks()
             stopLive()
         }
+        if let removedProfile {
+            notifier?.removeAll(forHostId: removedProfile.hostKeyB64)
+            if removedProfile.keyId != nil,
+               let url = URL(string: removedProfile.urlString) {
+                clearHostToken(profile: removedProfile, hostURL: url)
+            }
+        }
         store.removeProfile(id: profileID)
         reloadProfiles(from: store)
+        enrolledTokenPerHost.removeValue(forKey: profileID)
         // #401 D1: a removed host can never stay selected — the filter
         // reconciles to All Hosts (session-only choice).
         if let hostFilter, store.profile(id: hostFilter) == nil {
@@ -1026,12 +1143,6 @@ final class AppModel: ObservableObject {
             cancelHostDriveTasks(hostProfileID: profileID)
             if recentsRequest?.hostProfileID == profileID {
                 recentsRequest = nil
-            }
-            // #400 F2: a 2+ → 1 transition re-arms the single-host
-            // notification/APNs half (enrollment + deep links).
-            if profiles.count == 1, mode == .live {
-                notificationsConfigured = false
-                startLive()
             }
         }
     }
@@ -1217,6 +1328,17 @@ final class AppModel: ObservableObject {
                     // pairing is the new Add Host path.
                     if let store = self.profileStore {
                         do {
+                            // #397: a re-pair supersedes any pending
+                            // removal-clear for the URL and carries the
+                            // replaced record's per-host notification
+                            // state when the URL is unchanged.
+                            self.supersedePendingClear(
+                                urlString: registrationContext.requestedHostURL.absoluteString)
+                            let carriedNotifications =
+                                self.activeProfile?.urlString
+                                    == registrationContext.requestedHostURL.absoluteString
+                                ? (self.activeProfile?.notificationsEnabled ?? true)
+                                : true
                             if let oldActive = self.activeProfile {
                                 store.removeProfile(id: oldActive.id)
                             }
@@ -1229,7 +1351,8 @@ final class AppModel: ObservableObject {
                                 keyId: response.keyId,
                                 grants: response.grants,
                                 expiryTs: response.expiryTs,
-                                registeredAt: UInt64(Date().timeIntervalSince1970))
+                                registeredAt: UInt64(Date().timeIntervalSince1970),
+                                notificationsEnabled: carriedNotifications)
                             self.reloadProfiles(from: store)
                             self.persistActiveProfileID(profile.id)
                             self.keyContinuityState = .notPinned
@@ -1388,10 +1511,18 @@ final class AppModel: ObservableObject {
                     guard !Task.isCancelled,
                           self.isCurrent(baseContext),
                           self.identityLifecycle.isCurrent(sharedRegistrationContext) else { return }
+                    // #397: a fresh pairing supersedes any pending
+                    // removal-clear for the same URL (the new enrollment
+                    // writes the token the shared key record should hold).
+                    self.supersedePendingClear(urlString: url.absoluteString)
                     // Persist the fingerprint-confirmed pairing (B3/B5);
                     // the previous active record goes first (URL change =
-                    // remove-and-re-pair).
+                    // remove-and-re-pair). A same-URL re-pair carries the
+                    // replaced record's per-host notification state.
                     let now = UInt64(Date().timeIntervalSince1970)
+                    let carriedNotifications = self.activeProfile?.urlString == url.absoluteString
+                        ? (self.activeProfile?.notificationsEnabled ?? true)
+                        : true
                     if let oldActive = self.activeProfile {
                         store.removeProfile(id: oldActive.id)
                     }
@@ -1403,7 +1534,8 @@ final class AppModel: ObservableObject {
                         keyId: response.keyId,
                         grants: response.grants,
                         expiryTs: response.expiryTs,
-                        registeredAt: now)
+                        registeredAt: now,
+                        notificationsEnabled: carriedNotifications)
                     self.signer = candidateSigner
                     self.keyStorageWarning = (storage == .insecureFallback)
                     self.keyId = response.keyId
@@ -1546,15 +1678,20 @@ final class AppModel: ObservableObject {
         }
         let client = CorraldClient(host: hostURL, session: session)
         // #354 L2: state-change notification hooks (started / blocked /
-        // finished), fired by FleetStore on SSE deltas.
+        // finished), fired by FleetStore on SSE deltas. #397: every hook
+        // carries the ACTIVE profile id — notifications are composite
+        // (host, agent) targets from here on.
         fleet.onStarted = { [weak self] agentId in
-            self?.notifyTransition(.started, agentId: agentId)
+            self?.notifyTransition(.started, agentId: agentId,
+                                   hostProfileID: self?.activeProfile?.id)
         }
         fleet.onBlocked = { [weak self] agentId in
-            self?.notifyTransition(.blocked, agentId: agentId)
+            self?.notifyTransition(.blocked, agentId: agentId,
+                                   hostProfileID: self?.activeProfile?.id)
         }
         fleet.onFinished = { [weak self] agentId in
-            self?.notifyTransition(.finished, agentId: agentId)
+            self?.notifyTransition(.finished, agentId: agentId,
+                                   hostProfileID: self?.activeProfile?.id)
         }
         // #79 review F2: a decode failure lands in the full-width,
         // dismissible, text-selectable banner — readable/copyable on
@@ -1605,6 +1742,24 @@ final class AppModel: ObservableObject {
         // the shared lifecycle is live, even when notificationsConfigured is
         // already true.
         AppDelegate.shared?.retryPendingDeviceTokenUpload()
+        // #397: the delegate only enrolls the ACTIVE host; every OTHER
+        // paired host with per-host notifications enabled gets the same
+        // retained token under ITS OWN key id here (signed per-profile
+        // device registration record). The hook covers a mid-session OS
+        // callback; the direct fan-out covers launch/foreground/pairing.
+        if let delegate = AppDelegate.shared {
+            delegate.onDeviceTokenReceived = { [weak self] hex in
+                guard let self else { return }
+                Task { @MainActor in
+                    guard self.mode == .live else { return }
+                    for profile in self.profiles where profile.id != self.activeProfileID {
+                        guard let url = URL(string: profile.urlString) else { continue }
+                        self.uploadRetainedToken(hex, to: profile, hostURL: url)
+                    }
+                }
+            }
+        }
+        uploadRetainedTokenToHosts()
         // #79 review F4: only connect() is idempotent by itself (its
         // streamTask guard). The notification/APNs setup below is NOT —
         // re-running it allocates a fresh LocalNotifier (dropping the
@@ -1614,12 +1769,6 @@ final class AppModel: ObservableObject {
         // register()). Guard it to once per process.
         guard !notificationsConfigured else { return }
         notificationsConfigured = true
-        // #400 F2: with 2+ configured profiles APNs enrollment is DISABLED
-        // (and the DEBUG local bridge mirrors the release posture — no
-        // state-change notifications either). The flag stays set so the
-        // half never re-runs while multi-host; removing down to one host
-        // resets it and re-arms the single-host behavior (F1).
-        guard profiles.count <= 1 else { return }
         notifier = LocalNotifier()
         notifier?.isEnabled = notificationsEnabled
         // This OS permission request captures no host, key, fleet, or mode;
@@ -1627,11 +1776,11 @@ final class AppModel: ObservableObject {
         let notifierForAuthorization = notifier
         Task { await notifierForAuthorization?.requestAuthorization() }
         // #354 L2: notification tap → deep link to the agent row's recents.
-        // #400 F2: the deep-link closure is only installed on the
-        // single-host path — with 2+ profiles the app never guesses a host
-        // from a bare agent_id.
-        notifier?.onOpenAgent = { [weak self] agentId in
-            self?.openRecents(for: agentId)
+        // #397: the tap carries the payload's host identity — the model
+        // resolves EXACTLY one host profile (never a guess from a bare
+        // agent id).
+        notifier?.onOpenAgent = { [weak self] agentId, hostID in
+            self?.openNotification(agentId: agentId, hostKeyB64: hostID)
         }
         // APNs registration (D16): the token is sent to the daemon by the
         // AppDelegate; on the simulator this fails and the DEBUG local
@@ -1655,6 +1804,17 @@ final class AppModel: ObservableObject {
         }
         fleet.disconnect()
         fleet.persistCursor()
+        // #397: push clear/enroll lifecycle tasks must not outlive the
+        // live session that owns their URLSession — cancel them here so a
+        // task queued behind teardown bails on Task.isCancelled instead of
+        // touching a session that may already be invalidated. Their
+        // per-host pending markers were set synchronously before launch,
+        // so a cancelled attempt simply stays pending until the next
+        // successful connection retries it.
+        for task in lifecycleTasks.values {
+            task.cancel()
+        }
+        lifecycleTasks.removeAll()
         // #399: mirror the active profile's cursor into the profile store
         // and persist the allowlisted board metadata cache (background/
         // host-switch boundaries).
@@ -1727,15 +1887,30 @@ final class AppModel: ObservableObject {
     /// The transition hooks. The LOCAL path fires only through the DEBUG
     /// bridge (`PushBridge`); release builds rely on APNs — the daemon
     /// pushes the same payload once the APNs provisioning checkpoint is met.
-    /// #400 F2: with 2+ configured profiles notifications are disabled
-    /// entirely (no APNs enrollment, and the DEBUG local bridge mirrors
-    /// the release posture) — nothing fires for any host.
-    private func notifyTransition(_ type: PushPayload.PushType, agentId: String) {
-        guard profiles.count <= 1 else { return }
-        guard let agent = fleet.agent(agentId) else { return }
+    /// #397: notifications are COMPOSITE — the owning host profile rides
+    /// every event (the ACTIVE store hooks and every coordinator session's
+    /// hooks land here), the payload carries that host's pinned key as
+    /// `host_id`, and per-host + global enable are both enforced.
+    private func notifyTransition(_ type: PushPayload.PushType, agentId: String,
+                                  hostProfileID: UUID?) {
         guard PushBridge.shouldPresentLocally else { return }
-        let payload = PushPayload.transition(type: type, agent: agent)
+        guard let profile = hostProfileID.flatMap({ profileStore?.profile(id: $0) })
+            ?? activeProfile else { return }
+        guard profile.notificationsEnabled else { return }
+        guard let agent = owningAgent(hostProfileID: profile.id, agentID: agentId) else { return }
+        let payload = PushPayload.transition(type: type, agent: agent,
+                                              hostId: profile.hostKeyB64)
         notifier?.notify(payload)
+    }
+
+    /// #397: the agent of a composite transition from EXACTLY the owning
+    /// store (the same resolution the read routes use — an equal raw agent
+    /// id on another host never satisfies this event).
+    private func owningAgent(hostProfileID: UUID?, agentID: String) -> Agent? {
+        if let hostProfileID, hostProfileID != activeProfileID {
+            return coordinator?.agent(profileID: hostProfileID, agentID: agentID)
+        }
+        return fleet.agent(agentID)
     }
 
     /// Notification-pairing toggle (Settings). Global on/off only — no
@@ -1807,18 +1982,51 @@ final class AppModel: ObservableObject {
     /// Deep link from a tapped notification: open the agent's row recents.
     /// Live mode only — setup/demo states have no live agent to show. A
     /// deep link is not a row tap, so it plays no haptic.
-    /// #400 F2: with 2+ configured profiles notification deep-link routing
-    /// is DISABLED — a bare agent_id cannot name a host, so the app never
-    /// guesses one (the payload carries no host and no cross-host search
-    /// may run). Exactly one profile keeps the legacy route (F1).
-    func openRecents(for agentId: String) {
+    /// #397: the payload's `host_id` (the pinned X25519 key of the owning
+    /// daemon) resolves EXACTLY one host profile; a host-less legacy
+    /// payload may route to the SOLE configured host (F1 back-compat);
+    /// anything else — 2+ hosts without a matching host id, an unknown or
+    /// removed host, or a mismatched key — is NON-ACTIONABLE with a
+    /// bounded diagnostic: the app never guesses another host's lane and a
+    /// removed host's alert can never recreate its profile or cached lane.
+    func openNotification(agentId: String, hostKeyB64: String?) {
         guard mode == .live else { return }
-        guard profiles.count <= 1 else { return }
-        guard fleet.agent(agentId) != nil else {
-            banner = .info("This agent is no longer on the fleet — refresh the board.")
+        if profileStore == nil {
+            // Pure legacy single-host runtime (no profile store): the
+            // fleet store is the only surface — pre-#397 route unchanged.
+            guard fleet.agent(agentId) != nil else {
+                banner = .info("This agent is no longer on the fleet — refresh the board.")
+                return
+            }
+            requestRecents(for: agentId, hostProfileID: nil, haptic: false)
             return
         }
-        requestRecents(for: agentId, haptic: false)
+        if let hostKeyB64,
+           let profile = profiles.first(where: { $0.hostKeyB64 == hostKeyB64 }) {
+            routeNotification(to: profile, agentId: agentId)
+            return
+        }
+        // Legacy host-less payload / an identity no profile pins. Exactly
+        // one configured host keeps the pre-#397 route for host-less
+        // payloads (and unpinned legacy hosts cannot be verified anyway).
+        if profiles.count == 1, let only = profiles.first,
+           hostKeyB64 == nil || only.hostKeyB64 == nil {
+            routeNotification(to: only, agentId: agentId)
+            return
+        }
+        // 2+ hosts (or a pinned sole host receiving a foreign payload):
+        // non-actionable — bounded diagnostic, never a cross-host guess.
+        guard !profiles.isEmpty else { return }
+        banner = .error(
+            "notification_host_unknown",
+            "This alert doesn't match a paired host, so Corral won't guess which lane to open. Re-pair the host or dismiss the alert.")
+    }
+
+    /// #397: the routed half of a notification tap — the owning profile's
+    /// recents route (agent-existence, continuity, and posture gates all
+    /// live inside `requestRecents`).
+    private func routeNotification(to profile: HostProfile, agentId: String) {
+        requestRecents(for: agentId, hostProfileID: profile.id, haptic: false)
     }
 
     // MARK: - Recents sheet request lifecycle (#364 C)
@@ -2469,9 +2677,15 @@ final class AppModel: ObservableObject {
         // #401 D1: a device reset leaves no host selected (session filter).
         hostFilter = nil
         // #400 E3: tear down every coordinator session (stream/tasks/rows
-        // purged) and return the notification posture to single-host.
+        // purged).
         syncCoordinator(startStreams: false)
-        refreshPushPosture()
+        // #397: a device reset retires every per-host enrollment artifact —
+        // pending clears, dedupe state, and the shared retained token
+        // (cleared above).
+        pendingPushTokenClears.removeAll()
+        pendingPushClearTargets.removeAll()
+        enrolledTokenPerHost.removeAll()
+        notifier?.removeAll()
         keyContinuityState = .notPinned
         fingerprintConfirmation = nil
         fleet.acceptedHostIdentity = nil

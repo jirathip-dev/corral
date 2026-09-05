@@ -236,7 +236,14 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # 400 r1: the 02:50 self-test PASS predated the final wiring/plumbing
     # edits to the Release sources (03:03); digest re-pinned to the tree
     # actually committed at 39e4c83 and built below.
-    "e7afb97e37e3a5588226823b278356de7cf7c45c7f973a2b68128c2ed57240ca"
+    # 397: host-aware APNs — PushPayload (host_id composite identifiers),
+    # AppDelegate (retained token + fan-out hook + gate-denial retry),
+    # LocalNotifier (composite identifiers + per-host removal), HostProfile/
+    # HostProfileStore (per-host notificationsEnabled), HostStreamCoordinator
+    # (per-host transition hooks), AppModel (per-host enrollment/clears,
+    # composite notification routing), FleetViews (per-host Settings state)
+    # — re-pinned over the #397 source set.
+    "ffd8dfa4099659a40db35a3bc0ee2042417c2b4b73efd112e469352b93d74e5a"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -340,7 +347,7 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # RecentsCompositeRouteTests, PushPostureModelTests) added to
     # FleetNotifierTests.swift, and two wiring pins updated for the
     # composite recents target — re-pinned.
-    "b8f24098419839fd8d15be803d1b3e0c6be74fd1f07e28f8fde76c131a32bf99"
+    "28fc4640c6165f3b204f8d6165876adecfef433b51fade9138aa0b282f34c80a"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(
@@ -402,7 +409,11 @@ RELEASE_SOURCE_REQUIRED: dict[str, tuple[str, ...]] = {
         # drive, and the notification deep link.
         "func refreshGrants(",
         "func driveReadTail(",
-        "func openRecents(",
+        # #397: host-aware composite deep link — every notification tap
+        # (APNs or the DEBUG local bridge) funnels through the SAME
+        # model-owned openNotification, which routes by the payload's
+        # (host_id, agent_id) composite target.
+        "func openNotification(",
     ),
     "ios/FleetNotifier/UI/FleetViews.swift": (
         "model.driveReadTail(",

@@ -135,6 +135,20 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             || Self.apnsRegistered
     }
 
+    /// #397: the APNs token retained by this process (nil before the OS
+    /// callback). AppModel reads it to enroll every NON-active host with
+    /// that host profile's own signed registration record.
+    var retainedDeviceToken: String? {
+        deviceTokenState.pending
+    }
+
+    /// #397: fired when the OS hands this process a device token, so
+    /// AppModel can fan the token out to every paired host (the delegate
+    /// itself only uploads for the ACTIVE lifecycle identity). Installed
+    /// by AppModel when the model is live; a token received before that is
+    /// still retained and picked up by the next startLive() fan-out.
+    var onDeviceTokenReceived: (@Sendable (String) -> Void)?
+
     func application(_ application: UIApplication,
                      didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         let hex = deviceToken.map { String(format: "%02x", $0) }.joined()
@@ -148,6 +162,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     func receiveDeviceToken(_ hex: String) -> Task<Void, Never>? {
         Self.apnsRegistered = true
         deviceTokenState.remember(hex)
+        onDeviceTokenReceived?(hex)
         return startDeviceTokenUploadIfPossible(hex)
     }
 
@@ -202,7 +217,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
               lifecycle.isCurrent(expected) else {
             return nil
         }
-        guard deviceTokenState.begin(expected, token: hex) else { return nil }
+        guard lifecycle.current() == expected,
+              let signer = self.identityProvider(),
+              signer.publicKeyB64 == expected.signerPublicKeyB64 else {
+            return nil
+        }
         let session = self.session
         let beforeUpload = self.beforeDeviceTokenUpload
         let tokenState = self.deviceTokenState
@@ -221,8 +240,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             // write to the daemon and must not reach a replacement
             // identity. The gate defaults to allow (legacy flows/tests);
             // AppModel installs the continuity predicate when pinned.
+            // The gate runs BEFORE the claim is taken, so a denial leaves
+            // no accepted claim behind — the next startLive retry (after
+            // verification) can upload instead of being suppressed.
             guard await KeyContinuityGate.allowsPushRegistration() else { return }
             guard !Task.isCancelled, lifecycle.isCurrent(context) else { return }
+            guard tokenState.begin(context, token: hex) else { return }
             let client = DriveClient(host: hostURL, session: session)
             // Keep the identity check adjacent to the request. Reset/demo
             // can invalidate the context while the preflight boundary was

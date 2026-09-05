@@ -161,6 +161,16 @@ final class HostProfileStore {
         save()
     }
 
+    /// #397: persist one host's per-host notification enrollment flag
+    /// (the profile document owns it; removal purges it with the record).
+    @discardableResult
+    func setNotificationsEnabled(_ enabled: Bool, id: UUID) throws -> HostProfile {
+        guard let idx = index(of: id) else { throw HostProfileError.profileNotFound }
+        profiles[idx].notificationsEnabled = enabled
+        save()
+        return profiles[idx]
+    }
+
     func noteConnectionState(id: UUID, _ state: ProfileConnectionState) {
         guard let idx = index(of: id) else { return }
         profiles[idx].connectionState = state
@@ -207,7 +217,9 @@ final class HostProfileStore {
     /// separately — remove-and-re-pair is a MODEL decision because the
     /// active identity lives there. `hostKeyB64` nil = legacy single-host
     /// flow (no pin, parity); non-nil = fingerprint-confirmed Add Host
-    /// pairing (B3).
+    /// pairing (B3). `notificationsEnabled` carries the replaced record's
+    /// per-host notification state when the URL is unchanged (#397 — a
+    /// re-pair must not silently re-enable a host the user muted).
     @discardableResult
     func commitActivePairing(displayName: String,
                              urlString: String,
@@ -216,7 +228,8 @@ final class HostProfileStore {
                              keyId: String,
                              grants: [String],
                              expiryTs: UInt64?,
-                             registeredAt: UInt64) throws -> HostProfile {
+                             registeredAt: UInt64,
+                             notificationsEnabled: Bool = true) throws -> HostProfile {
         guard let normalized = HostURLForm.normalizedForLegacyMigration(urlString) else {
             throw HostProfileError.invalidURL
         }
@@ -235,7 +248,8 @@ final class HostProfileStore {
                                   expiryTs: expiryTs,
                                   registeredAt: registeredAt,
                                   order: (profiles.map(\.order).max() ?? -1) + 1,
-                                  connectionState: .disconnected)
+                                  connectionState: .disconnected,
+                                  notificationsEnabled: notificationsEnabled)
         profiles.append(profile)
         save()
         return profile

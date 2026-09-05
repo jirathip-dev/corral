@@ -231,6 +231,63 @@ final class PushPayloadTests: XCTestCase {
         XCTAssertNil(PushPayload.parse(userInfo: ["type": "alien", "agent_id": "x"]))
         XCTAssertNil(PushPayload.parse(userInfo: [:]))
     }
+
+    // MARK: - #397 composite (host_id, agent_id) target
+
+    /// SAFETY: 32-byte fixtures are valid X25519 public-key byte strings.
+    private static let hostA = Data(repeating: 0x11, count: 32).base64EncodedString()
+    private static let hostB = Data(repeating: 0x22, count: 32).base64EncodedString()
+
+    func testParsesAndRetainsHostIdFromApnsPayloads() {
+        let userInfo: [AnyHashable: Any] = [
+            "aps": ["alert": ["title": "builder · demo-garden", "body": "blocked · main"]],
+            "type": "blocked",
+            "host_id": Self.hostA,
+            "agent_id": "herdr:ses-1",
+            "ts": 1700000000,
+        ]
+        let payload = try? XCTUnwrap(PushPayload.parse(userInfo: userInfo))
+        XCTAssertEqual(payload?.hostId, Self.hostA,
+                       "the payload's host identity must be parsed and retained")
+        XCTAssertEqual(payload?.agentId, "herdr:ses-1")
+        // Host-less legacy payloads still parse (hostId nil).
+        let legacy = try? XCTUnwrap(PushPayload.parse(userInfo: [
+            "type": "blocked", "agent_id": "herdr:x",
+        ]))
+        XCTAssertNil(legacy?.hostId, "legacy payloads carry no host identity")
+    }
+
+    func testLocalBridgeRoundTripsHostId() {
+        let payload = PushPayload.transition(
+            type: .blocked,
+            agent: agent("herdr:ses-2", state: .blocked, repo: "demo-ledger",
+                         branch: "demo-migration", displayName: "ledger"),
+            hostId: Self.hostA)
+        let parsed = PushPayload.parse(userInfo: payload.asUserInfo())
+        XCTAssertEqual(parsed, payload, "the DEBUG bridge round-trips the host identity")
+        XCTAssertEqual(parsed?.hostId, Self.hostA)
+    }
+
+    func testEqualRawAgentIdsOnTwoHostsProduceDistinctCompositeIdentifiers() {
+        // #397: identifiers + thread ids are namespaced by the composite
+        // target — the same raw agent id from two hosts never collides.
+        let a = PushPayload(type: .started, agentId: "herdr:dup", hostId: Self.hostA,
+                            ts: 1, title: "t", body: "b")
+        let b = PushPayload(type: .started, agentId: "herdr:dup", hostId: Self.hostB,
+                            ts: 1, title: "t", body: "b")
+        XCTAssertNotEqual(a.requestIdentifier, b.requestIdentifier,
+                          "two hosts with an equal raw agent id must schedule distinct requests")
+        XCTAssertNotEqual(a.threadIdentifier, b.threadIdentifier,
+                          "thread identifiers must not merge two hosts' lanes")
+        XCTAssertEqual(a.requestIdentifier,
+                       "started-\(Self.hostA)-herdr:dup")
+        XCTAssertEqual(a.threadIdentifier, "\(Self.hostA)::herdr:dup")
+        // Legacy host-less payloads keep the pre-#397 identifier shape.
+        let legacy = PushPayload(type: .finished, agentId: "herdr:dup",
+                                 ts: 1, title: "t", body: "b")
+        XCTAssertEqual(legacy.requestIdentifier, "finished-herdr:dup")
+        XCTAssertEqual(legacy.threadIdentifier, "herdr:dup")
+    }
 }
 
 // MARK: - Episode transition hooks (#354 L2 notifications)
@@ -2811,20 +2868,22 @@ final class RecentsSheetLifecycleTests: XCTestCase {
     }
 
     func testDeepLinkIsLiveModeOnlyAndHapticFree() {
-        // openRecents (notification tap) keeps its live-mode + agent-exists
-        // guards and never plays a haptic (it is not a row tap).
+        // openNotification (notification tap) keeps its live-mode +
+        // agent-exists guards and never plays a haptic (it is not a row
+        // tap). #397: the no-profile-store runtime routes through the
+        // legacy fleet store (host-less payload, pure single-host).
         let (model, ticks) = makeHarness()
         defer { model.exitDemo() }
-        model.openRecents(for: DemoFleet.featuredAgentID)
+        model.openNotification(agentId: DemoFleet.featuredAgentID, hostKeyB64: nil)
         XCTAssertNil(model.recentsRequest, "demo mode must ignore deep links")
         XCTAssertEqual(ticks.count, 0)
 
         seedLive(model, ["a1", "a2"])
-        model.openRecents(for: "a2")
+        model.openNotification(agentId: "a2", hostKeyB64: nil)
         XCTAssertEqual(model.recentsRequest?.agentId, "a2")
         XCTAssertEqual(ticks.count, 0, "deep links never tick")
 
-        model.openRecents(for: "ghost")
+        model.openNotification(agentId: "ghost", hostKeyB64: nil)
         XCTAssertEqual(model.recentsRequest?.agentId, "a2",
                        "a missing agent must not displace the open request")
         XCTAssertNotNil(model.banner)
@@ -5751,6 +5810,52 @@ final class HostProfileStoreTests: XCTestCase {
         XCTAssertEqual(files, [HostProfileStore.profilesFileName])
     }
 
+    func testPerHostNotificationStateDefaultsOnAndSurvivesReloadAndPurgesOnRemove() throws {
+        // #397: notificationsEnabled defaults TRUE (new + legacy docs),
+        // persists through the profile document, and dies with removal.
+        // SAFETY: per-test temp directory under the system temp dir.
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("corral-notifyflag-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = HostProfileStore(directory: directory)
+        let a = try store.addProfile(displayName: "Mac",
+                                     urlString: "https://mac.example",
+                                     hostKeyB64: Self.keyA,
+                                     keyId: "dev_1", registeredAt: 1)
+        XCTAssertTrue(a.notificationsEnabled, "new profiles default to ON")
+        _ = try store.setNotificationsEnabled(false, id: a.id)
+        XCTAssertFalse(store.profile(id: a.id)?.notificationsEnabled ?? true)
+        // Reload from the document keeps the persisted OFF state.
+        let reloaded = HostProfileStore(directory: directory)
+        XCTAssertFalse(reloaded.orderedProfiles.first?.notificationsEnabled ?? true,
+                       "the per-host flag must round-trip through the document")
+        // Remove Host purges the flag with the record (no orphan state).
+        reloaded.removeProfile(id: a.id)
+        XCTAssertTrue(reloaded.isEmpty)
+    }
+
+    func testLegacyProfileDocumentWithoutNotificationKeyDefaultsEnabled() throws {
+        // SAFETY: per-test temp directory under the system temp dir.
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("corral-notifylegacy-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // Write a profile document WITHOUT the #397 key (pre-#397 bytes).
+        let fm = FileManager.default
+        try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        let profileJSON = """
+        [{"id":"\(UUID().uuidString)","displayName":"Legacy","urlString":"https://old.example",
+          "hostKeyB64":null,"fingerprint":null,"keyId":"dev_legacy","grants":["read_tail"],
+          "expiryTs":1800000000,"registeredAt":1,"order":0,"connectionState":"disconnected",
+          "cursorRev":null,"lastSuccessfulConnectionTs":null}]
+        """
+        try profileJSON.write(to: directory.appendingPathComponent(HostProfileStore.profilesFileName),
+                              atomically: true, encoding: .utf8)
+        let store = HostProfileStore(directory: directory)
+        XCTAssertEqual(store.orderedProfiles.count, 1)
+        XCTAssertEqual(store.orderedProfiles.first?.notificationsEnabled, true,
+                       "a pre-#397 document must decode with notifications enabled")
+    }
+
     func testRemoveHostPurgesOnlyThatProfileIncludingCursorAndCache() throws {
         // SAFETY: per-test temp directory under the system temp dir.
         let directory = FileManager.default.temporaryDirectory
@@ -7175,25 +7280,40 @@ final class RecentsCompositeRouteTests: XCTestCase {
     }
 }
 
-// MARK: - #400 push posture + empty-token cleanup (F1/F2 logic)
+// MARK: - #397 host-aware push: per-host enrollment, clears, composite routing
 
+/// #397 replaces the #400 F2 "2+ hosts disables push" posture: every
+/// paired host enrolls the SAME phone APNs token independently under its
+/// OWN signed registration record (key id), per-host notification state
+/// lives in Settings, Remove Host / per-host disable clears that host's
+/// token (pending + retried when unreachable), and notification taps
+/// route by the payload's composite `host_id` — never a guess.
 @MainActor
-final class PushPostureModelTests: XCTestCase {
+final class HostAwarePushModelTests: XCTestCase {
     private var suiteName = ""
     private var model: AppModel?
     private var session: URLSession?
+    /// Retains the fixture AppDelegate — `AppDelegate.shared` is weak, so
+    /// the delegate that receives/retains the token must be owned here.
+    private var delegate: AppDelegate?
 
     static let hostKey = Data(repeating: 9, count: 32).base64EncodedString()
     static let otherHostKey = Data(repeating: 10, count: 32).base64EncodedString()
+    /// SAFETY: deterministic fixture token — any 64-hex APNs-shaped string.
+    static let tokenHex = "cafe1234cafe1234cafe1234cafe1234cafe1234cafe1234cafe1234cafe1234"
+    static let registerOK = Data(#"{"key_id":"dev_push_b","grants":["read_tail"],"expiry_ts":1800000000,"revoked":false,"algorithm":"Ed25519"}"#.utf8)
+    static let tokenOK = Data(#"{"ok":true,"key_id":"k","push_registered":false}"#.utf8)
 
     private func cleanup() {
         model?.stopLive()
         model = nil
+        delegate?.clearRetainedDeviceToken()
+        delegate?.onDeviceTokenReceived = nil
+        delegate = nil
         session?.invalidateAndCancel()
         session = nil
         AppDelegate.apnsRegistered = false
         UserDefaults.standard.removeObject(forKey: AppDelegate.deviceTokenUploadedKey)
-        AppDelegate.shared?.clearRetainedDeviceToken()
         KeyContinuityGate.reset()
         HostSwitchURLProtocol.clearScript()
         if !suiteName.isEmpty {
@@ -7204,19 +7324,19 @@ final class PushPostureModelTests: XCTestCase {
     }
 
     private func waitUntil(_ condition: @autoclosure () -> Bool,
-                           timeout: TimeInterval = 5) async {
+                           timeout: TimeInterval = 6) async {
         let deadline = Date().addingTimeInterval(timeout)
         while !condition(), Date() < deadline {
             try? await Task.sleep(nanoseconds: 25_000_000)
         }
     }
 
-    /// One or two pinned profiles. `recordUpload` pre-records a successful
-    /// APNs upload so the F2 cleanup path is exercised.
-    private func makeModel(profileCount: Int,
-                           recordUpload: Bool = false,
-                           host2DriveStatus: Int = 200) -> (AppModel, HostProfile?) {
-        suiteName = "corral.h400.push.\(UUID().uuidString)"
+    /// Two pinned profiles (A active, B coordinator-owned). Both hosts
+    /// answer /host-key with their pinned key and /events; /device-token
+    /// answers with `hostBTokenStatus` (and 200 for host A).
+    private func makeModel(profileCount: Int = 2,
+                           hostBTokenStatus: Int = 200) -> AppModel {
+        suiteName = "corral.h397.push.\(UUID().uuidString)"
         // SAFETY: a fresh UUID suite name is always a valid suite.
         let defaults = UserDefaults(suiteName: suiteName)!
         let store = HostProfileStore(directory: nil, defaults: defaults)
@@ -7231,16 +7351,15 @@ final class PushPostureModelTests: XCTestCase {
                                              grants: ["read_tail"],
                                              expiryTs: 1_800_000_000,
                                              registeredAt: 1)
-        var profileB: HostProfile?
         if profileCount > 1 {
-            profileB = try! store.addProfile(displayName: "Host B",
-                                             urlString: urlB.absoluteString,
-                                             hostKeyB64: Self.otherHostKey,
-                                             fingerprint: "FINGER",
-                                             keyId: "dev_push_b",
-                                             grants: ["read_tail"],
-                                             expiryTs: 1_800_000_000,
-                                             registeredAt: 1)
+            try! store.addProfile(displayName: "Host B",
+                                  urlString: urlB.absoluteString,
+                                  hostKeyB64: Self.otherHostKey,
+                                  fingerprint: "FINGER",
+                                  keyId: "dev_push_b",
+                                  grants: ["read_tail"],
+                                  expiryTs: 1_800_000_000,
+                                  registeredAt: 1)
         }
         defaults.set(profileA.id.uuidString, forKey: "fleetnotifier.activeHostProfileID")
         let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
@@ -7251,130 +7370,378 @@ final class PushPostureModelTests: XCTestCase {
                 200, Data(#"{"algorithm":"X25519","public_key":"\#(key)"}"#.utf8), false)
             script[url.appendingPathComponent("/events")] = (200, Data(), true)
             script[url.appendingPathComponent("/device-token")] = (
-                url == urlB ? host2DriveStatus : 200,
-                Data(#"{"ok":true,"key_id":"k","push_registered":false}"#.utf8), false)
+                url == urlB ? hostBTokenStatus : 200, Self.tokenOK, false)
         }
+        script[URL(string: "https://push-b.example/register")!] = (200, Self.registerOK, false)
         HostSwitchURLProtocol.setScript(script)
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [HostSwitchURLProtocol.self]
         let session = URLSession(configuration: config)
         self.session = session
-        // F2: the shared AppDelegate (with the SAME defaults suite) records
-        // whether a token was previously uploaded.
-        let delegate = AppDelegate(identityLifecycle: .shared,
-                                   session: session,
-                                   defaults: defaults,
-                                   identityProvider: { signer })
-        _ = delegate
-        if recordUpload {
-            defaults.set(true, forKey: AppDelegate.deviceTokenUploadedKey)
-        }
+        // The shared AppDelegate (SAME defaults suite) owns the retained
+        // token + the ACTIVE-host lifecycle upload. Retained here —
+        // AppDelegate.shared is weak and the upload tasks read it.
+        let fixtureDelegate = AppDelegate(identityLifecycle: .shared,
+                                           session: session,
+                                           defaults: defaults,
+                                           identityProvider: { signer })
+        self.delegate = fixtureDelegate
         let model = AppModel(session: session, defaults: defaults,
                              identityLoader: { (signer, .insecureFallback) },
                              loadMeta: { nil }, saveMeta: { _ in },
                              wipeIdentity: {}, profileStore: store)
         self.model = model
-        return (model, profileB)
+        return model
     }
 
     private func requests(to url: URL) -> [URLRequest] {
         HostSwitchURLProtocol.requests.filter { $0.url?.absoluteString == url.absoluteString }
     }
 
-    func testSingleHostPreservesEnrollmentAndDeepLinkRouting() async {
-        defer { cleanup() }
-        let (model, _) = makeModel(profileCount: 1)
-        XCTAssertEqual(model.pushPosture, .singleHost, "F1: one profile keeps single-host posture")
-        model.startLive()
-        await waitUntil(model.keyContinuityState == .verified)
-        let allows = await KeyContinuityGate.allowsPushRegistration()
-        XCTAssertTrue(allows, "F1: a verified single host keeps APNs enrollment")
-        // F1: notification deep-link routing still resolves the single host.
-        model.fleet.apply(.snapshot(Snapshot(schemaVersion: 5, rev: 1, generatedAt: 0,
-                                             agents: ["herdr:a1": Agent(agentId: "herdr:a1",
-                                                                         state: .idle,
-                                                                         ts: 1,
-                                                                         host: Self.hostKey)])))
-        model.openRecents(for: "herdr:a1")
-        XCTAssertEqual(model.recentsRequest?.agentId, "herdr:a1",
-                       "single-host deep links keep working")
+    private func deviceTokenBodies(to url: URL) -> [[String: Any]] {
+        requests(to: url).compactMap { request in
+            guard let body = request.httpBody,
+                  let json = try? JSONSerialization.jsonObject(with: body)
+                    as? [String: Any] else { return nil }
+            return json
+        }
     }
 
-    func testMultiHostDisablesEnrollmentAndDeepLinkRouting() async {
-        defer { cleanup() }
-        let (model, _) = makeModel(profileCount: 2)
-        XCTAssertEqual(model.pushPosture, .multiHostDisabled,
-                       "F2: 2+ profiles disable APNs posture")
-        model.startLive()
-        await waitUntil(model.keyContinuityState == .verified)
-        // The active host is verified and healthy — yet enrollment is off.
-        let allows = await KeyContinuityGate.allowsPushRegistration()
-        XCTAssertFalse(allows, "F2: no push registration may pass with 2+ profiles")
-        model.fleet.apply(.snapshot(Snapshot(schemaVersion: 5, rev: 1, generatedAt: 0,
-                                             agents: ["herdr:a1": Agent(agentId: "herdr:a1",
-                                                                         state: .idle,
-                                                                         ts: 1,
-                                                                         host: Self.hostKey)])))
-        // Notification deep-link routing is disabled: a bare agent_id can
-        // not name a host, so no row opens and no host is guessed.
-        model.openRecents(for: "herdr:a1")
-        XCTAssertNil(model.recentsRequest,
-                     "F2: deep-link routing must not guess a host from agent_id")
+    private func deviceTokenValue(_ body: [String: Any]) -> String? {
+        (body["request"] as? [String: Any])?["device_token"] as? String
     }
 
-    func testMultiHostBestEffortClearsPreviouslyUploadedTokensPerHost() async {
+    private func keyID(_ body: [String: Any]) -> String? {
+        body["key_id"] as? String
+    }
+
+private func startAndVerifyBothHosts(_ model: AppModel) async -> (UUID, UUID) {
+        let profileA = model.profiles[0]
+        let profileB = model.profiles[1]
+        model.startLive()
+        await waitUntil(model.keyContinuityState == .verified)
+        await waitUntil(model.coordinator?.posture(profileID: profileB.id) == .verified)
+        // The per-host fan-out only runs on startLive — re-enter it now
+        // that BOTH hosts are verified so enrollments are guaranteed.
+        model.startLive()
+        return (profileA.id, profileB.id)
+    }
+
+    private func seedAgent(_ id: String, host: String,
+                           in model: AppModel, profileID: UUID?) {
+        let agent = Agent(agentId: id, state: .idle, ts: 1, host: host)
+        if let profileID, profileID != model.activeProfileID,
+           let store = model.coordinator?.store(profileID: profileID) {
+            store.apply(.snapshot(Snapshot(schemaVersion: 5, rev: 1, generatedAt: 0,
+                                           agents: [id: agent])))
+        } else {
+            model.fleet.apply(.snapshot(Snapshot(schemaVersion: 5, rev: 1, generatedAt: 0,
+                                                 agents: [id: agent])))
+        }
+    }
+
+    func testTwoHostsEnrollTheSameTokenIndependentlyUnderTheirOwnKeyIDs() async {
         defer { cleanup() }
-        // Host B is REACHABLE (200) at launch: its token clear succeeds.
-        let (model, _) = makeModel(profileCount: 2, recordUpload: true)
-        XCTAssertEqual(model.pushPosture, .multiHostDisabled)
-        // SAFETY: fixed test fixture invariant (see the test's fixture builder); failure here is a harness bug, not a product defect.
-        let coordinator = try! XCTUnwrap(model.coordinator)
-        let profileB = try! XCTUnwrap(model.profiles.first { $0.displayName == "Host B" })
-        // Wait for the two signed empty-token clears to land.
-        let urlB = URL(string: "https://push-b.example")!
-        await waitUntil(!requests(to: urlB.appendingPathComponent("/device-token")).isEmpty)
+        let model = makeModel()
+        // The OS token arrives BEFORE the stream is live: retained only.
+        _ = self.delegate?.receiveDeviceToken(Self.tokenHex)
+// SAFETY: fixed valid fixture URL (distinct hostname).
+        let urlA = URL(string: "https://push-a.example/device-token")!
+// SAFETY: fixed valid fixture URL (distinct hostname).
+        let urlB = URL(string: "https://push-b.example/device-token")!
+        let (profileA, profileB) = await startAndVerifyBothHosts(model)
+
+        // ACTIVE host A is enrolled by the delegate's lifecycle path; host
+        // B by the model's per-host fan-out — BOTH with the same token,
+        // each signed under ITS OWN key id.
+        await waitUntil(!requests(to: urlA).isEmpty && !requests(to: urlB).isEmpty)
+        let bodiesA = deviceTokenBodies(to: urlA)
+        let bodiesB = deviceTokenBodies(to: urlB)
+        let enrollA = bodiesA.first { deviceTokenValue($0) == Self.tokenHex }
+        let enrollB = bodiesB.first { deviceTokenValue($0) == Self.tokenHex }
+        XCTAssertNotNil(enrollA, "host A must enroll the retained token")
+        XCTAssertNotNil(enrollB, "host B must enroll the SAME retained token")
+// SAFETY: enrollA was asserted non-nil immediately above.
+        XCTAssertEqual(keyID(enrollA!), "dev_push_a",
+                       "A's enrollment is signed with A's key id")
+// SAFETY: enrollB was asserted non-nil immediately above.
+        XCTAssertEqual(keyID(enrollB!), "dev_push_b",
+                       "B's enrollment is signed with B's key id (independent record)")
+// SAFETY: enrollB was asserted non-nil immediately above.
+        XCTAssertEqual(deviceTokenValue(enrollB!), Self.tokenHex)
+
+        // #397: the 2+-host blanket gate is gone — the ACTIVE host's gate
+        // now reflects only ITS continuity posture.
+        let allows = await KeyContinuityGate.allowsPushRegistration()
+        XCTAssertTrue(allows, "a verified host may enroll with 2+ profiles")
         XCTAssertTrue(model.pendingPushTokenClears.isEmpty,
-                      "reachable hosts clear immediately (best-effort)")
-        let body = try! XCTUnwrap(requests(to: urlB.appendingPathComponent("/device-token")).first?.httpBody)
-        let json = try! XCTUnwrap(try JSONSerialization.jsonObject(with: body)
-                                  as? [String: Any])
-        XCTAssertEqual(json["key_id"] as? String, "dev_push_b",
-                       "each host's clear is signed with THAT host's key id")
-        let request = try! XCTUnwrap(json["request"] as? [String: Any])
-        XCTAssertEqual(request["device_token"] as? String, "",
-                       "the clear uses the signed empty-token path")
-        XCTAssertNotNil(coordinator.posture(profileID: profileB.id),
-                        "the coordinator session exists for host B")
+                      "normal operation schedules no clears")
+        XCTAssertEqual(model.profiles.first { $0.id == profileA }?.notificationsEnabled, true)
+        XCTAssertEqual(model.profiles.first { $0.id == profileB }?.notificationsEnabled, true)
     }
 
-    func testOfflineHostKeepsClearPendingAndRetriesOnReconnect() async {
+    func testUnverifiedPinnedHostNeverEnrollsTheToken() async {
         defer { cleanup() }
-        // Host B is UNREACHABLE at launch: its clear stays pending.
-        let (model, _) = makeModel(profileCount: 2, recordUpload: true,
-                                   host2DriveStatus: 500)
-        // SAFETY: fixed test fixture invariant (see the test's fixture builder); failure here is a harness bug, not a product defect.
+        // Host B's /host-key never answers (no script entry): its posture
+        // stays .verifying — an UNVERIFIED key must not receive a token.
+        suiteName = "corral.h397.unverified.\(UUID().uuidString)"
+        // SAFETY: fresh UUID suite; script omits B's host-key endpoint.
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let store = HostProfileStore(directory: nil, defaults: defaults)
+        // SAFETY: fixed valid fixture URLs.
+        let urlA = URL(string: "https://push-a.example")!
         let urlB = URL(string: "https://push-b.example")!
-        // Wait for the failed clear to be recorded.
+        let profileA = try! store.addProfile(displayName: "Host A",
+                                             urlString: urlA.absoluteString,
+                                             hostKeyB64: Self.hostKey,
+                                             fingerprint: "FINGER",
+                                             keyId: "dev_push_a",
+                                             grants: ["read_tail"],
+                                             expiryTs: 1_800_000_000,
+                                             registeredAt: 1)
+        let profileB = try! store.addProfile(displayName: "Host B",
+                                             urlString: urlB.absoluteString,
+                                             hostKeyB64: Self.otherHostKey,
+                                             fingerprint: "FINGER",
+                                             keyId: "dev_push_b",
+                                             grants: ["read_tail"],
+                                             expiryTs: 1_800_000_000,
+                                             registeredAt: 1)
+        defaults.set(profileA.id.uuidString, forKey: "fleetnotifier.activeHostProfileID")
+        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        var script: [URL: (Int, Data, Bool)] = [:]
+        script[urlA.appendingPathComponent("/host-key")] = (
+            200, Data(#"{"algorithm":"X25519","public_key":"\#(Self.hostKey)"}"#.utf8), false)
+        script[urlA.appendingPathComponent("/events")] = (200, Data(), true)
+        script[urlA.appendingPathComponent("/device-token")] = (200, Self.tokenOK, false)
+        // Host B answers ONLY /device-token (never /host-key): its stream
+        // can never verify, so no enrollment may reach it.
+        script[urlB.appendingPathComponent("/device-token")] = (200, Self.tokenOK, false)
+        HostSwitchURLProtocol.setScript(script)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [HostSwitchURLProtocol.self]
+        let session = URLSession(configuration: config)
+        self.session = session
+        let fixtureDelegate = AppDelegate(identityLifecycle: .shared, session: session,
+                                           defaults: defaults,
+                                           identityProvider: { signer })
+        self.delegate = fixtureDelegate
+        let model = AppModel(session: session, defaults: defaults,
+                             identityLoader: { (signer, .insecureFallback) },
+                             loadMeta: { nil }, saveMeta: { _ in },
+                             wipeIdentity: {}, profileStore: store)
+        self.model = model
+        _ = fixtureDelegate.receiveDeviceToken(Self.tokenHex)
+        model.startLive()
+        await waitUntil(model.keyContinuityState == .verified)
+        // Give B's verification + any fan-out time to (not) happen.
+        try? await Task.sleep(nanoseconds: 600_000_000)
+        let bodiesB = deviceTokenBodies(to: urlB.appendingPathComponent("/device-token"))
+        XCTAssertTrue(bodiesB.isEmpty,
+                      "an UNVERIFIED pinned host must never receive the token (AC7)")
+        XCTAssertEqual(model.coordinator?.posture(profileID: profileB.id), .verifying)
+    }
+
+    func testPerHostDisableClearsOnlyThatHostsToken() async {
+        defer { cleanup() }
+        let model = makeModel()
+// SAFETY: fixed valid fixture URL (distinct hostname).
+        let urlA = URL(string: "https://push-a.example/device-token")!
+// SAFETY: fixed valid fixture URL (distinct hostname).
+        let urlB = URL(string: "https://push-b.example/device-token")!
+        _ = self.delegate?.receiveDeviceToken(Self.tokenHex)
+        await startAndVerifyBothHosts(model)
+        await waitUntil(!deviceTokenBodies(to: urlA).isEmpty
+                        && !deviceTokenBodies(to: urlB).isEmpty)
+
+        // Disable host B: ONLY B's enrollment is cleared (empty token).
+// SAFETY: makeModel always seeds Host B; the disable below needs it.
+        let profileB = model.profiles.first { $0.displayName == "Host B" }!
+        model.setHostNotificationsEnabled(profileID: profileB.id, enabled: false)
+        await waitUntil(deviceTokenBodies(to: urlB).contains {
+            deviceTokenValue($0) == ""
+        })
+        await waitUntil(model.pendingPushTokenClears.isEmpty)
+        let clearsB = deviceTokenBodies(to: urlB).filter { deviceTokenValue($0) == "" }
+        XCTAssertEqual(clearsB.count, 1, "one empty-token clear for host B")
+        XCTAssertEqual(keyID(clearsB[0]), "dev_push_b")
+        XCTAssertTrue(deviceTokenBodies(to: urlA).allSatisfy { deviceTokenValue($0) != "" },
+                      "host A's enrollment must be untouched by B's disable")
+        XCTAssertEqual(model.profiles.first { $0.id == profileB.id }?.notificationsEnabled,
+                       false, "the per-host flag must persist on the profile")
+        XCTAssertTrue(model.pendingPushTokenClears.isEmpty,
+                      "a reachable disable clears immediately")
+
+        // Re-enable re-enrolls the retained token under B's key id.
+        let enrollmentsBefore = deviceTokenBodies(to: urlB).filter {
+            deviceTokenValue($0) == Self.tokenHex
+        }.count
+        model.setHostNotificationsEnabled(profileID: profileB.id, enabled: true)
+        await waitUntil(deviceTokenBodies(to: urlB).filter {
+            deviceTokenValue($0) == Self.tokenHex
+        }.count > enrollmentsBefore)
+        XCTAssertEqual(model.profiles.first { $0.id == profileB.id }?.notificationsEnabled,
+                       true)
+    }
+
+    func testOfflinePerHostDisableKeepsClearPendingAndRetriesOnReconnect() async {
+        defer { cleanup() }
+        let model = makeModel(hostBTokenStatus: 500)
+// SAFETY: fixed valid fixture URL (distinct hostname).
+        let urlB = URL(string: "https://push-b.example/device-token")!
+        _ = self.delegate?.receiveDeviceToken(Self.tokenHex)
+        await startAndVerifyBothHosts(model)
+
+// SAFETY: makeModel always seeds Host B; the disable below needs it.
+        let profileB = model.profiles.first { $0.displayName == "Host B" }!
+        model.setHostNotificationsEnabled(profileID: profileB.id, enabled: false)
         await waitUntil(!model.pendingPushTokenClears.isEmpty)
-        let profileB = try! XCTUnwrap(model.profiles.first { $0.displayName == "Host B" })
         XCTAssertTrue(model.pendingPushTokenClears.contains(profileB.id),
-                      "an offline host surfaces its pending cleanup")
-        // B reconnects → the pending clear retries (now reachable).
-        let ok = Data(#"{"ok":true,"key_id":"k","push_registered":false}"#.utf8)
+                      "an unreachable host surfaces its pending clear")
+        XCTAssertEqual(model.pendingPushClearNames(), ["Host B"],
+                       "Settings shows the pending cleanup name")
+
+        // The host reconnects → the clear retries and lands.
         HostSwitchURLProtocol.setScript([
-            urlB.appendingPathComponent("/device-token"): (200, ok, false),
+            urlB: (200, Self.tokenOK, false),
         ])
         model.retryPendingPushTokenClear(profileID: profileB.id)
-        await waitUntil(!requests(to: urlB.appendingPathComponent("/device-token")).isEmpty)
+        await waitUntil(!deviceTokenBodies(to: urlB).contains { deviceTokenValue($0) == "" })
         await waitUntil(model.pendingPushTokenClears.isEmpty)
-        XCTAssertFalse(model.pendingPushTokenClears.contains(profileB.id),
-                       "the retried clear succeeds on reconnect")
-        let body = try! XCTUnwrap(requests(to: urlB.appendingPathComponent("/device-token")).first?.httpBody)
-        let json = try! XCTUnwrap(try JSONSerialization.jsonObject(with: body)
-                                  as? [String: Any])
-        XCTAssertEqual(json["key_id"] as? String, "dev_push_b")
-        let request = try! XCTUnwrap(json["request"] as? [String: Any])
-        XCTAssertEqual(request["device_token"] as? String, "")
+        XCTAssertFalse(model.pendingPushTokenClears.contains(profileB.id))
+    }
+
+    func testRemoveHostClearsReachableHostsToken() async {
+        defer { cleanup() }
+        let model = makeModel()
+// SAFETY: fixed valid fixture URL (distinct hostname).
+        let urlA = URL(string: "https://push-a.example/device-token")!
+// SAFETY: fixed valid fixture URL (distinct hostname).
+        let urlB = URL(string: "https://push-b.example/device-token")!
+        _ = self.delegate?.receiveDeviceToken(Self.tokenHex)
+        await startAndVerifyBothHosts(model)
+        await waitUntil(!deviceTokenBodies(to: urlA).isEmpty
+                        && !deviceTokenBodies(to: urlB).isEmpty)
+
+// SAFETY: makeModel always seeds Host B; the removal below needs it.
+        let profileB = model.profiles.first { $0.displayName == "Host B" }!
+        model.removeHost(profileID: profileB.id)
+        // The removal's empty-token clear lands for B; A is untouched.
+        await waitUntil(deviceTokenBodies(to: urlB).contains { deviceTokenValue($0) == "" })
+        await waitUntil(model.pendingPushTokenClears.isEmpty)
+// SAFETY: the empty-token clear was awaited just above.
+        XCTAssertEqual(keyID(deviceTokenBodies(to: urlB).filter { deviceTokenValue($0) == "" }.first!),
+                       "dev_push_b")
+        XCTAssertTrue(deviceTokenBodies(to: urlA).allSatisfy { deviceTokenValue($0) != "" },
+                      "removing B never clears A's enrollment")
+        XCTAssertEqual(model.profiles.map(\.displayName), ["Host A"])
+        XCTAssertTrue(model.pendingPushTokenClears.isEmpty)
+        XCTAssertNil(model.coordinator?.store(profileID: profileB.id),
+                     "the removed host's session is gone")
+    }
+
+    func testRemoveOfflineHostKeepsPendingClearUntilSameURLRepairs() async {
+        defer { cleanup() }
+        let model = makeModel(hostBTokenStatus: 500)
+// SAFETY: fixed valid fixture URL (distinct hostname).
+        let urlB = URL(string: "https://push-b.example")!
+        _ = self.delegate?.receiveDeviceToken(Self.tokenHex)
+        await startAndVerifyBothHosts(model)
+
+// SAFETY: makeModel always seeds Host B; the removal below needs it.
+        let profileB = model.profiles.first { $0.displayName == "Host B" }!
+        model.removeHost(profileID: profileB.id)
+        await waitUntil(!model.pendingPushTokenClears.isEmpty)
+        XCTAssertEqual(model.profiles.map(\.displayName), ["Host A"])
+        XCTAssertEqual(model.pendingPushClearNames(), ["Host B"],
+                       "a removed-but-unreachable host shows host-side cleanup guidance")
+        // A retry while the profile is gone keeps the pending entry (the
+        // URL is not paired, so nothing to clear against yet).
+        model.retryPendingPushTokenClear(profileID: profileB.id)
+        XCTAssertTrue(model.pendingPushTokenClears.contains(profileB.id))
+
+        // Re-pairing the SAME URL supersedes the stale removal-clear (the
+        // fresh enrollment writes the token the shared key record holds).
+// SAFETY: prepareHostPairing only throws on invalid fixture input.
+        let prepared = try! await model.prepareHostPairing(
+            displayName: "Host B", rawURL: urlB.absoluteString)
+        await model.completeAddHost(prepared, token: "tok")
+        XCTAssertTrue(model.pendingPushTokenClears.isEmpty,
+                      "a same-URL re-pair supersedes the pending removal-clear")
+        XCTAssertEqual(model.profiles.first { $0.displayName == "Host B" }?.keyId,
+                       "dev_push_b", "re-pairing restores the same deterministic key record")
+    }
+
+    func testNotificationTapsRouteByCompositeHostIdentityNeverGuessing() async {
+        defer { cleanup() }
+        let model = makeModel()
+        _ = self.delegate?.receiveDeviceToken(Self.tokenHex)
+        let (profileA, profileB) = await startAndVerifyBothHosts(model)
+        // Equal RAW agent ids on both hosts, stamped with each host's key.
+        seedAgent("herdr:dup", host: Self.hostKey, in: model, profileID: profileA)
+        seedAgent("herdr:dup", host: Self.otherHostKey, in: model, profileID: profileB)
+
+        // A's alert opens A's recents; B's alert opens B's — the raw id is
+        // preserved for the /drive request on BOTH routes.
+        model.openNotification(agentId: "herdr:dup", hostKeyB64: Self.hostKey)
+        XCTAssertEqual(model.recentsRequest?.hostProfileID, profileA)
+        XCTAssertEqual(model.recentsRequest?.agentId, "herdr:dup")
+        model.recentsRequest = nil
+
+        model.openNotification(agentId: "herdr:dup", hostKeyB64: Self.otherHostKey)
+        XCTAssertEqual(model.recentsRequest?.hostProfileID, profileB,
+                       "the SAME raw agent id on host B opens B's sheet, never A's")
+        XCTAssertEqual(model.recentsRequest?.agentId, "herdr:dup")
+        model.recentsRequest = nil
+
+        // A legacy host-less payload with 2+ hosts is NON-ACTIONABLE.
+        model.openNotification(agentId: "herdr:dup", hostKeyB64: nil)
+        XCTAssertNil(model.recentsRequest, "no host_id + 2 hosts = no guessing")
+        XCTAssertEqual(model.banner?.kind, "notification_host_unknown",
+                       "bounded diagnostic, never a cross-host open")
+        model.banner = nil
+
+        // An unknown / removed host's payload is NON-ACTIONABLE.
+        model.openNotification(agentId: "herdr:dup", hostKeyB64: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+        XCTAssertNil(model.recentsRequest, "an unknown host identity never opens a lane")
+        XCTAssertEqual(model.banner?.kind, "notification_host_unknown")
+
+        // A notification for a REMOVED host cannot recreate its profile or
+        // cached lane — and never falls through to the other host.
+        model.recentsRequest = nil
+        model.banner = nil
+        model.removeHost(profileID: profileB)
+        XCTAssertNil(model.coordinator?.store(profileID: profileB))
+        model.openNotification(agentId: "herdr:dup", hostKeyB64: Self.otherHostKey)
+        XCTAssertNil(model.recentsRequest,
+                     "a removed host's alert must not open the remaining host's lane")
+        XCTAssertEqual(model.banner?.kind, "notification_host_unknown")
+    }
+
+    func testSingleHostLegacyRoutingStillWorksWithAndWithoutHostID() async {
+        defer { cleanup() }
+        let model = makeModel(profileCount: 1)
+// SAFETY: fixed valid fixture URL (distinct hostname).
+        let urlA = URL(string: "https://push-a.example/device-token")!
+        _ = self.delegate?.receiveDeviceToken(Self.tokenHex)
+        model.startLive()
+        await waitUntil(model.keyContinuityState == .verified)
+        await waitUntil(!deviceTokenBodies(to: urlA).isEmpty)
+        seedAgent("herdr:a1", host: Self.hostKey, in: model, profileID: model.profiles[0].id)
+
+        // The sole host still routes a host_id-bearing payload…
+        model.openNotification(agentId: "herdr:a1", hostKeyB64: Self.hostKey)
+        XCTAssertEqual(model.recentsRequest?.agentId, "herdr:a1")
+        model.recentsRequest = nil
+        // …AND a legacy host-less payload (F1 back-compat).
+        model.openNotification(agentId: "herdr:a1", hostKeyB64: nil)
+        XCTAssertEqual(model.recentsRequest?.agentId, "herdr:a1")
+        model.recentsRequest = nil
+        // A FOREIGN host identity with one PINNED host stays non-actionable
+        // (never guess a rotated/replacement identity).
+        model.openNotification(agentId: "herdr:a1", hostKeyB64: Self.otherHostKey)
+        XCTAssertNil(model.recentsRequest)
+        XCTAssertEqual(model.banner?.kind, "notification_host_unknown")
     }
 }
 
@@ -7847,7 +8214,7 @@ final class MultiHostSurfaceWiringTests: XCTestCase {
                       "row VoiceOver must carry the badge/staleness facts (D8)")
     }
 
-    func testSettingsExposesReorderRenameRetryRemoveAndF2Text() throws {
+    func testSettingsExposesReorderRenameRetryRemoveAndPerHostNotifyState() throws {
         let source = try bundledSource()
         let start = try XCTUnwrap(source.range(of: "private var hostsSection: some View {"))
         let end = try XCTUnwrap(source.range(of: "// MARK: - #399 Add Host"))
@@ -7868,8 +8235,16 @@ final class MultiHostSurfaceWiringTests: XCTestCase {
                       "D7: grants expiry must be readable per host")
         XCTAssertTrue(slice.contains("Last seen"),
                       "D7: last seen must be readable per host")
-        XCTAssertTrue(source.contains("settings.notifications.multi-host"),
-                      "F2: the 2+ host APNs/deep-link limitation must be explained in Settings")
+        // #397: the per-host notification state rides the EXISTING host
+        // row (no redesigned chrome) and routes through the model.
+        XCTAssertTrue(slice.contains("Toggle(\"Notify about this host\""),
+                      "#397: each host row must carry its per-host notification toggle")
+        XCTAssertTrue(slice.contains("model.setHostNotificationsEnabled(profileID: profile.id,"),
+                      "#397: the per-host toggle must route through the model")
+        XCTAssertTrue(source.contains("settings.hosts.notify"),
+                      "#397: each per-host toggle carries a row anchor")
+        XCTAssertTrue(source.contains("settings.notifications.pending-clear"),
+                      "#397: pending per-host token cleanup must surface in Settings")
     }
 
     func testAddHostSheetPrefillsNameFromURL() throws {

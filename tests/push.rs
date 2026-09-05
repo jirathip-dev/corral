@@ -30,6 +30,10 @@ fn test_config() -> Config {
     }
 }
 
+/// #397 fixture host identity — base64 of 32 bytes, the wire form of the
+/// daemon's X25519 public key (fixture only).
+const TEST_HOST_ID: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+
 /// A valid-format APNs token (64 lowercase hex chars — N13).
 const DEVICE_TOKEN: &str = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";
 
@@ -138,6 +142,7 @@ async fn blocked_transition_reaches_provider_within_10s_then_done_pushes() {
         state.auth.registry.clone(),
         provider,
         test_config(),
+        TEST_HOST_ID,
     ));
     notifier.clone().start();
     notifier.ready().await;
@@ -167,6 +172,7 @@ async fn blocked_transition_reaches_provider_within_10s_then_done_pushes() {
     );
     assert_eq!(token, DEVICE_TOKEN);
     assert_eq!(payload["type"], "blocked");
+    assert_eq!(payload["host_id"], TEST_HOST_ID);
     assert_eq!(payload["agent_id"], "herdr:ses-e2e");
     assert_eq!(payload["prompt_hash"], "sha256:e2e");
     assert_eq!(payload["approval_id"], "herdr:ses-e2e:sha256:e2e");
@@ -206,6 +212,7 @@ async fn only_enrolled_live_devices_receive_pushes() {
         state.auth.registry.clone(),
         provider,
         test_config(),
+        TEST_HOST_ID,
     ));
     notifier.clone().start();
     notifier.ready().await;

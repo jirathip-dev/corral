@@ -92,6 +92,11 @@ pub struct Notifier {
     registry: Arc<DeviceRegistry>,
     provider: Arc<dyn ApnsProvider>,
     config: Config,
+    /// #397: this daemon's stable X25519 host identity (base64, the same
+    /// key `GET /host-key` publishes). Stamped into every payload as the
+    /// composite target's `host_id` half — the phone routes taps by
+    /// matching it against a pinned host profile, never a display name.
+    host_id: String,
     /// Fired once the watcher holds a broadcast subscription — tests await
     /// it before applying changes so a flushed delta can never race the
     /// subscription (a delta broadcast before subscribe is missed forever).
@@ -114,12 +119,14 @@ impl Notifier {
         registry: Arc<DeviceRegistry>,
         provider: Arc<dyn ApnsProvider>,
         config: Config,
+        host_id: impl Into<String>,
     ) -> Self {
         Self {
             store,
             registry,
             provider,
             config,
+            host_id: host_id.into(),
             ready: Arc::new(tokio::sync::Notify::new()),
         }
     }
@@ -135,7 +142,13 @@ impl Notifier {
 
     /// Arm from `CORRAL_APNS_*` env. `None` when unconfigured; the daemon
     /// then runs with push disabled (documented first-run state).
-    pub fn from_env(store: Store, registry: Arc<DeviceRegistry>) -> Option<Arc<Self>> {
+    /// `host_id` is this daemon's X25519 public key (base64) — stamped
+    /// into every payload (#397 composite target).
+    pub fn from_env(
+        store: Store,
+        registry: Arc<DeviceRegistry>,
+        host_id: impl Into<String>,
+    ) -> Option<Arc<Self>> {
         let config = Config::from_env()?;
         let signing_key = match Config::load_signing_key(&config.auth_key_path) {
             Ok(key) => key,
@@ -157,7 +170,9 @@ impl Notifier {
             topic = %config.topic,
             "push notifier armed (APNs)"
         );
-        Some(Arc::new(Self::new(store, registry, provider, config)))
+        Some(Arc::new(Self::new(
+            store, registry, provider, config, host_id,
+        )))
     }
 
     /// Spawn the watcher. Never panics and never blocks the store path:
@@ -331,6 +346,7 @@ impl Notifier {
                         };
                         Some(blocked_payload(
                             &agent.agent_id,
+                            &self.host_id,
                             agent.display_name.as_deref(),
                             &agent.workspace,
                             waiting.kind,
@@ -360,6 +376,7 @@ impl Notifier {
                 if is_new {
                     Some(done_payload(
                         &agent.agent_id,
+                        &self.host_id,
                         agent.display_name.as_deref(),
                         &agent.workspace,
                     ))
@@ -490,6 +507,10 @@ mod tests {
     use crate::core::model::{Change, WaitingOn, WaitingOnKind, Workspace};
     use crate::push::provider::MockProvider;
 
+    /// #397 fixture host identity — base64 of 32 bytes, the wire form of
+    /// the daemon's X25519 public key (fixture only).
+    const TEST_HOST_ID: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+
     fn test_config() -> Config {
         Config {
             team_id: "t".to_string(),
@@ -588,6 +609,7 @@ mod tests {
             registry.clone(),
             provider,
             test_config(),
+            TEST_HOST_ID,
         ));
         (store, registry, notifier, received)
     }
@@ -613,6 +635,7 @@ mod tests {
             .expect("provider channel closed");
         assert_eq!(token, "a1b2c3d4e5f6"); // gitleaks:allow — fixture device token
         assert_eq!(payload["type"], "blocked");
+        assert_eq!(payload["host_id"], TEST_HOST_ID);
         assert_eq!(payload["agent_id"], "herdr:ses-1");
         assert_eq!(payload["prompt_hash"], "sha256:aaa");
         assert_eq!(payload["aps"]["alert"]["body"], "proceed? [y/n]");
@@ -1007,6 +1030,7 @@ mod tests {
             registry.clone(),
             provider,
             test_config(),
+            TEST_HOST_ID,
         ));
         notifier.clone().start();
         notifier.ready().await;
@@ -1075,6 +1099,7 @@ mod tests {
             registry.clone(),
             provider,
             test_config(),
+            TEST_HOST_ID,
         ));
         let mut shadow = HashMap::new();
 

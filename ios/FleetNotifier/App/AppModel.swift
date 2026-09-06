@@ -1642,7 +1642,25 @@ final class AppModel: ObservableObject {
                         signerPublicKeyB64: candidateSigner.publicKeyB64)
                     self.keyContinuityState = .verified
                     self.fleet.acceptedHostIdentity = profile.hostKeyB64
-                    self.fleet.restoreCursor()
+                    if switchingHost {
+                        // #421: a runtime HOST SWITCH (a second host
+                        // fingerprint-confirmed while this app is running)
+                        // must not let the previous active host's rows/
+                        // cursor ride the shared legacy store into the NEW
+                        // host — they would project under the new host's
+                        // composite id until an authoritative snapshot
+                        // replaced them (stale rows under both host badges
+                        // until relaunch). The old host's state survives in
+                        // its own per-profile cursor + durable board cache
+                        // (persisted by stopLive above) and re-enters via
+                        // its fresh coordinator session. Same-URL re-pairing
+                        // (switchingHost == false) keeps the live store and
+                        // its rows untouched — they still belong to the
+                        // active host.
+                        fleet.reset()
+                    } else {
+                        fleet.restoreCursor()
+                    }
                     self.startLive()
                     self.banner = .info("Paired \(profile.displayName) · fingerprint confirmed")
                     // #415: the commit succeeded — ONLY now is the draft

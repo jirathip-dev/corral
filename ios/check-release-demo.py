@@ -277,7 +277,12 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # SettingsView — with 2+ host profiles the Hosts section is the sole
     # host surface — and HowToConnectSheet's pairing copy branches by the
     # multi-host variant — re-pinned over the #423 source set.
-    "abb882f20ebbf37104d2fa69cc4cf504ef1041ce1f0bd612c82adda11db51792"
+    # 425: pull-to-refresh stale-stream recovery — FleetStore
+    # (applyRefresh no longer marks .connected from a snapshot,
+    # owner-exit stream-task cleanup, reconnectIfNeeded) + AppModel
+    # (refreshFleet restarts the un-acked active-host stream once) —
+    # re-pinned over the #425 source set.
+    "98c9016de0e10801eba74d8735c8bde6d8a895d902c12c359c3506e94fcf069c"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -408,7 +413,12 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # guard probes, Hosts-authority + VoiceOver pins, variant help-copy
     # pins) and SettingsConnectWiringTests' '?'-entry pin updated to the
     # multi-host call — re-pinned over the #423 test source.
-    "cac61e9f0027ca6fad5cd029c2c5722e992a5e13f8be613712850ebb7dc25d61"
+    # 425: RefreshRecoversStaleStreamTests added (snapshot-only refresh
+    # never marks the store live without a stream ack; a single
+    # pull-to-refresh restarts exactly ONE wedged active-host stream and
+    # stays idempotent while healthy) + the RefreshRecoveryURLProtocol
+    # wedge/live transport — re-pinned over the #425 test source.
+    "0714958ace7867eab064bb7258c45332fb094d7dad179eb20227a048b5e35b14"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

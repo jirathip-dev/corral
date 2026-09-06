@@ -146,6 +146,18 @@ final class HostProfileStore {
         return profiles[idx]
     }
 
+    /// #426: fold a successful `/grants-read` response into ONE host
+    /// profile — grants + expiry ONLY (the registration key id/url are
+    /// pairing-owned and a grants refresh must never rewrite them).
+    @discardableResult
+    func applyGrants(id: UUID, grants: [String], expiryTs: UInt64?) throws -> HostProfile {
+        guard let idx = index(of: id) else { throw HostProfileError.profileNotFound }
+        profiles[idx].grants = grants
+        profiles[idx].expiryTs = expiryTs
+        save()
+        return profiles[idx]
+    }
+
     /// #397: persist one host's per-host notification enrollment flag
     /// (the profile document owns it; removal purges it with the record).
     @discardableResult

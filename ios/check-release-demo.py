@@ -282,7 +282,17 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # owner-exit stream-task cleanup, reconnectIfNeeded) + AppModel
     # (refreshFleet restarts the un-acked active-host stream once) —
     # re-pinned over the #425 source set.
-    "98c9016de0e10801eba74d8735c8bde6d8a895d902c12c359c3506e94fcf069c"
+    # #426: per-host grants refresh — refreshGrants() now fans out a signed
+    # /grants-read to EVERY configured live host (ACTIVE profile + verified
+    # coordinator hosts) against each host's OWN url/keyId, persists each
+    # success into only that host's profile grant set (HostProfileStore
+    # applyGrants), and the coordinator session-connected hook refreshes a
+    # host that verified after the launch fan-out — re-pinned over the
+    # #426 source set.
+    # #426 r1: per-host refresh failure now logs the bound error instead of
+    # an empty catch (anti-slop no-swallowed-errors) — AppModel.swift
+    # changed again, so the release-source pin follows the r1 source set.
+    "8934fa0a50c9a6e0713eff671f4e4b656742135848f019204a9a5fa5bb9eb890"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -418,7 +428,11 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # pull-to-refresh restarts exactly ONE wedged active-host stream and
     # stays idempotent while healthy) + the RefreshRecoveryURLProtocol
     # wedge/live transport — re-pinned over the #425 test source.
-    "0714958ace7867eab064bb7258c45332fb094d7dad179eb20227a048b5e35b14"
+    # #426: PerHostGrantsRefreshTests added (per-host grants fan-out,
+    # per-profile persistence/isolation, failed-refresh preservation,
+    # refreshed-profile non-active drive, equal-raw-id separation,
+    # not-granted permission-state) — re-pinned over the #426 test source.
+    "cd4d75a7479bdee264bacb7d6d6ebbf056aa2c26ebd0fb40697ec3a80eae5898"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

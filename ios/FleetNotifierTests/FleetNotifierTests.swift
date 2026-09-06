@@ -10174,3 +10174,428 @@ final class RefreshRecoversStaleStreamTests: XCTestCase {
         XCTAssertFalse(fixture.model.isRefreshingFleet)
     }
 }
+
+// MARK: - #426 per-host grants refresh (multi-host)
+
+/// Regression for #426. `refreshGrants()` at the unfixed head refreshes
+/// ONLY the ACTIVE profile's grants (and only the legacy in-memory
+/// mirrors at that), so a NON-active host that was granted `read_tail`
+/// host-side keeps an empty per-profile grant set and its Recent Output
+/// route denies the read locally — Bazzite stays on the empty state even
+/// though the host and agent both authorize. The fix fans the signed
+/// `/grants-read` out to EVERY configured, live host against that host's
+/// OWN URL/key identity and persists each response into ONLY that host's
+/// profile grant set.
+@MainActor
+final class PerHostGrantsRefreshTests: XCTestCase {
+    private var suiteName = ""
+    private var model: AppModel?
+    private var session: URLSession?
+    private var store: HostProfileStore?
+
+    // SAFETY: fixed valid 32-byte X25519 public-key fixtures.
+    static let hostAKey = Data(repeating: 7, count: 32).base64EncodedString()
+    // SAFETY: fixed valid 32-byte X25519 public-key fixtures.
+    static let hostBKey = Data(repeating: 8, count: 32).base64EncodedString()
+
+    // SAFETY: fixed valid fixture URLs under distinct hostnames.
+    private let urlA = URL(string: "https://route-a.example")!
+    // SAFETY: fixed valid fixture URLs under distinct hostnames.
+    private let urlB = URL(string: "https://route-b.example")!
+
+    private func cleanup() {
+        model?.stopLive()
+        model = nil
+        store = nil
+        session?.invalidateAndCancel()
+        session = nil
+        AppDelegate.apnsRegistered = false
+        UserDefaults.standard.removeObject(forKey: AppDelegate.deviceTokenUploadedKey)
+        AppDelegate.shared?.clearRetainedDeviceToken()
+        KeyContinuityGate.reset()
+        HostSwitchURLProtocol.clearScript()
+        if !suiteName.isEmpty {
+            // SAFETY: suiteName was freshly minted per test.
+            UserDefaults(suiteName: suiteName)!.removePersistentDomain(forName: suiteName)
+            suiteName = ""
+        }
+    }
+
+    private func waitUntil(_ condition: @autoclosure () -> Bool,
+                           timeout: TimeInterval = 5) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+    }
+
+    private func requests(to url: URL) -> [URLRequest] {
+        HostSwitchURLProtocol.requests.filter { $0.url?.absoluteString == url.absoluteString }
+    }
+
+    /// Two pinned live hosts: A = ACTIVE (Mac), B = coordinator
+    /// (Bazzite). B's seeded grants model the #426 bug state: the HOST
+    /// granted read_tail AFTER Bazzite was paired, so B's cached profile
+    /// grant set is empty. `/grants-read` answers per host URL with that
+    /// host's OWN key id / grant set / expiry.
+    private func makeModel(bSeedGrants: [String],
+                           bGrantsReadStatus: Int = 200,
+                           scriptDrive: Bool = true) -> (AppModel, HostProfile, HostProfile) {
+        suiteName = "corral.h426.refresh.\(UUID().uuidString)"
+        // SAFETY: a fresh UUID suite name is always a valid suite.
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let store = HostProfileStore(directory: nil, defaults: defaults)
+        self.store = store
+        // SAFETY: fixed fixture profiles (see the class doc).
+        let profileA = try! store.addProfile(displayName: "Mac",
+                                             urlString: urlA.absoluteString,
+                                             hostKeyB64: Self.hostAKey,
+                                             fingerprint: "FINGER",
+                                             keyId: "dev_route_a",
+                                             grants: ["read_tail"],
+                                             expiryTs: 1_800_000_000,
+                                             registeredAt: 1)
+        // SAFETY: fixed fixture profiles (see the class doc).
+        let profileB = try! store.addProfile(displayName: "Bazzite",
+                                             urlString: urlB.absoluteString,
+                                             hostKeyB64: Self.hostBKey,
+                                             fingerprint: "FINGER",
+                                             keyId: "dev_route_b",
+                                             grants: bSeedGrants,
+                                             expiryTs: 1_800_000_000,
+                                             registeredAt: 1)
+        defaults.set(profileA.id.uuidString, forKey: "fleetnotifier.activeHostProfileID")
+        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        var script: [URL: (Int, Data, Bool)] = [:]
+        for (url, key) in [(urlA, Self.hostAKey), (urlB, Self.hostBKey)] {
+            // SAFETY: fixed fixture JSON from the fixture keys.
+            script[url.appendingPathComponent("/host-key")] = (
+                200, Data(#"{"algorithm":"X25519","public_key":"\#(key)"}"#.utf8), false)
+            script[url.appendingPathComponent("/events")] = (200, Data(), true)
+        }
+        // A's own daemon answer stays its current grant set; B's answer is
+        // the #426 host-side promotion (read_tail + prompt, fresh expiry).
+        script[urlA.appendingPathComponent("/grants-read")] = (
+            200,
+            Data(#"{"ok":true,"key_id":"dev_route_a","grants":["read_tail"],"expiry_ts":1800000000,"revoked":false}"#.utf8),
+            false)
+        script[urlB.appendingPathComponent("/grants-read")] = (
+            bGrantsReadStatus,
+            Data(#"{"ok":true,"key_id":"dev_route_b","grants":["read_tail","prompt"],"expiry_ts":1800000001,"revoked":false}"#.utf8),
+            false)
+        if scriptDrive {
+            // SAFETY: a fixed minimal drive response fixture.
+            let driveOK = Data(#"{"request_id":"r1","ok":true,"rev":5,"result":{"lines":["l1"],"blocks":[]}}"#.utf8)
+            script[urlA.appendingPathComponent("/drive")] = (200, driveOK, false)
+            script[urlB.appendingPathComponent("/drive")] = (200, driveOK, false)
+        }
+        HostSwitchURLProtocol.setScript(script)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [HostSwitchURLProtocol.self]
+        let session = URLSession(configuration: config)
+        self.session = session
+        let model = AppModel(session: session, defaults: defaults,
+                             identityLoader: { (signer, .insecureFallback) },
+                             loadMeta: { nil }, saveMeta: { _ in },
+                             wipeIdentity: {}, profileStore: store)
+        self.model = model
+        model.startLive()
+        return (model, profileA, profileB)
+    }
+
+    private func agent(_ id: String, state: AgentState, host: String, ts: UInt64) -> Agent {
+        Agent(agentId: id, state: state, ts: ts,
+              capabilities: ["read_tail"], host: host,
+              workspace: Workspace(repo: "corral", branch: "main"))
+    }
+
+    /// Wait until BOTH hosts are live (ACTIVE verified, B verified and
+    /// streaming) and seed the equal raw agent id into both stores.
+    private func seed(model: AppModel, profileA: HostProfile, profileB: HostProfile) async {
+        model.fleet.apply(.snapshot(Snapshot(schemaVersion: 5, rev: 5, generatedAt: 0,
+                                             agents: ["herdr:dup": agent("herdr:dup",
+                                                                         state: .working,
+                                                                         host: Self.hostAKey,
+                                                                         ts: 5)])))
+        // SAFETY: fixed test fixture invariant (see the fixture builder); failure here is a harness bug, not a product defect.
+        let coordinator = try! XCTUnwrap(model.coordinator)
+        await waitUntil(coordinator.allowsLiveWork(profileID: profileB.id))
+        await waitUntil(model.keyContinuityState == .verified)
+        // SAFETY: fixed test fixture invariant (see the fixture builder); failure here is a harness bug, not a product defect.
+        let storeB = try! XCTUnwrap(coordinator.store(profileID: profileB.id))
+        storeB.apply(.snapshot(Snapshot(schemaVersion: 5, rev: 5, generatedAt: 0,
+                                        agents: ["herdr:dup": agent("herdr:dup",
+                                                                    state: .blocked,
+                                                                    host: Self.hostBKey,
+                                                                    ts: 5)])))
+        await waitUntil(storeB.connectionState == .connected)
+        await waitUntil(model.fleet.connectionState == .connected)
+    }
+
+    private func grantsBodyKeyID(at url: URL) -> String? {
+        guard let body = requests(to: url.appendingPathComponent("/grants-read")).first?.httpBody,
+              let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else {
+            return nil
+        }
+        return json["key_id"] as? String
+    }
+
+    /// AC1 + AC2: refreshGrants() fans out to EVERY live host (ACTIVE and
+    /// coordinator), each signed against its OWN URL/key id, and a
+    /// successful response updates ONLY that host's profile grant set
+    /// (persisted) — Bazzite's answer never touches Mac's record.
+    func testRefreshGrantsFansOutToEveryLiveHostAndPersistsPerHostGrantSets() async {
+        defer { cleanup() }
+        let (model, profileA, profileB) = makeModel(bSeedGrants: [])
+        await seed(model: model, profileA: profileA, profileB: profileB)
+        // SAFETY: store was created in makeModel above.
+        let store = try! XCTUnwrap(self.store)
+
+        await model.refreshGrants()
+
+        // Every configured live host performed a signed /grants-read.
+        XCTAssertEqual(requests(to: urlA.appendingPathComponent("/grants-read")).count, 1,
+                       "the ACTIVE host must still refresh its own grants")
+        XCTAssertGreaterThanOrEqual(requests(to: urlB.appendingPathComponent("/grants-read")).count, 1,
+                                    "a coordinator host must refresh its OWN grants too (#426)")
+        XCTAssertEqual(grantsBodyKeyID(at: urlA), "dev_route_a",
+                       "A's read is signed with A's own key id")
+        XCTAssertEqual(grantsBodyKeyID(at: urlB), "dev_route_b",
+                       "B's read is signed with B's own key id (never A's)")
+        // B's own answer persisted into B's profile grant set only.
+        // SAFETY: profileB.id comes from the fixture above.
+        XCTAssertEqual(store.profile(id: profileB.id)?.grants, ["read_tail", "prompt"],
+                       "Bazzite's refreshed grant set must persist in B's profile record")
+        XCTAssertEqual(store.profile(id: profileB.id)?.expiryTs, 1_800_000_001,
+                       "Bazzite's refreshed expiry must persist too")
+        // Mac's grant set and host state remain untouched by B's refresh.
+        // SAFETY: profileA.id comes from the fixture above.
+        XCTAssertEqual(store.profile(id: profileA.id)?.grants, ["read_tail"],
+                       "Mac's grant set must stay its own (never B's answer)")
+        XCTAssertEqual(store.profile(id: profileA.id)?.expiryTs, 1_800_000_000)
+        XCTAssertEqual(store.profile(id: profileA.id)?.keyId, "dev_route_a")
+        XCTAssertEqual(store.profile(id: profileA.id)?.urlString, urlA.absoluteString)
+        XCTAssertEqual(store.profile(id: profileB.id)?.keyId, "dev_route_b",
+                       "a grants refresh never rewrites the host's key identity")
+        XCTAssertEqual(store.profile(id: profileB.id)?.urlString, urlB.absoluteString)
+    }
+
+    /// AC3: a FAILED coordinator-host refresh keeps the last-known grants,
+    /// never clears them, never breaks that host's stream, and never
+    /// touches the other host's refresh.
+    func testFailedBazziteRefreshPreservesLastKnownGrantsAndOtherHostState() async {
+        defer { cleanup() }
+        // B's grants-read fails (500); B's last-known grant set is
+        // ["prompt"] (a previous grant that must survive the failure).
+        let (model, profileA, profileB) = makeModel(bSeedGrants: ["prompt"],
+                                                    bGrantsReadStatus: 500)
+        await seed(model: model, profileA: profileA, profileB: profileB)
+        // SAFETY: store was created in makeModel above.
+        let store = try! XCTUnwrap(self.store)
+
+        await model.refreshGrants()
+
+        // The per-host refresh was still ATTEMPTED for B (fan-out + the
+        // session-connect retry), then the failure preserved the
+        // last-known set.
+        XCTAssertGreaterThanOrEqual(requests(to: urlB.appendingPathComponent("/grants-read")).count, 1,
+                                    "the coordinator host's refresh must be attempted even when it fails")
+        XCTAssertEqual(requests(to: urlA.appendingPathComponent("/grants-read")).count, 1,
+                       "A's own refresh still runs")
+        // SAFETY: profileB.id comes from the fixture above.
+        XCTAssertEqual(store.profile(id: profileB.id)?.grants, ["prompt"],
+                       "a failed refresh must preserve Bazzite's last-known grants")
+        XCTAssertEqual(store.profile(id: profileB.id)?.expiryTs, 1_800_000_000,
+                       "a failed refresh must not touch Bazzite's expiry either")
+        // SAFETY: profileA.id comes from the fixture above.
+        XCTAssertEqual(store.profile(id: profileA.id)?.grants, ["read_tail"],
+                       "Mac's grant set is untouched by Bazzite's failure")
+        // B's stream is not broken by the failed refresh.
+        // SAFETY: fixed test fixture invariant (see the fixture builder); failure here is a harness bug, not a product defect.
+        let coordinator = try! XCTUnwrap(model.coordinator)
+        XCTAssertTrue(coordinator.allowsLiveWork(profileID: profileB.id),
+                      "Bazzite's session must stay live after a failed grants refresh")
+        XCTAssertEqual(coordinator.store(profileID: profileB.id)?.connectionState, .connected)
+        XCTAssertEqual(model.fleet.connectionState, .connected,
+                       "the ACTIVE host's stream must stay live too")
+    }
+
+    /// AC4 + AC5: after the fan-out persists Bazzite's refreshed grants,
+    /// the NON-active route authorizes read_tail and the signed /drive
+    /// goes to Bazzite (never Mac), rendering real returned lines.
+    func testRefreshedBazziteProfileAuthorizesNonActiveRouteAndDrivesBazzite() async {
+        defer { cleanup() }
+        let (model, profileA, profileB) = makeModel(bSeedGrants: [])
+        await seed(model: model, profileA: profileA, profileB: profileB)
+        // SAFETY: store was created in makeModel above.
+        let store = try! XCTUnwrap(self.store)
+
+        await model.refreshGrants()
+        // SAFETY: profileB.id comes from the fixture above.
+        XCTAssertEqual(store.profile(id: profileB.id)?.grants, ["read_tail", "prompt"],
+                       "precondition: B's profile now carries the refreshed grant set")
+        // SAFETY: fixed test fixture invariant (see the fixture builder); failure here is a harness bug, not a product defect.
+        let coordinator = try! XCTUnwrap(model.coordinator)
+        let bAgent = try! XCTUnwrap(coordinator.agent(profileID: profileB.id, agentID: "herdr:dup"))
+        // Drive with a client bound to host A on purpose: the composite
+        // route must sign against B's URL with B's key id.
+        let clientForA = DriveClient(host: urlA, session: session ?? .shared)
+        model.driveReadTail(agent: bAgent, hostProfileID: profileB.id,
+                            driveClient: clientForA)
+        await waitUntil(!requests(to: urlB.appendingPathComponent("/drive")).isEmpty)
+        XCTAssertTrue(requests(to: urlA.appendingPathComponent("/drive")).isEmpty,
+                      "a read_tail for host B must NEVER reach host A")
+        let driveBody = try! XCTUnwrap(requests(to: urlB.appendingPathComponent("/drive")).first?.httpBody)
+        let json = try! XCTUnwrap(try JSONSerialization.jsonObject(with: driveBody)
+                                  as? [String: Any])
+        XCTAssertEqual(json["key_id"] as? String, "dev_route_b",
+                       "the read must be signed with the OWNING profile's key id")
+        let envelope = try! XCTUnwrap(json["envelope"] as? [String: Any])
+        XCTAssertEqual(envelope["target"] as? String, "herdr:dup",
+                       "the raw agent id is sent untouched")
+        // Real returned lines land in B's store pane — not the empty state.
+        await waitUntil(coordinator.tailPane(profileID: profileB.id, agentID: "herdr:dup") != nil)
+        XCTAssertEqual(coordinator.tailPane(profileID: profileB.id, agentID: "herdr:dup")?.lines,
+                       ["l1"], "Recent Output must render the real returned lines")
+        // SAFETY: fixed test fixture invariant (see the fixture builder); failure here is a harness bug, not a product defect.
+        let pane = try! XCTUnwrap(coordinator.tailPane(profileID: profileB.id, agentID: "herdr:dup"))
+        XCTAssertNil(pane.error)
+        XCTAssertEqual(RecentOutputModel.phase(for: pane), .loaded,
+                       "real lines render the loaded state, never successful-empty")
+        XCTAssertNil(model.fleet.tailPane(for: "herdr:dup"),
+                     "host B's tail must never land in host A's read model")
+    }
+
+    /// AC6: equal raw agent IDs on two hosts use SEPARATE per-profile
+    /// grant sets and SEPARATE drive URLs (each signed with its own key).
+    func testEqualRawAgentIDsUseSeparateGrantSetsAndDriveURLs() async {
+        defer { cleanup() }
+        let (model, profileA, profileB) = makeModel(bSeedGrants: [])
+        await seed(model: model, profileA: profileA, profileB: profileB)
+        // SAFETY: store was created in makeModel above.
+        let store = try! XCTUnwrap(self.store)
+
+        await model.refreshGrants()
+        // SAFETY: profile ids come from the fixture above.
+        XCTAssertEqual(store.profile(id: profileA.id)?.grants, ["read_tail"])
+        XCTAssertEqual(store.profile(id: profileB.id)?.grants, ["read_tail", "prompt"],
+                       "each host keeps its OWN grant set under the equal raw id")
+        // SAFETY: fixed test fixture invariant (see the fixture builder); failure here is a harness bug, not a product defect.
+        let coordinator = try! XCTUnwrap(model.coordinator)
+        let aAgent = try! XCTUnwrap(model.fleet.agent("herdr:dup"))
+        let bAgent = try! XCTUnwrap(coordinator.agent(profileID: profileB.id, agentID: "herdr:dup"))
+        let clientForA = DriveClient(host: urlA, session: session ?? .shared)
+
+        // Drive A's dup: only A's URL may be hit.
+        model.driveReadTail(agent: aAgent, hostProfileID: profileA.id,
+                            driveClient: clientForA)
+        await waitUntil(!requests(to: urlA.appendingPathComponent("/drive")).isEmpty)
+        XCTAssertTrue(requests(to: urlB.appendingPathComponent("/drive")).isEmpty,
+                      "A's dup drive must never reach host B")
+        // SAFETY: waitUntil above guarantees A's drive request is recorded; the body is scripted fixture JSON.
+        let aDriveBody = try! XCTUnwrap(requests(to: urlA.appendingPathComponent("/drive")).first?.httpBody)
+        // SAFETY: the drive body is the scripted fixture JSON (see makeModel).
+        let aJSON = try! XCTUnwrap(try JSONSerialization.jsonObject(with: aDriveBody)
+                                   as? [String: Any])
+        XCTAssertEqual(aJSON["key_id"] as? String, "dev_route_a")
+
+        // Drive B's dup: only B's URL may be hit.
+        model.driveReadTail(agent: bAgent, hostProfileID: profileB.id,
+                            driveClient: clientForA)
+        await waitUntil(!requests(to: urlB.appendingPathComponent("/drive")).isEmpty)
+        XCTAssertEqual(requests(to: urlA.appendingPathComponent("/drive")).count, 1,
+                       "B's dup drive adds no second request to host A")
+        // SAFETY: waitUntil above guarantees B's drive request is recorded; the body is scripted fixture JSON.
+        let bDriveBody = try! XCTUnwrap(requests(to: urlB.appendingPathComponent("/drive")).first?.httpBody)
+        // SAFETY: the drive body is the scripted fixture JSON (see makeModel).
+        let bJSON = try! XCTUnwrap(try JSONSerialization.jsonObject(with: bDriveBody)
+                                   as? [String: Any])
+        XCTAssertEqual(bJSON["key_id"] as? String, "dev_route_b",
+                       "each equal raw id is driven under its OWN host key")
+    }
+
+    /// AC7: a genuine not_granted state (refreshed set WITHOUT read_tail)
+    /// still renders the #424 permission state — never the empty state.
+    func testGenuineNotGrantedAfterRefreshStillRendersPermissionState() async {
+        defer { cleanup() }
+        // B's daemon answers a grants-read WITHOUT read_tail — Bazzite was
+        // genuinely not granted the capability. B's agent still advertises
+        // read_tail (host capabilities are independent of this device's
+        // grant set).
+        suiteName = "corral.h426.notgranted.\(UUID().uuidString)"
+        // SAFETY: a fresh UUID suite name is always a valid suite.
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let store = HostProfileStore(directory: nil, defaults: defaults)
+        self.store = store
+        // SAFETY: fixed fixture profiles (see the class doc).
+        let profileA = try! store.addProfile(displayName: "Mac",
+                                             urlString: urlA.absoluteString,
+                                             hostKeyB64: Self.hostAKey,
+                                             fingerprint: "FINGER",
+                                             keyId: "dev_route_a",
+                                             grants: ["read_tail"],
+                                             expiryTs: 1_800_000_000,
+                                             registeredAt: 1)
+        // SAFETY: fixed fixture profiles (see the class doc).
+        let profileB = try! store.addProfile(displayName: "Bazzite",
+                                             urlString: urlB.absoluteString,
+                                             hostKeyB64: Self.hostBKey,
+                                             fingerprint: "FINGER",
+                                             keyId: "dev_route_b",
+                                             grants: [],
+                                             expiryTs: 1_800_000_000,
+                                             registeredAt: 1)
+        defaults.set(profileA.id.uuidString, forKey: "fleetnotifier.activeHostProfileID")
+        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        var script: [URL: (Int, Data, Bool)] = [:]
+        for (url, key) in [(urlA, Self.hostAKey), (urlB, Self.hostBKey)] {
+            // SAFETY: fixed fixture JSON from the fixture keys.
+            script[url.appendingPathComponent("/host-key")] = (
+                200, Data(#"{"algorithm":"X25519","public_key":"\#(key)"}"#.utf8), false)
+            script[url.appendingPathComponent("/events")] = (200, Data(), true)
+        }
+        script[urlA.appendingPathComponent("/grants-read")] = (
+            200,
+            Data(#"{"ok":true,"key_id":"dev_route_a","grants":["read_tail"],"expiry_ts":1800000000,"revoked":false}"#.utf8),
+            false)
+        // B's genuine answer: prompt only, NO read_tail.
+        script[urlB.appendingPathComponent("/grants-read")] = (
+            200,
+            Data(#"{"ok":true,"key_id":"dev_route_b","grants":["prompt"],"expiry_ts":1800000001,"revoked":false}"#.utf8),
+            false)
+        HostSwitchURLProtocol.setScript(script)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [HostSwitchURLProtocol.self]
+        let session = URLSession(configuration: config)
+        self.session = session
+        let model = AppModel(session: session, defaults: defaults,
+                             identityLoader: { (signer, .insecureFallback) },
+                             loadMeta: { nil }, saveMeta: { _ in },
+                             wipeIdentity: {}, profileStore: store)
+        self.model = model
+        model.startLive()
+        await seed(model: model, profileA: profileA, profileB: profileB)
+
+        await model.refreshGrants()
+        // SAFETY: profileB.id comes from the fixture above.
+        XCTAssertEqual(store.profile(id: profileB.id)?.grants, ["prompt"],
+                       "B's refreshed grant set persists even when it excludes read_tail")
+        // The sheet's drive attempt is denied locally with the typed
+        // not_granted failure — the #424 permission state renders.
+        // SAFETY: fixed test fixture invariant (see the fixture builder); failure here is a harness bug, not a product defect.
+        let coordinator = try! XCTUnwrap(model.coordinator)
+        let bAgent = try! XCTUnwrap(coordinator.agent(profileID: profileB.id, agentID: "herdr:dup"))
+        let clientForA = DriveClient(host: urlA, session: session ?? .shared)
+        model.driveReadTail(agent: bAgent, hostProfileID: profileB.id,
+                            driveClient: clientForA, silent: true)
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        let pane = coordinator.tailPane(profileID: profileB.id, agentID: "herdr:dup")
+        XCTAssertEqual(pane?.error?.kind, "not_granted",
+                       "a locally ungranted read_tail must fold the typed not_granted failure")
+        guard case .error = RecentOutputModel.phase(for: pane) else {
+            return XCTFail("the permission state must render — never the successful-empty state")
+        }
+        XCTAssertTrue(requests(to: urlB.appendingPathComponent("/drive")).isEmpty,
+                      "without the grant the drive stops locally (no signed request)")
+    }
+}

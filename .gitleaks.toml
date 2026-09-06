@@ -66,3 +66,18 @@ regexTarget = "line"
 regexes = [
   '''^\s*private var token = "tok-415-fixture"\s*$''',
 ]
+
+# The #421 active-host-switch fixture (tok-421-fixture) is the same
+# synthetic test-only registration-token shape as the #415 fixture above:
+# FleetNotifierTests only, never referenced by the app target. Scope the
+# exception to that exact path and source line so a real token-shaped value
+# anywhere else remains reportable.
+[[allowlists]]
+description = "Synthetic #421 active-host-switch registration-token test fixture"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^ios/FleetNotifierTests/FleetNotifierTests\.swift$''']
+regexTarget = "line"
+regexes = [
+  '''^\s*private var token = "tok-421-fixture"\s*$''',
+]

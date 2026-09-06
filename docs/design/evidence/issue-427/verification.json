@@ -1,0 +1,53 @@
+{
+  "status": "pass",
+  "surface": "Monitor",
+  "matrix": "3 variants \u00d7 7 states \u00d7 4 Catppuccin palettes \u00d7 2 widths",
+  "image_verification": {
+    "status": "pass",
+    "expected": 175,
+    "verified": 175,
+    "counts": {
+      "matrix": 168,
+      "accessibility": 6,
+      "comparison": 1
+    },
+    "failures": []
+  },
+  "dom_verification": {
+    "status": "pass",
+    "case_count": 60,
+    "failure_count": 0
+  },
+  "contrast_verification": {
+    "status": "pass",
+    "check_count": 28
+  },
+  "source_contract": {
+    "status": "pass",
+    "checks": {
+      "no generic Fleet title": true,
+      "explicit All hosts": true,
+      "explicit All repositories": true,
+      "active summary form": true,
+      "settings remains": true,
+      "textual connecting": true,
+      "textual offline and stale": true,
+      "reset all": true,
+      "scoped clears": true,
+      "native sheet role": true,
+      "dynamic type mode": true,
+      "reduced motion": true,
+      "minimum hit target contract": true
+    }
+  },
+  "contact_sheets": [
+    "screenshots/contact-sheets/contact__variant-a__width-390x844.png",
+    "screenshots/contact-sheets/contact__variant-a__width-375x812.png",
+    "screenshots/contact-sheets/contact__variant-b__width-390x844.png",
+    "screenshots/contact-sheets/contact__variant-b__width-375x812.png",
+    "screenshots/contact-sheets/contact__variant-c__width-390x844.png",
+    "screenshots/contact-sheets/contact__variant-c__width-375x812.png",
+    "screenshots/contact-sheets/contact__dynamic-type-accessibility.png"
+  ],
+  "manifest_file_count": 208
+}

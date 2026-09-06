@@ -1,0 +1,167 @@
+source: /Users/jirathip/.herdr/worktrees/corral/g427-filter-header-design/ios/FleetNotifier/UI/BoardModel.swift
+lines: 263-425
+base: c3141f94bea97cc08476123e6e491e6fa24a5a55
+
+263|// MARK: - #401 multi-host board projections (D1-D7 view-model, consumes #400 rows)
+264|
+265|/// #401: the multi-host board consumes `HostBoardRow` (the #400 composite
+266|/// read-model row with staleness + last-seen facts) and NEVER re-derives
+267|/// ranking: rows arrive in `HostBoardProjection`'s canonical + live-first
+268|/// order. The projections below are pure view-model helpers over those rows
+269|/// plus per-host runtime facts — host/repo filters, host chips (D2/D3/D4),
+270|/// the board-level outage summary (D7), and the status-section → repo-
+271|/// subgroup buckets that MERGE equal repo names across hosts (D5).
+272|extension BoardModel {
+273|
+274|    /// Per-host runtime facts the host-filter chips and Settings host rows
+275|    /// render from (D3/D7). Produced by the model from #399/#400 state
+276|    /// (`connectionState`/posture/continuity) — never re-derived here.
+277|    struct HostRuntimeFacts: Equatable, Sendable {
+278|        var isConnected = false
+279|        var isConnecting = false
+280|        var keyMismatch = false
+281|        var awaitingFingerprint = false
+282|    }
+283|
+284|    /// The health posture of one host chip (D3/D7). Textual label ALWAYS
+285|    /// rides with the color — color is never the only channel (D8).
+286|    enum HostChipHealth: Equatable, Sendable {
+287|        case live
+288|        case connecting
+289|        case offline
+290|        case keyMismatch
+291|        case awaitingFingerprint
+292|
+293|        var label: String {
+294|            switch self {
+295|            case .live: return "live"
+296|            case .connecting: return "connecting"
+297|            case .offline: return "offline"
+298|            case .keyMismatch: return "key mismatch"
+299|            case .awaitingFingerprint: return "awaiting fingerprint"
+300|            }
+301|        }
+302|    }
+303|
+304|    /// Classify one host's runtime facts into the chip health vocabulary.
+305|    /// Mismatch and unconfirmed pins fail closed and OUT-rank any store
+306|    /// connection state (B4/B6: such a host is never live).
+307|    static func hostChipHealth(for facts: HostRuntimeFacts) -> HostChipHealth {
+308|        if facts.keyMismatch { return .keyMismatch }
+309|        if facts.awaitingFingerprint { return .awaitingFingerprint }
+310|        if facts.isConnected { return .live }
+311|        if facts.isConnecting { return .connecting }
+312|        return .offline
+313|    }
+314|
+315|    /// #401 D8: the Catppuccin TOKEN for each host health posture — the
+316|    /// single mapping both the board chips and the Settings host rows
+317|    /// resolve, so the four themes can never diverge. Color is NEVER the
+318|    /// only channel: the textual health label and VoiceOver values always
+319|    /// accompany it.
+320|    static func hostHealthToken(_ health: HostChipHealth) -> CatppuccinToken {
+321|        switch health {
+322|        case .live: return .green
+323|        case .connecting: return .yellow
+324|        case .offline: return .peach
+325|        case .keyMismatch: return .red
+326|        case .awaitingFingerprint: return .surface2
+327|        }
+328|    }
+329|
+330|    /// One host-filter chip (D2/D3): a profile in user-controlled order, its
+331|    /// TOTAL lane count (independent of the repo filter), and its health.
+332|    /// `profileID == nil` is the All chip carrying the UNIFIED lane count and
+333|    /// the aggregate (partial) health of every host.
+334|    struct HostFilterChip: Identifiable, Equatable, Sendable {
+335|        let profileID: UUID?
+336|        let displayName: String
+337|        let laneCount: Int
+338|        let health: HostChipHealth
+339|
+340|        var isAll: Bool { profileID == nil }
+341|        var id: String { profileID?.uuidString ?? "all-hosts" }
+342|    }
+343|
+344|    /// Lane counts per host profile over an aggregate row set (D3).
+345|    static func laneCounts(_ rows: [HostBoardRow]) -> [UUID: Int] {
+346|        rows.reduce(into: [:]) { counts, row in
+347|            counts[row.identity.hostProfileID, default: 0] += 1
+348|        }
+349|    }
+350|
+351|    /// The host chip row in render order: All first, then every host in the
+352|    /// given (user-controlled) order — zero-lane and offline hosts stay
+353|    /// visible (D3). The All chip shows the unified count and the aggregate
+354|    /// partial health: live only when EVERY host is live; otherwise the
+355|    /// worst posture (mismatch > awaiting > offline > connecting) so the
+356|    /// chip can never claim full health during a partial outage (D3/D7).
+357|    static func hostChips(hosts: [HostFilterChip]) -> [HostFilterChip] {
+358|        let allLaneCount = hosts.reduce(0) { $0 + $1.laneCount }
+359|        let kinds = Set(hosts.map(\.health))
+360|        let allHealth: HostChipHealth
+361|        if kinds.isEmpty || kinds == [.live] {
+362|            allHealth = .live
+363|        } else if kinds.contains(.keyMismatch) {
+364|            allHealth = .keyMismatch
+365|        } else if kinds.contains(.awaitingFingerprint) {
+366|            allHealth = .awaitingFingerprint
+367|        } else if kinds.contains(.offline) {
+368|            allHealth = .offline
+369|        } else {
+370|            allHealth = .connecting
+371|        }
+372|        return [HostFilterChip(profileID: nil, displayName: "All",
+373|                               laneCount: allLaneCount, health: allHealth)]
+374|            + hosts
+375|    }
+376|
+377|    /// The compact board-level outage summary (D7): nil when every host is
+378|    /// live; otherwise "1 host offline"-style text naming each unreachable
+379|    /// kind. Never a full-width reconnect banner.
+380|    static func hostOutageSummary(hosts: [HostFilterChip]) -> String? {
+381|        var parts: [String] = []
+382|        let offline = hosts.filter { $0.health == .offline }.count
+383|        if offline == 1 {
+384|            parts.append("1 host offline")
+385|        } else if offline > 1 {
+386|            parts.append("\(offline) hosts offline")
+387|        }
+388|        let mismatch = hosts.filter { $0.health == .keyMismatch }.count
+389|        if mismatch == 1 {
+390|            parts.append("1 host key mismatch")
+391|        } else if mismatch > 1 {
+392|            parts.append("\(mismatch) hosts key mismatch")
+393|        }
+394|        let awaiting = hosts.filter { $0.health == .awaitingFingerprint }.count
+395|        if awaiting == 1 {
+396|            parts.append("1 host awaiting fingerprint")
+397|        } else if awaiting > 1 {
+398|            parts.append("\(awaiting) hosts awaiting fingerprint")
+399|        }
+400|        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+401|    }
+402|
+403|    /// D2/D4: keep the rows of ONE host (nil = every host).
+404|    static func rows(_ rows: [HostBoardRow], forHost hostProfileID: UUID?) -> [HostBoardRow] {
+405|        guard let hostProfileID else { return rows }
+406|        return rows.filter { $0.identity.hostProfileID == hostProfileID }
+407|    }
+408|
+409|    /// D4: keep the rows of one repo (nil = every repo). Host + repo both
+410|    /// apply because the caller filters by host first, then repo.
+411|    static func rows(_ rows: [HostBoardRow], in repo: String?) -> [HostBoardRow] {
+412|        guard let repo else { return rows }
+413|        return rows.filter { $0.agent.workspace.repo == repo }
+414|    }
+415|
+416|    /// D4: the repo chip set over the ROWS of the selected host (All Hosts =
+417|    /// the unified set). Choices AND counts recalculate when the host
+418|    /// selection changes; chips never zero other chips' counts.
+419|    static func repoFilters(_ rows: [HostBoardRow]) -> [RepoFilterChip] {
+420|        let counts = rows.reduce(into: [String: Int]()) { counts, row in
+421|            guard let repo = row.agent.workspace.repo else { return }
+422|            counts[repo, default: 0] += 1
+423|        }
+424|        return counts.keys.sorted()
+425|            .map { RepoFilterChip(repo: $0, count: counts[$0] ?? 0) }

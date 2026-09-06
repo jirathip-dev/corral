@@ -1,0 +1,379 @@
+source: /Users/jirathip/.herdr/worktrees/corral/g427-filter-header-design/ios/FleetNotifier/UI/FleetViews.swift
+lines: 739-1113
+base: c3141f94bea97cc08476123e6e491e6fa24a5a55
+
+739|        // #365: the top-bar chrome (.navigationTitle/.toolbar — the Settings
+740|        // gear) renders only inside a navigation shell. The #354 cut deleted
+741|        // the board's NavigationStack, orphaning those modifiers and leaving
+742|        // the board with NO visible way into Settings; restore the shell.
+743|        return NavigationStack {
+744|            // #387: the board list rides a ScrollViewReader so the DEBUG
+745|            // recorded-evidence driver can reach the SCROLLED nav-bar state
+746|            // (simctl cannot drag the list). The reader itself is passive;
+747|            // no scroll machinery compiles into Release.
+748|            ScrollViewReader { proxy in
+749|                List {
+750|                    // Issue #219: the board chrome is the FIRST section of the same
+751|                    // physical scroll surface (a pinned header) instead of a
+752|                    // `.safeAreaInset` outside the list. During the pull gesture
+753|                    // the chrome, section headers, and rows translate as one unit.
+754|                    if model.mode != .needsSetup {
+755|                        Section {
+756|                            if model.fleet.agents.isEmpty {
+757|                                Color.clear
+758|                                    .frame(height: 0)
+759|                                    .listRowInsets(EdgeInsets())
+760|                                    .listRowBackground(Color.clear)
+761|                                    .listRowSeparator(.hidden)
+762|                            }
+763|                        } header: {
+764|                            PinnedHeader(fillsInteractiveWidth: true) {
+765|                                boardChrome
+766|                            }
+767|                        }
+768|                        // #401 D2: with 2+ profiles the HOST-chip row sits
+769|                        // ABOVE the repo-chip row (All, then hosts in
+770|                        // user-controlled order); the compact D7 outage
+771|                        // summary rides under it. Single-host layout is
+772|                        // unchanged (the row is hidden with one profile).
+773|                        if model.multiHostConfigured {
+774|                            hostChipsRow(chips: hostChipRow,
+775|                                         selection: model.hostFilter)
+776|                            if let hostOutageSummary {
+777|                                hostOutageSummaryRow(hostOutageSummary)
+778|                            }
+779|                        }
+780|                        if model.multiHostConfigured {
+781|                            repoChipsRow(chips: hostRepoChips,
+782|                                         total: hostRows.count,
+783|                                         selection: activeHostRepoFilter)
+784|                        } else {
+785|                            repoChipsRow(chips: chips,
+786|                                         total: agents.count,
+787|                                         selection: activeRepoFilter)
+788|                        }
+789|                    }
+790|                    if let banner = model.banner {
+791|                        BannerView(banner: banner) {
+792|                            model.banner = nil
+793|                        }
+794|                    }
+795|                    switch model.mode {
+796|                    case .needsSetup:
+797|                        RegistrationView(model: model)
+798|#if DEBUG
+799|                    case .demo:
+800|                        if model.multiHostConfigured {
+801|                            hostBoardSections(sections: hostSections,
+802|                                              repos: hostRepos,
+803|                                              hideRepoLabels: activeHostRepoFilter != nil,
+804|                                              showHostBadges: showRowHostBadges)
+805|                        } else {
+806|                            boardSections(sections: sections, repos: repos,
+807|                                          hideRepoLabels: rowRepoLabelsHidden)
+808|                        }
+809|#endif
+810|                    case .live:
+811|                        if model.multiHostConfigured {
+812|                            hostBoardSections(sections: hostSections,
+813|                                              repos: hostRepos,
+814|                                              hideRepoLabels: activeHostRepoFilter != nil,
+815|                                              showHostBadges: showRowHostBadges)
+816|                        } else {
+817|                            boardSections(sections: sections, repos: repos,
+818|                                          hideRepoLabels: rowRepoLabelsHidden)
+819|                        }
+820|                    }
+821|                }
+822|                .listStyle(.plain)
+823|                .listSectionSpacing(.compact)
+824|                // #372: the board surface is the active flavor's base token —
+825|                // rows ride transparent over it while the chrome strips use
+826|                // mantle (PinnedHeader), matching the approved palette layering.
+827|                // `.listRowBackground` keeps iOS 26 plain rows on the token
+828|                // surface (system rows would paint white/black cards in the
+829|                // forced light/dark scheme).
+830|                .scrollContentBackground(.hidden)
+831|                .background(theme.base)
+832|                .listRowBackground(theme.base)
+833|                // Issue #219: native pull-to-refresh on the one physical scroll
+834|                // surface. `refreshFleet` is coalesced and never touches the SSE
+835|                // stream task.
+836|                .refreshable {
+837|                    await model.refreshFleet()
+838|                }
+839|                // #387: the board header is chrome-only — NO 'Fleet' title
+840|                // text in the large-title state or the scrolled inline state
+841|                // (app identity is the gear, top-right). An EMPTY title with
+842|                // INLINE display mode reserves no large-title band at rest and
+843|                // the collapsed bar shows no text when scrolled either — the
+844|                // freed space belongs to the board (content starts naturally
+845|                // higher; no extra insets forced).
+846|                .navigationTitle("")
+847|                .navigationBarTitleDisplayMode(.inline)
+848|                // #365: Settings is an ALWAYS-VISIBLE top-bar control — a plain
+849|                // gear Button (system gear shape, >=44 pt target, VoiceOver
+850|                // label) opening the Settings sheet. The DEBUG demo toggle is
+851|                // NOT on the main path: it lives in a secondary overflow menu
+852|                // that exists only in Debug builds (Release shows the gear
+853|                // alone).
+854|                .toolbar {
+855|                    ToolbarItemGroup(placement: .topBarTrailing) {
+856|#if DEBUG
+857|                        Menu {
+858|                            Button(model.mode == .demo ? "Exit demo" : "Demo mode",
+859|                                   systemImage: "sparkles") {
+860|                                if model.mode == .demo {
+861|                                    model.exitDemo()
+862|                                } else {
+863|                                    model.enterDemo()
+864|                                }
+865|                            }
+866|                        } label: {
+867|                            Image(systemName: "slider.horizontal.3")
+868|                        }
+869|                        .accessibilityLabel("Developer menu")
+870|#endif
+871|                        Button {
+872|                            showSettings = true
+873|                        } label: {
+874|                            Image(systemName: "gearshape")
+875|                        }
+876|                        .accessibilityLabel("Settings")
+877|                        .accessibilityHint("Opens connection and notification settings")
+878|                        .frame(minWidth: 44, minHeight: 44)
+879|                    }
+880|                }
+881|                .sheet(isPresented: $showSettings) {
+882|                    SettingsView(model: model)
+883|                }
+884|                // #364 C: recents bottom sheet binds DIRECTLY to the model-owned
+885|                // request — row taps, notification deep links, and the demo route
+886|                // all funnel through `model.requestRecents`. Every request is a
+887|                // fresh value, and the dismissal reconciler (`onDismiss`) clears
+888|                // or re-arms it, so a first tap after ANY dismissal re-presents
+889|                // (the old view-latched target + equality-guarded onChange
+890|                // swallowed it).
+891|                .sheet(item: $model.recentsRequest,
+892|                       onDismiss: { model.recentsSheetDismissed() }) { request in
+893|                    // #400 E1: the sheet receives the row's COMPOSITE
+894|                    // identity and resolves exactly the owning host.
+895|                    RecentOutputSheet(agentId: request.agentId,
+896|                                      hostProfileID: request.hostProfileID,
+897|                                      model: model)
+898|                }
+899|                // #379: the How-to-connect sheet — the SAME shared content the
+900|                // Settings '?' button presents from the Settings sheet. The
+901|                // unpaired-launch auto-present drives this binding; the DEBUG
+902|                // recorded-evidence driver opens it too (simctl cannot tap).
+903|                .sheet(isPresented: $showConnectHelp) {
+904|                    HowToConnectSheet(host: model.hostURL?.absoluteString ?? "")
+905|                }
+906|                // #399 B6: the legacy-migration fingerprint confirmation —
+907|                // the profile is paused (no stream) until the user confirms
+908|                // the pinned host key on this sheet.
+909|                .sheet(item: $model.fingerprintConfirmation) { request in
+910|                    FingerprintConfirmationSheet(model: model, request: request)
+911|                }
+912|                // #379: a fresh install (or any launch that finds the device
+913|                // UNPAIRED) auto-presents the connect sheet once — first
+914|                // launch guidance for the daemon-setup + pairing steps.
+915|                .task(id: model.mode) {
+916|                    await autoPresentConnectHelpIfUnpaired()
+917|                }
+918|#if DEBUG
+919|                .onChange(of: model.mode) { _, _ in
+920|                    applyDemoRouteIfNeeded()
+921|                }
+922|                .task {
+923|                    applyDemoRouteIfNeeded()
+924|                }
+925|                .task(id: model.mode) {
+926|                    await runDemoEvidenceIfNeeded()
+927|                }
+928|#endif
+929|#if DEBUG
+930|                // #387: the recorded-evidence driver's scroll requests —
+931|                // simctl cannot drag the list, so the DEBUG driver asks
+932|                // the list to scroll to a row id. Fired from a .task(id:)
+933|                // (like the proven #379 settings scroll) with a short
+934|                // settle so the request lands after the current update;
+935|                // instant + idempotent: a repeated request for the same
+936|                // anchor is a no-op, so a re-fired evidence task cannot
+937|                // corrupt a phase.
+938|                .task(id: evidenceScrollTarget) {
+939|                    guard let target = evidenceScrollTarget else { return }
+940|                    try? await Task.sleep(for: .milliseconds(400))
+941|                    proxy.scrollTo(target, anchor: .top)
+942|                }
+943|#endif
+944|            }
+945|        }
+946|        .tint(theme.accent)
+947|        .preferredColorScheme(theme.flavor.isLight ? .light : .dark)
+948|    }
+949|
+950|    /// #364 B: the horizontal repo filter chip row ('All' + one chip per
+951|    /// repo with the live agent count), rendered as the first board
+952|    /// content row under the pinned chrome. Selecting a chip filters the
+953|    /// agents the #362 status sections bucket; 'All' clears. Counts are
+954|    /// always over the WHOLE fleet — filtering never re-zeroes the other
+955|    /// chips.
+956|    @ViewBuilder
+957|    private func repoChipsRow(chips: [BoardModel.RepoFilterChip],
+958|                              total: Int,
+959|                              selection: String?) -> some View {
+960|        let repos = chips.map(\.repo)
+961|        return Section {
+962|            ScrollView(.horizontal, showsIndicators: false) {
+963|                HStack(spacing: 8) {
+964|                    repoChipButton(label: "All", count: total,
+965|                                   isSelected: selection == nil) {
+966|                        model.repoFilter = nil
+967|                    }
+968|                    ForEach(chips) { chip in
+969|                        repoChipButton(label: chip.repo, count: chip.count,
+970|                                       isSelected: selection == chip.repo,
+971|                                       repo: chip.repo, repos: repos) {
+972|                            model.repoFilter = chip.repo
+973|                        }
+974|                    }
+975|                }
+976|                .padding(.horizontal, 20)
+977|                .padding(.vertical, 4)
+978|            }
+979|            // #387: the chips row is the demo board's FIRST content row —
+980|            // its id is the ScrollViewReader 'top' anchor the recorded-
+981|            // evidence driver returns to (see BoardEvidenceAnchor.top).
+982|            .id("board.filter-chips")
+983|            .listRowInsets(EdgeInsets())
+984|            .listRowBackground(Color.clear)
+985|            .listRowSeparator(.hidden)
+986|        }
+987|    }
+988|
+989|    /// One filter chip: repo/All label + count badge, ≥44 pt hit target
+990|    /// (#364 A3), visible selected state, VoiceOver label/value/selected
+991|    /// trait. Press feedback comes from `BoardPressStyle`. #372 tokens: the
+992|    /// selected chip fills with the palette accent (mauve) — never teal —
+993|    /// and unselected chips carry the repo hue dot + surface-token chrome.
+994|    private func repoChipButton(label: String, count: Int,
+995|                                isSelected: Bool,
+996|                                repo: String? = nil,
+997|                                repos: [String] = [],
+998|                                action: @escaping () -> Void) -> some View {
+999|        Button(action: action) {
+1000|            HStack(spacing: 5) {
+1001|                if label != "All", let repo {
+1002|                    RoundedRectangle(cornerRadius: 2)
+1003|                        .fill(theme.repoHueColor(for: repo, among: repos))
+1004|                        .frame(width: 7, height: 7)
+1005|                        .accessibilityHidden(true)
+1006|                }
+1007|                Text(label)
+1008|                    .lineLimit(1)
+1009|                Text("\(count)")
+1010|                    .font(.caption.weight(.semibold))
+1011|                    .padding(.horizontal, 5)
+1012|                    .padding(.vertical, 1)
+1013|                    .background(isSelected ? theme.crust.opacity(0.22)
+1014|                                           : theme.surface2.opacity(0.30),
+1015|                                in: Capsule())
+1016|                    .accessibilityHidden(true)
+1017|            }
+1018|            .font(.subheadline.weight(.medium))
+1019|            .foregroundStyle(isSelected ? theme.crust : theme.subtext1)
+1020|            .padding(.horizontal, 12)
+1021|            .padding(.vertical, 6)
+1022|            .background(isSelected ? theme.accent : theme.base,
+1023|                        in: Capsule())
+1024|            .overlay(Capsule().stroke(
+1025|                isSelected ? theme.accent : theme.surface1, lineWidth: 1))
+1026|            .frame(minHeight: 44)
+1027|        }
+1028|        .buttonStyle(BoardPressStyle())
+1029|        .accessibilityElement(children: .ignore)
+1030|        .accessibilityLabel(label == "All" ? "All agents"
+1031|                                           : "Filter \(label)")
+1032|        .accessibilityValue(count == 1 ? "\(count) agent"
+1033|                                       : "\(count) agents")
+1034|        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+1035|    }
+1036|
+1037|    /// #401 D2/D3: the horizontal HOST-filter chip row rendered ABOVE the
+1038|    /// repo-chip row when 2+ profiles exist — All first, then every host in
+1039|    /// the user-controlled order (Settings drag-to-reorder drives the same
+1040|    /// store order). Each host chip always shows that host's TOTAL lane
+1041|    /// count + health, independent of the repo filter; zero-lane and
+1042|    /// offline hosts stay visible (D3).
+1043|    @ViewBuilder
+1044|    private func hostChipsRow(chips: [BoardModel.HostFilterChip],
+1045|                              selection: UUID?) -> some View {
+1046|        Section {
+1047|            ScrollView(.horizontal, showsIndicators: false) {
+1048|                HStack(spacing: 8) {
+1049|                    ForEach(chips) { chip in
+1050|                        hostChipButton(chip,
+1051|                                       isSelected: selection == chip.profileID) {
+1052|                            model.selectHostFilter(chip.profileID)
+1053|                        }
+1054|                    }
+1055|                }
+1056|                .padding(.horizontal, 20)
+1057|                .padding(.vertical, 4)
+1058|            }
+1059|            .id("board.host-chips")
+1060|            .listRowInsets(EdgeInsets())
+1061|            .listRowBackground(Color.clear)
+1062|            .listRowSeparator(.hidden)
+1063|        }
+1064|    }
+1065|
+1066|    /// One host-filter chip: All / host name + total-lane count + a health
+1067|    /// dot whose COLOR never carries the meaning alone — the health text
+1068|    /// label rides on the chip whenever the host is not live and in the
+1069|    /// VoiceOver label/value always (D3/D8). ≥44 pt hit target, visible
+1070|    /// selected state, selected trait.
+1071|    private func hostChipButton(_ chip: BoardModel.HostFilterChip,
+1072|                                isSelected: Bool,
+1073|                                action: @escaping () -> Void) -> some View {
+1074|        Button(action: action) {
+1075|            HStack(spacing: 5) {
+1076|                Circle()
+1077|                    .fill(hostHealthColor(chip.health))
+1078|                    .frame(width: 7, height: 7)
+1079|                    .accessibilityHidden(true)
+1080|                Text(chip.isAll ? "All" : chip.displayName)
+1081|                    .lineLimit(1)
+1082|                Text("\(chip.laneCount)")
+1083|                    .font(.caption.weight(.semibold))
+1084|                    .padding(.horizontal, 5)
+1085|                    .padding(.vertical, 1)
+1086|                    .background(isSelected ? theme.crust.opacity(0.22)
+1087|                                           : theme.surface2.opacity(0.30),
+1088|                                in: Capsule())
+1089|                    .accessibilityHidden(true)
+1090|                if !chip.isAll, chip.health != .live {
+1091|                    Text(chip.health.label)
+1092|                        .font(.caption2.weight(.medium))
+1093|                        .lineLimit(1)
+1094|                        .foregroundStyle(hostHealthColor(chip.health))
+1095|                }
+1096|            }
+1097|            .font(.subheadline.weight(.medium))
+1098|            .foregroundStyle(isSelected ? theme.crust : theme.subtext1)
+1099|            .padding(.horizontal, 12)
+1100|            .padding(.vertical, 6)
+1101|            .background(isSelected ? theme.accent : theme.base,
+1102|                        in: Capsule())
+1103|            .overlay(Capsule().stroke(
+1104|                isSelected ? theme.accent : theme.surface1, lineWidth: 1))
+1105|            .frame(minHeight: 44)
+1106|        }
+1107|        .buttonStyle(BoardPressStyle())
+1108|        .accessibilityElement(children: .ignore)
+1109|        .accessibilityLabel(chip.isAll ? "All hosts"
+1110|                                       : "Filter host \(chip.displayName)")
+1111|        .accessibilityValue("\(chip.laneCount) lanes, \(chip.health.label)")
+1112|        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+1113|    }

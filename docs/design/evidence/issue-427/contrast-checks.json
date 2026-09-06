@@ -1,0 +1,233 @@
+{
+  "status": "pass",
+  "checks": [
+    {
+      "palette": "latte",
+      "foreground": "text",
+      "background": "base",
+      "ratio": 7.06,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "palette": "latte",
+      "foreground": "text",
+      "background": "mantle",
+      "ratio": 6.57,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "palette": "latte",
+      "foreground": "subtext1",
+      "background": "base",
+      "ratio": 5.53,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "palette": "latte",
+      "foreground": "subtext1",
+      "background": "mantle",
+      "ratio": 5.14,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "palette": "latte",
+      "foreground": "base",
+      "background": "mauve",
+      "ratio": 4.79,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "palette": "latte",
+      "foreground": "mauve",
+      "background": "base",
+      "ratio": 4.79,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "palette": "latte",
+      "foreground": "text",
+      "background": "surface0",
+      "role": "status header",
+      "ratio": 5.17,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "palette": "frappe",
+      "foreground": "text",
+      "background": "base",
+      "ratio": 8.06,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "palette": "frappe",
+      "foreground": "text",
+      "background": "mantle",
+      "ratio": 9.04,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "palette": "frappe",
+      "foreground": "subtext1",
+      "background": "base",
+      "ratio": 6.75,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "palette": "frappe",
+      "foreground": "subtext1",
+      "background": "mantle",
+      "ratio": 7.58,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "palette": "frappe",
+      "foreground": "base",
+      "background": "mauve",
+      "ratio": 5.6,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "palette": "frappe",
+      "foreground": "mauve",
+      "background": "base",
+      "ratio": 5.6,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "palette": "frappe",
+      "foreground": "text",
+      "background": "surface1",
+      "role": "status header",
+      "ratio": 4.68,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "palette": "macchiato",
+      "foreground": "text",
+      "background": "base",
+      "ratio": 9.92,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "palette": "macchiato",
+      "foreground": "text",
+      "background": "mantle",
+      "ratio": 10.85,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "palette": "macchiato",
+      "foreground": "subtext1",
+      "background": "base",
+      "ratio": 8.17,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "palette": "macchiato",
+      "foreground": "subtext1",
+      "background": "mantle",
+      "ratio": 8.93,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "palette": "macchiato",
+      "foreground": "base",
+      "background": "mauve",
+      "ratio": 6.84,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "palette": "macchiato",
+      "foreground": "mauve",
+      "background": "base",
+      "ratio": 6.84,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "palette": "macchiato",
+      "foreground": "text",
+      "background": "surface1",
+      "role": "status header",
+      "ratio": 5.59,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "palette": "mocha",
+      "foreground": "text",
+      "background": "base",
+      "ratio": 11.34,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "palette": "mocha",
+      "foreground": "text",
+      "background": "mantle",
+      "ratio": 12.14,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "palette": "mocha",
+      "foreground": "subtext1",
+      "background": "base",
+      "ratio": 9.26,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "palette": "mocha",
+      "foreground": "subtext1",
+      "background": "mantle",
+      "ratio": 9.91,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "palette": "mocha",
+      "foreground": "base",
+      "background": "mauve",
+      "ratio": 8.07,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "palette": "mocha",
+      "foreground": "mauve",
+      "background": "base",
+      "ratio": 8.07,
+      "minimum": 4.5,
+      "pass": true
+    },
+    {
+      "palette": "mocha",
+      "foreground": "text",
+      "background": "surface1",
+      "role": "status header",
+      "ratio": 6.31,
+      "minimum": 4.5,
+      "pass": true
+    }
+  ]
+}

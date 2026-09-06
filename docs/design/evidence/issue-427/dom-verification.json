@@ -1,0 +1,307 @@
+{
+  "status": "pass",
+  "case_count": 60,
+  "failures": [],
+  "cases": [
+    {
+      "case": "default:A:390x844:populated",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:A:390x844:host-only",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:A:390x844:repository-only",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:A:390x844:both-filters",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:A:390x844:connecting-host",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:A:390x844:offline-stale-host",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:A:390x844:zero-results",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "forced:A:390x844",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "a11y:A:390x844",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "interaction:A:390x844",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:A:375x812:populated",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:A:375x812:host-only",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:A:375x812:repository-only",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:A:375x812:both-filters",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:A:375x812:connecting-host",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:A:375x812:offline-stale-host",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:A:375x812:zero-results",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "forced:A:375x812",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "a11y:A:375x812",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "interaction:A:375x812",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:B:390x844:populated",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:B:390x844:host-only",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:B:390x844:repository-only",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:B:390x844:both-filters",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:B:390x844:connecting-host",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:B:390x844:offline-stale-host",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:B:390x844:zero-results",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "forced:B:390x844",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "a11y:B:390x844",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "interaction:B:390x844",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:B:375x812:populated",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:B:375x812:host-only",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:B:375x812:repository-only",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:B:375x812:both-filters",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:B:375x812:connecting-host",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:B:375x812:offline-stale-host",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:B:375x812:zero-results",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "forced:B:375x812",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "a11y:B:375x812",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "interaction:B:375x812",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:C:390x844:populated",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:C:390x844:host-only",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:C:390x844:repository-only",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:C:390x844:both-filters",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:C:390x844:connecting-host",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:C:390x844:offline-stale-host",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:C:390x844:zero-results",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "forced:C:390x844",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "a11y:C:390x844",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "interaction:C:390x844",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:C:375x812:populated",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:C:375x812:host-only",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:C:375x812:repository-only",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:C:375x812:both-filters",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:C:375x812:connecting-host",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:C:375x812:offline-stale-host",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "default:C:375x812:zero-results",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "forced:C:375x812",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "a11y:C:375x812",
+      "pass": true,
+      "failures": {}
+    },
+    {
+      "case": "interaction:C:375x812",
+      "pass": true,
+      "failures": {}
+    }
+  ]
+}

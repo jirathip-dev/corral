@@ -4169,8 +4169,8 @@ final class SettingsConnectWiringTests: XCTestCase {
         XCTAssertEqual(lineNumbers(of: ".sheet(isPresented: $showConnectHelp)",
                                    in: slice).count, 1,
                        "SettingsView must present the connect sheet from inside its own stack")
-        XCTAssertTrue(slice.contains("HowToConnectSheet(host: host)"),
-                      "the '?'-opened sheet must receive the LIVE host field text")
+        XCTAssertTrue(slice.contains("HowToConnectSheet(host: host, multiHost: model.multiHostConfigured)"),
+                      "the '?'-opened sheet must receive the LIVE host field text and the multi-host variant flag (#423)")
     }
 
     /// #379 B.1: an unpaired first launch auto-presents the connect sheet
@@ -9463,5 +9463,226 @@ final class FilterHeaderRedesignTests: XCTestCase {
             .subgroups.filter { $0.repo == "demo-atlas" } ?? []
         XCTAssertEqual(workingAtlas.count, 1)
         XCTAssertEqual(workingAtlas.first?.rows.count, 1)
+    }
+}
+
+// MARK: - #423 Settings host-management authority (Hosts is THE surface at 2+)
+
+/// #423: source-wiring regression over the bundled FleetViews.swift.txt.
+/// The legacy single-host Connection section — host endpoint field, shared
+/// key-id status row and Re-register action — must render ONLY on the
+/// unpaired and ONE-host Settings variants. With TWO OR MORE host profiles
+/// (`multiHostConfigured`) the Hosts section is the single authoritative
+/// host-management surface, so the whole legacy section must sit inside a
+/// `!multiHostConfigured` guard: multi-host users can never see the
+/// duplicated active-host endpoint/key identity (AC2) while unpaired and
+/// single-host flows keep the full Connection/pairing form (AC4). The
+/// How-to-connect sheet's Settings '?' entry must pass the variant so its
+/// copy never directs multi-host users to the hidden Connection section
+/// (AC5). RED at the #423 base head (the section renders unconditionally
+/// and the help copy knows no variant); GREEN only once the guard wraps the
+/// section and the help copy branches by variant.
+final class SettingsHostsAuthorityWiringTests: XCTestCase {
+
+    private func bundledSource() throws -> String {
+        let bundle = Bundle(for: SettingsHostsAuthorityWiringTests.self)
+        let url = try XCTUnwrap(bundle.url(forResource: "FleetViews",
+                                           withExtension: "swift.txt"))
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    private func lineNumbers(of needle: String, in text: String) -> [Int] {
+        text.split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+            .filter { $0.element.contains(needle) }
+            .map { $0.offset + 1 }
+    }
+
+    private func occurrences(of needle: String, in text: String) -> Int {
+        text.components(separatedBy: needle).count - 1
+    }
+
+    /// The Settings sheet's own region: SettingsView → How-to-connect MARK.
+    private func settingsSlice(_ source: String) throws -> String {
+        let start = try XCTUnwrap(source.range(of: "\nstruct SettingsView: View {"),
+                                  "SettingsView declaration must exist")
+        let end = try XCTUnwrap(source.range(of: "\n// MARK: - How to connect"),
+                                "the How-to-connect MARK must follow SettingsView")
+        return String(source[start.lowerBound..<end.lowerBound])
+    }
+
+    /// The shared How-to-connect sheet's own region: its MARK → Add Host.
+    private func connectSheetSlice(_ source: String) throws -> String {
+        let start = try XCTUnwrap(source.range(of: "\n// MARK: - How to connect"),
+                                  "the How-to-connect MARK must exist")
+        let end = try XCTUnwrap(source.range(of: "\n// MARK: - #399 Add Host"),
+                                "the Add Host MARK must follow the connect sheet")
+        return String(source[start.lowerBound..<end.lowerBound])
+    }
+
+    /// The 1-based line where the `{` opened on `openLine` first balances
+    /// back to depth zero (the caller's own closing brace).
+    private func braceCloseLine(after openLine: Int,
+                                in lines: [Substring]) -> Int? {
+        var depth = 0
+        for index in (openLine - 1)..<lines.count {
+            for char in lines[index] where char == "{" || char == "}" {
+                depth += char == "{" ? 1 : -1
+                if depth == 0 { return index + 1 }
+            }
+        }
+        return nil
+    }
+
+    // MARK: RED probes — each FAILS at the #423 base head.
+
+    /// AC2/AC4: the legacy Connection section (host field, shared key-id
+    /// status, Re-register, unpaired Register action) must live INSIDE a
+    /// `!multiHostConfigured` guard, rendered only while fewer than two
+    /// host profiles exist. At the base head the section renders
+    /// unconditionally — the guard count is 0 → RED.
+    func testLegacyConnectionSectionRendersOnlyOutsideTheTwoHostVariant() throws {
+        let slice = try settingsSlice(try bundledSource())
+        // RED at base: the legacy section is NOT gated on the multi-host
+        // state, so exactly-zero single-host guards exist in the sheet.
+        let gates = lineNumbers(of: "if !model.multiHostConfigured {", in: slice)
+        XCTAssertEqual(gates.count, 1,
+                       "the legacy Connection section must be gated on the single-host state exactly once (#423)")
+        let gateLine = try XCTUnwrap(gates.first,
+                                     "the single-host guard must exist (see count pin)")
+        // The legacy section itself stays for the unpaired/one-host
+        // variants (AC4) — deleting it breaks first-time setup.
+        let sections = lineNumbers(of: "Section(\"Connection\")", in: slice)
+        XCTAssertEqual(sections.count, 1,
+                       "exactly one legacy Connection section may exist in Settings")
+        let sectionLine = try XCTUnwrap(sections.first,
+                                        "the Connection section must exist (see count pin)")
+        XCTAssertLessThan(gateLine, sectionLine,
+                          "the single-host guard must open before the legacy Connection section")
+        // Every legacy single-host surface piece sits inside the guard's
+        // braces, so a 2+ profile Settings screen can never render them.
+        let lines = slice.split(separator: "\n", omittingEmptySubsequences: false)
+        let closeLine = try XCTUnwrap(braceCloseLine(after: gateLine, in: lines),
+                                      "the single-host guard must close")
+        XCTAssertLessThan(sectionLine, closeLine,
+                          "the Connection section must sit inside the single-host guard")
+        for needle in ["Button(\"Re-register\")",
+                       "revealTokenField = true",
+                       "ConnectionField(title: \"Registration token\"",
+                       "model.register(host: host, token: token)"] {
+            let hits = lineNumbers(of: needle, in: slice)
+            XCTAssertEqual(hits.count, 1,
+                           "\"\(needle)\" must exist exactly once in Settings (#423)")
+            if let hit = hits.first {
+                XCTAssertGreaterThan(hit, gateLine,
+                                     "\"\(needle)\" must not render ahead of the single-host guard")
+                XCTAssertLessThan(hit, closeLine,
+                                  "\"\(needle)\" must not escape the single-host guard")
+            }
+        }
+        // The Hosts section gate stays OUTSIDE the single-host guard — the
+        // authoritative multi-host surface is never swallowed with the
+        // legacy section (AC1).
+        let hostsGate = try XCTUnwrap(lineNumbers(of: "if model.hostProfilesConfigured {",
+                                                  in: slice).first,
+                                      "the Hosts section gate must exist")
+        XCTAssertGreaterThan(hostsGate, closeLine,
+                             "the Hosts section must render outside the single-host guard")
+    }
+
+    /// AC1/AC6: with two or more hosts the Hosts section is the ONE host
+    /// surface — it keeps its header, the per-host row read-outs (URL, key
+    /// id, grants), the Active marker with its VoiceOver label, Retry /
+    /// Rename / Remove host, and the Add host entry closing the section.
+    func testTwoHostVariantKeepsHostsAsTheOnlyHostManagementSurface() throws {
+        let slice = try settingsSlice(try bundledSource())
+        let header = try XCTUnwrap(lineNumbers(of: "Text(\"Hosts\")", in: slice).first,
+                                   "the Hosts section header must exist")
+        for needle in ["LabeledContent(\"URL\"",
+                       "LabeledContent(\"Key ID\", value: String(keyID.prefix(16))",
+                       "LabeledContent(\"Grants expiry\"",
+                       "Text(\"Active\")",
+                       ".accessibilityLabel(\"Active host\")",
+                       "model.retryHostConnection(profile)",
+                       "model.renameHost(id: profile.id, to: name)",
+                       "Button(\"Remove host\", role: .destructive)",
+                       "model.removeHost(profileID: profile.id)"] {
+            XCTAssertTrue(slice.contains(needle),
+                          "the multi-host Hosts surface must wire: \(needle)")
+        }
+        let rows = try XCTUnwrap(lineNumbers(of: "ForEach(model.profiles)",
+                                             in: slice).first,
+                                 "the Hosts rows must iterate the profiles")
+        let addHost = try XCTUnwrap(lineNumbers(of: "Label(\"Add host\", systemImage: \"plus.circle\")",
+                                                in: slice).first,
+                                    "the Add host entry must close the Hosts section")
+        // SwiftUI section code order: content rows, then the Add host entry,
+        // then the header text literal that closes the section.
+        XCTAssertLessThan(rows, addHost,
+                          "the per-host rows must render before the Add host entry")
+        XCTAssertLessThan(addHost, header,
+                          "the Add host entry must close the Hosts section")
+    }
+
+    /// AC5: the How-to-connect copy is variant-aware — the Settings '?'
+    /// entry passes the multi-host state, and the pairing steps direct 2+
+    /// host users to Settings → Hosts → Add host instead of the now-hidden
+    /// Connection section, while the unpaired/single-host copy (which still
+    /// has a real Connection section) is preserved verbatim.
+    func testHelpCopyNeverDirectsMultiHostUsersToTheHiddenConnectionSection() throws {
+        let source = try bundledSource()
+        let settings = try settingsSlice(source)
+        // RED at base: the help entry passes only the live host — no
+        // variant flag exists yet.
+        XCTAssertTrue(settings.contains("HowToConnectSheet(host: host, multiHost: model.multiHostConfigured)"),
+                      "the Settings help entry must pass the live host AND the multi-host variant (#423)")
+        let sheet = try connectSheetSlice(source)
+        XCTAssertEqual(occurrences(of: "var multiHost: Bool = false", in: sheet), 1,
+                       "HowToConnectSheet must declare the multi-host variant flag")
+        // The legacy Connection-directed instructions survive exactly once
+        // each — the unpaired/single-host branch keeps them (AC4).
+        for needle in ["Not set — type it in Settings → Connection",
+                       "Open Settings → Connection and paste the host into the Host field.",
+                       "Paste the daemon's registration token into the Registration token field and tap Register device (read-only)."] {
+            XCTAssertEqual(occurrences(of: needle, in: sheet), 1,
+                           "the single-host help copy must stay intact: \(needle)")
+        }
+        // Two if/else copy blocks (steps 3 and 4) branch on the variant;
+        // the multi-host branches direct to the Hosts → Add host surface.
+        let multiIfs = lineNumbers(of: "if multiHost {", in: sheet)
+        let elses = lineNumbers(of: "} else {", in: sheet)
+        XCTAssertEqual(multiIfs.count, 2,
+                       "the pairing copy must branch twice on the variant")
+        XCTAssertEqual(elses.count, 2,
+                       "each multi-host branch must carry its single-host else")
+        // The count pins above already failed when the variant branches do
+        // not exist — never index an empty array (crashes the runner).
+        guard multiIfs.count == 2, elses.count == 2 else { return }
+        XCTAssertLessThan(multiIfs[0], elses[0],
+                          "the first variant branch must close with its else")
+        XCTAssertLessThan(multiIfs[1], elses[1],
+                          "the second variant branch must close with its else")
+        let step3Multi = try XCTUnwrap(lineNumbers(of: "Open Settings → Hosts → Add host:",
+                                                   in: sheet).first,
+                                       "step 3 must carry the multi-host direction")
+        XCTAssertTrue(step3Multi > multiIfs[0] && step3Multi < elses[0],
+                      "the step-3 multi-host direction must sit in the first variant branch")
+        let step4Multi = try XCTUnwrap(lineNumbers(of: "tap Confirm fingerprint & register",
+                                                   in: sheet).first,
+                                       "step 4 must name the Add-host register action")
+        XCTAssertTrue(step4Multi > multiIfs[1] && step4Multi < elses[1],
+                      "the step-4 multi-host register copy must sit in the second variant branch")
+        // The preserved single-host instructions live in the else branches,
+        // never inside a multi-host branch.
+        let step3Legacy = try XCTUnwrap(
+            lineNumbers(of: "Open Settings → Connection and paste the host into the Host field.",
+                        in: sheet).first)
+        XCTAssertTrue(step3Legacy > elses[0] && step3Legacy < multiIfs[1],
+                      "the Connection-directed step-3 copy must stay on the single-host branch")
+        let step4Legacy = try XCTUnwrap(
+            lineNumbers(of: "Paste the daemon's registration token into the Registration token field",
+                        in: sheet).first)
+        XCTAssertTrue(step4Legacy > elses[1],
+                      "the Connection register step must stay on the single-host branch")
     }
 }

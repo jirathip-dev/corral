@@ -2898,6 +2898,12 @@ private struct ConnectionField: View {
 /// small Re-register action replace the pairing rows, and Re-register
 /// reveals the token field again. Remove device returns the unpaired
 /// form naturally.
+///
+/// #423: the legacy Connection section renders ONLY while FEWER THAN TWO
+/// host profiles are configured (unpaired pairing form / one-host setup
+/// path). With 2+ profiles the Hosts section is the single authoritative
+/// host-management surface and this section is hidden — it must never
+/// duplicate the active host's endpoint/key status next to Hosts.
 struct SettingsView: View {
     @ObservedObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
@@ -2960,47 +2966,56 @@ struct SettingsView: View {
             ScrollViewReader { proxy in
                 Form {
                     appearanceSection
-                    Section("Connection") {
-                        ConnectionField(title: "Host (Tailscale host or loopback)",
-                                        secure: false,
-                                        text: $host)
-                        // #388: once the device is REGISTERED the
-                        // Registration-token field is pointless — the
-                        // section shows the host (still editable so a
-                        // paired device can re-point) + the registration
-                        // status row + a small Re-register action that
-                        // reveals the token field again. Remove device in
-                        // the Device section clears the identity and the
-                        // unpaired form below returns naturally.
-                        if model.isRegistered && !revealTokenField {
-                            Text("Device registered · Key ID \(deviceKeyID) · read-only signed")
-                                .font(.caption)
-                                .foregroundStyle(theme.subtext1)
-                            Button("Re-register") {
-                                revealTokenField = true
-                            }
-                            .font(.subheadline)
-                        } else {
-                            ConnectionField(title: "Registration token",
-                                            secure: true,
-                                            text: $token)
-                            Button {
-                                registering = true
-                                Task {
-                                    await model.register(host: host, token: token)
-                                    registering = false
+                    // #423: the legacy single-host Connection section — host
+                    // endpoint, registration status, Re-register — serves the
+                    // UNPAIRED pairing form and the ONE-host setup path only.
+                    // With 2+ host profiles (multiHostConfigured) the Hosts
+                    // section below is the single authoritative host surface;
+                    // this legacy section must never repeat the active host's
+                    // URL/key identity/Re-register on the same screen (AC2).
+                    if !model.multiHostConfigured {
+                        Section("Connection") {
+                            ConnectionField(title: "Host (Tailscale host or loopback)",
+                                            secure: false,
+                                            text: $host)
+                            // #388: once the device is REGISTERED the
+                            // Registration-token field is pointless — the
+                            // section shows the host (still editable so a
+                            // paired device can re-point) + the registration
+                            // status row + a small Re-register action that
+                            // reveals the token field again. Remove device in
+                            // the Device section clears the identity and the
+                            // unpaired form below returns naturally.
+                            if model.isRegistered && !revealTokenField {
+                                Text("Device registered · Key ID \(deviceKeyID) · read-only signed")
+                                    .font(.caption)
+                                    .foregroundStyle(theme.subtext1)
+                                Button("Re-register") {
+                                    revealTokenField = true
                                 }
-                            } label: {
-                                if registering {
-                                    ProgressView().controlSize(.small)
-                                } else {
-                                    Text("Register device (read-only)")
+                                .font(.subheadline)
+                            } else {
+                                ConnectionField(title: "Registration token",
+                                                secure: true,
+                                                text: $token)
+                                Button {
+                                    registering = true
+                                    Task {
+                                        await model.register(host: host, token: token)
+                                        registering = false
+                                    }
+                                } label: {
+                                    if registering {
+                                        ProgressView().controlSize(.small)
+                                    } else {
+                                        Text("Register device (read-only)")
+                                    }
                                 }
+                                .disabled(host.isEmpty || token.isEmpty || registering)
+                                Text("The device signs every read with its own Ed25519 key. Registration grants NOTHING: the host provisions the read_tail grant out-of-band.")
+                                    .font(.caption)
+                                    .foregroundStyle(theme.subtext1)
                             }
-                            .disabled(host.isEmpty || token.isEmpty || registering)
-                            Text("The device signs every read with its own Ed25519 key. Registration grants NOTHING: the host provisions the read_tail grant out-of-band.")
-                                .font(.caption)
-                                .foregroundStyle(theme.subtext1)
                         }
                     }
                     if model.hostProfilesConfigured {
@@ -3131,8 +3146,11 @@ struct SettingsView: View {
                 // #379: the '?' Help entry presents the shared connect sheet
                 // from INSIDE this sheet's hierarchy (sheet-over-sheet needs
                 // the inner presentation modifier in the presented tree).
+                // #423: the sheet also receives the multi-host state so its
+                // pairing copy never directs 2+ host users to the hidden
+                // Connection section.
                 .sheet(isPresented: $showConnectHelp) {
-                    HowToConnectSheet(host: host)
+                    HowToConnectSheet(host: host, multiHost: model.multiHostConfigured)
                 }
                 // #399: the Add Host sheet (fingerprint-verified pairing)
                 // presents from inside Settings, over the same backdrop.
@@ -3602,12 +3620,20 @@ private struct FlavorSwatchStrip: View {
 /// registered host (empty on a fresh device) when the launch auto-present
 /// shows it. An empty host disables the copy button and shows the setup
 /// hint instead — nothing is copied that was never entered.
+///
+/// #423: `multiHost` marks the 2+ profile state (Settings '?' only — the
+/// board auto-present is unpaired by construction). The pairing steps then
+/// direct to the Hosts → Add host fingerprint flow instead of the legacy
+/// Connection section, which is hidden while multiple hosts are configured.
 struct HowToConnectSheet: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var theme: ThemeStore
 
     /// The host string offered for copy in step 2 (see type doc).
     let host: String
+    /// #423: true when Settings opened the sheet with 2+ host profiles —
+    /// the pairing copy then routes to the Hosts → Add host surface.
+    var multiHost: Bool = false
 
     var body: some View {
         NavigationStack {
@@ -3639,7 +3665,9 @@ struct HowToConnectSheet: View {
                         .foregroundStyle(theme.subtext1)
                     LabeledContent("Host",
                                    value: host.isEmpty
-                                       ? "Not set — type it in Settings → Connection"
+                                       ? (multiHost
+                                           ? "Not set — pair one in Settings → Hosts → Add host"
+                                           : "Not set — type it in Settings → Connection")
                                        : host)
                     Button {
                         UIPasteboard.general.string = host
@@ -3651,16 +3679,31 @@ struct HowToConnectSheet: View {
                     stepHeader(number: 2, title: "Reach it from the phone")
                 }
                 Section {
-                    Text("Open Settings → Connection and paste the host into the Host field.")
-                        .font(.subheadline)
-                        .foregroundStyle(theme.subtext1)
+                    if multiHost {
+                        // #423: with 2+ hosts the legacy Connection section
+                        // is hidden — new daemons pair through Hosts → Add
+                        // host (fingerprint-verified, B3).
+                        Text("Open Settings → Hosts → Add host: name the daemon, enter its URL, and confirm the fingerprint it shows.")
+                            .font(.subheadline)
+                            .foregroundStyle(theme.subtext1)
+                    } else {
+                        Text("Open Settings → Connection and paste the host into the Host field.")
+                            .font(.subheadline)
+                            .foregroundStyle(theme.subtext1)
+                    }
                 } header: {
                     stepHeader(number: 3, title: "Open Settings and paste the Host")
                 }
                 Section {
-                    Text("Paste the daemon's registration token into the Registration token field and tap Register device (read-only). The device pairs as a read-only signed device.")
-                        .font(.subheadline)
-                        .foregroundStyle(theme.subtext1)
+                    if multiHost {
+                        Text("When Add host asks, paste that daemon's registration token and tap Confirm fingerprint & register — the device keeps its one shared read-only key.")
+                            .font(.subheadline)
+                            .foregroundStyle(theme.subtext1)
+                    } else {
+                        Text("Paste the daemon's registration token into the Registration token field and tap Register device (read-only). The device pairs as a read-only signed device.")
+                            .font(.subheadline)
+                            .foregroundStyle(theme.subtext1)
+                    }
                 } header: {
                     stepHeader(number: 4, title: "Register with the pairing token")
                 }

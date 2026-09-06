@@ -500,4 +500,22 @@ enum TranscriptText {
             return "\(error.kind): \(error.message)"
         }
     }
+
+    /// #424: whether one tail failure is a grant denial — the recents
+    /// sheet renders it as the explicit permission state, never the
+    /// generic error+Retry block and never the successful-empty copy.
+    static func isGrantDenial(_ failure: TranscriptFailure) -> Bool {
+        failure.kind == "not_granted"
+    }
+
+    /// #424 permission headline (AC1): names the host-side grant; it says
+    /// nothing about whether the agent produced output.
+    static let notGrantedPermissionText =
+        "Read Tail isn't granted on this host yet."
+    /// #424 actionable next step (AC3): the host owner grants read_tail,
+    /// restarts corrald, and the app reopens. No token, key, or admin
+    /// credential is ever displayed or requested in the app.
+    static let notGrantedGuidanceText =
+        "On the host: grant read_tail in ~/.config/corral/registry.json, "
+        + "restart corrald, then reopen the app."
 }

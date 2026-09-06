@@ -3188,6 +3188,198 @@ final class RecentBlockModelTests: XCTestCase {
     }
 }
 
+// MARK: - #424: not_granted read_tail vs successful-empty Recent Output
+
+/// #424 discriminating regressions: an ungranted read_tail (the host's
+/// registry has no read_tail grant for this device yet) must render the
+/// explicit permission state — it can NEVER land in the successful-empty
+/// state ("No output yet.") — while a zero-line SUCCESSFUL signed read
+/// keeps that copy. The typed DriveErrorBody refusal channel already
+/// exists; these tests prove where the mapping is lost at the unfixed
+/// head: a LOCAL silent stop leaves the pane untouched (empty), and only
+/// the REMOTE typed refusal folds a pane failure.
+@MainActor
+final class RecentOutputNotGrantedStateTests: XCTestCase {
+
+    private struct LiveFixture {
+        let model: AppModel
+        let session: URLSession
+        let defaults: UserDefaults
+        let suiteName: String
+        // SAFETY: a fixed valid URL literal.
+        let hostURL = URL(string: "http://daemon")!
+
+        @MainActor
+        func cleanup() {
+            model.stopLive()
+            session.invalidateAndCancel()
+            defaults.removePersistentDomain(forName: suiteName)
+            DeterministicDriveURLProtocol.clearScript()
+        }
+    }
+
+    private func liveModel(script: DeterministicDriveScript,
+                           grants: [String]) -> LiveFixture {
+        let suiteName = "corral.notgranted.\\(UUID().uuidString)"
+        // SAFETY: a fresh UUID-based suite name is always a valid suite.
+        let defaults = UserDefaults(suiteName: suiteName)!
+        DeterministicDriveURLProtocol.setScript(script)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [DeterministicDriveURLProtocol.self]
+        let session = URLSession(configuration: config)
+        // The fixture signs like a registered device: the same signer the
+        // identity loader hands the model is installed on the model, so the
+        // legacy live route resolves and authorize() is really exercised.
+        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        let model = AppModel(
+            session: session,
+            defaults: defaults,
+            identityLoader: { (signer, .insecureFallback) },
+            loadMeta: { nil },
+            saveMeta: { _ in },
+            wipeIdentity: {})
+        model.mode = .live
+        // SAFETY: a fixed valid URL literal.
+        model.hostURL = URL(string: "http://daemon")!
+        model.keyId = "dev_notgranted"
+        model.grants = grants
+        model.signer = signer
+        return LiveFixture(model: model, session: session, defaults: defaults,
+                           suiteName: suiteName)
+    }
+
+    private func seedConnectedReadableAgent(_ model: AppModel,
+                                            capabilities: [String] = ["read_tail"]) {
+        model.fleet.apply(.snapshot(Snapshot(
+            schemaVersion: 5, rev: 1, generatedAt: 1,
+            agents: ["herdr:a1": Agent(agentId: "herdr:a1", source: "herdr",
+                                       tool: "claude", state: .working,
+                                       reason: "writing", seq: 1, ts: 1,
+                                       capabilities: capabilities)])))
+        model.fleet.noteConnected()
+    }
+
+    private func waitUntil(_ condition: () -> Bool,
+                           timeout: TimeInterval = 5) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+    }
+
+    /// RED at the unfixed head (#424 AC7): the PRE-GRANT state — the
+    /// device's grant set does not include read_tail, so the signed drive
+    /// never leaves (the daemon's registry would refuse it too). The local
+    /// stop must fold a typed not_granted failure on the pane; at the
+    /// unfixed head the pane stays untouched and the sheet renders the
+    /// successful-empty state ("No output yet.").
+    func testNotGrantedLocalStopFoldsTypedFailureNeverTheEmptyState() async {
+        let script = DeterministicDriveScript(
+            response: Data(#"{"request_id":"r","ok":true,"rev":1}"#.utf8))
+        let fixture = liveModel(script: script, grants: [])
+        defer { fixture.cleanup() }
+        seedConnectedReadableAgent(fixture.model)
+        guard let agent = fixture.model.fleet.agent("herdr:a1") else {
+            return XCTFail("fixture agent missing")
+        }
+        let client = DriveClient(host: fixture.hostURL, session: fixture.session)
+        fixture.model.driveReadTail(agent: agent, driveClient: client, silent: true)
+        // The local stop is synchronous; the beat keeps a regression that
+        // (wrongly) drives from racing the assertions below.
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        let pane = fixture.model.fleet.tailPane(for: "herdr:a1")
+        XCTAssertEqual(pane?.error?.kind, "not_granted",
+                       "a locally ungranted read_tail must fold a typed not_granted failure")
+        guard case .error = RecentOutputModel.phase(for: pane) else {
+            return XCTFail("an ungranted read_tail must NOT render the successful-empty state")
+        }
+        XCTAssertTrue(script.log.requests.filter { $0.url?.path == "/drive" }.isEmpty,
+                      "without the grant the drive must stop locally (no signed request)")
+    }
+
+    /// AC4: a SUCCESSFUL signed read that returns zero lines/blocks still
+    /// renders the successful-empty state — "No output yet." is reserved
+    /// for exactly this case.
+    func testZeroLineSuccessfulReadStillRendersTheEmptyState() async {
+        let script = DeterministicDriveScript(
+            responses: ["/drive": Data(#"{"request_id":"r1","ok":true,"rev":1,"result":{"lines":[],"blocks":[]}}"#.utf8)])
+        let fixture = liveModel(script: script, grants: ["read_tail"])
+        defer { fixture.cleanup() }
+        seedConnectedReadableAgent(fixture.model)
+        guard let agent = fixture.model.fleet.agent("herdr:a1") else {
+            return XCTFail("fixture agent missing")
+        }
+        let client = DriveClient(host: fixture.hostURL, session: fixture.session)
+        fixture.model.driveReadTail(agent: agent, driveClient: client, silent: true)
+        let observed = await script.log.observed.waitFor(atLeast: 1)
+        XCTAssertTrue(observed, "the granted read must reach the daemon")
+        await waitUntil {
+            let pane = fixture.model.fleet.tailPane(for: "herdr:a1")
+            return pane != nil && pane?.loading == false && pane?.error == nil
+        }
+        let pane = fixture.model.fleet.tailPane(for: "herdr:a1")
+        XCTAssertNotNil(pane)
+        XCTAssertTrue(pane?.isEmpty ?? false, "a zero-line result must stay empty")
+        XCTAssertNil(pane?.error, "a successful read must not fold a failure")
+        XCTAssertEqual(RecentOutputModel.phase(for: pane), .empty,
+                       "a zero-line successful signed read keeps the successful-empty state")
+    }
+
+    /// AC7: the REMOTE typed refusal (the daemon answers 403 with a
+    /// not_granted DriveErrorBody) must keep folding the typed pane
+    /// failure — the sheet then renders the permission state, never the
+    /// successful-empty copy. This path exists at the unfixed head and
+    /// must survive the #424 fix.
+    func testRemoteNotGrantedRefusalFoldsTheTypedFailure() async {
+        let script = DeterministicDriveScript(
+            responses: ["/drive": Data(#"{"kind":"not_granted","message":"capability not granted: read_tail","request_id":"r1"}"#.utf8)],
+            statuses: ["/drive": 403])
+        let fixture = liveModel(script: script, grants: ["read_tail"])
+        defer { fixture.cleanup() }
+        seedConnectedReadableAgent(fixture.model)
+        guard let agent = fixture.model.fleet.agent("herdr:a1") else {
+            return XCTFail("fixture agent missing")
+        }
+        let client = DriveClient(host: fixture.hostURL, session: fixture.session)
+        fixture.model.driveReadTail(agent: agent, driveClient: client, silent: true)
+        await waitUntil {
+            fixture.model.fleet.tailPane(for: "herdr:a1")?.error != nil
+        }
+        let pane = fixture.model.fleet.tailPane(for: "herdr:a1")
+        XCTAssertEqual(pane?.error?.kind, "not_granted",
+                       "the remote typed refusal must fold kind not_granted")
+        guard case .error = RecentOutputModel.phase(for: pane) else {
+            return XCTFail("the refused read must not fall back to the empty state")
+        }
+    }
+
+    /// AC1-3 copy contract: the denial headline names the missing HOST
+    /// grant (never the agent's output), the guidance is the host-owner
+    /// action (no token/key/credential), and only the not_granted kind is
+    /// a denial — transport/stale/timeout/capability refusals keep their
+    /// own distinct paths.
+    func testPermissionCopyNamesTheHostGrantAndActionableStep() {
+        let denial = TranscriptFailure(kind: "not_granted",
+                                       message: "capability not granted: read_tail",
+                                       candidates: [])
+        XCTAssertTrue(TranscriptText.isGrantDenial(denial))
+        for other in ["transport", "stale_agent", "timeout",
+                      "capability_unavailable", "expired", "encoding"] {
+            XCTAssertFalse(TranscriptText.isGrantDenial(
+                TranscriptFailure(kind: other, message: "m", candidates: [])),
+                "\\(other) must stay on its own error path, never the permission state")
+        }
+        XCTAssertTrue(TranscriptText.notGrantedPermissionText.contains("isn't granted"),
+                      "the headline must say the GRANT is missing — never the output")
+        XCTAssertFalse(TranscriptText.notGrantedPermissionText.contains("No output yet."))
+        XCTAssertTrue(TranscriptText.notGrantedGuidanceText.contains("registry.json"),
+                      "the next step must name the host-side registry")
+        XCTAssertTrue(TranscriptText.notGrantedGuidanceText.contains("restart corrald"))
+        XCTAssertTrue(TranscriptText.notGrantedGuidanceText.contains("reopen the app"))
+        XCTAssertFalse(TranscriptText.notGrantedGuidanceText.contains("No output yet."))
+    }
+}
+
 // MARK: - #373 block-per-run session state (default-expanded + toggle)
 
 /// The sheet-session collapse/reveal contract: fresh sessions are ALL
@@ -3280,6 +3472,38 @@ final class ReadOnlySurfaceWiringTests: XCTestCase {
             XCTAssertFalse(slice.contains(chrome),
                            "role/card chrome \(chrome) must not be wired in the recents sheet")
         }
+    }
+
+    /// #424 decoy-resistant wiring over the bundled FleetViews source: the
+    /// sheet's content switch must branch a not_granted denial to the
+    /// explicit permission copy (headline + host-owner guidance, no Retry
+    /// — only the host owner can change a denial), and the
+    /// successful-empty copy stays EXACTLY once ("No output yet." for a
+    /// zero-line success, never for a refusal).
+    func testRecentsSheetRendersNotGrantedAsPermissionStateOnlyForDenials() throws {
+        let source = try bundledSource()
+        let sheetMarker = "struct RecentOutputSheet: View {"
+        let sheetStart = try XCTUnwrap(source.range(of: sheetMarker),
+                                       "RecentOutputSheet declaration not found")
+        let nextDecl = try XCTUnwrap(source.range(of: "\n// MARK: - Recents block renderer")?.lowerBound,
+                                     "the recents block renderer MARK must follow the sheet source")
+        let slice = String(source[sheetStart.lowerBound..<nextDecl])
+        // The denial gate and the permission copy live in the sheet.
+        XCTAssertTrue(slice.contains("TranscriptText.isGrantDenial(failure)"),
+                      "the sheet must route a not_granted denial to the permission state")
+        XCTAssertTrue(slice.contains("TranscriptText.notGrantedPermissionText"),
+                      "the permission headline must render for a not_granted refusal")
+        XCTAssertTrue(slice.contains("TranscriptText.notGrantedGuidanceText"),
+                      "the sheet must render the actionable host-owner next step")
+        // Retry stays on the generic error path only — a denial cannot be
+        // retried into success, so the permission state must never add a
+        // second Retry.
+        XCTAssertEqual(slice.components(separatedBy: "Button(\"Retry\")").count - 1, 1,
+                       "Retry remains the generic error path's control only")
+        // "No output yet." is the successful-empty copy ONLY (zero-line
+        // success) — exactly once in the sheet, never for a refusal.
+        XCTAssertEqual(slice.components(separatedBy: "Text(\"No output yet.\")").count - 1, 1,
+                       "the empty copy stays exactly once (zero-line success)")
     }
 
     /// #373 block renderer wiring pins (decoy-resistant over the bundled

@@ -4499,21 +4499,44 @@ struct RecentOutputSheet: View {
                     .padding(16)
                     .background(theme.base)
             case .error(let failure):
-                VStack(alignment: .leading, spacing: 8) {
-                    Label(TranscriptText.errorText(failure), systemImage: "exclamationmark.triangle")
-                        .font(.caption)
-                        .foregroundStyle(theme.codeDeletion)
-                        .accessibilityLabel(TranscriptText.errorText(failure))
-                    Button("Retry") {
-                        refresh()
+                // #424: a not_granted refusal is a PERMISSION state — the
+                // host owner must grant read_tail before any output can
+                // exist, so Retry cannot help and the successful-empty
+                // copy must never appear. VoiceOver reads the headline +
+                // the next step as one element; Dynamic Type scales the
+                // system fonts.
+                if TranscriptText.isGrantDenial(failure) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label(TranscriptText.notGrantedPermissionText,
+                              systemImage: "lock.shield")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(theme.tailMuted)
+                        Text(TranscriptText.notGrantedGuidanceText)
+                            .font(.caption)
+                            .foregroundStyle(theme.tailMuted)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    .buttonStyle(.bordered)
-                    .tint(theme.accent)
-                    .accessibilityLabel("Retry recent output")
+                    .padding(16)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .background(theme.base)
+                    .accessibilityElement(children: .combine)
+                } else {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label(TranscriptText.errorText(failure), systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(theme.codeDeletion)
+                            .accessibilityLabel(TranscriptText.errorText(failure))
+                        Button("Retry") {
+                            refresh()
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(theme.accent)
+                        .accessibilityLabel("Retry recent output")
+                    }
+                    .padding(16)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .background(theme.base)
                 }
-                .padding(16)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .background(theme.base)
             case .loaded:
                 // #385: the loaded block stream floats over the translucent
                 // sheet backdrop — the blocks' own opaque card chrome keeps

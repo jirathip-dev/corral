@@ -2310,8 +2310,21 @@ final class AppModel: ObservableObject {
             }
             return
         }
-        guard authorize(.readTail, for: live, grants: route.grants,
-                        silent: silent) else { return }
+        if let refusal = authorize(.readTail, for: live, grants: route.grants,
+                                   silent: silent) {
+            // #424: a read_tail refused BEFORE dispatch must fold the same
+            // typed failure the daemon's remote refusal folds. An ungranted
+            // read can never leave the pane in the successful-empty state
+            // ("No output yet."), which the sheet renders as the explicit
+            // permission state.
+            route.store.foldTailFailure(TranscriptFailure(
+                kind: refusal,
+                message: refusal == "not_granted"
+                    ? "read_tail is not granted on this host yet."
+                    : "read_tail is not available for this agent.",
+                candidates: []), for: live.agentId)
+            return
+        }
         // E1: sign against THAT profile's URL — for coordinator-owned
         // hosts the caller's (active-host) client is replaced by a client
         // bound to the owning profile, so a signed read can never cross
@@ -2445,24 +2458,27 @@ final class AppModel: ObservableObject {
     /// return a typed refusal, which the common drive path surfaces.
     /// #400 E1: composite routes authorize against the OWNING profile's
     /// grants (`grants`); the legacy runtime passes its global set.
+    /// #424: returns the typed refusal kind when the control is denied
+    /// locally (nil when authorized) so driveReadTail can fold the pane
+    /// failure instead of silently leaving the successful-empty state.
     private func authorize(_ capability: Capability, for agent: Agent,
                            grants: Set<Capability>? = nil,
-                           silent: Bool = false) -> Bool {
+                           silent: Bool = false) -> String? {
         guard agent.capabilities.contains(capability.rawValue) else {
             if !silent {
                 banner = .error("capability_unavailable",
                                 "\(capability.rawValue): not available for this agent.")
             }
-            return false
+            return "capability_unavailable"
         }
         guard (grants ?? actionGrants).contains(capability) else {
             if !silent {
                 banner = .error("not_granted",
                                 "requires the \(capability.rawValue) grant — ask the host.")
             }
-            return false
+            return "not_granted"
         }
-        return true
+        return nil
     }
 
     private func beginDriveAction(_ key: DriveActionKey, silent: Bool = false) -> String? {

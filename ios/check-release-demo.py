@@ -272,7 +272,12 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # (Retry/Rename/Remove host) became independent plain-style 44 pt
     # bounded controls with explicit theme tokens; digest re-pinned over
     # the #422 source set.
-    "f150aed8c3879a9a89fe30e97ed58b3ccc1073034e1009da1b28db7f5f64feb5"
+    # 423: the legacy single-host Connection section (host endpoint, key
+    # identity, Re-register) is gated on `!multiHostConfigured` in
+    # SettingsView — with 2+ host profiles the Hosts section is the sole
+    # host surface — and HowToConnectSheet's pairing copy branches by the
+    # multi-host variant — re-pinned over the #423 source set.
+    "abb882f20ebbf37104d2fa69cc4cf504ef1041ce1f0bd612c82adda11db51792"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -399,7 +404,11 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # SettingsAccessWiringTests, NavigationHeaderWiringTests,
     # ThemeWiringTests) updated to the filter-sheet surface — re-pinned
     # over the #427 test source.
-    "5e7cf2610f96903aeac1df2df7d930375cfb997af9dbf3279bc9d6f9fb95712b"
+    # 423: SettingsHostsAuthorityWiringTests added (single-host Connection
+    # guard probes, Hosts-authority + VoiceOver pins, variant help-copy
+    # pins) and SettingsConnectWiringTests' '?'-entry pin updated to the
+    # multi-host call — re-pinned over the #423 test source.
+    "cac61e9f0027ca6fad5cd029c2c5722e992a5e13f8be613712850ebb7dc25d61"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

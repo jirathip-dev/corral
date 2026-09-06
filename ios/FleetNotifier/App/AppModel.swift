@@ -1909,7 +1909,10 @@ final class AppModel: ObservableObject {
                 }
             } catch {
                 // Silent by design: stale cached grants beat a broken
-                // board; another host's refresh is never affected.
+                // board; another host's refresh is never affected. Logged
+                // so repeated failures stay diagnosable without ever
+                // clearing the cached set.
+                Self.log.error("host \(profile.displayName, privacy: .public): grants refresh failed — cached grants kept (\(error.localizedDescription))")
             }
         }
         lifecycleTasks[taskId] = task

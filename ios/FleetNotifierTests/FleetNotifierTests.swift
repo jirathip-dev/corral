@@ -6857,6 +6857,274 @@ final class BoardMetadataCacheTests: XCTestCase {
     }
 }
 
+// MARK: - #421 active-host switch reconcile (stale cross-host projection)
+
+/// #421 regression: pairing a SECOND host (Settings -> Hosts, fingerprint
+/// confirmed) while the app is open switches the runtime binding to the
+/// new host WITHOUT a relaunch. The previous active host's rows live in
+/// the shared legacy store; if they survive the switch they project under
+/// the NEW host's composite identity until an authoritative replacement
+/// snapshot arrives (the issue's "Bazzite shows the Mac's lanes" repro).
+/// These tests drive the REAL add-host/commit/startLive flow against the
+/// scripted transport and assert the board re-scopes immediately: a host's
+/// rows appear only under its own badge, equal raw ids stay two composite
+/// rows, and refresh/background-foreground transitions keep per-host
+/// counts agreeing with the current stores.
+@MainActor
+final class HostSwitchReconcileTests: XCTestCase {
+    /// SAFETY: fixed synthetic X25519 fixture key (32-byte fill).
+    static let macKey = Data(repeating: 11, count: 32).base64EncodedString()
+    /// SAFETY: fixed synthetic X25519 fixture key (32-byte fill).
+    static let bazziteKey = Data(repeating: 12, count: 32).base64EncodedString()
+    /// SAFETY: fixed fixture register response (synthetic key id).
+    static let registerOK = Data(#"{"key_id":"dev_421","grants":["read_tail"],"expiry_ts":1800000000,"revoked":false,"algorithm":"Ed25519"}"#.utf8)
+
+    private var suiteName = ""
+    private var model: AppModel?
+    private var session: URLSession?
+
+    // SAFETY: fixed valid fixture URL literals (distinct hostnames).
+    private var macURL: URL { URL(string: "https://mac-421.example")! }
+    // SAFETY: fixed valid fixture URL literal (distinct hostname).
+    private var bazziteURL: URL { URL(string: "https://bazzite-421.example")! }
+    private var token = "tok-421-fixture"
+
+    private func cleanup() {
+        model?.stopLive()
+        model = nil
+        session?.invalidateAndCancel()
+        session = nil
+        AddHostFlowURLProtocol.clearScript()
+        AppDelegate.apnsRegistered = false
+        UserDefaults.standard.removeObject(forKey: AppDelegate.deviceTokenUploadedKey)
+        AppDelegate.shared?.clearRetainedDeviceToken()
+        KeyContinuityGate.reset()
+        if !suiteName.isEmpty {
+            // SAFETY: suiteName was freshly minted per test.
+            UserDefaults(suiteName: suiteName)!.removePersistentDomain(forName: suiteName)
+            suiteName = ""
+        }
+    }
+
+    private func waitUntil(_ condition: @autoclosure () -> Bool,
+                           timeout: TimeInterval = 6) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+    }
+
+    private func agent(_ id: String, state: AgentState, host: String, ts: UInt64,
+                       repo: String) -> Agent {
+        Agent(agentId: id, state: state, ts: ts,
+              capabilities: ["read_tail"], host: host,
+              workspace: Workspace(repo: repo, branch: "main"))
+    }
+
+    private func macSnapshot(_ rev: UInt64, ts: UInt64) throws -> Data {
+        // SAFETY: fixed synthetic snapshot of Mac's own lanes.
+        try JSONEncoder().encode(Snapshot(schemaVersion: 5, rev: rev, generatedAt: 0,
+            agents: [
+                "orch-corral": agent("orch-corral", state: .working,
+                                     host: Self.macKey, ts: ts, repo: "corral"),
+                "herdr:dup": agent("herdr:dup", state: .blocked,
+                                   host: Self.macKey, ts: ts, repo: "corral"),
+            ]))
+    }
+
+    private func bazziteSnapshot(_ rev: UInt64, ts: UInt64) throws -> Data {
+        // SAFETY: fixed synthetic snapshot of Bazzite's own two local lanes
+        // (the issue's Bazzite readback) — the SAME raw id "herdr:dup" also
+        // exists on Mac, with host-distinct metadata.
+        try JSONEncoder().encode(Snapshot(schemaVersion: 5, rev: rev, generatedAt: 0,
+            agents: [
+                "plush-a": agent("plush-a", state: .working,
+                                 host: Self.bazziteKey, ts: ts, repo: "plush-meadow"),
+                "plush-b": agent("plush-b", state: .idle,
+                                 host: Self.bazziteKey, ts: ts, repo: "plush-meadow"),
+                "herdr:dup": agent("herdr:dup", state: .blocked,
+                                   host: Self.bazziteKey, ts: ts, repo: "plush-meadow"),
+            ]))
+    }
+
+    /// One pinned ACTIVE "Mac" profile + scripted endpoints for BOTH hosts
+    /// (Mac's key matches its pin; Bazzite serves the new key; register is
+    /// accepted), then the app is started LIVE on Mac (key re-verified,
+    /// SSE open) — the "Mac paired and live, app running" repro state.
+    private func makeLiveMac() async -> (AppModel, HostProfile) {
+        suiteName = "corral.g421.switch.\\(UUID().uuidString)"
+        // SAFETY: a fresh UUID suite name is always a valid suite.
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let store = HostProfileStore(directory: nil, defaults: defaults)
+        // SAFETY: fixed fixture URL/key literals from the constants above.
+        let mac = try! store.addProfile(
+            displayName: "Mac",
+            urlString: macURL.absoluteString,
+            hostKeyB64: Self.macKey,
+            fingerprint: "FINGER-MAC",
+            keyId: "dev_mac_421",
+            grants: ["read_tail"],
+            expiryTs: 1_800_000_000,
+            registeredAt: 1)
+        defaults.set(mac.id.uuidString, forKey: "fleetnotifier.activeHostProfileID")
+        let script: [URL: (Int, Data, Bool)] = [
+            macURL.appendingPathComponent("/host-key"): (200,
+                Data(#"{"algorithm":"X25519","public_key":"\#(Self.macKey)"}"#.utf8), false),
+            bazziteURL.appendingPathComponent("/host-key"): (200,
+                Data(#"{"algorithm":"X25519","public_key":"\#(Self.bazziteKey)"}"#.utf8), false),
+            // /events hold open (SSE) so post-commit startLive connects.
+            macURL.appendingPathComponent("/events"): (200, Data(), true),
+            bazziteURL.appendingPathComponent("/events"): (200, Data(), true),
+            bazziteURL.appendingPathComponent("/register"): (200, Self.registerOK, false),
+        ]
+        AddHostFlowURLProtocol.setScript(script)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AddHostFlowURLProtocol.self]
+        let session = URLSession(configuration: config)
+        self.session = session
+        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        let model = AppModel(session: session, defaults: defaults,
+                             identityLoader: { (signer, .insecureFallback) },
+                             loadMeta: { nil }, saveMeta: { _ in },
+                             wipeIdentity: {},
+                             profileStore: store)
+        self.model = model
+        model.startLive()
+        await waitUntil(model.keyContinuityState == .verified)
+        return (model, mac)
+    }
+
+    /// Drive the sheet's phase-1 (scripted /host-key) + return the
+    /// confirmation-phase pairing for `completeAddHost`.
+    private func primeBazziteDraft(_ model: AppModel) async throws -> AppModel.PreparedHostPairing {
+        model.addHostDraft.name = "Bazzite"
+        model.addHostDraft.urlString = bazziteURL.absoluteString
+        model.addHostDraft.token = token
+        await model.verifyAddHostDraft()
+        let pairing = try XCTUnwrap(model.addHostDraft.prepared,
+                                    "the scripted /host-key must reach the confirmation phase")
+        return pairing
+    }
+
+    /// Seed the ACTIVE (Mac) read model with its live lanes — the rows the
+    /// board must keep scoped to Mac across the switch.
+    private func seedMacFleet(_ model: AppModel) throws {
+        // SAFETY: fixed synthetic snapshot (see macSnapshot).
+        let data = try macSnapshot(5, ts: 5)
+        let snapshot = try XCTUnwrap(try? JSONDecoder().decode(Snapshot.self, from: data))
+        model.fleet.apply(.snapshot(snapshot))
+    }
+
+    /// The board rows under one host's badge plus the raw ids under the
+    /// OTHER host's badge — the cross-host contamination surface.
+    private func rows(_ model: AppModel) -> [HostBoardRow] {
+        model.aggregateBoardRows ?? []
+    }
+
+    func testAddedHostBadgeNeverProjectsPreviousActiveHostRowsAfterConfirm() async throws {
+        defer { cleanup() }
+        let (model, mac) = await makeLiveMac()
+        // The Mac read model is live with rows when Bazzite gets paired.
+        try seedMacFleet(model)
+        let pairing = try await primeBazziteDraft(model)
+        let outcome = await model.completeAddHost(pairing, token: model.addHostDraft.token)
+        XCTAssertEqual(outcome, .success)
+        // Runtime switched to Bazzite in the SAME process — no relaunch.
+        let bazziteID = try XCTUnwrap(model.activeProfileID)
+        XCTAssertNotEqual(bazziteID, mac.id)
+        let macRawIDs = Set(["orch-corral", "herdr:dup"])
+        let aggregate = rows(model)
+        // AC2/AC4: one host's lanes never appear under the other host's
+        // badge merely because the app was already running when it was added.
+        let underBazzite = aggregate.filter { $0.identity.hostProfileID == bazziteID }
+        XCTAssertTrue(underBazzite.allSatisfy { !macRawIDs.contains($0.identity.agentID) },
+                      "the previous active host's lanes projected under the newly added host's badge: "
+                      + underBazzite.map(\.identity.description).sorted().joined(separator: ", "))
+        // AC2: a Mac raw id keeps exactly ONE composite row, on the Mac.
+        let dupScopes = Set(aggregate.filter { $0.identity.agentID == "herdr:dup" }
+            .map(\.identity.hostProfileID))
+        XCTAssertEqual(dupScopes, [mac.id],
+                       "the Mac lane must keep exactly one composite row, scoped to Mac")
+        // AC6: the previous host's retained rows stay visible under its OWN
+        // badge (stale until its coordinator session reconnects) — never
+        // erased by the switch.
+        let underMac = aggregate.filter { $0.identity.hostProfileID == mac.id }
+        XCTAssertTrue(underMac.contains { $0.identity.agentID == "orch-corral" },
+                      "the previous host's retained rows must remain under its own badge")
+        XCTAssertTrue(underMac.allSatisfy(\.isStale),
+                      "pre-reconnect retained rows of the previous host render stale")
+    }
+
+    func testRefreshAndForegroundKeepPerHostRowsAndCountsAfterSwitch() async throws {
+        defer { cleanup() }
+        let (model, mac) = await makeLiveMac()
+        try seedMacFleet(model)
+        let pairing = try await primeBazziteDraft(model)
+        let outcome = await model.completeAddHost(pairing, token: model.addHostDraft.token)
+        XCTAssertEqual(outcome, .success)
+        let bazziteID = try XCTUnwrap(model.activeProfileID)
+
+        // Authoritative pull: Bazzite answers with its OWN snapshot at rev 2
+        // (LOWER than the Mac cursor the switch inherits at base — a fix
+        // that just waited for a refresh must still be red) and Mac answers
+        // with its own live read model at rev 6.
+        var script: [URL: (Int, Data, Bool)] = [
+            macURL.appendingPathComponent("/host-key"): (200,
+                Data(#"{"algorithm":"X25519","public_key":"\#(Self.macKey)"}"#.utf8), false),
+            bazziteURL.appendingPathComponent("/host-key"): (200,
+                Data(#"{"algorithm":"X25519","public_key":"\#(Self.bazziteKey)"}"#.utf8), false),
+            macURL.appendingPathComponent("/events"): (200, Data(), true),
+            bazziteURL.appendingPathComponent("/events"): (200, Data(), true),
+            macURL.appendingPathComponent("/snapshot"): (200, try macSnapshot(6, ts: 6), false),
+            bazziteURL.appendingPathComponent("/snapshot"): (200, try bazziteSnapshot(2, ts: 2), false),
+        ]
+        script[bazziteURL.appendingPathComponent("/register")] = (200, Self.registerOK, false)
+        AddHostFlowURLProtocol.setScript(script)
+        await model.refreshFleet()
+
+        func assertScoped() throws {
+            let aggregate = rows(model)
+            // AC2: the equal raw id exists on BOTH hosts — two composite
+            // rows, each carrying ITS OWN host's metadata.
+            let dups = aggregate.filter { $0.identity.agentID == "herdr:dup" }
+            XCTAssertEqual(dups.count, 2,
+                           "an equal raw id on two hosts must stay two composite rows")
+            XCTAssertEqual(Set(dups.map(\.identity.hostProfileID)),
+                           Set([mac.id, bazziteID]))
+            let bazziteDup = dups.first { $0.identity.hostProfileID == bazziteID }
+            XCTAssertEqual(bazziteDup?.agent.workspace.repo, "plush-meadow",
+                           "the row under Bazzite's badge must carry Bazzite's OWN lane metadata")
+            XCTAssertEqual(dups.first { $0.identity.hostProfileID == mac.id }?
+                .agent.workspace.repo, "corral")
+            // AC3/AC4: Bazzite's badge shows EXACTLY its own two local
+            // lanes + its dup — never Mac's "orch-corral" lane.
+            let underBazzite = aggregate.filter { $0.identity.hostProfileID == bazziteID }
+            XCTAssertEqual(Set(underBazzite.map(\.identity.agentID)),
+                           Set(["herdr:dup", "plush-a", "plush-b"]),
+                           "Bazzite's badge must show only Bazzite's lanes")
+            // The Mac badge keeps Mac's lanes.
+            let underMac = aggregate.filter { $0.identity.hostProfileID == mac.id }
+            XCTAssertEqual(Set(underMac.map(\.identity.agentID)),
+                           Set(["herdr:dup", "orch-corral"]))
+            // All Hosts total = the per-host sum (no duplicated rows).
+            XCTAssertEqual(aggregate.count, underBazzite.count + underMac.count)
+            XCTAssertEqual(aggregate.count, 5)
+        }
+
+        // After the pull-to-refresh transition (AC5) the board must already
+        // be host-scoped — no relaunch, no second refresh.
+        try assertScoped()
+
+        // Background -> foreground transition (AC3/AC5): rows stay retained
+        // in each host's store across the reconnect boundary and the board
+        // re-projects from the SAME per-host stores.
+        model.stopLive()
+        model.startLive()
+        await waitUntil(model.keyContinuityState == .verified)
+        try assertScoped()
+    }
+}
+
 // MARK: - #399 host-profile Settings/board wiring (source pins)
 
 /// Source-wiring pins over the bundled FleetViews source: the Settings

@@ -2013,6 +2013,11 @@ final class AppModel: ObservableObject {
     /// shared cursor. Failure ends the indicator and lands in the
     /// existing dismissible/retryable banner — never an endless spinner
     /// (`isRefreshingFleet` is cleared in `defer`).
+    /// #425: a successful snapshot also proves the ACTIVE host is
+    /// reachable — when its stream has not acknowledged a live connection
+    /// (ended or wedged), the refresh restarts it exactly once, so an
+    /// ordinary pull recovers a stale/offline host without a relaunch.
+    /// While the stream is healthy the refresh stays snapshot-only.
     func refreshFleet() async {
         guard mode == .live, let hostURL else { return }
         // #399 B4: no fetch may reach a host whose pinned identity is
@@ -2040,6 +2045,12 @@ final class AppModel: ObservableObject {
                 guard !Task.isCancelled, self.isCurrent(context) else { return }
                 self.fleet.applyRefresh(snapshot)
                 self.persistBoardMetadata()
+                // #425: the snapshot succeeded, so the active host is
+                // reachable — if its stream is not acknowledged live
+                // (ended/wedged), clear the stale task ownership and
+                // start exactly one replacement; a healthy stream is left
+                // untouched (idempotent refresh, no duplicate tasks).
+                self.fleet.reconnectIfNeeded(client: client)
             } catch {
                 guard !Task.isCancelled, self.isCurrent(context) else { return }
                 self.banner = .error("fleet_refresh",

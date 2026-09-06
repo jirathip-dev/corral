@@ -9910,3 +9910,267 @@ final class SettingsHostsAuthorityWiringTests: XCTestCase {
                       "the Connection register step must stay on the single-host branch")
     }
 }
+
+// MARK: - #425 pull-to-refresh must recover a stale active-host stream
+
+/// #425 transport: counts `/events` attempts; until `serveLive` is set a
+/// request is held open with NO response — the wedged/half-open stream
+/// that never acks (request #1 stays pending exactly like a dead SSE
+/// socket). After `serveLive`, `/events` answers 200 `text/event-stream`
+/// and stays open with ZERO frames (an idle fleet), so `onConnected` is
+/// the ONLY ack. `/snapshot` answers the scripted body; any other path
+/// gets a benign 200 so unrelated calls never wedge the fixture.
+private final class RefreshRecoveryURLProtocol: URLProtocol {
+    private static let lock = NSLock()
+    private static var serveLiveStorage = false
+    private static var eventsCountStorage = 0
+    private static var eventsRequestsStorage: [URLRequest] = []
+    private static var snapshotBodyStorage = Data(#"{"ok":true}"#.utf8)
+
+    static func reset(snapshotBody: Data) {
+        lock.lock()
+        serveLiveStorage = false
+        eventsCountStorage = 0
+        eventsRequestsStorage = []
+        snapshotBodyStorage = snapshotBody
+        lock.unlock()
+    }
+
+    static func serveLive() {
+        lock.lock()
+        serveLiveStorage = true
+        lock.unlock()
+    }
+
+    static var eventRequestCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return eventsCountStorage
+    }
+
+    static var lastEventsRequest: URLRequest? {
+        lock.lock()
+        defer { lock.unlock() }
+        return eventsRequestsStorage.last
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.lock.lock()
+        let serveLive = Self.serveLiveStorage
+        let snapshotBody = Self.snapshotBodyStorage
+        guard let url = request.url else {
+            Self.lock.unlock()
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        if url.path == "/events" {
+            Self.eventsCountStorage += 1
+            Self.eventsRequestsStorage.append(request)
+        }
+        Self.lock.unlock()
+
+        // SAFETY: fixed HTTPURLResponse construction from the request's own URL.
+        let response = HTTPURLResponse(
+            url: url, statusCode: 200, httpVersion: "HTTP/1.1",
+            headerFields: url.path == "/events"
+                ? ["Content-Type": "text/event-stream"]
+                : ["Content-Type": "application/json"])!
+        if url.path == "/events" {
+            if !serveLive {
+                // Wedge: hold the connection open WITHOUT ANY response —
+                // the stream task suspends forever on its first attempt
+                // (no headers, no status, no ack).
+                return
+            }
+            // Live SSE connection with zero frames; never finish, so the
+            // stream stays open and the attempt count stays stable.
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data())
+            return
+        }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        if url.path == "/snapshot" {
+            client?.urlProtocol(self, didLoad: snapshotBody)
+        } else {
+            client?.urlProtocol(self, didLoad: Data(#"{"ok":true}"#.utf8))
+        }
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+/// #425 regression: a stale/offline ACTIVE host must recover from an
+/// ordinary pull-to-refresh without an app relaunch, ending with either a
+/// live acked stream or an honest non-live state — and a snapshot-only
+/// success must never be rendered as live. AC8's exact task-count /
+/// no-duplicate invariant: an ended/wedged stream task followed by one
+/// pull produces EXACTLY ONE replacement /events attempt.
+@MainActor
+final class RefreshRecoversStaleStreamTests: XCTestCase {
+
+    // SAFETY: fixed valid URL literal for the fixture host.
+    private let host = URL(string: "http://g425.example")!
+
+    private func agent(_ id: String, state: AgentState, title: String? = nil) -> Agent {
+        Agent(agentId: id, state: state, seq: 1, ts: 1,
+              capabilities: ["read_tail"], displayName: id, title: title)
+    }
+
+    private func snapshot(rev: UInt64, agents: [String: Agent]) -> Snapshot {
+        Snapshot(schemaVersion: 5, rev: rev, generatedAt: 1, agents: agents)
+    }
+
+    private func waitFor(_ condition: () -> Bool,
+                         timeout: TimeInterval = 5) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+        return condition()
+    }
+
+    private struct LiveFixture {
+        let model: AppModel
+        let session: URLSession
+        let defaults: UserDefaults
+        let suiteName: String
+
+        @MainActor
+        func cleanup() {
+            model.stopLive()
+            session.invalidateAndCancel()
+            defaults.removePersistentDomain(forName: suiteName)
+            RefreshRecoveryURLProtocol.reset(
+                snapshotBody: Data(#"{"ok":true}"#.utf8))
+        }
+    }
+
+    private func liveModel(agents: [String: Agent], rev: UInt64) -> LiveFixture {
+        let suiteName = "corral.g425.\\(UUID().uuidString)"
+        // SAFETY: a fresh UUID-based suite name is always a valid suite.
+        let defaults = UserDefaults(suiteName: suiteName)!
+        // SAFETY: fixture snapshots encode through the same Codable the
+        // wire uses.
+        let body = try! JSONEncoder().encode(snapshot(rev: rev, agents: agents))
+        RefreshRecoveryURLProtocol.reset(snapshotBody: body)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RefreshRecoveryURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let model = AppModel(
+            session: session,
+            defaults: defaults,
+            identityLoader: { (DeviceSigner(key: Curve25519.Signing.PrivateKey()),
+                               .insecureFallback) },
+            loadMeta: { nil },
+            saveMeta: { _ in },
+            wipeIdentity: {})
+        model.mode = .live
+        model.hostURL = host
+        return LiveFixture(model: model, session: session, defaults: defaults,
+                           suiteName: suiteName)
+    }
+
+    /// AC5 (store half): applying a REFRESH snapshot is data, not a
+    /// liveness claim — a store with no stream must stay .disconnected.
+    func testApplyRefreshKeepsStoreDisconnectedWithoutStreamAck() {
+        let store = FleetStore()
+        store.applyRefresh(snapshot(rev: 5,
+                                    agents: ["a": agent("a", state: .working, title: "fresh")]))
+
+        XCTAssertEqual(store.agents["a"]?.title, "fresh",
+                       "the refresh snapshot must still apply its data")
+        XCTAssertEqual(store.lastEventId, 5)
+        XCTAssertEqual(store.connectionState, .disconnected,
+                       "a snapshot-only refresh must not mark the store live without a stream ack (#425)")
+    }
+
+    /// AC5: after a successful pull-to-refresh with NO acked stream the
+    /// host must read as connecting (a fresh attempt in flight), never as
+    /// live; rows still update. Base head marks .connected straight from
+    /// the snapshot — the false-live bug.
+    func testSnapshotOnlyRefreshNeverRendersHostLiveWithoutStreamAck() async {
+        let fixture = liveModel(agents: ["a": agent("a", state: .working, title: "fresh")],
+                                rev: 9)
+        defer { fixture.cleanup() }
+
+        await fixture.model.refreshFleet()
+
+        XCTAssertEqual(fixture.model.fleet.agents["a"]?.title, "fresh",
+                       "the refresh snapshot must apply its data")
+        XCTAssertFalse(fixture.model.isRefreshingFleet)
+        XCTAssertNil(fixture.model.banner)
+        XCTAssertEqual(fixture.model.fleet.connectionState, .connecting,
+                       "a snapshot-only success must not render the host live; only the stream's 200 ack may mark .connected (#425)")
+    }
+
+    /// AC1/AC2/AC8: a wedged active-host stream (task alive, never acked)
+    /// followed by ONE pull-to-refresh must clear the stale task ownership
+    /// and start EXACTLY ONE replacement stream — request count 1 -> 2,
+    /// resuming from the refreshed cursor; no duplicate SSE tasks. Base
+    /// head never issues the replacement: FleetStore.connect() no-ops on
+    /// the wedged streamTask, so the board stays dead until a relaunch.
+    func testSinglePullToRefreshRestartsExactlyOneWedgedActiveStream() async {
+        let fixture = liveModel(agents: ["a": agent("a", state: .working, title: "recovered")],
+                                rev: 9)
+        defer { fixture.cleanup() }
+
+        // A live session whose /events connection is wedged: the store
+        // holds a stream task that never acks.
+        fixture.model.fleet.connect(client: CorraldClient(host: host,
+                                                          session: fixture.session))
+        let firstAttempt = await waitFor({ RefreshRecoveryURLProtocol.eventRequestCount == 1 })
+        XCTAssertTrue(firstAttempt, "the initial stream attempt must reach the transport")
+        XCTAssertTrue(fixture.model.fleet.isStreaming)
+        XCTAssertNotEqual(fixture.model.fleet.connectionState, .connected,
+                          "a wedged stream must not read as live")
+
+        // The host becomes reachable: the pull's snapshot answers, then
+        // the refresh must tear the wedged task down and start ONE
+        // replacement stream.
+        RefreshRecoveryURLProtocol.serveLive()
+        await fixture.model.refreshFleet()
+
+        let replacement = await waitFor({ RefreshRecoveryURLProtocol.eventRequestCount == 2 },
+                                        timeout: 2)
+        XCTAssertTrue(replacement,
+                      "a single pull-to-refresh must cause a NEW active-host stream attempt (1 -> 2); base head keeps the stale wedged task (#425)")
+        XCTAssertEqual(RefreshRecoveryURLProtocol.eventRequestCount, 2,
+                       "exactly ONE replacement stream — no duplicate SSE tasks (#425)")
+
+        let acked = await waitFor({ fixture.model.fleet.connectionState == .connected })
+        XCTAssertTrue(acked, "the replacement stream's 200 must ack the host live")
+        XCTAssertEqual(fixture.model.fleet.agents["a"]?.title, "recovered",
+                       "the refreshed rows must be applied")
+        XCTAssertEqual(fixture.model.fleet.lastEventId, 9)
+        XCTAssertEqual(RefreshRecoveryURLProtocol.lastEventsRequest?
+            .value(forHTTPHeaderField: "Last-Event-ID"), "9",
+            "the replacement stream must resume from the refreshed cursor")
+    }
+
+    /// AC3: while the stream is healthy (acked .connected), pull-to-refresh
+    /// stays snapshot-only — no second stream task is created.
+    func testPullToRefreshIsIdempotentWhileStreamIsLive() async {
+        let fixture = liveModel(agents: ["a": agent("a", state: .working, title: "fresh")],
+                                rev: 9)
+        defer { fixture.cleanup() }
+
+        RefreshRecoveryURLProtocol.serveLive() // healthy from the first attempt
+        fixture.model.fleet.connect(client: CorraldClient(host: host,
+                                                          session: fixture.session))
+        let acked = await waitFor({ fixture.model.fleet.connectionState == .connected })
+        XCTAssertTrue(acked, "the live stream must ack before the pull")
+        XCTAssertEqual(RefreshRecoveryURLProtocol.eventRequestCount, 1)
+
+        await fixture.model.refreshFleet()
+
+        XCTAssertEqual(RefreshRecoveryURLProtocol.eventRequestCount, 1,
+                       "refreshing a healthy live host must not create a second stream (#425)")
+        XCTAssertEqual(fixture.model.fleet.connectionState, .connected)
+        XCTAssertEqual(fixture.model.fleet.agents["a"]?.title, "fresh")
+        XCTAssertFalse(fixture.model.isRefreshingFleet)
+    }
+}

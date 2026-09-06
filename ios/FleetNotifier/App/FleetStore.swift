@@ -151,7 +151,7 @@ final class FleetStore: ObservableObject {
         // path (`ingest`) both converge here, so the client-side state clock
         // is seeded on first sight and re-stamped on state change regardless
         // of which entry point delivered the event.
-        apply(withoutDiff: event)
+        apply(withoutDiff: event, marksConnected: true)
     }
 
     /// Issue #219: authoritative pull/toolbar refresh application.
@@ -162,11 +162,16 @@ final class FleetStore: ObservableObject {
     /// The SSE stream task is deliberately NOT touched here: it keeps
     /// running and resumes from the newest accepted revision via the
     /// shared cursor at the next reconnect — no duplicate stream tasks.
+    /// #425: a refresh snapshot is DATA, never a liveness claim — unlike a
+    /// frame that rode the live stream, it must not mark the store
+    /// `.connected`. Only the stream's own transport ack (`noteConnected`,
+    /// fired on every successful `/events` 200) may, so a snapshot-only
+    /// success can never render a dead/offline host as live.
     func applyRefresh(_ snapshot: Snapshot) {
-        apply(.snapshot(snapshot))
+        apply(withoutDiff: .snapshot(snapshot), marksConnected: false)
     }
 
-    private func apply(withoutDiff event: FleetEvent) {
+    private func apply(withoutDiff event: FleetEvent, marksConnected: Bool) {
         // #399 B4/C1: fail closed when the frame carries records from a
         // DIFFERENT host identity than the one this store was pinned to.
         // The prior (stale) snapshot stays untouched — nothing is applied.
@@ -203,7 +208,14 @@ final class FleetStore: ObservableObject {
             updateStateEnteredAt(old: old, new: next)
             trackTransitions(.delta(delta))
         }
-        connectionState = .connected
+        // #425: only events that RODE the live stream (ingest frames, and
+        // direct apply() seeds that mirror them) may mark the store
+        // `.connected`. A pull-refresh snapshot (`applyRefresh`) is applied
+        // with marksConnected: false — liveness belongs to the stream's own
+        // 200 ack (`noteConnected`), never to a snapshot fetch.
+        if marksConnected {
+            connectionState = .connected
+        }
     }
 
     // MARK: - Notification transition tracking (#354 L2)
@@ -400,6 +412,9 @@ final class FleetStore: ObservableObject {
 
     /// Start (or resume) the SSE stream from the last seen rev. The daemon
     /// responds with a full snapshot when the cursor is too old (R2).
+    /// #425: the task's OWN exit clears the handle — when the async stream
+    /// owner finishes (for any reason other than `disconnect()`), the
+    /// non-nil `streamTask` must not keep refusing later reconnects.
     func connect(client: CorraldClient) {
         guard streamTask == nil else { return }
         connectionState = .connecting
@@ -445,7 +460,38 @@ final class FleetStore: ObservableObject {
                     self.noteConnectionError(reason)
                 }
             })
+            // #425: the stream owner EXITED. Clear the stale task handle
+            // on the main actor so the next refresh/foreground reconnect is
+            // not refused by `connect()`'s non-nil guard, and report the
+            // honest non-live state (a stream that ended without
+            // disconnect() must never leave the store looking connected).
+            // Generation-guarded: a NEWER connection (or a deliberate
+            // disconnect that already nil-ed the handle) is never
+            // disturbed by this late cleanup.
+            Task { @MainActor [weak self] in
+                guard let self, self.connectionGeneration == generation else { return }
+                self.streamTask = nil
+                if self.connectionState != .disconnected {
+                    self.connectionState = .disconnected
+                }
+            }
         }
+    }
+
+    /// #425: pull-to-refresh stream recovery. `applyRefresh` never claims
+    /// liveness, so a successful snapshot over an ended/wedged stream
+    /// leaves the host honestly offline. This clears the stale task
+    /// ownership (cancel + handle) and starts EXACTLY ONE replacement
+    /// stream from the shared cursor whenever the stream has NOT
+    /// acknowledged a live connection; it is a no-op while the stream is
+    /// acknowledged live, so refreshing a healthy host stays idempotent —
+    /// no duplicate SSE tasks are ever created. Fire-and-forget: the pull
+    /// indicator is governed by the caller's own awaits, never by the
+    /// (re)connect.
+    func reconnectIfNeeded(client: CorraldClient) {
+        guard connectionState != .connected else { return }
+        disconnect()
+        connect(client: client)
     }
 
     /// #92: visible + diagnosable connection-failure state (never a silent

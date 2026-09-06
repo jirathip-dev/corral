@@ -289,7 +289,10 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # applyGrants), and the coordinator session-connected hook refreshes a
     # host that verified after the launch fan-out — re-pinned over the
     # #426 source set.
-    "d30cd2c82b5680ff472b281c9cdb4e7cd5f32aebdcf1e6ed97dfd6de9a732ba3"
+    # #426 r1: per-host refresh failure now logs the bound error instead of
+    # an empty catch (anti-slop no-swallowed-errors) — AppModel.swift
+    # changed again, so the release-source pin follows the r1 source set.
+    "8934fa0a50c9a6e0713eff671f4e4b656742135848f019204a9a5fa5bb9eb890"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

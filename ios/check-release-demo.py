@@ -63,6 +63,13 @@ TEST_SOURCE_FILE = "ios/FleetNotifierTests/FleetNotifierTests.swift"
 # RecentOutputModel (client reclassification removed), FleetViews (unknown rendering).
 APPROVED_RELEASE_SOURCE_DIGEST = (
     # #401: multi-host board + Settings UX — BoardModel host-chip/host-section projections, AppModel host filter/aggregate accessors + N2 recents-route fix, FleetViews multi-host renderer + Settings per-host rows + F2 text + Add-Host prefill, DemoFleet multi-host seed, TimeInState last-seen label — re-pinned over the #401 source set.
+    # #427: Direction-A filter/header redesign — FleetViews board header
+    # (top-left Filters control + summary, chip rows removed, No-lanes
+    # state), the new FilterScopeSheet (host/repo scopes over the shared
+    # translucent backdrop), the D7 banner extension (connecting hosts),
+    # FleetStore noteConnecting + AppModel demo variant, and the #427
+    # evidence launch args (FleetNotifierApp) — re-pinned over the #427
+    # source set.
     # #315: re-pinned after the canonical provenance read-model change.
     # #316 V3 context split: canonical-kind partition, structured session
     # status, and locked accessibility roles updated RecentOutputModel,
@@ -265,7 +272,7 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # (Retry/Rename/Remove host) became independent plain-style 44 pt
     # bounded controls with explicit theme tokens; digest re-pinned over
     # the #422 source set.
-    "daeeffeca6555c0dfc97122a836199b8d9a12997a97688fadb78fd097aabfe91"
+    "f150aed8c3879a9a89fe30e97ed58b3ccc1073034e1009da1b28db7f5f64feb5"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -386,7 +393,13 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # controls, single removal-request pin, no row gestures, token colors)
     # added to FleetNotifierTests.swift — re-pinned over the #422 test
     # source.
-    "8ba7845acf023b177444c10f6f688243c7eec698dcf66f3438fd24f42f786757"
+    # 427: FilterHeaderRedesignTests added (Direction-A header/sheet RED
+    # probes + independent host/repo selection pins) and the superseded
+    # chip-row wiring pins (MultiHostSurfaceWiringTests,
+    # SettingsAccessWiringTests, NavigationHeaderWiringTests,
+    # ThemeWiringTests) updated to the filter-sheet surface — re-pinned
+    # over the #427 test source.
+    "5e7cf2610f96903aeac1df2df7d930375cfb997af9dbf3279bc9d6f9fb95712b"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

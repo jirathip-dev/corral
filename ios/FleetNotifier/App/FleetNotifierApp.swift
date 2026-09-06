@@ -77,6 +77,10 @@ struct FleetNotifierApp: App {
                                 || CorralDemoLaunch.wantsMultiHostBoardEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsMultiHostSettingsEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsMultiHostAddEvidence(arguments: CommandLine.arguments)
+                                // #427: the filter-header evidence drivers
+                                // seed the same three-profile demo.
+                                || CorralDemoLaunch.wantsFilterHeaderEvidence(arguments: CommandLine.arguments)
+                                || CorralDemoLaunch.wantsFilterHeaderConnectingEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsAddHostBgReturnEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsAddHostFailedEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsAddHostCommitEvidence(arguments: CommandLine.arguments)
@@ -86,8 +90,15 @@ struct FleetNotifierApp: App {
                         // instead of the single-host demo fleet.
                         if CorralDemoLaunch.wantsMultiHostBoardEvidence(arguments: CommandLine.arguments)
                             || CorralDemoLaunch.wantsMultiHostSettingsEvidence(arguments: CommandLine.arguments)
-                            || CorralDemoLaunch.wantsMultiHostAddEvidence(arguments: CommandLine.arguments) {
-                            model.enterMultiHostDemo()
+                            || CorralDemoLaunch.wantsMultiHostAddEvidence(arguments: CommandLine.arguments)
+                            // #427: the filter-header drivers ride the same
+                            // three-profile seed (Host B connecting for the
+                            // connecting evidence launch).
+                            || CorralDemoLaunch.wantsFilterHeaderEvidence(arguments: CommandLine.arguments)
+                            || CorralDemoLaunch.wantsFilterHeaderConnectingEvidence(arguments: CommandLine.arguments) {
+                            model.enterMultiHostDemo(
+                                hostBConnecting: CorralDemoLaunch
+                                    .wantsFilterHeaderConnectingEvidence(arguments: CommandLine.arguments))
                         } else if CorralDemoLaunch.wantsAddHostBgReturnEvidence(arguments: CommandLine.arguments)
                                     || CorralDemoLaunch.wantsAddHostFailedEvidence(arguments: CommandLine.arguments)
                                     || CorralDemoLaunch.wantsAddHostCommitEvidence(arguments: CommandLine.arguments) {
@@ -125,9 +136,34 @@ struct FleetNotifierApp: App {
                         break
                     }
                 }
+#if DEBUG
+                // #427 evidence: Dynamic Type frames — run the WHOLE UI
+                // (board + sheets) at the accessibility content size only
+                // when the evidence launch argument is present. Without
+                // the argument the modifier is a pass-through and the
+                // user/system size category is untouched.
+                .modifier(DebugAccessibilitySizeModifier())
+#endif
         }
     }
 }
+
+#if DEBUG
+/// #427 evidence: force the accessibility content size category when
+/// `-corral427AccessibilitySizes` is passed (Debug builds only — the
+/// release path never compiles this), so the Dynamic Type frames prove the
+/// filter sheet's wrapping rows and vertical scroll reachability. Without
+/// the argument the modifier leaves the environment untouched.
+struct DebugAccessibilitySizeModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        if CorralDemoLaunch.wantsFilterHeaderAccessibilitySizes(arguments: CommandLine.arguments) {
+            content.environment(\.sizeCategory, .accessibilityLarge)
+        } else {
+            content
+        }
+    }
+}
+#endif
 
 #if DEBUG
 /// Launch arguments for the deterministic local design-gate fixture. The
@@ -197,6 +233,17 @@ enum CorralDemoLaunch {
     /// name/URL entry with the B3 URL-derived name prefill, then the
     /// fingerprint confirmation phase (Mocha + Latte).
     static let multiHostAddEvidenceArgument = "-corralDemoMultiHostAddEvidence"
+    /// #427 Direction A: records the filter/header surface matrix — the
+    /// top-left Filters control + sheet (closed All/All, sheet default,
+    /// host-only, repo-only, both scopes, offline host scope, zero-lane
+    /// No-lanes board; Mocha + Latte).
+    static let filterHeaderEvidenceArgument = "-corral427FilterEvidence"
+    /// #427 Direction A: the same driver with Host B seeded CONNECTING so
+    /// the board banner + sheet host rows show textual `connecting`.
+    static let filterHeaderConnectingEvidenceArgument = "-corral427ConnectingHostEvidence"
+    /// #427 Direction A: render the whole UI at the accessibility content
+    /// size for the Dynamic Type evidence frames (Debug only).
+    static let accessibilitySizesArgument = "-corral427AccessibilitySizes"
     /// #415: Add Host draft/error lifecycle evidence (a) — a partially
     /// entered Add Host draft survives an app-switch/return cycle (the
     /// host backgrounds this app via the Settings app and relaunches it).
@@ -285,6 +332,21 @@ enum CorralDemoLaunch {
     /// #401: the multi-host board evidence driver.
     static func wantsMultiHostBoardEvidence(arguments: [String]) -> Bool {
         arguments.contains(multiHostBoardEvidenceArgument)
+    }
+
+    /// #427: the Direction-A filter/header evidence driver.
+    static func wantsFilterHeaderEvidence(arguments: [String]) -> Bool {
+        arguments.contains(filterHeaderEvidenceArgument)
+    }
+
+    /// #427: the connecting-host filter/header evidence driver.
+    static func wantsFilterHeaderConnectingEvidence(arguments: [String]) -> Bool {
+        arguments.contains(filterHeaderConnectingEvidenceArgument)
+    }
+
+    /// #427: accessibility content size for the Dynamic Type evidence.
+    static func wantsFilterHeaderAccessibilitySizes(arguments: [String]) -> Bool {
+        arguments.contains(accessibilitySizesArgument)
     }
 
     /// #401: the multi-host Settings evidence driver.

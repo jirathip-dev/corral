@@ -647,6 +647,10 @@ struct FleetView: View {
     @ObservedObject var model: AppModel
     @EnvironmentObject private var theme: ThemeStore
     @State private var showSettings = false
+    /// #427 Direction A: the filter sheet (host + repository scopes). The
+    /// binding is flipped by the top-left Filters control and the DEBUG
+    /// recorded-evidence driver; dismissal preserves the current selection.
+    @State private var showFilters = false
     // #379: the How-to-connect sheet. Presented from the Settings '?' Help
     // button AND auto-presented over the board on an unpaired first launch
     // (fresh install); the DEBUG evidence driver opens the same binding.
@@ -655,6 +659,12 @@ struct FleetView: View {
     /// most ONCE per board lifetime (first launch while unpaired) — a
     /// deliberate device removal later must NOT re-pop the sheet.
     @State private var autoPresentedConnectHelp = false
+#if DEBUG
+    /// #427: single-fire guard for the filter-header evidence drivers —
+    /// the .task(id:) hook can fire twice on demo entry, and a second
+    /// concurrent instance would interleave phase state (the #387 lesson).
+    @State private var filterHeaderEvidenceRan = false
+#endif
     /// #386: which status sections are collapsed. View-owned so the state
     /// lives for the board session ONLY — never persisted, never restored
     /// (consistent with #373's per-sheet session state) — and every fresh
@@ -701,13 +711,15 @@ struct FleetView: View {
             BoardModel.agents(agents, in: activeRepoFilter))
         // #401 multi-host board (D1-D7): with 2+ profiles the board renders
         // the #400 COMPOSITE rows (aggregateBoardRows — never re-derived
-        // ranking) with a host-chip row above the repo chips; every host
-        // chip shows its TOTAL lane count + health independent of the repo
-        // filter (D3), repo chips/choices recalc for the selected host
-        // (D4), rows merge by repo across hosts (D5), and compact textual
-        // host badges show on rows only in All Hosts (D6). With one profile
-        // every host* value below is inert and the legacy single-host path
-        // below renders byte-identically (F1 parity).
+        // ranking). #427 Direction A moved the host/repo chip ROWS into the
+        // top-left Filters control + sheet, but every data projection they
+        // consumed stays: each host chip shows its TOTAL lane count +
+        // health independent of the repo filter (D3), repo chips/choices
+        // recalc for the selected host (D4), rows merge by repo across
+        // hosts (D5), and compact textual host badges show on rows only in
+        // All Hosts (D6). With one profile every host* value below is inert
+        // and the single-host path keeps its pre-#401 semantics (F1
+        // parity) — its repo scope rides the same Filters control.
         let multiHost = model.multiHostConfigured
         let aggregateRows = model.aggregateBoardRows ?? []
         let hostFilter = model.hostFilter
@@ -732,10 +744,36 @@ struct FleetView: View {
                 health: BoardModel.hostChipHealth(
                     for: model.hostRuntimeFacts(for: profile)))
         }
-        let hostChipRow = BoardModel.hostChips(hosts: hostChipInputs)
         let hostOutageSummary = BoardModel.hostOutageSummary(hosts: hostChipInputs)
         // D6: badges only in All Hosts with 2+ profiles.
         let showRowHostBadges = multiHost && hostFilter == nil
+        // #427 Direction A: the compact top-left Filters control and the
+        // filtered-empty state derive from the SAME reconciled projections
+        // the board content uses. Multi-host boards summarize host AND
+        // repository scope ("Host A · demo-atlas"); single-host boards show
+        // the repository scope alone (there is no host choice with one
+        // profile — pre-#401 parity).
+        let hostFilterName = model.hostFilterProfile?.displayName ?? "All hosts"
+        let activeRepoChoice = multiHost ? activeHostRepoFilter : activeRepoFilter
+        let repoFilterName = activeRepoChoice ?? "All repositories"
+        let activeFilterCount = (hostFilter == nil ? 0 : 1)
+            + (activeRepoChoice == nil ? 0 : 1)
+        let filterButtonLabel = activeFilterCount == 0
+            ? "Filters"
+            : "Filters · \(activeFilterCount)"
+        let filterSummaryText = multiHost
+            ? "\(hostFilterName) · \(repoFilterName)"
+            : repoFilterName
+        // The No-lanes state renders ONLY while a filter selection is active
+        // and the scoped board has no rows (zero-lane host, empty
+        // intersection). A filterless empty fleet keeps the plain board.
+        let filteredBoardIsEmpty = multiHost
+            ? hostSections.statuses.isEmpty
+            : sections.statuses.isEmpty
+        let filterIsActive = multiHost
+            ? (hostFilter != nil || activeHostRepoFilter != nil)
+            : (activeRepoFilter != nil)
+        let showNoLanesState = filteredBoardIsEmpty && filterIsActive
         // #365: the top-bar chrome (.navigationTitle/.toolbar — the Settings
         // gear) renders only inside a navigation shell. The #354 cut deleted
         // the board's NavigationStack, orphaning those modifiers and leaving
@@ -762,34 +800,76 @@ struct FleetView: View {
                             }
                         } header: {
                             PinnedHeader(fillsInteractiveWidth: true) {
-                                boardChrome
+                                boardChrome(filterButtonLabel: filterButtonLabel,
+                                            filterSummaryText: filterSummaryText)
                             }
                         }
-                        // #401 D2: with 2+ profiles the HOST-chip row sits
-                        // ABOVE the repo-chip row (All, then hosts in
-                        // user-controlled order); the compact D7 outage
-                        // summary rides under it. Single-host layout is
-                        // unchanged (the row is hidden with one profile).
-                        if model.multiHostConfigured {
-                            hostChipsRow(chips: hostChipRow,
-                                         selection: model.hostFilter)
-                            if let hostOutageSummary {
-                                hostOutageSummaryRow(hostOutageSummary)
-                            }
-                        }
-                        if model.multiHostConfigured {
-                            repoChipsRow(chips: hostRepoChips,
-                                         total: hostRows.count,
-                                         selection: activeHostRepoFilter)
-                        } else {
-                            repoChipsRow(chips: chips,
-                                         total: agents.count,
-                                         selection: activeRepoFilter)
+                        // #427 Direction A: the horizontal chip rows moved
+                        // into the top-left Filters control + the filter
+                        // sheet — NO chip row renders on the board in any
+                        // mode (the two-unexplained-All defect is gone). The
+                        // compact D7 outage summary stays as the board's
+                        // textual host-health line under the pinned chrome
+                        // (2+ profiles; AC5 — connecting/offline/stale stay
+                        // textual on the board, never color alone).
+                        if model.multiHostConfigured, let hostOutageSummary {
+                            hostOutageSummaryRow(hostOutageSummary)
                         }
                     }
                     if let banner = model.banner {
                         BannerView(banner: banner) {
                             model.banner = nil
+                        }
+                    }
+                    // #427 Direction A: the filtered-empty state — only
+                    // while a filter selection is ACTIVE and the scoped
+                    // board has no rows (zero-lane host, empty
+                    // intersection). A filterless empty fleet keeps the
+                    // plain board. The summary echo + Reset keep both
+                    // scopes visible and reversible (AC4).
+                    if showNoLanesState {
+                        Section {
+                            VStack(spacing: 0) {
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .stroke(theme.surface2, lineWidth: 1.5)
+                                        .frame(width: 40, height: 40)
+                                    Image(systemName: "bolt")
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(theme.accent)
+                                }
+                                .accessibilityHidden(true)
+                                Text("No lanes match")
+                                    .font(.headline.weight(.bold))
+                                    .foregroundStyle(theme.text)
+                                    .padding(.top, 14)
+                                Text(filterSummaryText)
+                                    .font(.caption)
+                                    .foregroundStyle(theme.subtext1)
+                                    .padding(.top, 6)
+                                Text("Both scopes remain active and reversible.")
+                                    .font(.caption2)
+                                    .foregroundStyle(theme.subtext1)
+                                    .padding(.top, 2)
+                                Button {
+                                    model.selectHostFilter(nil)
+                                    model.repoFilter = nil
+                                } label: {
+                                    Text("Reset all filters")
+                                        .font(.footnote.weight(.semibold))
+                                        .foregroundStyle(theme.accent)
+                                        .frame(minWidth: 44, minHeight: 44)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .padding(.top, 8)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 24)
+                            .padding(.horizontal, 20)
+                            .listRowInsets(EdgeInsets())
+                            .listRowBackground(theme.base)
+                            .listRowSeparator(.hidden)
                         }
                     }
                     switch model.mode {
@@ -881,6 +961,14 @@ struct FleetView: View {
                 .sheet(isPresented: $showSettings) {
                     SettingsView(model: model)
                 }
+                // #427 Direction A: the filter sheet — host and repository
+                // scopes apply IMMEDIATELY (no Apply button); dismissal
+                // preserves the current selection. A native bottom sheet
+                // (fraction + full detents, drag indicator) over the shared
+                // translucent backdrop, so the board stays visible behind.
+                .sheet(isPresented: $showFilters) {
+                    FilterScopeSheet(model: model)
+                }
                 // #364 C: recents bottom sheet binds DIRECTLY to the model-owned
                 // request — row taps, notification deep links, and the demo route
                 // all funnel through `model.requestRecents`. Every request is a
@@ -945,178 +1033,6 @@ struct FleetView: View {
         }
         .tint(theme.accent)
         .preferredColorScheme(theme.flavor.isLight ? .light : .dark)
-    }
-
-    /// #364 B: the horizontal repo filter chip row ('All' + one chip per
-    /// repo with the live agent count), rendered as the first board
-    /// content row under the pinned chrome. Selecting a chip filters the
-    /// agents the #362 status sections bucket; 'All' clears. Counts are
-    /// always over the WHOLE fleet — filtering never re-zeroes the other
-    /// chips.
-    @ViewBuilder
-    private func repoChipsRow(chips: [BoardModel.RepoFilterChip],
-                              total: Int,
-                              selection: String?) -> some View {
-        let repos = chips.map(\.repo)
-        return Section {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    repoChipButton(label: "All", count: total,
-                                   isSelected: selection == nil) {
-                        model.repoFilter = nil
-                    }
-                    ForEach(chips) { chip in
-                        repoChipButton(label: chip.repo, count: chip.count,
-                                       isSelected: selection == chip.repo,
-                                       repo: chip.repo, repos: repos) {
-                            model.repoFilter = chip.repo
-                        }
-                    }
-                }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 4)
-            }
-            // #387: the chips row is the demo board's FIRST content row —
-            // its id is the ScrollViewReader 'top' anchor the recorded-
-            // evidence driver returns to (see BoardEvidenceAnchor.top).
-            .id("board.filter-chips")
-            .listRowInsets(EdgeInsets())
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
-        }
-    }
-
-    /// One filter chip: repo/All label + count badge, ≥44 pt hit target
-    /// (#364 A3), visible selected state, VoiceOver label/value/selected
-    /// trait. Press feedback comes from `BoardPressStyle`. #372 tokens: the
-    /// selected chip fills with the palette accent (mauve) — never teal —
-    /// and unselected chips carry the repo hue dot + surface-token chrome.
-    private func repoChipButton(label: String, count: Int,
-                                isSelected: Bool,
-                                repo: String? = nil,
-                                repos: [String] = [],
-                                action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 5) {
-                if label != "All", let repo {
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(theme.repoHueColor(for: repo, among: repos))
-                        .frame(width: 7, height: 7)
-                        .accessibilityHidden(true)
-                }
-                Text(label)
-                    .lineLimit(1)
-                Text("\(count)")
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(isSelected ? theme.crust.opacity(0.22)
-                                           : theme.surface2.opacity(0.30),
-                                in: Capsule())
-                    .accessibilityHidden(true)
-            }
-            .font(.subheadline.weight(.medium))
-            .foregroundStyle(isSelected ? theme.crust : theme.subtext1)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(isSelected ? theme.accent : theme.base,
-                        in: Capsule())
-            .overlay(Capsule().stroke(
-                isSelected ? theme.accent : theme.surface1, lineWidth: 1))
-            .frame(minHeight: 44)
-        }
-        .buttonStyle(BoardPressStyle())
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(label == "All" ? "All agents"
-                                           : "Filter \(label)")
-        .accessibilityValue(count == 1 ? "\(count) agent"
-                                       : "\(count) agents")
-        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
-    }
-
-    /// #401 D2/D3: the horizontal HOST-filter chip row rendered ABOVE the
-    /// repo-chip row when 2+ profiles exist — All first, then every host in
-    /// the user-controlled persisted profile order (the store order the
-    /// Settings Hosts rows render in). Each host chip always shows that
-    /// host's TOTAL lane count + health, independent of the repo filter;
-    /// zero-lane and offline hosts stay visible (D3).
-    @ViewBuilder
-    private func hostChipsRow(chips: [BoardModel.HostFilterChip],
-                              selection: UUID?) -> some View {
-        Section {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(chips) { chip in
-                        hostChipButton(chip,
-                                       isSelected: selection == chip.profileID) {
-                            model.selectHostFilter(chip.profileID)
-                        }
-                    }
-                }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 4)
-            }
-            .id("board.host-chips")
-            .listRowInsets(EdgeInsets())
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
-        }
-    }
-
-    /// One host-filter chip: All / host name + total-lane count + a health
-    /// dot whose COLOR never carries the meaning alone — the health text
-    /// label rides on the chip whenever the host is not live and in the
-    /// VoiceOver label/value always (D3/D8). ≥44 pt hit target, visible
-    /// selected state, selected trait.
-    private func hostChipButton(_ chip: BoardModel.HostFilterChip,
-                                isSelected: Bool,
-                                action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 5) {
-                Circle()
-                    .fill(hostHealthColor(chip.health))
-                    .frame(width: 7, height: 7)
-                    .accessibilityHidden(true)
-                Text(chip.isAll ? "All" : chip.displayName)
-                    .lineLimit(1)
-                Text("\(chip.laneCount)")
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(isSelected ? theme.crust.opacity(0.22)
-                                           : theme.surface2.opacity(0.30),
-                                in: Capsule())
-                    .accessibilityHidden(true)
-                if !chip.isAll, chip.health != .live {
-                    Text(chip.health.label)
-                        .font(.caption2.weight(.medium))
-                        .lineLimit(1)
-                        .foregroundStyle(hostHealthColor(chip.health))
-                }
-            }
-            .font(.subheadline.weight(.medium))
-            .foregroundStyle(isSelected ? theme.crust : theme.subtext1)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(isSelected ? theme.accent : theme.base,
-                        in: Capsule())
-            .overlay(Capsule().stroke(
-                isSelected ? theme.accent : theme.surface1, lineWidth: 1))
-            .frame(minHeight: 44)
-        }
-        .buttonStyle(BoardPressStyle())
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(chip.isAll ? "All hosts"
-                                       : "Filter host \(chip.displayName)")
-        .accessibilityValue("\(chip.laneCount) lanes, \(chip.health.label)")
-        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
-    }
-
-    /// The health dot color (D8 — color never alone; the textual health
-    /// label and VoiceOver value always accompany it). Resolves through the
-    /// shared token mapping so all four themes stay in sync.
-    private func hostHealthColor(_ health: BoardModel.HostChipHealth) -> Color {
-        theme.color(BoardModel.hostHealthToken(health))
     }
 
     /// #401 D7: the ONE compact board-level outage summary row ("1 host
@@ -1489,11 +1405,19 @@ struct FleetView: View {
         return parts.joined(separator: ", ")
     }
 
-    /// Board chrome: connection status (live) + the pull-to-refresh hint.
-    /// No search field; #364 B repo chips live in their own row below.
+    /// Board chrome: the top-left #427 Filters control (count label +
+    /// selected-scope summary, opening the filter sheet), the connection
+    /// status line (live), and the pull-to-refresh hint. The control lives
+    /// in the pinned chrome — the board's own header strip — so it can
+    /// never compete with the Settings gear, which stays alone on the
+    /// top-right toolbar. The labels come from the body's reconciled
+    /// projections so the trigger can never drift from the board content.
     @ViewBuilder
-    private var boardChrome: some View {
+    private func boardChrome(filterButtonLabel: String,
+                             filterSummaryText: String) -> some View {
         VStack(alignment: .leading, spacing: 0) {
+            filterHeaderControl(filterButtonLabel: filterButtonLabel,
+                                filterSummaryText: filterSummaryText)
             if model.mode == .live {
                 connectionStatusLine
             }
@@ -1513,6 +1437,46 @@ struct FleetView: View {
             .accessibilityElement(children: .combine)
             .accessibilityLabel("Pull to refresh. Updates stream in automatically.")
         }
+    }
+
+    /// #427 Direction A: the top-left `Filters` control — compact count
+    /// label (`Filters` / `Filters · N`) above the concise selected
+    /// summary (`Bazzite · corral`), opening the filter sheet. The whole
+    /// control is one >= 44 pt button whose VoiceOver label repeats the
+    /// full visible text so the scope is never color or position
+    /// dependent.
+    @ViewBuilder
+    private func filterHeaderControl(filterButtonLabel: String,
+                                     filterSummaryText: String) -> some View {
+        Button {
+            showFilters = true
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "line.3.horizontal.decrease")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(theme.accent)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(filterButtonLabel)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(theme.text)
+                        .lineLimit(1)
+                    Text(filterSummaryText)
+                        .font(.caption2)
+                        .foregroundStyle(theme.subtext1)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .contentShape(Rectangle())
+            .padding(.horizontal, 20)
+            .padding(.vertical, 2)
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(filterButtonLabel + ", " + filterSummaryText)
+        .accessibilityHint("Opens host and repository filters")
     }
 
     /// Connection indicator line, modeled by `BoardModel.connectionStatus`
@@ -1619,6 +1583,16 @@ struct FleetView: View {
             await runMultiHostSettingsSequence()
         } else if CorralDemoLaunch.wantsMultiHostAddEvidence(arguments: CommandLine.arguments) {
             await runMultiHostAddSequence()
+        } else if CorralDemoLaunch.wantsFilterHeaderEvidence(arguments: CommandLine.arguments) {
+            // #427: the Direction-A matrix — glass by default; the
+            // Accessibility Sizes launch runs the shorter a11y sequence.
+            if CorralDemoLaunch.wantsFilterHeaderAccessibilitySizes(arguments: CommandLine.arguments) {
+                await runFilterHeaderAccessibilitySequence()
+            } else {
+                await runFilterHeaderSequence()
+            }
+        } else if CorralDemoLaunch.wantsFilterHeaderConnectingEvidence(arguments: CommandLine.arguments) {
+            await runFilterHeaderConnectingSequence()
         } else if CorralDemoLaunch.wantsAddHostBgReturnEvidence(arguments: CommandLine.arguments)
                     || CorralDemoLaunch.wantsAddHostFailedEvidence(arguments: CommandLine.arguments)
                     || CorralDemoLaunch.wantsAddHostCommitEvidence(arguments: CommandLine.arguments) {
@@ -2186,6 +2160,171 @@ struct FleetView: View {
         showSettings = true
         _ = await themePause(1000)
     }
+
+    // MARK: #427 Direction-A filter/header evidence drivers
+
+    /// Seeded demo profile id for the #427 drivers (#401 seed display
+    /// names: Host A live / Host B offline-or-connecting / Host C key
+    /// mismatch with zero lanes).
+    private func filterHeaderDemoHost(_ name: String) -> UUID? {
+        model.profiles.first { $0.displayName == name }?.id
+    }
+
+    /// #427 evidence (main matrix, Mocha + Latte): one deterministic launch
+    /// records the Direction-A board header + filter sheet — the closed
+    /// All/All board, the sheet at its default scope, host-only, repo-only,
+    /// both scopes, the offline/stale host scope, the zero-lane host's
+    /// No-lanes board, then a Latte pair after a live flavor flip. The
+    /// driver flips the same `showFilters` / `model.hostFilter` /
+    /// `model.repoFilter` state the header control and sheet rows set —
+    /// simctl cannot inject taps. Markers land AFTER each state settles,
+    /// then hold >= 9 s so the host capture always lands in the named
+    /// phase. Cancellation-aborts like the other drivers.
+    private func runFilterHeaderSequence() async {
+        guard model.mode == .demo, model.multiHostConfigured else { return }
+        guard await themePause(0) else { return }
+        guard !filterHeaderEvidenceRan else { return }
+        let hostA = filterHeaderDemoHost("Host A")
+        let hostB = filterHeaderDemoHost("Host B")
+        let hostC = filterHeaderDemoHost("Host C")
+        theme.setFlavor(.mocha)
+        model.selectHostFilter(nil)
+        model.repoFilter = nil
+        showFilters = false
+        // Longer pre-phase-1 settle: the first frames ride the launch's
+        // cold simctl screenshots, which can lag several seconds.
+        guard await themePause(4000) else { return }
+        EvidenceMarkers.write("phase-1-filters-board-all-mocha")
+        guard await themePause(9000) else { return }
+        showFilters = true
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("phase-2-filters-sheet-all-mocha")
+        guard await themePause(9000) else { return }
+        model.selectHostFilter(hostA)
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("phase-3-filters-sheet-host-only-mocha")
+        guard await themePause(9000) else { return }
+        showFilters = false
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("phase-4-filters-board-host-only-mocha")
+        guard await themePause(9000) else { return }
+        showFilters = true
+        model.selectHostFilter(nil)
+        model.repoFilter = "demo-atlas"
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("phase-5-filters-sheet-repo-only-mocha")
+        guard await themePause(9000) else { return }
+        model.selectHostFilter(hostA)
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("phase-6-filters-sheet-both-mocha")
+        guard await themePause(9000) else { return }
+        showFilters = false
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("phase-7-filters-board-both-mocha")
+        guard await themePause(9000) else { return }
+        // Offline/stale host: Host B's scope — its retained STALE rows and
+        // "2 lanes · offline" health stay textual in the sheet (AC5).
+        showFilters = true
+        model.repoFilter = nil
+        model.selectHostFilter(hostB)
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("phase-8-filters-sheet-host-b-offline-mocha")
+        guard await themePause(9000) else { return }
+        // Zero results: the zero-lane key-mismatch host (Host C) — the
+        // board shows the No-lanes state with both scopes still reversible.
+        showFilters = false
+        model.selectHostFilter(hostC)
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("phase-9-filters-board-zero-results-mocha")
+        guard await themePause(9000) else { return }
+        // Latte: reset → the closed All/All board, then both-active sheet.
+        model.selectHostFilter(nil)
+        model.repoFilter = nil
+        theme.setFlavor(.latte)
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("phase-10-filters-board-all-latte")
+        guard await themePause(9000) else { return }
+        showFilters = true
+        model.selectHostFilter(hostA)
+        model.repoFilter = "demo-atlas"
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("phase-11-filters-sheet-both-latte")
+        guard await themePause(9000) else { return }
+        showFilters = false
+        guard await themePause(1500) else { return }
+        EvidenceMarkers.write("phase-12-filters-done")
+        // Single-fire completion: a re-fired .task(id:) instance after a
+        // cancelled run may only re-run BEFORE the final marker (the #387
+        // double-fire lesson) — never after the sequence completed.
+        filterHeaderEvidenceRan = true
+        _ = await themePause(1500)
+    }
+
+    /// #427 evidence (connecting host): the SAME multi-host demo state but
+    /// Host B's session store is CONNECTING (seeded via
+    /// `enterMultiHostDemo(hostBConnecting:)`) — the board banner and the
+    /// sheet's host rows must read `connecting` textually (AC5, never color
+    /// alone). Mocha frames: the closed All/All board, the sheet at All/All
+    /// (B's connecting row visible), then Host B selected (retained rows +
+    /// connecting health).
+    private func runFilterHeaderConnectingSequence() async {
+        guard model.mode == .demo, model.multiHostConfigured else { return }
+        guard await themePause(0) else { return }
+        guard !filterHeaderEvidenceRan else { return }
+        let hostB = filterHeaderDemoHost("Host B")
+        theme.setFlavor(.mocha)
+        model.selectHostFilter(nil)
+        model.repoFilter = nil
+        showFilters = false
+        guard await themePause(4000) else { return }
+        EvidenceMarkers.write("phase-1-connecting-board-all-mocha")
+        guard await themePause(9000) else { return }
+        showFilters = true
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("phase-2-connecting-sheet-all-mocha")
+        guard await themePause(9000) else { return }
+        model.selectHostFilter(hostB)
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("phase-3-connecting-sheet-host-b-mocha")
+        guard await themePause(9000) else { return }
+        showFilters = false
+        guard await themePause(1500) else { return }
+        EvidenceMarkers.write("phase-4-connecting-done")
+        filterHeaderEvidenceRan = true
+        _ = await themePause(1500)
+    }
+
+    /// #427 evidence (Dynamic Type): under `-corral427AccessibilitySizes`
+    /// the whole UI renders at the accessibility content size — this
+    /// shorter sequence records the sheet at the default scope, host-only,
+    /// and both-active so the wrapped row copy stays reachable and the
+    /// scopes scroll under the pinned Reset footer (AC6).
+    private func runFilterHeaderAccessibilitySequence() async {
+        guard model.mode == .demo, model.multiHostConfigured else { return }
+        guard await themePause(0) else { return }
+        guard !filterHeaderEvidenceRan else { return }
+        let hostA = filterHeaderDemoHost("Host A")
+        theme.setFlavor(.mocha)
+        model.selectHostFilter(nil)
+        model.repoFilter = nil
+        showFilters = true
+        guard await themePause(4000) else { return }
+        EvidenceMarkers.write("phase-1-ax-sheet-all-mocha")
+        guard await themePause(9000) else { return }
+        model.selectHostFilter(hostA)
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("phase-2-ax-sheet-host-only-mocha")
+        guard await themePause(9000) else { return }
+        model.repoFilter = "demo-atlas"
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("phase-3-ax-sheet-both-mocha")
+        guard await themePause(9000) else { return }
+        showFilters = false
+        guard await themePause(1500) else { return }
+        EvidenceMarkers.write("phase-4-ax-done")
+        filterHeaderEvidenceRan = true
+        _ = await themePause(1500)
+    }
 #endif
 }
 
@@ -2206,14 +2345,16 @@ enum EvidenceMarkers {
 }
 
 /// #387 evidence scroll anchors: `.top` is the demo board's first content
-/// row (the filter-chips row — see repoChipsRow's `.id("board.filter-chips")`);
+/// row (the blocked demo-garden agent — the first agent row of the
+/// single-host demo seed, right under the pinned chrome; the #427 redesign
+/// removed the old filter-chips row that used to carry this anchor);
 /// `.belowFold` is a demo row below the first-viewport fold (the idle
 /// agent — every agent row carries its agent id), so scrolling it to the
 /// viewport top edge puts the nav bar in its fully collapsed state.
 /// simctl cannot drag, so the title-evidence driver scrolls through
 /// ScrollViewReader requests.
 enum BoardEvidenceAnchor {
-    static let top = "board.filter-chips"
+    static let top = "herdr:demo-garden-blocked"
     static let belowFold = "herdr:demo-ledger-idle"
 }
 #endif
@@ -2244,6 +2385,261 @@ struct BannerView: View {
         .background(banner.isError ? theme.red.opacity(0.12) : theme.blue.opacity(0.12),
                     in: RoundedRectangle(cornerRadius: 8))
     }
+}
+
+// MARK: - #427 Direction A filter scope sheet
+
+/// The native bottom sheet behind the top-left `Filters` control (#427
+/// Direction A). Host scope FIRST (with every host's textual health), then
+/// the independent Repository scope — the approved variant-A surface:
+///
+/// - explicit `All hosts` / `All repositories` rows (never two bare `All`
+///   labels — AC1), each selection applying IMMEDIATELY to the model
+///   (host/repo stay two independent selections — AC7);
+/// - scoped `Clear host` / `Clear repository` controls (enabled only while
+///   that scope is active) plus ONE visible `Reset all filters` footer and
+///   an obvious close path (`Close filters` + the drag indicator);
+/// - rows >= 50 pt, distinct VoiceOver labels + selected trait, Dynamic
+///   Type-safe wrapping in the vertical scroll surface;
+/// - the shared translucent backdrop (Liquid Glass on iOS 26+, themed
+///   fallback below the availability gate) with the board visible behind.
+struct FilterScopeSheet: View {
+    @ObservedObject var model: AppModel
+    @EnvironmentObject private var theme: ThemeStore
+    @Environment(\.dismiss) private var dismiss
+
+    /// "1 lane" / "N lanes" — the same singular handling the board chips
+    /// used, now riding the scope-row metadata line.
+    private func laneText(_ count: Int) -> String {
+        count == 1 ? "1 lane" : "\(count) lanes"
+    }
+
+    /// One selectable scope row: name + metadata subtitle, accent-tinted
+    /// when selected with a trailing check + the VoiceOver selected trait.
+    /// >= 50 pt hit target (the 44 pt minimum at any Dynamic Type size).
+    private func scopeRow(name: String, subtitle: String, selected: Bool,
+                          action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(name)
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(selected ? theme.accent : theme.text)
+                        .multilineTextAlignment(.leading)
+                    Text(subtitle)
+                        .font(.caption2)
+                        .foregroundStyle(theme.subtext1)
+                        .multilineTextAlignment(.leading)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                if selected {
+                    Image(systemName: "checkmark")
+                        .font(.footnote.weight(.bold))
+                        .foregroundStyle(theme.accent)
+                        .accessibilityHidden(true)
+                }
+            }
+            .padding(.horizontal, 16)
+            .frame(maxWidth: .infinity, minHeight: 50, alignment: .leading)
+            .background(selected ? theme.accent.opacity(0.12) : Color.clear)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(name + ", " + subtitle)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
+    }
+
+    /// One scope section: uppercase heading + its scoped Clear control on
+    /// the heading row, then the choice rows (hairline separators).
+    private func scopeSection(title: String, clearLabel: String,
+                              clearEnabled: Bool,
+                              clearAction: @escaping () -> Void,
+                              rows: [FilterScopeChoice]) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Text(title)
+                    .font(.caption2.weight(.semibold))
+                    .kerning(0.6)
+                    .textCase(.uppercase)
+                    .foregroundStyle(theme.subtext1)
+                Spacer(minLength: 0)
+                Button(action: clearAction) {
+                    Text(clearLabel)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(theme.accent.opacity(clearEnabled ? 1 : 0.35))
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(!clearEnabled)
+                .accessibilityLabel(clearLabel)
+                .accessibilityHint(clearEnabled ? "Clears the \(title.lowercased()) selection"
+                                               : "No \(title.lowercased()) selection to clear")
+            }
+            .padding(.leading, 16)
+            .padding(.trailing, 8)
+            .frame(minWidth: 0, minHeight: 44)
+            ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                scopeRow(name: row.name, subtitle: row.subtitle,
+                         selected: row.selected) {
+                    row.action()
+                }
+                .overlay(alignment: .bottom) {
+                    if index < rows.count - 1 {
+                        Rectangle()
+                            .fill(theme.surface1.opacity(0.35))
+                            .frame(height: 1)
+                    }
+                }
+            }
+        }
+        .background(theme.base.opacity(0.92))
+    }
+
+    var body: some View {
+        let multiHost = model.multiHostConfigured
+        let aggregateRows = model.aggregateBoardRows ?? []
+        let hostRows = BoardModel.rows(aggregateRows, forHost: model.hostFilter)
+        // D3/D4: host chips (All first, unified count + aggregate health)
+        // and repo chips/counts RESCOPED to the selected host — the same
+        // projections the pre-#427 chip rows consumed (AC7: semantics
+        // unchanged; only the surface moved into the sheet).
+        let hostChipInputs = model.profiles.map { profile in
+            BoardModel.HostFilterChip(
+                profileID: profile.id,
+                displayName: profile.displayName,
+                laneCount: BoardModel.laneCounts(aggregateRows)[profile.id] ?? 0,
+                health: BoardModel.hostChipHealth(
+                    for: model.hostRuntimeFacts(for: profile)))
+        }
+        let hostChips = BoardModel.hostChips(hosts: hostChipInputs)
+        let repoChips = multiHost
+            ? BoardModel.repoFilters(hostRows)
+            : BoardModel.repoFilters(Array(model.fleet.agents.values))
+        let repoTotal = multiHost ? hostRows.count : model.fleet.agents.count
+        let activeRepoChoice = BoardModel.reconcile(model.repoFilter,
+                                                    against: repoChips)
+        let hostScopeRows = hostChips.enumerated().map { index, chip in
+            FilterScopeChoice(
+                id: "host-\(chip.id)",
+                name: chip.isAll ? "All hosts" : chip.displayName,
+                subtitle: chip.isAll
+                    ? laneText(chip.laneCount)
+                    : "\(laneText(chip.laneCount)) · \(chip.health.label)",
+                selected: index == 0 ? model.hostFilter == nil
+                                     : model.hostFilter == chip.profileID,
+                action: {
+                    model.selectHostFilter(chip.profileID)
+                })
+        }
+        let repoScopeRows = [FilterScopeChoice(
+            id: "repo-all",
+            name: "All repositories",
+            subtitle: laneText(repoTotal),
+            selected: activeRepoChoice == nil,
+            action: {
+                model.repoFilter = nil
+            })] + repoChips.map { chip in
+                FilterScopeChoice(
+                    id: "repo-\(chip.repo)",
+                    name: chip.repo,
+                    subtitle: laneText(chip.count),
+                    selected: activeRepoChoice == chip.repo,
+                    action: {
+                        model.repoFilter = chip.repo
+                    })
+            }
+        let sheetSummaryText = multiHost
+            ? "\(model.hostFilterProfile?.displayName ?? "All hosts") · \(activeRepoChoice ?? "All repositories")"
+            : (activeRepoChoice ?? "All repositories")
+        VStack(spacing: 0) {
+            HStack(spacing: 4) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Filters")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(theme.text)
+                    Text(sheetSummaryText)
+                        .font(.caption)
+                        .foregroundStyle(theme.subtext1)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                Spacer(minLength: 0)
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(theme.accent)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Close filters")
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 6)
+            Rectangle()
+                .fill(theme.surface1.opacity(0.4))
+                .frame(height: 1)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    if multiHost {
+                        scopeSection(
+                            title: "Host scope",
+                            clearLabel: "Clear host",
+                            clearEnabled: model.hostFilter != nil,
+                            clearAction: {
+                                model.selectHostFilter(nil)
+                            },
+                            rows: hostScopeRows)
+                    }
+                    scopeSection(
+                        title: "Repository scope",
+                        clearLabel: "Clear repository",
+                        clearEnabled: activeRepoChoice != nil,
+                        clearAction: {
+                            model.repoFilter = nil
+                        },
+                        rows: repoScopeRows)
+                }
+                .padding(.vertical, 8)
+            }
+            Rectangle()
+                .fill(theme.surface1.opacity(0.4))
+                .frame(height: 1)
+            Button {
+                model.selectHostFilter(nil)
+                model.repoFilter = nil
+            } label: {
+                Text("Reset all filters")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(theme.accent)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .frame(maxWidth: .infinity)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.vertical, 4)
+        }
+        .background(theme.base.opacity(0.55))
+        .translucentSheetBackdrop(theme.base)
+        .presentationDetents([.fraction(0.78), .large])
+        .presentationDragIndicator(.visible)
+    }
+}
+
+/// One filter scope choice row (id + display copy + selection state + the
+/// model mutation the row performs — host rows keep
+/// `model.selectHostFilter(chip.profileID)` wiring, repo rows write
+/// `model.repoFilter` directly: the two selections stay independent).
+struct FilterScopeChoice: Identifiable {
+    let id: String
+    let name: String
+    let subtitle: String
+    let selected: Bool
+    let action: () -> Void
 }
 
 // MARK: - Registration

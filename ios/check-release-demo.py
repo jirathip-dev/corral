@@ -243,7 +243,25 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # (per-host transition hooks), AppModel (per-host enrollment/clears,
     # composite notification routing), FleetViews (per-host Settings state)
     # — re-pinned over the #397 source set.
-    "ffd8dfa4099659a40db35a3bc0ee2042417c2b4b73efd112e469352b93d74e5a"
+    # 415: Add Host draft/error lifecycle — AppModel (scene-scoped
+    # AddHostDraft + AddHostOutcome + phase failures + no-active-removal
+    # commit + evidence seed), FleetViews (draft-bound AddHostSheet +
+    # dismiss-on-success + evidence drivers + Settings-owned commit
+    # markers), FleetNotifierApp (evidence launch args + fixture-session
+    # init), DemoFleet-free evidence transport
+    # (Demo/AddHostCommitEvidenceURLProtocol) — re-pinned over the #415
+    # source set.
+    # 416: perceptible translucent treatment — AppTheme (SheetBackdrop
+    # constants re-locked: glassTintOpacity 0.3 -> 0.1 band 0.05-0.2,
+    # fallbackTintAlpha 0.88 -> 0.8 band 0.75-0.85), FleetViews (shared
+    # TranslucentSheetBackdrop consumes the re-locked constants, the
+    # whole-sheet opaque base fills removed from AddHostSheet +
+    # FingerprintConfirmationSheet, #416 translucency evidence driver +
+    # medium-detent evidence hook + fallback-forcing hook), FleetNotifierApp
+    # (evidence launch-arg routing) — re-pinned over the #416 source set.
+    # 416 doc: backdrop comment wording corrected (material share, not
+    # dominance) — re-pinned.
+    "b072eb49a86bec6746bf0c66285bcba8cbf8cd2eb64105153c7f300a8ca6850f"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -347,7 +365,20 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # RecentsCompositeRouteTests, PushPostureModelTests) added to
     # FleetNotifierTests.swift, and two wiring pins updated for the
     # composite recents target — re-pinned.
-    "28fc4640c6165f3b204f8d6165876adecfef433b51fade9138aa0b282f34c80a"
+    # 415: AddHostDraftLifecycleTests (7 model-level tests: draft
+    # retention, failure-without-dismissal, success-only commit/clear,
+    # duplicate-submit protection, retry idempotence, Mac-profile
+    # preservation) + AddHostFlowURLProtocol + updated AddHostSheet
+    # wiring pins (scene-scoped draft bindings, dismiss-on-success-only)
+    # — re-pinned over the #415 test source.
+    # 416: SheetBackdropTests re-locked to the #416 constants (glass tint
+    # 0.1 band 0.05-0.2, fallback tint 0.8 band 0.75-0.85, exact blend at
+    # 0.8) and SheetTranslucencyWiringTests extended to the THREE fixed
+    # parity sheets (AddHostSheet wiring + no-opaque-whole-sheet-fill
+    # probe, backdrop overlay pin) — re-pinned over the #416 test source.
+    # 416 fix: SettingsAccessWiringTests debug-gated settings-opener count
+    # 9 -> 10 for the #416 translucency evidence driver — re-pinned.
+    "90156c585db3223d15a0a13ded6463397c282a6fae08ac88a5b4077d77e70799"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

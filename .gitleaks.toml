@@ -51,3 +51,18 @@ regexTarget = "line"
 regexes = [
   '''^\s*let apiKey = "sk-live-abc123"\s*$''',
 ]
+
+
+# The #415 add-host registration-token fixture (tok-415-fixture) is a
+# synthetic test-only value in FleetNotifierTests; the app target never
+# references it. Scope the exception to that exact path and source line so a
+# real token-shaped value anywhere else remains reportable.
+[[allowlists]]
+description = "Synthetic #415 add-host registration-token test fixture"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^ios/FleetNotifierTests/FleetNotifierTests\.swift$''']
+regexTarget = "line"
+regexes = [
+  '''^\s*private var token = "tok-415-fixture"\s*$''',
+]

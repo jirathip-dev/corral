@@ -1601,6 +1601,8 @@ struct FleetView: View {
             await runThemeSequence()
         } else if CorralDemoLaunch.wantsGlassEvidence(arguments: CommandLine.arguments) {
             await runGlassSequence()
+        } else if Corral416Evidence.wantsDriver {
+            await runTranslucencySequence()
         } else if CorralDemoLaunch.wantsRepoLabelEvidence(arguments: CommandLine.arguments) {
             await runRepoLabelSequence()
         } else if CorralDemoLaunch.wantsCollapseEvidence(arguments: CommandLine.arguments) {
@@ -1617,7 +1619,24 @@ struct FleetView: View {
             await runMultiHostSettingsSequence()
         } else if CorralDemoLaunch.wantsMultiHostAddEvidence(arguments: CommandLine.arguments) {
             await runMultiHostAddSequence()
+        } else if CorralDemoLaunch.wantsAddHostBgReturnEvidence(arguments: CommandLine.arguments)
+                    || CorralDemoLaunch.wantsAddHostFailedEvidence(arguments: CommandLine.arguments)
+                    || CorralDemoLaunch.wantsAddHostCommitEvidence(arguments: CommandLine.arguments) {
+            await runAddHostLifecycleSequence()
         }
+    }
+
+    /// #415 evidence: opens the Settings sheet so its DEBUG task presents
+    /// the AddHostSheet, whose own DEBUG task records the bg-return /
+    /// failed-submit / successful-commit phases (simctl cannot tap the
+    /// gear or the Add host row). The board itself stays behind the
+    /// sheets — the frames only ever show the pairing surfaces.
+    private func runAddHostLifecycleSequence() async {
+        guard model.mode == .demo else { return }
+        guard await themePause(0) else { return }
+        theme.setFlavor(.mocha)
+        showSettings = true
+        _ = await themePause(1000)
     }
 
     /// #364 C: open A → dismiss → open B → dismiss → open A in one
@@ -1819,6 +1838,54 @@ struct FleetView: View {
         showSettings = false
         guard await themePause(1500) else { return }
         EvidenceMarkers.write("phase-7-done")
+    }
+
+    /// #416 evidence: one deterministic launch records the RE-LOCKED
+    /// translucent treatment over the same synthetic busy board the #385
+    /// glass evidence used — Recent Output at the MEDIUM detent (the
+    /// board stays visible above/behind the sheet), then Settings at the
+    /// evidence-forced medium detent (see
+    /// `Corral416Evidence.wantsMediumDetents`), in Mocha + Latte. Run with
+    /// `-corral416ForceFallbackBackdrop` to capture the SAME sequence on
+    /// the iOS 17–25 tinted-material branch (forced on the 26.5 runtime —
+    /// see the evidence README for why). Markers are `phase-416-*` so the
+    /// host capture script never re-captures stale #385 markers.
+    private func runTranslucencySequence() async {
+        guard model.mode == .demo else { return }
+        guard await themePause(0) else { return }
+        theme.setFlavor(.mocha)
+        EvidenceMarkers.write("phase-416-1-board-mocha")
+        guard await themePause(4000) else { return }
+        model.requestRecents(for: DemoFleet.featuredAgentID, haptic: false)
+        guard await themePause(4000) else { return }
+        EvidenceMarkers.write("phase-416-2-recents-mocha")
+        guard await themePause(6000) else { return }
+        theme.setFlavor(.latte)
+        guard await themePause(4000) else { return }
+        EvidenceMarkers.write("phase-416-3-recents-latte")
+        guard await themePause(6000) else { return }
+        model.recentsRequest = nil
+        guard await themePause(2000) else { return }
+        // Latte board A/B control at the same scroll position (the recents
+        // frame's underlying content for the pixel analysis).
+        EvidenceMarkers.write("phase-416-4-board-latte")
+        guard await themePause(4000) else { return }
+        theme.setFlavor(.mocha)
+        guard await themePause(1000) else { return }
+        // Settings at the MEDIUM detent (the evidence arg) so the busy
+        // board stays in view above the form surface.
+        showSettings = true
+        guard await themePause(4000) else { return }
+        EvidenceMarkers.write("phase-416-5-settings-mocha")
+        guard await themePause(6000) else { return }
+        theme.setFlavor(.latte)
+        guard await themePause(4000) else { return }
+        EvidenceMarkers.write("phase-416-6-settings-latte")
+        guard await themePause(6000) else { return }
+        showSettings = false
+        guard await themePause(1500) else { return }
+        EvidenceMarkers.write("phase-416-7-done")
+        _ = await themePause(1500)
     }
 
     /// Sleep that reports cancellation: `false` (and stops the caller) when
@@ -2239,23 +2306,32 @@ struct RegistrationView: View {
     }
 }
 
-// MARK: - #385 Liquid Glass / translucent sheet backdrop
+// MARK: - #385/#416 Liquid Glass / translucent sheet backdrop
 
-/// The shared #385 sheet backdrop: RecentOutputSheet and the Settings sheet
-/// float over this so the board content behind shows through softly (the
-/// approved terminal-transparency look). The sheets' TEXT layers keep their
-/// opaque token backing (cards, native cells, the recents header strip's
-/// caption row) — the translucency lives in the sheet background between
-/// and around them, so every text tier keeps its current AA contrast while
-/// the board reads through the glass.
+/// The shared #385 sheet backdrop: RecentOutputSheet, the Settings sheet,
+/// and the Add Host sheet float over this so the board content behind
+/// shows through softly (the approved terminal-transparency look). The
+/// sheets' TEXT layers keep their opaque token backing (cards, native
+/// cells, the recents header strip's caption row) — the translucency lives
+/// in the sheet background between and around them, so every text tier
+/// keeps its current AA contrast while the board reads through the glass.
+///
+/// #416: the original recipe's tint levels (glass 30 %, fallback 88 %)
+/// painted the sheet surface into a near-flat theme base — the physical
+/// sheet read as an opaque dark slab with no perceptible through-show.
+/// The constants are re-locked at the perceptible end of the scale
+/// (`SheetBackdrop.glassTintOpacity` / `.fallbackTintAlpha`) so the glass
+/// and the material — not a tint fill — are what the eye meets first.
 ///
 /// - iOS 26+: the NATIVE Liquid Glass surface — SwiftUI `glassEffect`,
-///   availability-gated at compile time, tinted with the active flavor's
-///   base token through the API's theme hook (`Glass.tint`).
+///   availability-gated at compile time, with only a whisper of the active
+///   flavor's base token through the API's theme hook (`Glass.tint`).
 /// - iOS 17–25: the translucent fallback — the flavor's base at the locked
-///   `SheetBackdrop.fallbackTintAlpha` (0.85–0.90 spec band) over an
-///   ultra-thin material blur. Deployment target is 17.0, so this is what
-///   older runtimes actually render; `SheetBackdropTests` locks the
+///   `SheetBackdrop.fallbackTintAlpha` OVER an ultra-thin material blur,
+///   tinted at the lowest value the preserved WCAG floor allows so the
+///   material's own blur keeps a visible share of the surface (the board
+///   content keeps showing through it). Deployment target is 17.0, so this
+///   is what older runtimes actually render; `SheetBackdropTests` locks the
 ///   constants and the 4.5:1 worst-case contrast math.
 private struct TranslucentSheetBackdrop: View {
     /// The active flavor's base token (resolved by the caller so a live
@@ -2264,22 +2340,26 @@ private struct TranslucentSheetBackdrop: View {
 
     var body: some View {
         ZStack {
-            if #available(iOS 26.0, *) {
-                // #385 iOS 26+: Native Liquid Glass. The tint stays at
-                // `SheetBackdrop.glassTintOpacity` — a full-opacity tint
-                // paints the glass into a flat solid (measured on the 26.5
-                // sim) and hides the board behind the sheet entirely. The
-                // CLEAR style is used rather than `.regular`: over the
+            if #available(iOS 26.0, *), !Corral416Evidence.forceFallbackBackdrop {
+                // #385/#416 iOS 26+: Native Liquid Glass. The tint stays a
+                // WHISPER at `SheetBackdrop.glassTintOpacity` — a heavy
+                // tint paints the glass into a flat solid (measured on the
+                // 26.5 sim) and hides whatever the glass could reveal; the
+                // CLEAR style is used rather than `.regular` (over the
                 // system dimming scrim the regular glass reads as an
-                // opaque dark slab; clear glass keeps the terminal
-                // transparency the approved spec calls for (board content
-                // visibly through the sheet — pixel-verified).
+                // opaque dark slab).
                 Rectangle()
                     .fill(Color.clear)
                     .glassEffect(.clear
                         .tint(tint.opacity(SheetBackdrop.glassTintOpacity)),
                         in: Rectangle())
             } else {
+                // #416: the fallback tint was re-locked DOWN from 0.88
+                // (which left only ~12 % of the material visible — the
+                // sheet read as a flat painted slab) to the lowest value
+                // the preserved WCAG floor allows; the ultra-thin blur now
+                // holds a fifth of the surface and the sheet reads as
+                // tinted frosted glass, not a paint fill.
                 Rectangle().fill(.ultraThinMaterial)
                 tint.opacity(SheetBackdrop.fallbackTintAlpha)
             }
@@ -2287,6 +2367,50 @@ private struct TranslucentSheetBackdrop: View {
         .accessibilityHidden(true)
     }
 }
+
+/// #416 evidence plumbing (DEBUG): the iOS 17–25 material fallback cannot
+/// be runtime-captured on this host (only the iOS 26.5 runtime exists), so
+/// `-corral416ForceFallbackBackdrop` makes the shared backdrop take the
+/// SAME `else` branch a 17–25 runtime executes (identical source — the
+/// availability check is the only difference). `-corral416TranslucencyEvidence`
+/// runs the deterministic sheet-over-busy-board capture sequence.
+enum Corral416Evidence {
+    static let driverArgument = "-corral416TranslucencyEvidence"
+    static let fallbackBackdropArgument = "-corral416ForceFallbackBackdrop"
+    static let recentsMediumArgument = "-corral416MediumDetents"
+
+    static var wantsDriver: Bool {
+        CommandLine.arguments.contains(driverArgument)
+    }
+
+    static var wantsMediumDetents: Bool {
+        CommandLine.arguments.contains(recentsMediumArgument)
+    }
+
+    /// Release never forces the fallback: the availability branch decides.
+    static var forceFallbackBackdrop: Bool {
+#if DEBUG
+        CommandLine.arguments.contains(fallbackBackdropArgument)
+#else
+        false
+#endif
+    }
+}
+
+#if DEBUG
+/// #416 evidence: under `-corral416MediumDetents` the Settings / Add Host
+/// sheets present at the MEDIUM detent (release keeps the system LARGE
+/// detent) so the capture frames show the busy board above the form.
+struct MediumDetentsForEvidence: ViewModifier {
+    func body(content: Content) -> some View {
+        if Corral416Evidence.wantsMediumDetents {
+            content.presentationDetents([.medium, .large])
+        } else {
+            content
+        }
+    }
+}
+#endif
 
 extension View {
     /// #385: give a sheet presentation the shared translucent backdrop
@@ -2654,14 +2778,33 @@ struct SettingsView: View {
                 // presentAddHostForMultiHostEvidence).
                 .task { await scrollHostsIntoViewForMultiHostEvidence(proxy) }
                 .task { await presentAddHostForMultiHostEvidence() }
+                // #415 evidence: the Add Host lifecycle drivers (bg-return
+                // / failed-submit / successful-commit) present the same
+                // sheet from the Settings state.
+                .task { await presentAddHostForLifecycleEvidence() }
+                // #415 evidence (c): when the AddHostSheet dismisses after
+                // the successful commit, scroll the Hosts rows into view
+                // for the "original Mac host still present" frame.
+                .onChange(of: showAddHost) { _, presented in
+                    guard !presented else { return }
+                    Task { await scrollHostsForAddHostCommitEvidence(proxy) }
+                }
 #endif
             }
         }
-        // #385: the Settings sheet floats over the shared translucent
+        // #385/#416: the Settings sheet floats over the shared translucent
         // backdrop (Liquid Glass on iOS 26+, tinted-material fallback
         // below) instead of painting an opaque base fill over the
         // presentation.
         .translucentSheetBackdrop(theme.base)
+#if DEBUG
+        // #416 evidence: the LARGE system detent never renders the
+        // presenting board behind the card (the sheet fills the screen),
+        // so the translucency evidence frames force the MEDIUM detent —
+        // the busy board then stays visible above/behind the form surface
+        // (release launches keep the system LARGE detent).
+        .modifier(MediumDetentsForEvidence())
+#endif
     }
 
 #if DEBUG
@@ -2709,6 +2852,24 @@ struct SettingsView: View {
         }
     }
 
+    /// #415 evidence (c): after the successful commit's AddHostSheet
+    /// dismissal, scroll the Hosts rows into view so the frame shows the
+    /// original Mac host PLUS the exactly-one new host (simctl cannot
+    /// drag; the hosts section sits below Connection). The sheet's own
+    /// driver task is CANCELLED by its dismissal, so this Settings-owned
+    /// task (which outlives the sheet) writes the remaining markers.
+    private func scrollHostsForAddHostCommitEvidence(_ proxy: ScrollViewProxy) async {
+        guard CorralDemoLaunch.wantsAddHostCommitEvidence(arguments: CommandLine.arguments) else { return }
+        try? await Task.sleep(for: .milliseconds(1200))
+        guard CorralDemoLaunch.wantsAddHostCommitEvidence(arguments: CommandLine.arguments) else { return }
+        withAnimation(.easeInOut(duration: 0.35)) {
+            proxy.scrollTo("settings.hosts", anchor: .top)
+        }
+        EvidenceMarkers.write("phase-c-415-committed")
+        try? await Task.sleep(for: .milliseconds(9000))
+        EvidenceMarkers.write("phase-c-415-done")
+    }
+
     /// #401 evidence: the Add Host sheet driver presents the AddHostSheet
     /// from the multi-host Settings state (the sheet's own DEBUG task then
     /// records the entry + confirmation phases — simctl cannot tap the Add
@@ -2717,6 +2878,20 @@ struct SettingsView: View {
         guard CorralDemoLaunch.wantsMultiHostAddEvidence(arguments: CommandLine.arguments) else { return }
         try? await Task.sleep(for: .milliseconds(3500))
         guard CorralDemoLaunch.wantsMultiHostAddEvidence(arguments: CommandLine.arguments) else { return }
+        showAddHost = true
+    }
+
+    /// #415 evidence: presents the AddHostSheet from the Settings state
+    /// for the bg-return / failed / commit drivers (simctl cannot tap the
+    /// Add host row; the FleetView-level driver opened Settings first).
+    private func presentAddHostForLifecycleEvidence() async {
+        guard CorralDemoLaunch.wantsAddHostBgReturnEvidence(arguments: CommandLine.arguments)
+                || CorralDemoLaunch.wantsAddHostFailedEvidence(arguments: CommandLine.arguments)
+                || CorralDemoLaunch.wantsAddHostCommitEvidence(arguments: CommandLine.arguments) else { return }
+        try? await Task.sleep(for: .milliseconds(3500))
+        guard CorralDemoLaunch.wantsAddHostBgReturnEvidence(arguments: CommandLine.arguments)
+                || CorralDemoLaunch.wantsAddHostFailedEvidence(arguments: CommandLine.arguments)
+                || CorralDemoLaunch.wantsAddHostCommitEvidence(arguments: CommandLine.arguments) else { return }
         showAddHost = true
     }
 #endif
@@ -3146,22 +3321,22 @@ private struct StepNumberBadge: View {
 /// the registration token and calls `/register` with the shared phone
 /// Ed25519 key. Full pinned key + returned grants/expiry persist in the
 /// active host profile.
+///
+/// #415: every field/phase binds to the MODEL-owned scene-scoped draft
+/// (`model.addHostDraft`) — never sheet `@State` — so app-switch/return
+/// and sheet view-identity churn from normal scene lifecycle updates
+/// preserve the entered host name, URL, token, and the current host-key
+/// verification phase. A failed submit keeps the sheet open with a
+/// phase-identifying error; only a successful commit dismisses.
 struct AddHostSheet: View {
     @ObservedObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var theme: ThemeStore
 
-    @State private var name = ""
-    @State private var urlString = ""
-    @State private var token = ""
-    @State private var prepared: AppModel.PreparedHostPairing?
-    @State private var working = false
-    @State private var errorMessage: String?
-
     var body: some View {
         NavigationStack {
             Form {
-                if let prepared {
+                if let prepared = model.addHostDraft.prepared {
                     confirmationSection(prepared)
                 } else {
                     entrySection
@@ -3171,23 +3346,56 @@ struct AddHostSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel") {
+                        // #415: Cancel abandons the pairing — the
+                        // scene-scoped draft (incl. the transient token)
+                        // is cleared. Failure never dismisses here.
+                        model.clearAddHostDraft()
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .topBarLeading) {
+                    if model.addHostDraft.prepared != nil {
+                        Button {
+                            // #415: back to the entry phase for
+                            // CORRECTION — name/URL/token all stay in the
+                            // draft; the confirmed pairing is dropped.
+                            model.addHostDraft.prepared = nil
+                            model.addHostDraft.errorMessage = nil
+                        } label: {
+                            Label("Edit host details", systemImage: "chevron.backward")
+                        }
+                        .accessibilityLabel("Edit host details")
+                    }
                 }
             }
             .scrollContentBackground(.hidden)
-            .background(theme.base)
+            // #416: the old opaque `.background(theme.base)` here is gone —
+            // it painted the WHOLE Add Host surface over the shared
+            // translucent backdrop (the #385 modifier below), masking it
+            // into a flat opaque slab. The form now floats over the
+            // backdrop like the Settings sheet; the text rows keep their
+            // token ink over the glass/material (SheetBackdropTests locks
+            // the worst-case AA).
             .preferredColorScheme(theme.flavor.isLight ? .light : .dark)
             // #401 rev B3: prefill the host NAME from the URL as it is
             // typed (Tailscale first label) until the user has entered a
             // name — the reviewed gap where the sheet bound `name` but
             // never used the existing HostURLForm.displayNameCandidate.
-            .onChange(of: urlString) { _, newValue in
-                guard name.isEmpty else { return }
-                name = HostURLForm.displayNameCandidate(for: newValue)
+            // #415: the prefill writes into the model-owned draft.
+            .onChange(of: model.addHostDraft.urlString) { _, newValue in
+                guard model.addHostDraft.name.isEmpty else { return }
+                model.addHostDraft.name = HostURLForm.displayNameCandidate(for: newValue)
             }
         }
         .presentationDragIndicator(.visible)
         .translucentSheetBackdrop(theme.base)
+#if DEBUG
+        // #416 evidence: medium detent under the evidence arg (see
+        // SettingsView — the Add Host frames then show the Settings form
+        // + the busy board behind/above the pairing sheet).
+        .modifier(MediumDetentsForEvidence())
+#endif
 #if DEBUG
         // #401 evidence: the Add Host sheet records its two phases — (1)
         // name/URL entry with the B3 URL-derived NAME PREFILL (the driver
@@ -3195,35 +3403,144 @@ struct AddHostSheet: View {
         // the name), (2) the fingerprint confirmation phase fed by the
         // synthetic fixture (no network on the evidence sim). Mocha entry,
         // Latte confirmation — representative light/dark per locked H.
+        // #415: the driver writes through the model-owned draft (the
+        // same bindings the user's typing uses).
         .task {
-            guard CorralDemoLaunch.wantsMultiHostAddEvidence(arguments: CommandLine.arguments) else { return }
-            guard await settingsSettle() else { return }
-            theme.setFlavor(.mocha)
-            urlString = DemoFleet.DemoHosts.addHostURL
-            guard await settingsSettle() else { return }
-            EvidenceMarkers.write("phase-1-mh-add-entry-mocha")
-            guard await hold() else { return }
-            theme.setFlavor(.latte)
-            guard await settingsSettle() else { return }
-            prepared = AppModel.PreparedHostPairing(
-                displayName: name.isEmpty ? "demo-host-d" : name,
-                urlString: urlString,
-                hostKey: HostKeyResponse(algorithm: "X25519",
-                                         publicKey: DemoFleet.DemoHosts.addHostKey,
-                                         note: nil),
-                fingerprint: HostKeyTrust.fingerprint(
-                    forBase64: DemoFleet.DemoHosts.addHostKey) ?? "FINGER-DEMO")
-            guard await settingsSettle() else { return }
-            EvidenceMarkers.write("phase-2-mh-add-confirm-latte")
-            _ = await hold()
-            try? await Task.sleep(for: .milliseconds(1500))
-            EvidenceMarkers.write("phase-3-mh-add-done")
-            dismiss()
+            if CorralDemoLaunch.wantsMultiHostAddEvidence(arguments: CommandLine.arguments) {
+                await runMultiHostAddSheetEvidence()
+            } else if CorralDemoLaunch.wantsAddHostBgReturnEvidence(arguments: CommandLine.arguments) {
+                await runBgReturnEvidence()
+            } else if CorralDemoLaunch.wantsAddHostFailedEvidence(arguments: CommandLine.arguments) {
+                await runFailedSubmitEvidence()
+            } else if CorralDemoLaunch.wantsAddHostCommitEvidence(arguments: CommandLine.arguments) {
+                await runCommitEvidence()
+            }
         }
 #endif
     }
 
 #if DEBUG
+    /// #401 evidence: entry (name prefill) + fingerprint-confirmation
+    /// phases via the synthetic fixture — see the .task comment above.
+    private func runMultiHostAddSheetEvidence() async {
+        guard await settingsSettle() else { return }
+        theme.setFlavor(.mocha)
+        model.addHostDraft.urlString = DemoFleet.DemoHosts.addHostURL
+        guard await settingsSettle() else { return }
+        EvidenceMarkers.write("phase-1-mh-add-entry-mocha")
+        guard await hold() else { return }
+        theme.setFlavor(.latte)
+        guard await settingsSettle() else { return }
+        model.addHostDraft.prepared = AppModel.PreparedHostPairing(
+            displayName: model.addHostDraft.name.isEmpty ? "demo-host-d" : model.addHostDraft.name,
+            urlString: model.addHostDraft.urlString,
+            hostKey: HostKeyResponse(algorithm: "X25519",
+                                     publicKey: DemoFleet.DemoHosts.addHostKey,
+                                     note: nil),
+            fingerprint: HostKeyTrust.fingerprint(
+                forBase64: DemoFleet.DemoHosts.addHostKey) ?? "FINGER-DEMO")
+        guard await settingsSettle() else { return }
+        EvidenceMarkers.write("phase-2-mh-add-confirm-latte")
+        _ = await hold()
+        try? await Task.sleep(for: .milliseconds(1500))
+        EvidenceMarkers.write("phase-3-mh-add-done")
+        model.clearAddHostDraft()
+        dismiss()
+    }
+
+    /// #415 evidence (a): a partially entered draft survives an
+    /// app-switch/return cycle. The driver types the real name/URL into
+    /// the draft, marks the state, then HOLDS across the host's
+    /// background (Settings app launch) + return (app relaunch); the
+    /// frame captured after the return must show every field populated.
+    private func runBgReturnEvidence() async {
+        guard await settingsSettle() else { return }
+        model.addHostDraft.name = "Bazzite"
+        model.addHostDraft.urlString = DemoFleet.DemoHosts.addHostURL
+        guard await settingsSettle() else { return }
+        EvidenceMarkers.write("phase-a-415-bg-filled")
+        // Hold ~24 s: the host backgrounds this app and relaunches it
+        // inside this window, then captures the returned frame.
+        guard await hold() else { return }
+        guard await hold() else { return }
+        guard await hold() else { return }
+        EvidenceMarkers.write("phase-a-415-bg-returned")
+        _ = await hold()
+        EvidenceMarkers.write("phase-a-415-done")
+        model.clearAddHostDraft()
+        dismiss()
+    }
+
+    /// #415 evidence (b): a FAILED submit keeps the sheet open with a
+    /// phase-identifying error and every draft value intact. The driver
+    /// calls the SAME verify path the button invokes against a
+    /// connection-refused loopback URL (real transport failure; no
+    /// daemon on the evidence sim).
+    private func runFailedSubmitEvidence() async {
+        guard await settingsSettle() else { return }
+        model.addHostDraft.name = "Bazzite"
+        model.addHostDraft.urlString = "http://127.0.0.1:1"
+        guard await settingsSettle() else { return }
+        await model.verifyAddHostDraft()
+        // Wait for the failure to land (fast: connection refused).
+        var attempts = 0
+        while model.addHostDraft.errorMessage == nil, attempts < 40 {
+            try? await Task.sleep(for: .milliseconds(250))
+            attempts += 1
+        }
+        guard await settingsSettle() else { return }
+        EvidenceMarkers.write("phase-b-415-failed-sheet-open")
+        guard await hold() else { return }
+        EvidenceMarkers.write("phase-b-415-done")
+        model.clearAddHostDraft()
+        dismiss()
+    }
+
+    /// #415 evidence (c): a SUCCESSFUL submit commits exactly one new
+    /// host profile and clears the draft; the follow-up Settings frame
+    /// shows the original Mac host still present. The app was launched
+    /// with a DEBUG fixture URLSession (see
+    /// AddHostCommitEvidenceURLProtocol) so /host-key + /register +
+    /// /events resolve deterministically — the flow code below is the
+    /// REAL prepare/complete path, transport only is fixture.
+    private func runCommitEvidence() async {
+        guard await settingsSettle() else { return }
+        model.addHostDraft.name = "Bazzite"
+        model.addHostDraft.urlString = AppModel.addHostEvidenceNewHostURL
+        guard await settingsSettle() else { return }
+        await model.verifyAddHostDraft()
+        var attempts = 0
+        while model.addHostDraft.prepared == nil, attempts < 40 {
+            try? await Task.sleep(for: .milliseconds(250))
+            attempts += 1
+        }
+        guard await settingsSettle() else { return }
+        // The confirmation phase WITH the token filled (SecureField dots;
+        // the token itself is never rendered in full or logged).
+        model.addHostDraft.token = AppModel.addHostEvidenceToken
+        EvidenceMarkers.write("phase-c-415-confirm-before-submit")
+        guard await hold() else { return }
+        // Real submit through the model outcome — dismisses only on
+        // success, exactly once.
+        guard let pairing = model.addHostDraft.prepared else {
+            EvidenceMarkers.write("phase-c-415-no-pairing")
+            return
+        }
+        let outcome = await model.completeAddHost(pairing, token: model.addHostDraft.token)
+        guard case .success = outcome else {
+            EvidenceMarkers.write("phase-c-415-commit-failed")
+            model.clearAddHostDraft()
+            dismiss()
+            return
+        }
+        // Success: dismiss exactly once (the same action the register
+        // button takes). Dismissal cancels THIS sheet-owned task, so the
+        // remaining commit-evidence markers (hosts list with the Mac host
+        // still present) are written by the Settings-level driver —
+        // scrollHostsForAddHostCommitEvidence — which outlives the sheet.
+        dismiss()
+    }
+
     private func settingsSettle() async -> Bool {
         do {
             try await Task.sleep(for: .milliseconds(2500))
@@ -3243,28 +3560,32 @@ struct AddHostSheet: View {
     }
 #endif
 
-    /// Phase 1: name + URL entry.
+    /// Phase 1: name + URL entry. #415: fields bind straight to the
+    /// model-owned scene-scoped draft, so churn can never clear them.
     private var entrySection: some View {
         Section {
-            ConnectionField(title: "Host name", secure: false, text: $name)
+            ConnectionField(title: "Host name", secure: false,
+                            text: $model.addHostDraft.name)
             ConnectionField(title: "https://host (Tailscale serve URL or loopback)",
-                            secure: false, text: $urlString)
-            if let errorMessage {
+                            secure: false,
+                            text: $model.addHostDraft.urlString)
+            if let errorMessage = model.addHostDraft.errorMessage {
                 Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(theme.red)
             }
             Button {
-                verifyHostKey()
+                Task { await model.verifyAddHostDraft() }
             } label: {
-                if working {
+                if model.addHostDraft.isWorking {
                     ProgressView().controlSize(.small)
                 } else {
                     Text("Verify host key")
                 }
             }
-            .disabled(working || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                      || urlString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(model.addHostDraft.isWorking
+                      || model.addHostDraft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                      || model.addHostDraft.urlString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             Text("Corral fetches the host's X25519 identity key and shows its fingerprint BEFORE any registration token is accepted. Nothing is saved yet.")
                 .font(.caption)
                 .foregroundStyle(theme.subtext1)
@@ -3305,18 +3626,19 @@ struct AddHostSheet: View {
             Text("Confirm the host identity")
         }
         Section {
-            ConnectionField(title: "Registration token", secure: true, text: $token)
+            ConnectionField(title: "Registration token", secure: true,
+                            text: $model.addHostDraft.token)
             Button {
                 complete(pairing)
             } label: {
-                if working {
+                if model.addHostDraft.isWorking {
                     ProgressView().controlSize(.small)
                 } else {
                     Text("Confirm fingerprint & register")
                 }
             }
-            .disabled(working || token.isEmpty)
-            if let errorMessage {
+            .disabled(model.addHostDraft.isWorking || model.addHostDraft.token.isEmpty)
+            if let errorMessage = model.addHostDraft.errorMessage {
                 Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(theme.red)
@@ -3326,27 +3648,19 @@ struct AddHostSheet: View {
         }
     }
 
-    private func verifyHostKey() {
-        errorMessage = nil
-        working = true
-        Task {
-            defer { working = false }
-            do {
-                prepared = try await model.prepareHostPairing(displayName: name,
-                                                              rawURL: urlString)
-            } catch {
-                errorMessage = error.localizedDescription
-            }
-        }
-    }
-
+    /// #415: submit the confirmed pairing through the model. The model
+    /// clears the draft ONLY after the commit succeeds and returns the
+    /// outcome; this sheet dismisses exactly once — on success. A failure
+    /// keeps the sheet open with the draft's phase-identifying error and
+    /// every value available for correction/retry.
     private func complete(_ pairing: AppModel.PreparedHostPairing) {
-        errorMessage = nil
-        working = true
+        guard !model.addHostDraft.isWorking else { return }
         Task {
-            defer { working = false }
-            await model.completeAddHost(pairing, token: token)
-            dismiss()
+            let outcome = await model.completeAddHost(pairing,
+                                                      token: model.addHostDraft.token)
+            if case .success = outcome {
+                dismiss()
+            }
         }
     }
 }
@@ -3482,7 +3796,11 @@ struct FingerprintConfirmationSheet: View {
                 }
             }
             .scrollContentBackground(.hidden)
-            .background(theme.base)
+            // #416: the opaque whole-sheet `.background(theme.base)` is
+            // gone — this form floats over the shared translucent backdrop
+            // like the Add Host sheet (its rows carry their own token ink;
+            // SheetBackdropTests locks the worst-case AA over the
+            // glass/material).
             .preferredColorScheme(theme.flavor.isLight ? .light : .dark)
         }
         .presentationDragIndicator(.visible)
@@ -3612,7 +3930,7 @@ struct RecentOutputSheet: View {
         // #372: scheme forced at the SHEET level (covers the nav bar +
         // drag chrome of the presented stack).
         .preferredColorScheme(theme.flavor.isLight ? .light : .dark)
-        // #385: the recents sheet floats over the shared translucent
+        // #385/#416: the recents sheet floats over the shared translucent
         // backdrop (Liquid Glass on iOS 26+, tinted-material fallback
         // below) so the busy board behind shows through the sheet surface
         // between the blocks.

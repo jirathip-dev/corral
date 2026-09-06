@@ -583,35 +583,53 @@ extension ThemeStore {
     }
 }
 
-// MARK: - #385 translucent sheet backdrop (constants + WCAG math)
+// MARK: - #385/#416 translucent sheet backdrop (constants + WCAG math)
 
-/// The #385 translucent-sheet contract: RecentOutputSheet and the Settings
-/// sheet sit over a backdrop that lets the board content show through
-/// softly (the approved terminal-transparency look; #373 AC that #378/#381
-/// missed). Below iOS 26 the backdrop is the active flavor's base tinted at
-/// `fallbackTintAlpha` over an ultra-thin material blur; iOS 26+ renders the
-/// NATIVE Liquid Glass surface instead (see FleetViews.swift
+/// The #385 translucent-sheet contract: the Recent Output, Settings, and
+/// Add Host sheets sit over a backdrop that lets the board content show
+/// through softly (the approved terminal-transparency look; #373 AC that
+/// #378/#381 missed). Below iOS 26 the backdrop is an ultra-thin material
+/// blur tinted with the active flavor's base at `fallbackTintAlpha`; iOS
+/// 26+ renders the NATIVE Liquid Glass surface instead (see FleetViews.swift
 /// `TranslucentSheetBackdrop`). Text layers that need guaranteed AA keep
 /// their opaque token backing; the backdrop itself is verified against the
 /// spec's 4.5:1 minimum in the worst underlying-content case by
 /// `SheetBackdropTests`.
+///
+/// #416: the first #385 pass locked the tint levels HIGH (glass 30 %,
+/// fallback 88 %) so the sheet surface read as a near-flat theme-base slab
+/// on the real device — the board content behind was not perceptible. The
+/// levels are re-locked at the perceptible end of the scale (glass 10 %,
+/// fallback 80 % — the fallback floor is set by the preserved worst-case
+/// WCAG lock, which every flavor passes only down to ~0.78), so the
+/// glass/material — not a tint fill — is what the eye meets first; the
+/// tint keeps the flavor cast and the WCAG floor unchanged (worst-case
+/// math over the same palette tokens).
 enum SheetBackdrop {
-    /// Spec lock (#385): the fallback tint alpha must sit in this
-    /// terminal-transparency band.
-    static let fallbackTintAlphaRange: ClosedRange<Double> = 0.85...0.90
+    /// Spec lock (#416): the fallback tint alpha must sit in this band —
+    /// as low as the conservative WCAG model allows (the worst-case
+    /// 4.5:1 text-over-tinted-backdrop lock for EVERY flavor passes only
+    /// down to ~0.78 — frappe is the tightest), so the ultra-thin
+    /// material's own blur gets the largest share that still keeps the
+    /// AA floor.
+    static let fallbackTintAlphaRange: ClosedRange<Double> = 0.75...0.85
 
-    /// The locked fallback tint alpha: theme base at 88 % over the backdrop
-    /// blur material (inside the 0.85–0.90 spec band; tests assert both).
-    static let fallbackTintAlpha: Double = 0.88
+    /// The locked fallback tint alpha: theme base at 80 % over the backdrop
+    /// blur material (inside the #416 0.75–0.85 band; the old #385 lock was
+    /// 0.88, which left only ~12 % of the material visible — the sheet
+    /// read as a flat painted slab; tests assert both the value and the
+    /// band).
+    static let fallbackTintAlpha: Double = 0.8
 
     /// The iOS 26+ Native Liquid Glass tint strength: the flavor's base
-    /// token is applied to the glass at this opacity. A FULLY opaque tint
-    /// paints the glass into a solid flat color (no board visible through
-    /// the sheet — measured on the iOS 26.5 sim), so the theme hook stays
-    /// a tint over the still-translucent glass material. Tests lock it to
-    /// the 0.2–0.4 band and re-verify the sheet AC.
-    static let glassTintOpacity: Double = 0.3
-    static let glassTintOpacityRange: ClosedRange<Double> = 0.2...0.4
+    /// token is applied to the glass at this opacity. #416 drops it to a
+    /// WHISPER: on the 26.5 sim a 30 % tint already renders the clear
+    /// glass as a flat solid (no underlying structure distinguishable from
+    /// an opaque base fill), and on-device Liquid Glass is darker still —
+    /// the tint is a flavor cast, not a fill. Tests lock it to the
+    /// 0.05–0.2 band.
+    static let glassTintOpacity: Double = 0.1
+    static let glassTintOpacityRange: ClosedRange<Double> = 0.05...0.2
 
     /// The spec's minimum contrast for sheet content over the translucent
     /// backdrop (WCAG AA).

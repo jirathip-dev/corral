@@ -146,21 +146,6 @@ final class HostProfileStore {
         return profiles[idx]
     }
 
-    /// Order swap used by drag-to-reorder (#401 consumes it later).
-    func moveProfile(id: UUID, toOrder newOrder: Int) throws {
-        guard let idx = index(of: id) else { throw HostProfileError.profileNotFound }
-        var moved = profiles.remove(at: idx)
-        let clamped = min(max(newOrder, 0), profiles.count)
-        moved.order = clamped
-        profiles.insert(moved, at: clamped)
-        // Re-normalize the order fields to consecutive integers.
-        for (index, var profile) in profiles.enumerated() {
-            profile.order = index
-            profiles[index] = profile
-        }
-        save()
-    }
-
     /// #397: persist one host's per-host notification enrollment flag
     /// (the profile document owns it; removal purges it with the record).
     @discardableResult

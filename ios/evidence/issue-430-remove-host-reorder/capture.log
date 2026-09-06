@@ -1,0 +1,61 @@
+# 430 capture log — 2026-09-06 ~15:10 +0700 (base vs final, fresh Corral430 sim)
+
+Fresh simulator `Corral430` (iPhone 16, iOS 26.5, UDID
+0F27110E-A497-4970-B8AF-9BBA6ADF3382), DEBUG builds of BOTH sides: the #430
+BASE head 40198936bdee21a55464929e15f97cd608d6b791 (/tmp/fn430-base-app.app,
+copied from the RED run's derived data) and the final #430 tree
+(/tmp/fn430-final-app.app, dedicated build below). Same launch-arg evidence
+driver, marker polling, simctl screenshots, sips resize.
+
+Final-head build (after all #430 source edits):
+
+$ HERDR_XCODEBUILD_DIRECT=1 xcodebuild build \
+    -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier \
+    -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/fn430-ev build
+** BUILD SUCCEEDED **  (log: /tmp/fn430-ev-build.log)
+
+App: /tmp/fn430-ev/Build/Products/Debug-iphonesimulator/FleetNotifier.app
+Bundle id: com.corral.fleetnotifier (lowercase — simctl launch uses the
+Info.plist GENERATE_INFOPLIST_FILE id).
+Markers: <data>/Documents/ux-evidence/<phase>.marker written per phase
+(phase holds >= 9 s after each marker); the host capture script
+(/tmp/fn430-capture.sh — marker poll + `simctl io screenshot` per new
+marker) removes the app container's ux-evidence dir before each launch so
+stale markers are never re-captured.
+
+Simulator booted:
+$ xcrun simctl create Corral430 "iPhone 16" com.apple.CoreSimulator.SimRuntime.iOS-26-5
+0F27110E-A497-4970-B8AF-9BBA6ADF3382
+$ xcrun simctl boot 0F27110E-... && xcrun simctl bootstatus 0F27110E-... -b
+
+BASE side (the RED-state tree — Edit affordance present with 2+ hosts):
+$ /tmp/fn430-capture.sh /tmp/fn430-base-app.app -corralDemoMultiHostSettingsEvidence /tmp/fn430-evidence-base
+captured phase-1-mh-settings-mocha   <- committed as phase-0-base-mh-settings-mocha-390x844.png
+captured phase-2-mh-settings-latte
+captured phase-3-mh-settings-done
+driver -corralDemoMultiHostSettingsEvidence finished
+
+FINAL side (the #430 tree — reorder chrome removed):
+$ /tmp/fn430-capture.sh /tmp/fn430-final-app.app -corralDemoMultiHostSettingsEvidence /tmp/fn430-evidence-final
+captured phase-1-mh-settings-mocha
+captured phase-2-mh-settings-latte
+captured phase-3-mh-settings-done
+driver -corralDemoMultiHostSettingsEvidence finished
+
+The seeding (DEBUG AppModel.enterMultiHostDemo, synthetic only) wipes the
+simulator's profile store and creates three profiles: Host A (live active
+store, demo-orbit rows), Host B (pinned; coordinator session store holds
+retained rows, connection error "host unreachable"), Host C (pinned, then
+connection state set to key mismatch — fails closed). Fingerprint fixture
+keys are Data(repeating:) base64 — synthetic, never a real key.
+
+Resize (repo phone-size gate; this host has no 390x844 device — iPhone 16
+is 393x852 pt / 1179x2556 px @3x, resized per the issue-362+ conventions):
+
+$ sips -z 844 390 raw-phase-1-mh-settings-mocha.png --out phase-1-mh-settings-mocha-390x844.png
+$ sips -z 844 390 raw-phase-2-mh-settings-latte.png --out phase-2-mh-settings-latte-390x844.png
+$ sips -z 844 390 raw-phase-3-mh-settings-done.png --out phase-3-mh-settings-done-390x844.png
+$ sips -z 844 390 raw-phase-1-mh-settings-mocha.png (base dir) --out phase-0-base-mh-settings-mocha-390x844.png
+
+Committed artifacts under ios/evidence/issue-430-remove-host-reorder/:
+README.md, SHA256SUMS.txt, capture.log, 4 phase frames (390x844).

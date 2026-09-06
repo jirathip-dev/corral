@@ -9128,3 +9128,105 @@ final class MultiHostSurfaceWiringTests: XCTestCase {
                       "D8: health colors resolve through the shared token mapping")
     }
 }
+
+// MARK: - #422 Settings host-card hit targets (independent action controls)
+
+/// #422: source-wiring regression over the bundled FleetViews.swift.txt.
+/// The Settings -> Hosts host card must give Retry / Rename / Remove host
+/// each an INDEPENDENT, bounded (>= 44 pt) plain-style control so a tap on
+/// the card body, URL/fingerprint/key metadata, or the notification row can
+/// never land on the destructive Remove-host control, and each action
+/// invokes only its own handler. RED at the #422 base head (the three
+/// actions shared ONE automatic-style Form-row stack whose row-wide hit
+/// area landed on the trailing destructive button); GREEN only once every
+/// action is individually bounded and token-colored.
+final class HostCardHitTargetWiringTests: XCTestCase {
+    private func bundledSource() throws -> String {
+        let bundle = Bundle(for: HostCardHitTargetWiringTests.self)
+        let url = try XCTUnwrap(bundle.url(forResource: "FleetViews",
+                                           withExtension: "swift.txt"))
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    /// 1-based line numbers of every line containing the needle.
+    private func lineNumbers(of needle: String, in text: String) -> [Int] {
+        text.split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+            .compactMap { index, line in line.contains(needle) ? index + 1 : nil }
+    }
+
+    /// The whole per-host Settings row builder (one host's card).
+    private func hostRowSlice(_ source: String) throws -> String {
+        let start = try XCTUnwrap(
+            source.range(of: "private func hostRow(_ profile: HostProfile) -> some View {"),
+            "the per-host row builder must exist")
+        let end = try XCTUnwrap(
+            source.range(of: "/// The per-host connection failure copy shown under the row"),
+            "the row builder must be followed by hostConnectionFailure")
+        return String(source[start.lowerBound..<end.lowerBound])
+    }
+
+    /// The host card's ACTION BAND: from the action HStack to the row's own
+    /// vertical padding (everything below the metadata/notification rows).
+    private func actionBand(_ row: String) throws -> String {
+        let start = try XCTUnwrap(row.range(of: "HStack(spacing: 16) {"),
+                                  "the host card must have an action band")
+        let end = try XCTUnwrap(row.range(of: ".padding(.vertical, 4)"),
+                                "the action band must end at the row padding")
+        return String(row[start.lowerBound..<end.lowerBound])
+    }
+
+    func testHostActionsEachOwnABounded44PointPlainControl() throws {
+        let source = try bundledSource()
+        let actions = try actionBand(try hostRowSlice(source))
+        // #422 AC5: the OLD wiring put ONE shared `.frame(minHeight: 44)`
+        // on the whole action HStack of three automatic-style Buttons — the
+        // Form row's automatic borderless hit-area expansion then routed
+        // card-body taps onto the trailing destructive control and made
+        // Retry/Rename effectively unreachable. Every action must instead
+        // declare its OWN >= 44 pt target on its label.
+        XCTAssertEqual(lineNumbers(of: ".frame(minHeight: 44)", in: actions).count, 3,
+                       "each of Retry/Rename/Remove host must carry its OWN >= 44 pt label frame "
+                       + "(a single shared frame on the action HStack is the #422 hazard)")
+        XCTAssertEqual(lineNumbers(of: ".buttonStyle(.plain)", in: actions).count, 3,
+                       "no host action may rely on the Form row's automatic borderless "
+                       + "hit-area expansion (plain style bounds each target to its own label)")
+        XCTAssertEqual(lineNumbers(of: ".contentShape(Rectangle())", in: actions).count, 3,
+                       "each action's full >= 44 pt label frame must be hit-testable")
+    }
+
+    func testOnlyTheRemoveControlCanRequestRemovalAndNoRowGestureRoutesTaps() throws {
+        let source = try bundledSource()
+        let row = try hostRowSlice(source)
+        // #422 AC6 core pin: `hostBeingRemoved` may be REQUESTED in exactly
+        // one place per row — the Remove host control's own action.
+        let assignmentLines = lineNumbers(of: "hostBeingRemoved = profile", in: row)
+        XCTAssertEqual(assignmentLines.count, 1,
+                       "the Remove-host confirmation may be requested in exactly one place")
+        // SAFETY: assignmentLines was asserted non-empty immediately above.
+        let assignmentLine = try XCTUnwrap(assignmentLines.first)
+        let destructiveOpeners = lineNumbers(of: "role: .destructive) {", in: row)
+        XCTAssertTrue(destructiveOpeners.contains { assignmentLine - $0 == 1 },
+                      "the ONLY removal request must sit directly inside a destructive "
+                      + "control's own action (never on a row/card tap path)")
+        // #422 AC1: no row-level gesture may forward card-body taps anywhere.
+        for needle in [".onTapGesture", ".simultaneousGesture", ".highPriorityGesture"] {
+            XCTAssertEqual(lineNumbers(of: needle, in: row).count, 0,
+                           "no card/row-level gesture may route taps into the host actions (\(needle))")
+        }
+    }
+
+    func testHostActionsStayTokenColoredAndScaledForLegibility() throws {
+        let source = try bundledSource()
+        let actions = try actionBand(try hostRowSlice(source))
+        // #422 AC3: the actions resolve explicit theme tokens (dark-mode and
+        // flavor-safe) instead of the automatic Form tint, and keep the
+        // Dynamic-Type-scaled subheadline.
+        XCTAssertEqual(lineNumbers(of: "theme.accent", in: actions).count, 2,
+                       "Retry and Rename must resolve the themed accent explicitly")
+        XCTAssertEqual(lineNumbers(of: "theme.red", in: actions).count, 1,
+                       "the destructive Remove host text must resolve theme.red explicitly")
+        XCTAssertEqual(lineNumbers(of: ".font(.subheadline)", in: actions).count, 3,
+                       "every host action must keep the Dynamic-Type-scaled subheadline font")
+    }
+}

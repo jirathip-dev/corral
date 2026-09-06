@@ -3064,27 +3064,55 @@ struct SettingsView: View {
                 LabeledContent("Last seen", value: lastSeenText(lastSeenMs: lastSeen))
                     .foregroundStyle(theme.subtext1)
             }
+            // #422: each host action is an INDEPENDENT, bounded control.
+            // Three automatic/borderless Buttons sharing one Form-row HStack
+            // let the List's row-wide hit treatment land card-body taps on
+            // the trailing destructive control (Remove-host confirmation
+            // from a metadata/toggle tap) and left Retry/Rename without a
+            // reachable target. Each action now owns a plain-style label
+            // with its own >= 44 pt frame + contentShape (HIG); tapping
+            // inert card space touches nothing.
             HStack(spacing: 16) {
-                Button("Retry") {
+                Button {
                     model.retryHostConnection(profile)
+                } label: {
+                    Text("Retry")
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
                 .font(.subheadline)
+                .foregroundStyle(theme.accent)
                 .disabled(!profile.mayConnect)
                 .accessibilityLabel("Retry connection for \(profile.displayName)")
-                Button("Rename") {
+
+                Button {
                     hostBeingRenamed = profile
                     renameDraft = profile.displayName
+                } label: {
+                    Text("Rename")
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
                 .font(.subheadline)
+                .foregroundStyle(theme.accent)
                 .accessibilityLabel("Rename \(profile.displayName)")
+
                 Spacer(minLength: 0)
-                Button("Remove host", role: .destructive) {
+
+                Button(role: .destructive) {
                     hostBeingRemoved = profile
+                } label: {
+                    Text("Remove host")
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
                 .font(.subheadline)
+                .foregroundStyle(theme.red)
                 .accessibilityLabel("Remove \(profile.displayName)")
             }
-            .frame(minHeight: 44)
         }
         .padding(.vertical, 4)
         .confirmationDialog("Remove \(profile.displayName)?",

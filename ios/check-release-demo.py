@@ -261,7 +261,11 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # (evidence launch-arg routing) — re-pinned over the #416 source set.
     # 416 doc: backdrop comment wording corrected (material share, not
     # dominance) — re-pinned.
-    "b072eb49a86bec6746bf0c66285bcba8cbf8cd2eb64105153c7f300a8ca6850f"
+    # 422: Settings host-card hit targets — FleetViews hostRow actions
+    # (Retry/Rename/Remove host) became independent plain-style 44 pt
+    # bounded controls with explicit theme tokens; digest re-pinned over
+    # the #422 source set.
+    "daeeffeca6555c0dfc97122a836199b8d9a12997a97688fadb78fd097aabfe91"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -378,7 +382,11 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # probe, backdrop overlay pin) — re-pinned over the #416 test source.
     # 416 fix: SettingsAccessWiringTests debug-gated settings-opener count
     # 9 -> 10 for the #416 translucency evidence driver — re-pinned.
-    "90156c585db3223d15a0a13ded6463397c282a6fae08ac88a5b4077d77e70799"
+    # 422: HostCardHitTargetWiringTests (per-host-action 44 pt plain
+    # controls, single removal-request pin, no row gestures, token colors)
+    # added to FleetNotifierTests.swift — re-pinned over the #422 test
+    # source.
+    "8ba7845acf023b177444c10f6f688243c7eec698dcf66f3438fd24f42f786757"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

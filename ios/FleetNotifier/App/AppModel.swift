@@ -546,6 +546,14 @@ final class AppModel: ObservableObject {
                 // the retained token now (per-host dedupe makes this a
                 // no-op for already-enrolled hosts).
                 self?.uploadRetainedTokenToHosts()
+                // #426: the same "just became live" gap applies to the
+                // per-host grants refresh — a pinned host verifies AFTER
+                // the launch/foreground refreshGrants() fan-out ran, so it
+                // would otherwise keep stale grants until the next cycle.
+                // Refresh ITS grants now that its identity is verified.
+                Task { @MainActor [weak self] in
+                    await self?.refreshGrantsForConnectedHost(profileID: profileID)
+                }
             }
             // #397: per-host state-change notifications fire through the
             // same model path as the ACTIVE host's store hooks — composite
@@ -1761,21 +1769,34 @@ final class AppModel: ObservableObject {
         return .failure(failure)
     }
 
-    // MARK: - Grants refresh (#101)
+    // MARK: - Grants refresh (#101, #426)
 
-    /// Signed self-service grants read: re-fetches THIS key's CURRENT
+    /// Signed self-service grants read: re-fetches the device's CURRENT
     /// grants + expiry from the daemon so a host-side promotion reaches the
     /// phone without a device reset. Idempotent and non-blocking: callers
     /// wrap it in a fire-and-forget `Task`, and it never touches the live
     /// stream. On ANY failure the cached grants are kept — a stale cached
     /// set is strictly better than a broken board, so grants are never
     /// cleared by a network error.
+    /// #426: in the multi-host runtime this is a PER-HOST fan-out — every
+    /// configured, live host (the ACTIVE profile and every verified
+    /// coordinator host) performs its OWN signed `/grants-read` against its
+    /// OWN url/key identity, and a successful response folds into ONLY
+    /// that host's profile grant set (persisted). The legacy single-host
+    /// runtime below is unchanged.
     @MainActor
     func refreshGrants() async {
         let context = lifecycleContext()
         guard context.mode == .live,
-              let hostURL = context.hostURL,
-              let signer = self.signer,
+              let signer = self.signer else {
+            return
+        }
+        if let store = profileStore, !store.orderedProfiles.isEmpty {
+            await refreshGrantsForHosts(context: context, store: store, signer: signer)
+            return
+        }
+        // Legacy single-host runtime (#101, no profile store): unchanged.
+        guard let hostURL = context.hostURL,
               let keyId = context.keyId else {
             return
         }
@@ -1810,7 +1831,106 @@ final class AppModel: ObservableObject {
         await task.value
     }
 
-    // MARK: - Live connection
+    /// #426: one signed `/grants-read` per configured, LIVE host. The
+    /// ACTIVE profile refreshes its own url/keyId under the same B4 gate
+    /// as the legacy runtime; each verified coordinator host refreshes
+    /// against ITS OWN profile url/keyId (the shared phone signer signs,
+    /// the profile's registration key id names the device record). A
+    /// success folds ONLY into that host's profile grant set and persists
+    /// it; a failure keeps the last-known grants and never touches another
+    /// host's state or any live stream.
+    private func refreshGrantsForHosts(context: LifecycleContext,
+                                       store: HostProfileStore,
+                                       signer: DeviceSigner) async {
+        for profile in store.orderedProfiles {
+            await refreshGrantsHost(profile: profile, context: context,
+                                    store: store, signer: signer)
+        }
+    }
+
+    /// #426: per-host signed `/grants-read` for ONE profile (shared by the
+    /// launch/foreground fan-out and the coordinator's session-connected
+    /// retry). Eligibility mirrors the read route's fail-closed gates.
+    private func refreshGrantsHost(profile: HostProfile,
+                                   context: LifecycleContext,
+                                   store: HostProfileStore,
+                                   signer: DeviceSigner) async {
+        guard let keyId = profile.keyId,
+              !keyId.isEmpty,
+              let url = URL(string: profile.urlString) else {
+            return
+        }
+        if profile.id == activeProfileID {
+            // B4: the ACTIVE host needs verified continuity before any
+            // signed request (same gate as the legacy path).
+            guard keyContinuityAllowsLiveWork else { return }
+        } else {
+            // A coordinator host may only be signed toward once its
+            // pinned identity is verified (B4) — mirror the read route.
+            guard profile.mayConnect,
+                  coordinator?.allowsLiveWork(profileID: profile.id) == true else {
+                return
+            }
+        }
+        let profileID = profile.id
+        let isActiveProfile = profileID == activeProfileID
+        let taskId = UUID()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.lifecycleTasks.removeValue(forKey: taskId) }
+            guard self.isCurrent(context) else { return }
+            let client = DriveClient(host: url, session: self.session)
+            do {
+                let response = try await client.fetchGrants(keyId: keyId, signer: signer)
+                guard !Task.isCancelled, self.isCurrent(context) else { return }
+                // The host may have been removed/re-paired/re-pointed
+                // while the read was in flight — only fold into a
+                // profile that still exists under the SAME key + url.
+                guard let current = store.profile(id: profileID),
+                      current.keyId == keyId,
+                      current.urlString == profile.urlString else { return }
+                _ = try? store.applyGrants(id: profileID,
+                                           grants: response.grants,
+                                           expiryTs: response.expiryTs)
+                self.reloadProfiles(from: store)
+                if isActiveProfile {
+                    // Legacy mirror parity for the ACTIVE host (#101):
+                    // the in-memory grant set + persisted meta follow
+                    // the refreshed values too.
+                    self.grants = response.grants
+                    if let meta = self.loadMeta() {
+                        self.saveMeta(DeviceKeyStore.DeviceMeta(
+                            keyId: meta.keyId,
+                            host: meta.host,
+                            grants: response.grants,
+                            expiryTs: response.expiryTs,
+                            registeredAt: meta.registeredAt))
+                    }
+                }
+            } catch {
+                // Silent by design: stale cached grants beat a broken
+                // board; another host's refresh is never affected.
+            }
+        }
+        lifecycleTasks[taskId] = task
+        await task.value
+    }
+
+    /// #426: a coordinator host's session JUST connected (identity
+    /// verified + stream open). The launch/foreground fan-out may have run
+    /// while this host was still `.verifying` (pinned hosts re-check at
+    /// startLive), so refresh ITS grants now — mirroring the #397
+    /// retained-token retry on the same seam.
+    private func refreshGrantsForConnectedHost(profileID: UUID) async {
+        guard let store = profileStore,
+              let profile = store.profile(id: profileID),
+              profile.id != activeProfileID,
+              let signer = self.signer else {
+            return
+        }
+        await refreshGrantsHost(profile: profile, context: lifecycleContext(),
+                                store: store, signer: signer)
+    }
 
     /// Issue #219: one pull/toolbar snapshot refresh in flight. Guards
     /// coalescing (repeated pulls share one request) and drives the

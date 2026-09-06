@@ -95,6 +95,12 @@ final class FleetStore: ObservableObject {
     /// tolerated; the URL-level `/host-key` check is the continuity gate.
     /// Fired only when `acceptedHostIdentity` is non-nil.
     var onHostIntegrityMismatch: (@MainActor @Sendable () -> Void)?
+    /// #397 follow-up: fired AFTER an accepted frame mutated the read
+    /// model (snapshot or delta — stream, refresh, or seed). This is the
+    /// moment a deferred notification tap can learn that its target agent
+    /// appeared (or that the board settled without it). Rejected frames
+    /// never fire it.
+    var onAgentsChanged: (@MainActor () -> Void)?
     /// The pinned host identity the live feed must conform to (nil =
     /// legacy single-host flows without a pin).
     var acceptedHostIdentity: String?
@@ -216,6 +222,10 @@ final class FleetStore: ObservableObject {
         if marksConnected {
             connectionState = .connected
         }
+        // #397 follow-up: an accepted frame mutated the read model — the
+        // owning model replays any deferred notification tap whose target
+        // may now be present (or may now be provably absent).
+        onAgentsChanged?()
     }
 
     // MARK: - Notification transition tracking (#354 L2)

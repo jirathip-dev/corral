@@ -62,6 +62,9 @@ TEST_SOURCE_FILE = "ios/FleetNotifierTests/FleetNotifierTests.swift"
 # #315: canonical transcript provenance — Models (unknown kind + prompt_request_id),
 # RecentOutputModel (client reclassification removed), FleetViews (unknown rendering).
 APPROVED_RELEASE_SOURCE_DIGEST = (
+    # #397 follow-up (notification-tap lifecycle): AppModel deferred deep-link
+    # routing + replay, FleetStore onAgentsChanged, LocalNotifier tap queue,
+    # coordinator session-rows hook — re-pinned over the #397 source set.
     # #401: multi-host board + Settings UX — BoardModel host-chip/host-section projections, AppModel host filter/aggregate accessors + N2 recents-route fix, FleetViews multi-host renderer + Settings per-host rows + F2 text + Add-Host prefill, DemoFleet multi-host seed, TimeInState last-seen label — re-pinned over the #401 source set.
     # #427: Direction-A filter/header redesign — FleetViews board header
     # (top-left Filters control + summary, chip rows removed, No-lanes
@@ -292,7 +295,7 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # #426 r1: per-host refresh failure now logs the bound error instead of
     # an empty catch (anti-slop no-swallowed-errors) — AppModel.swift
     # changed again, so the release-source pin follows the r1 source set.
-    "8934fa0a50c9a6e0713eff671f4e4b656742135848f019204a9a5fa5bb9eb890"
+    "5235f84379b875def8133f9e822f4e39e5f56bf10ca41195cc73903d81064cdb"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -432,7 +435,10 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # per-profile persistence/isolation, failed-refresh preservation,
     # refreshed-profile non-active drive, equal-raw-id separation,
     # not-granted permission-state) — re-pinned over the #426 test source.
-    "cd4d75a7479bdee264bacb7d6d6ebbf056aa2c26ebd0fb40697ec3a80eae5898"
+    # #397 follow-up: NotificationTapDeferredLifecycleTests +
+    # LocalNotifierTapDeliveryTests added — re-pinned over the #397 test
+    # source.
+    "df76d8136a18d905bb532c97867c50b36c426fbb3a74f963fac8222c71341f70"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

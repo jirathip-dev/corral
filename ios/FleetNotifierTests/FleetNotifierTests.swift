@@ -3406,11 +3406,13 @@ final class ReadOnlySurfaceWiringTests: XCTestCase {
         // A.3: chip hit targets stay >= 44 pt.
         XCTAssertTrue(source.contains(".frame(minHeight: 44)"),
                       "chip hit targets must be >= 44 pt")
-        // B: chip row surfaces with the model-owned filter and selected
-        // state + VoiceOver selected trait.
-        XCTAssertTrue(source.contains("repoChipsRow(chips: chips,"))
+        // B: the filter surface lives in the #427 top-left control + sheet
+        // now (the old horizontal chip rows are gone) — selections still
+        // flow straight into the model-owned filters with the VoiceOver
+        // selected trait on the choice rows.
+        XCTAssertTrue(source.contains(".sheet(isPresented: $showFilters)"))
         XCTAssertTrue(source.contains("model.repoFilter = chip.repo"))
-        XCTAssertTrue(source.contains("accessibilityAddTraits(isSelected ? [.isSelected] : [])"))
+        XCTAssertTrue(source.contains(".accessibilityAddTraits(selected ? [.isSelected] : [])"))
         // C: dismissal reconciles the request (reopen lifecycle) — the
         // reconciler itself lives on the model and is pinned by
         // RecentsSheetLifecycleTests; here we pin the view call site.
@@ -3756,26 +3758,34 @@ final class SettingsAccessWiringTests: XCTestCase {
                              + "(a 'Button(\"Settings\", systemImage: \"gearshape\") { showSettings = true }' "
                              + "menu-item spelling is the removed surface)")
 
-        // >=44 pt target + VoiceOver label on the gear.
-        XCTAssertEqual(lineNumbers(of: ".accessibilityLabel(\"Settings\")",
-                                   in: source).count, 1,
-                       "the gear must carry a VoiceOver label")
-        XCTAssertEqual(lineNumbers(of: ".frame(minWidth: 44, minHeight: 44)",
-                                   in: source).count, 1,
-                       "the gear must keep a >=44 pt hit target")
+        // >=44 pt target + VoiceOver label on the gear. (#427: the board's
+        // other top-bar control — the leading Filters trigger — and the
+        // filter sheet controls carry their own >= 44 pt targets, so the
+        // gear's frame is pinned AFTER its own shape line, not by
+        // whole-source uniqueness.)
+        let gearLabelLine = try XCTUnwrap(
+            lineNumbers(of: ".accessibilityLabel(\"Settings\")", in: source).first,
+            "the gear must carry a VoiceOver label")
+        let gearFrameLine = try XCTUnwrap(
+            lineNumbers(of: ".frame(minWidth: 44, minHeight: 44)", in: source)
+                .filter { $0 > gearLines[0] }.first,
+            "the gear must keep a >=44 pt hit target")
+        XCTAssertGreaterThan(gearFrameLine, gearLabelLine,
+                             "the gear's >=44 pt frame must follow its VoiceOver label")
 
         // RELEASE-active: a DEBUG-gated gear would leave Release builds with
         // NO Settings access at all, so every gear line must sit OUTSIDE the
         // debug-active regions.
         for needle in ["gearshape",
-                       ".accessibilityLabel(\"Settings\")",
-                       ".frame(minWidth: 44, minHeight: 44)"] {
+                       ".accessibilityLabel(\"Settings\")"] {
             let lines = lineNumbers(of: needle, in: source)
             XCTAssertEqual(lines.count, 1, "\(needle) must appear exactly once")
             guard lines.count == 1 else { continue }
             XCTAssertFalse(debug.contains(lines[0]),
                            "\(needle) must be release-active (gear on the board in Release)")
         }
+        XCTAssertFalse(debug.contains(gearFrameLine),
+                       "the gear's >=44 pt frame must be release-active")
         // The sheet-open action: one release-active (the gear) + the
         // DEBUG-only recorded-evidence drivers (#365 settings, #372 theme,
         // #379 connect, #385 glass, #388 connection-inputs and #416
@@ -3800,11 +3810,17 @@ final class SettingsAccessWiringTests: XCTestCase {
         // Exactly ONE Menu in the board toolbar: the DEBUG demo overflow.
         XCTAssertEqual(toolbarSlice.components(separatedBy: "Menu {").count - 1, 1,
                        "the board toolbar must keep exactly one Menu (demo overflow only)")
-        guard let menuStart = toolbarSlice.range(of: "Menu {"),
-              let menuClose = toolbarSlice.range(of: "} label:") else {
+        guard let menuStart = toolbarSlice.range(of: "Menu {") else {
             return XCTFail("the demo Menu must have a label")
         }
-        let menuSlice = String(toolbarSlice[menuStart.lowerBound..<menuClose.lowerBound])
+        // #427: the leading Filters control opens `Button { ... } label: {`
+        // BEFORE the demo Menu, so the Menu's own label opener is the FIRST
+        // `} label:` AFTER the Menu declaration.
+        let menuTail = toolbarSlice[menuStart.lowerBound...]
+        guard let menuLabelOpen = menuTail.range(of: "} label:") else {
+            return XCTFail("the demo Menu must have a label")
+        }
+        let menuSlice = String(menuTail[..<menuLabelOpen.lowerBound])
         XCTAssertFalse(menuSlice.contains("showSettings"),
                        "Settings must NOT hide inside the demo overflow menu (#365)")
         XCTAssertTrue(menuSlice.contains("sparkles"),
@@ -3974,7 +3990,13 @@ final class NavigationHeaderWiringTests: XCTestCase {
         let toolbarLine = try XCTUnwrap(lineNumbers(of: ".toolbar {", in: slice).first)
         let gearLine = try XCTUnwrap(lineNumbers(of: "gearshape", in: slice).first)
         let labelLine = try XCTUnwrap(lineNumbers(of: ".accessibilityLabel(\"Settings\")", in: slice).first)
-        let frameLine = try XCTUnwrap(lineNumbers(of: ".frame(minWidth: 44, minHeight: 44)", in: slice).first)
+        // #427: the leading Filters trigger carries its own >= 44 pt frame
+        // BEFORE the gear's chain, so the gear's target is the FIRST frame
+        // line after its own shape line.
+        let frameLine = try XCTUnwrap(
+            lineNumbers(of: ".frame(minWidth: 44, minHeight: 44)", in: slice)
+                .filter { $0 > gearLine }.first,
+            "the gear must keep its own >=44 pt frame after its shape")
         let sheetLine = try XCTUnwrap(lineNumbers(of: ".sheet(isPresented: $showSettings)", in: slice).first)
         // Chrome order is unchanged from #365: empty title → inline lock →
         // gear toolbar → settings sheet, with the gear's >=44 pt target +
@@ -4553,18 +4575,23 @@ final class ThemeWiringTests: XCTestCase {
         let boardEnd = try XCTUnwrap(source.range(of: "\n// MARK: - Banner"),
                                      "the banner section must follow FleetView")
         let slice = String(source[boardStart.lowerBound..<boardEnd.lowerBound])
-        XCTAssertTrue(slice.contains("theme.repoHueColor(for: repo, among: repos)"),
-                      "repo chips must carry the deterministic palette hue dot")
-        XCTAssertTrue(slice.contains("isSelected ? theme.accent : theme.base"),
-                      "a selected chip fills with the palette accent (mauve, never teal)")
-        XCTAssertTrue(slice.contains("isSelected ? theme.crust : theme.subtext1"),
-                      "chip ink follows the crust/subtext tokens")
+        // The repo-hue mapping still rides the row-level repo label chips
+        // (#371/#384 — the #427 sheet rows are text-first per the approved
+        // variant-A look, so the deterministic hue dots live on board rows).
+        XCTAssertTrue(source.contains("theme.repoHueColor(for: repo ?? \"\", among: repos)"),
+                      "repo rows must carry the deterministic palette hue dot")
+        XCTAssertTrue(source.contains("selected ? theme.accent.opacity(0.12) : Color.clear"),
+                      "a selected filter scope row tints with the palette accent (mauve, never teal)")
+        XCTAssertTrue(source.contains("selected ? theme.accent : theme.text"),
+                      "selected scope row ink follows the accent/text tokens")
         XCTAssertTrue(slice.contains(".scrollContentBackground(.hidden)"),
                       "the board surface must be token-backed")
         XCTAssertTrue(slice.contains(".background(theme.base)"),
                       "the board background must be the active flavor's base")
-        XCTAssertFalse(slice.contains("Color.accentColor"),
-                       "no system accent color may remain on the board")
+        XCTAssertTrue(slice.contains(".foregroundStyle(theme.accent)"),
+                      "the top-left Filters control icon must ride the palette accent")
+        XCTAssertFalse(source.contains("Color.accentColor"),
+                       "no system accent color may remain on the board or its filter surface")
     }
 
     func testRecentsSheetGatesAutoScrollOnReduceMotion() throws {
@@ -4849,7 +4876,7 @@ final class RepoRowLabelWiringTests: XCTestCase {
         // builder) and AgentRow passes it into WorkspaceLine — two call
         // sites file-wide share the same spelling.
         let row = try slice(from: "private func agentRow(_ agent: Agent",
-                            to: "/// Board chrome: connection status",
+                            to: "/// Board chrome: the top-left #427 Filters control",
                             in: source)
         XCTAssertEqual(row.components(separatedBy: "hideRepoLabel: hideRepoLabel)").count - 1, 1,
                        "agentRow must pass the flag into AgentRow")
@@ -8977,14 +9004,15 @@ final class MultiHostBoardProjectionTests: XCTestCase {
     }
 }
 
-// MARK: - #401/#430 multi-host surface wiring (FleetViews source bundle)
+// MARK: - #401/#430/#427 multi-host surface wiring (FleetViews source bundle)
 
-/// Source-wiring pins over the bundled FleetViews source: the host-chip row
-/// renders ONLY with 2+ profiles (above the repo row), the All-Hosts row
-/// badges + stale/last-seen markers ride the composite renderer, Settings
-/// exposes the per-host D7 surface (rename/retry/remove + F2 copy) with NO
-/// drag-to-reorder chrome (#430), and the Add Host sheet prefills the name
-/// from the URL (B3).
+/// Source-wiring pins over the bundled FleetViews source: #427 Direction A
+/// moved the filter chrome off the board (no chip rows render in ANY mode)
+/// while the D7 textual host-health line stays inside the 2+ profile
+/// guard; the All-Hosts row badges + stale/last-seen markers ride the
+/// composite renderer; Settings exposes the per-host D7 surface
+/// (rename/retry/remove + F2 copy) with NO drag-to-reorder chrome (#430);
+/// and the Add Host sheet prefills the name from the URL (B3).
 final class MultiHostSurfaceWiringTests: XCTestCase {
     private func bundledSource() throws -> String {
         let bundle = Bundle(for: MultiHostSurfaceWiringTests.self)
@@ -8993,25 +9021,23 @@ final class MultiHostSurfaceWiringTests: XCTestCase {
         return try String(contentsOf: url, encoding: .utf8)
     }
 
-    func testHostChipRowSitsAboveRepoRowUnderTheMultiHostGuard() throws {
+    func testFilterChromeLivesInTheHeaderSheetWhileTheBannerStaysUnderTheMultiHostGuard() throws {
         let source = try bundledSource()
-        // The host chips row + outage summary live INSIDE the 2+ profile
-        // guard (probe (a): removing the guard or hoisting the row out of
-        // it makes this RED — the single-host layout stays byte-comparable).
-        let start = try XCTUnwrap(source.range(of: "// #401 D2: with 2+ profiles the HOST-chip row"))
+        // The board list region (chrome section → the model banner) renders
+        // NO chip rows in any mode (the #427 duplicate-unexplained-All
+        // defect); the compact D7 outage line stays INSIDE the 2+ profile
+        // guard as the board's textual host health.
+        let start = try XCTUnwrap(source.range(of: "// #427 Direction A: the horizontal chip rows moved"))
         let end = try XCTUnwrap(source.range(of: "if let banner = model.banner"))
         let slice = String(source[start.lowerBound..<end.lowerBound])
-        let guardRange = try XCTUnwrap(slice.range(of: "if model.multiHostConfigured {"),
-                                       "the host chip row must sit inside the 2+ profile guard")
-        let chipsRange = try XCTUnwrap(slice.range(of: "hostChipsRow(chips: hostChipRow,"),
-                                       "the host chip row must be wired above the repo row")
-        XCTAssertLessThan(guardRange.lowerBound, chipsRange.lowerBound)
-        XCTAssertEqual(slice.components(separatedBy: "hostChipsRow(chips: hostChipRow,").count - 1, 1,
-                       "exactly one host-chip row call site")
-        XCTAssertTrue(slice.contains("hostOutageSummaryRow(hostOutageSummary)"),
-                      "the compact D7 summary must ride under the host chips")
-        XCTAssertTrue(slice.contains("} else {\n                            repoChipsRow(chips: chips,"),
-                      "the single-host repo row must keep its own (unchanged) branch")
+        XCTAssertTrue(slice.contains("if model.multiHostConfigured, let hostOutageSummary {"),
+                      "the D7 textual host-health line must stay inside the 2+ profile guard")
+        XCTAssertEqual(slice.components(separatedBy: "hostOutageSummaryRow(hostOutageSummary)").count - 1, 1,
+                       "exactly one D7 outage row call site on the board")
+        XCTAssertEqual(source.components(separatedBy: "hostChipsRow(").count - 1, 0,
+                       "the host chip row must not return to the board (#427)")
+        XCTAssertEqual(source.components(separatedBy: "repoChipsRow(").count - 1, 0,
+                       "the repo chip row must not return to the board (#427)")
     }
 
     func testHostSelectionFlowsThroughTheModelAndProjections() throws {
@@ -9113,19 +9139,23 @@ final class MultiHostSurfaceWiringTests: XCTestCase {
                       "B3: the prefill must track URL entry")
     }
 
-    func testHostChipsAre44PtAccessibleAndTokenThemed() throws {
+    func testFilterSheetHostScopeRowsStayReachableAndTextuallyHealthy() throws {
         let source = try bundledSource()
-        let start = try XCTUnwrap(source.range(of: "private func hostChipButton("))
-        let end = try XCTUnwrap(source.range(of: "/// #401 D7: the ONE compact board-level outage summary"))
+        let start = try XCTUnwrap(source.range(of: "struct FilterScopeSheet: View {"),
+                                  "the #427 filter sheet must exist")
+        let end = try XCTUnwrap(source.range(of: "// MARK: - Registration"),
+                                "the sheet must precede the Registration MARK")
         let slice = String(source[start.lowerBound..<end.lowerBound])
-        XCTAssertTrue(slice.contains(".frame(minHeight: 44)"),
-                      "D8: interactive host chips keep the ≥44 pt target")
-        XCTAssertTrue(slice.contains(".accessibilityAddTraits(isSelected ? [.isSelected] : [])"),
-                      "D8: selected host chips carry the VoiceOver selected trait")
-        XCTAssertTrue(source.contains(".id(\"board.host-chips\")"),
-                      "the host chip row carries its scroll anchor")
+        XCTAssertTrue(slice.contains("chip.health.label"),
+                      "AC5: host scope rows must render the textual health label (live/connecting/offline)")
+        XCTAssertTrue(slice.contains(".frame(maxWidth: .infinity, minHeight: 50"),
+                      "D8: scope choice rows keep the 50 pt minimum hit target")
+        XCTAssertTrue(slice.contains(".frame(minWidth: 44, minHeight: 44)"),
+                      "D8: the scope clear/close/reset controls keep the >= 44 pt target")
+        XCTAssertTrue(slice.contains(".accessibilityAddTraits(selected ? [.isSelected] : [])"),
+                      "D8: selected scope rows carry the VoiceOver selected trait")
         XCTAssertTrue(source.contains("BoardModel.hostHealthToken(health)"),
-                      "D8: health colors resolve through the shared token mapping")
+                      "the shared health-token mapping stays consumed (Settings host rows)")
     }
 }
 
@@ -9228,5 +9258,210 @@ final class HostCardHitTargetWiringTests: XCTestCase {
                        "the destructive Remove host text must resolve theme.red explicitly")
         XCTAssertEqual(lineNumbers(of: ".font(.subheadline)", in: actions).count, 3,
                        "every host action must keep the Dynamic-Type-scaled subheadline font")
+    }
+}
+
+// MARK: - #427 filter/header redesign (Direction A): discriminating RED + pins
+
+/// #427 Direction A regression + positive pins over the bundled FleetViews
+/// source and the BoardModel projections. The RED probes bite at the #427
+/// BASE head — the board chrome still spends two horizontal chip rows (two
+/// unexplained `All` chips), the top-left header is empty, there is no
+/// filter sheet, and a connecting host has no textual board summary — every
+/// assertion below names the Direction-A surface that must exist after the
+/// redesign. The positive pins (host/repository selections stay
+/// independent, the All chip keeps unified counts, repo chips rescope to
+/// the selected host, composite rows merge across hosts) must be green at
+/// the base head AND after the redesign.
+final class FilterHeaderRedesignTests: XCTestCase {
+
+    private func bundledSource() throws -> String {
+        let bundle = Bundle(for: FilterHeaderRedesignTests.self)
+        let url = try XCTUnwrap(bundle.url(forResource: "FleetViews",
+                                           withExtension: "swift.txt"))
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    private func occurrences(of needle: String, in text: String) -> Int {
+        text.components(separatedBy: needle).count - 1
+    }
+
+    /// The board region: FleetView declaration → Banner MARK (the same
+    /// boundary the #365/#386/#387 wiring tests slice).
+    private func boardSlice(from source: String) throws -> String {
+        let start = try XCTUnwrap(source.range(of: "\nstruct FleetView: View {"),
+                                  "FleetView declaration must exist")
+        let end = try XCTUnwrap(source.range(of: "\n// MARK: - Banner"),
+                                "the banner section must follow FleetView")
+        return String(source[start.lowerBound..<end.lowerBound])
+    }
+
+    /// The Direction-A filter sheet region: its struct declaration up to
+    /// the next section MARK.
+    private func sheetSlice(from source: String) throws -> String {
+        let start = try XCTUnwrap(source.range(of: "struct FilterScopeSheet: View {"),
+                                  "the Direction-A filter sheet must exist")
+        let end = try XCTUnwrap(source.range(of: "// MARK: - Settings"),
+                                "the Settings MARK must follow the filter sheet")
+        return String(source[start.lowerBound..<end.lowerBound])
+    }
+
+    // MARK: RED probes — each FAILS at the #427 base head.
+
+    func testTopLeftHeaderLeadsWithTheFiltersControlAndSummary() throws {
+        let source = try bundledSource()
+        let slice = try boardSlice(from: source)
+        // The Filters control rides the board's OWN pinned chrome (the
+        // top-left header strip) — the nav bar's toolbar holds ONLY the
+        // Settings gear (top-right), so the two can never compete (AC3).
+        XCTAssertEqual(occurrences(of: "ToolbarItem(placement: .topBarLeading)", in: slice), 0,
+                       "the toolbar must not carry a leading item — Settings alone stays top-right")
+        // Exactly ONE release-active opener (the chrome trigger; the DEBUG
+        // evidence drivers flip the same binding behind #if DEBUG, so the
+        // opener is pinned by its Button-label chain).
+        XCTAssertEqual(occurrences(of: "showFilters = true\n        } label: {", in: slice), 1,
+                       "exactly one opener must present the filter sheet (#427 C)")
+        XCTAssertEqual(occurrences(of: "Image(systemName: \"line.3.horizontal.decrease\")",
+                                   in: slice), 1,
+                       "the Filters control must carry the slider icon")
+        XCTAssertTrue(slice.contains("\"Filters · \\(activeFilterCount)\""),
+                      "the control must show the active-count label form 'Filters · N'")
+        XCTAssertTrue(slice.contains("\"All hosts\""),
+                      "the selected summary must name the All-hosts scope explicitly")
+        XCTAssertTrue(slice.contains("\"All repositories\""),
+                      "the selected summary must name the All-repositories scope explicitly")
+        XCTAssertTrue(slice.contains(".sheet(isPresented: $showFilters)"),
+                      "the Filters control must open the filter sheet")
+        XCTAssertTrue(slice.contains("Text(\"No lanes match\")"),
+                      "a filtered board with no matching rows must show the No-lanes state")
+        XCTAssertTrue(slice.contains("Both scopes remain active and reversible."),
+                      "the No-lanes state must explain that both scopes stay active")
+    }
+
+    func testBoardChromeRendersNoChipRowsAndNoDuplicateGenericAllLabels() throws {
+        let source = try bundledSource()
+        // Direction A removes the two horizontal chip rows from the board:
+        // their builders + scroll anchors must be GONE (a restored row is
+        // the exact #427 defect — two unexplained All chips).
+        XCTAssertEqual(occurrences(of: "hostChipsRow(", in: source), 0,
+                       "the host chip row must not render on the board (#427)")
+        XCTAssertEqual(occurrences(of: "repoChipsRow(", in: source), 0,
+                       "the repo chip row must not render on the board (#427)")
+        XCTAssertEqual(occurrences(of: "hostChipButton(", in: source), 0,
+                       "the generic 'All' host chip button must be gone")
+        XCTAssertEqual(occurrences(of: "repoChipButton(", in: source), 0,
+                       "the generic 'All' repo chip button must be gone")
+        XCTAssertEqual(occurrences(of: ".id(\"board.host-chips\")", in: source), 0,
+                       "the host chip row scroll anchor must be gone")
+        XCTAssertEqual(occurrences(of: ".id(\"board.filter-chips\")", in: source), 0,
+                       "the repo chip row scroll anchor must be gone")
+        // No remaining visible 'All'-only chip label (any All control must
+        // say its full scope in visible text — AC1).
+        XCTAssertEqual(occurrences(of: "chip.isAll ? \"All\"", in: source), 0,
+                       "no chip may render the bare 'All' label")
+    }
+
+    func testFilterSheetLeadsWithHostScopeAndCarriesScopedActions() throws {
+        let source = try bundledSource()
+        let slice = try sheetSlice(from: source)
+        let hostScope = try XCTUnwrap(slice.range(of: "\"Host scope\""),
+                                      "the sheet must open with the Host scope heading")
+        let repoScope = try XCTUnwrap(slice.range(of: "\"Repository scope\""),
+                                      "the Repository scope must follow the Host scope")
+        XCTAssertLessThan(hostScope.lowerBound, repoScope.lowerBound,
+                          "Host scope must come FIRST, then Repository scope (#427 C/D)")
+        for needle in ["\"All hosts\"", "\"All repositories\"",
+                       "\"Clear host\"", "\"Clear repository\"",
+                       "\"Reset all filters\"", "\"Close filters\"",
+                       "model.selectHostFilter(nil)",
+                       ".frame(maxWidth: .infinity, minHeight: 50",
+                       ".accessibilityAddTraits(selected ? [.isSelected] : [])"] {
+            XCTAssertTrue(slice.contains(needle),
+                          "the filter sheet must wire: \(needle)")
+        }
+    }
+
+    func testConnectingHostsGetTextualOutageSummaryParts() {
+        // AC5: connecting stays textually available ON the board through
+        // the D7 compact summary (never color alone). Base head returns nil
+        // for a connecting-only host set → RED.
+        XCTAssertEqual(BoardModel.hostOutageSummary(hosts: [
+            BoardModel.HostFilterChip(profileID: UUID(), displayName: "B",
+                                      laneCount: 2, health: .connecting)]),
+            "1 host connecting")
+        XCTAssertEqual(BoardModel.hostOutageSummary(hosts: [
+            BoardModel.HostFilterChip(profileID: UUID(), displayName: "A",
+                                      laneCount: 1, health: .offline),
+            BoardModel.HostFilterChip(profileID: UUID(), displayName: "B",
+                                      laneCount: 2, health: .connecting)]),
+            "1 host offline · 1 host connecting")
+        XCTAssertEqual(BoardModel.hostOutageSummary(hosts: [
+            BoardModel.HostFilterChip(profileID: UUID(), displayName: "A",
+                                      laneCount: 0, health: .connecting),
+            BoardModel.HostFilterChip(profileID: UUID(), displayName: "B",
+                                      laneCount: 0, health: .connecting)]),
+            "2 hosts connecting")
+    }
+
+    // MARK: Positive pins — green at the base head AND after the redesign.
+
+    func testIndependentHostAndRepositorySelectionSemanticsRemainUntouched() {
+        let a = UUID(), b = UUID()
+        func agent(_ id: String, state: AgentState, ts: UInt64,
+                   repo: String?) -> Agent {
+            Agent(agentId: id, state: state, reason: nil, ts: ts,
+                  capabilities: [], workspace: Workspace(repo: repo,
+                                                         branch: "main"))
+        }
+        func row(_ hostID: UUID, _ id: String, state: AgentState,
+                 ts: UInt64, repo: String?) -> HostBoardRow {
+            HostBoardRow(identity: CompositeAgentID(hostProfileID: hostID,
+                                                    agentID: id),
+                         agent: agent(id, state: state, ts: ts, repo: repo),
+                         isStale: false, lastSeen: ts)
+        }
+        let rows = [row(a, "herdr:a1", state: .working, ts: 10, repo: "corral"),
+                    row(a, "herdr:a2", state: .working, ts: 20, repo: "demo-atlas"),
+                    row(b, "herdr:b1", state: .blocked, ts: 30, repo: "demo-atlas"),
+                    row(b, "herdr:b2", state: .blocked, ts: 40, repo: "demo-garden")]
+        // AC7: host and repo remain TWO independent selections — host keeps
+        // the host's rows, repo keeps the repo's rows, both intersect.
+        XCTAssertEqual(BoardModel.rows(rows, forHost: a).count, 2)
+        XCTAssertEqual(BoardModel.rows(rows, in: "demo-atlas").count, 2)
+        XCTAssertEqual(BoardModel.rows(BoardModel.rows(rows, forHost: b),
+                                       in: "demo-atlas").count, 1)
+        XCTAssertEqual(BoardModel.rows(BoardModel.rows(rows, forHost: a),
+                                       in: "demo-garden").count, 0,
+                       "an intersection with no rows must stay EMPTY — never fall back")
+        // The All chip keeps the unified count; repo chips rescope to the
+        // selected host (D3/D4) — the sheet consumes the same projections.
+        let chips = BoardModel.hostChips(hosts: [
+            BoardModel.HostFilterChip(profileID: a, displayName: "Host A",
+                                      laneCount: 2, health: .live),
+            BoardModel.HostFilterChip(profileID: b, displayName: "Host B",
+                                      laneCount: 2, health: .offline)])
+        XCTAssertEqual(chips.first?.laneCount, 4)
+        XCTAssertEqual(chips.first?.health, .offline,
+                       "All hosts is never 'live' while a host is offline")
+        XCTAssertEqual(BoardModel.repoFilters(BoardModel.rows(rows, forHost: a))
+            .map(\.repo), ["corral", "demo-atlas"])
+        // Reconcile keeps a live repo choice and falls back to All (nil)
+        // only when the repo vanished.
+        XCTAssertEqual(BoardModel.reconcile("demo-atlas", against:
+            BoardModel.repoFilters(rows)), "demo-atlas")
+        XCTAssertNil(BoardModel.reconcile("vanished", against:
+            BoardModel.repoFilters(rows)))
+        // Composite rows with one repo name across hosts share ONE subgroup
+        // INSIDE each status section (D5) — equal repo names never split
+        // within a section, but different statuses stay separate sections.
+        let sections = BoardModel.hostSections(rows)
+        let blockedAtlas = sections.statuses.first { $0.state == .blocked }?
+            .subgroups.filter { $0.repo == "demo-atlas" } ?? []
+        XCTAssertEqual(blockedAtlas.count, 1)
+        XCTAssertEqual(blockedAtlas.first?.rows.count, 1)
+        let workingAtlas = sections.statuses.first { $0.state == .working }?
+            .subgroups.filter { $0.repo == "demo-atlas" } ?? []
+        XCTAssertEqual(workingAtlas.count, 1)
+        XCTAssertEqual(workingAtlas.first?.rows.count, 1)
     }
 }

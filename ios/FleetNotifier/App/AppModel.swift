@@ -2703,7 +2703,11 @@ final class AppModel: ObservableObject {
     /// (paused, fails closed, no session). Everything routes through the
     /// #399/#400 public seams (profile store + coordinator sessions' own
     /// stores) — no network, no stream internals.
-    func enterMultiHostDemo() {
+    /// `hostBConnecting` (#427 evidence): seed Host B's session store in the
+    /// CONNECTING posture instead of the offline error, so the filter-header
+    /// frames can capture the textual `connecting` health inside the filter
+    /// sheet and the board banner.
+    func enterMultiHostDemo(hostBConnecting: Bool = false) {
         guard let store = profileStore, coordinator != nil else {
             enterDemo()
             return
@@ -2760,7 +2764,14 @@ final class AppModel: ObservableObject {
         // Host B: retained STALE rows in its coordinator session store.
         if let storeB = coordinator?.store(profileID: profileB.id) {
             storeB.seedDemo(agents: DemoFleet.multiHostSeedB(now: now), rev: 1)
-            storeB.noteConnectionError("host unreachable")
+            if hostBConnecting {
+                // #427 evidence: B mid-connect — rows stay retained (a
+                // connecting host is not connected), health reads
+                // `connecting` on the chip/sheet + banner.
+                storeB.noteConnecting()
+            } else {
+                storeB.noteConnectionError("host unreachable")
+            }
         }
         store.noteLastSuccessfulConnection(id: profileA.id,
                                            at: now - 2 * 60 * 1000)

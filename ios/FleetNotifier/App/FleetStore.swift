@@ -475,6 +475,17 @@ final class FleetStore: ObservableObject {
         onConnected?()
     }
 
+    /// #427 evidence seeding: put a store in the CONNECTING posture without
+    /// starting a stream (the demo filter-header frames need a host whose
+    /// sheet/banner text reads `connecting`). Mirrors the exact `.connecting`
+    /// transition `connect()` makes and clears the error-dedupe reason like
+    /// `noteConnected()`; it deliberately touches NO stream task, cursor, or
+    /// callback state — only the published connection posture changes.
+    func noteConnecting() {
+        lastConnectionErrorReason = nil
+        connectionState = .connecting
+    }
+
     /// One frame off the wire: decode OFF-main (round-3 R-N4 — a large
     /// resnapshot must not become main-thread work), then a single
     /// main-actor hop applies the outcome. Frames still get one

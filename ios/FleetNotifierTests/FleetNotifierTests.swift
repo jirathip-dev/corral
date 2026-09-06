@@ -10599,3 +10599,331 @@ final class PerHostGrantsRefreshTests: XCTestCase {
                       "without the grant the drive stops locally (no signed request)")
     }
 }
+// MARK: - #397 follow-up: notification-tap lifecycle (deferred deep link)
+
+/// Discriminating regressions for the notification-RESPONSE lifecycle: a
+/// tap is a ONE-SHOT OS delivery (one `didReceive` per tap) and must never
+/// be lost just because the model was not ready to route it the instant it
+/// arrived — cold/terminated launch before live setup, background
+/// reconnect while the owning profile re-verifies, or board rows not
+/// loaded yet. The pre-fix code dropped every tap that hit a not-ready
+/// gate (`mode != .live`, key continuity pending, agent row absent, host
+/// session still verifying); these tests pin the deferred-deep-link
+/// contract — the tap is remembered per composite target and replayed
+/// exactly once when ITS OWN host is live and the agent is available.
+@MainActor
+final class NotificationTapDeferredLifecycleTests: XCTestCase {
+    static let hostKey = Data(repeating: 9, count: 32).base64EncodedString()
+    static let otherHostKey = Data(repeating: 10, count: 32).base64EncodedString()
+    static let unknownHostKey = Data(repeating: 11, count: 32).base64EncodedString()
+
+    private var suiteName = ""
+    private var model: AppModel?
+    private var session: URLSession?
+
+    private func cleanup() {
+        model?.stopLive()
+        model = nil
+        session?.invalidateAndCancel()
+        session = nil
+        KeyContinuityGate.reset()
+        HostSwitchURLProtocol.clearScript()
+        if !suiteName.isEmpty {
+            // SAFETY: suiteName was freshly minted per test.
+            UserDefaults(suiteName: suiteName)!.removePersistentDomain(forName: suiteName)
+            suiteName = ""
+        }
+    }
+
+    /// Fresh legacy-runtime model (NO profile store): starts in
+    /// `.needsSetup` — the cold-launch posture before an identity is
+    /// restored/registered.
+    private func makeLegacyModel() -> AppModel {
+        suiteName = "corral.h397tap.legacy.\(UUID().uuidString)"
+        // SAFETY: a fresh UUID suite name is always a valid suite.
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let model = AppModel(defaults: defaults,
+                             identityLoader: {
+                                 (DeviceSigner(key: Curve25519.Signing.PrivateKey()),
+                                  .insecureFallback)
+                             },
+                             loadMeta: { nil }, saveMeta: { _ in },
+                             wipeIdentity: {})
+        self.model = model
+        return model
+    }
+
+    private func agent(_ id: String, state: AgentState = .working) -> Agent {
+        Agent(agentId: id, state: state, seq: 1, ts: 100,
+              capabilities: ["read_tail"],
+              workspace: Workspace(repo: "corral", branch: "main"),
+              displayName: id)
+    }
+
+    /// Profile-store fixture: A (pinned, ACTIVE) + optional B (pinned,
+    /// coordinator-owned); both hosts' /host-key + /events are scripted.
+    /// Returns a model that is ALREADY `.live` (the active profile binds at
+    /// init) but has NOT started any stream — the test calls startLive().
+    private func makeProfilesModel(count: Int = 2) -> AppModel {
+        suiteName = "corral.h397tap.profiles.\(UUID().uuidString)"
+        // SAFETY: a fresh UUID suite name is always a valid suite.
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let store = HostProfileStore(directory: nil, defaults: defaults)
+        // SAFETY: fixed fixture URLs (distinct hostnames).
+        let urlA = URL(string: "https://tap-a.example")!
+        // SAFETY: fixed fixture URLs (distinct hostnames).
+        let urlB = URL(string: "https://tap-b.example")!
+        // SAFETY: fixture addProfile calls only throw on invalid fixture input.
+        let profileA = try! store.addProfile(displayName: "Host A",
+                                             urlString: urlA.absoluteString,
+                                             hostKeyB64: Self.hostKey,
+                                             fingerprint: "FINGER",
+                                             keyId: "dev_tap_a",
+                                             grants: ["read_tail"],
+                                             expiryTs: 1_800_000_000,
+                                             registeredAt: 1)
+        if count > 1 {
+            try! store.addProfile(displayName: "Host B",
+                                  urlString: urlB.absoluteString,
+                                  hostKeyB64: Self.otherHostKey,
+                                  fingerprint: "FINGER",
+                                  keyId: "dev_tap_b",
+                                  grants: ["read_tail"],
+                                  expiryTs: 1_800_000_000,
+                                  registeredAt: 1)
+        }
+        defaults.set(profileA.id.uuidString, forKey: "fleetnotifier.activeHostProfileID")
+        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        var script: [URL: (Int, Data, Bool)] = [:]
+        for (url, key) in [(urlA, Self.hostKey), (urlB, Self.otherHostKey)] {
+            // SAFETY: fixed fixture JSON from the fixture keys.
+            script[url.appendingPathComponent("/host-key")] = (
+                200, Data(#"{"algorithm":"X25519","public_key":"\#(key)"}"#.utf8), false)
+            script[url.appendingPathComponent("/events")] = (200, Data(), true)
+        }
+        HostSwitchURLProtocol.setScript(script)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [HostSwitchURLProtocol.self]
+        let session = URLSession(configuration: config)
+        self.session = session
+        let model = AppModel(session: session, defaults: defaults,
+                             identityLoader: { (signer, .insecureFallback) },
+                             loadMeta: { nil }, saveMeta: { _ in },
+                             wipeIdentity: {}, profileStore: store)
+        self.model = model
+        return model
+    }
+
+    private func waitUntil(_ condition: @autoclosure () -> Bool,
+                           timeout: TimeInterval = 3) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+    }
+
+    // MARK: AC2 — cold/terminated-launch tap before live setup
+
+    /// A tap can arrive as soon as the process is up — BEFORE startLive /
+    /// the identity restore put the model in `.live` (and before the first
+    /// board snapshot carried the notified agent). It must not be dropped:
+    /// once the owning host is live and the agent row is available the
+    /// sheet opens exactly once.
+    func testTerminatedLaunchTapBeforeLiveSetupIsNotLost() {
+        defer { cleanup() }
+        let model = makeLegacyModel()
+        XCTAssertEqual(model.mode, .needsSetup, "fixture starts cold")
+        // The OS delivers the tap response while the model is still cold.
+        model.openNotification(agentId: "a1", hostKeyB64: nil)
+        XCTAssertNil(model.recentsRequest, "no UI may present before the model is live")
+        // The host comes live and its first board data carries the agent.
+        model.mode = .live
+        model.fleet.apply(.snapshot(Snapshot(
+            schemaVersion: 3, rev: 1, generatedAt: 1,
+            agents: ["a1": agent("a1")])))
+        XCTAssertEqual(model.recentsRequest?.agentId, "a1",
+                       "a tap received before live setup must open the sheet once the agent is available")
+        XCTAssertNil(model.recentsRequest?.hostProfileID,
+                     "the legacy runtime opens the single-host store")
+    }
+
+    // MARK: AC2/AC3 — background reconnect (active host re-verifying)
+
+    /// The app backgrounds (stream stopped, pinned key back to `.pending`)
+    /// and the tap lands while the OWNING profile is reconnecting. Nothing
+    /// may present pre-verification, and once the host re-verifies and the
+    /// agent is available the deferred tap must open exactly once.
+    func testTapDuringBackgroundReconnectIsDeferredUntilTheHostReVerifies() async throws {
+        defer { cleanup() }
+        let model = makeProfilesModel(count: 1)
+        let profileID = try XCTUnwrap(model.activeProfile?.id)
+        model.startLive()
+        await waitUntil(model.keyContinuityState == .verified)
+        // Seed the notified agent's row on the ACTIVE store (host-stamped
+        // so the pinned feed accepts it).
+        model.fleet.apply(.snapshot(Snapshot(
+            schemaVersion: 5, rev: 1, generatedAt: 0,
+            agents: ["a1": Agent(agentId: "a1", state: .idle, ts: 1,
+                                 host: Self.hostKey)])))
+        // Background boundary: stream down, key continuity back to pending.
+        model.stopLive()
+        XCTAssertEqual(model.keyContinuityState, .pending)
+        // The tap arrives while the owning profile is reconnecting.
+        model.openNotification(agentId: "a1", hostKeyB64: Self.hostKey)
+        XCTAssertNil(model.recentsRequest,
+                     "nothing may present while the owning host is unverified")
+        XCTAssertNil(model.banner, "a reconnect deferral is silent")
+        // Foreground: the host re-verifies; the deferred tap replays.
+        model.startLive()
+        await waitUntil(model.keyContinuityState == .verified)
+        await waitUntil(model.recentsRequest?.agentId == "a1")
+        XCTAssertEqual(model.recentsRequest?.hostProfileID, profileID,
+                       "the replayed tap opens the OWNING profile's lane")
+    }
+
+    // MARK: AC3 — coordinator host not yet connected; equal raw id on A
+
+    /// A tap for host B's agent arrives while B's session is still
+    /// verifying (post-foreground reconnect boundary) and host A ALREADY
+    /// holds an equal raw agent id. The tap must defer for B only and open
+    /// B's lane when B's agent becomes available — never A's.
+    func testTapForCoordinatorHostBeforeItsSessionConnectsDefersToThatHostOnly() async throws {
+        defer { cleanup() }
+        let model = makeProfilesModel(count: 2)
+        let profileB = try XCTUnwrap(model.profiles.first {
+            $0.hostKeyB64 == Self.otherHostKey
+        })
+        // B's session exists but has NOT verified/connected (no startLive
+        // yet): posture `.verifying` — the reconnect boundary.
+        XCTAssertEqual(model.coordinator?.posture(profileID: profileB.id), .verifying)
+        // Host A already holds an equal RAW agent id (host-stamped).
+        model.fleet.apply(.snapshot(Snapshot(
+            schemaVersion: 5, rev: 1, generatedAt: 0,
+            agents: ["dup": Agent(agentId: "dup", state: .idle, ts: 1,
+                                  host: Self.hostKey)])))
+        // A tap for B's agent lands while B is still reconnecting.
+        model.openNotification(agentId: "dup", hostKeyB64: Self.otherHostKey)
+        XCTAssertNil(model.recentsRequest,
+                     "nothing may present while B is unverified — and never A's lane")
+        XCTAssertNil(model.banner, "a reconnect deferral is silent")
+        // Both hosts come live; B's session connects and its snapshot
+        // carries the notified agent.
+        model.startLive()
+        await waitUntil(model.keyContinuityState == .verified)
+        await waitUntil(model.coordinator?.posture(profileID: profileB.id) == .verified)
+        let bStore = try XCTUnwrap(model.coordinator?.store(profileID: profileB.id))
+        bStore.apply(.snapshot(Snapshot(
+            schemaVersion: 5, rev: 1, generatedAt: 0,
+            agents: ["dup": Agent(agentId: "dup", state: .blocked, ts: 1,
+                                  host: Self.otherHostKey)])))
+        await waitUntil(model.recentsRequest?.hostProfileID == profileB.id)
+        XCTAssertEqual(model.recentsRequest?.agentId, "dup",
+                       "the raw agent id stays untouched on B's lane")
+        XCTAssertNotEqual(model.recentsRequest?.hostProfileID, model.activeProfileID,
+                          "the equal raw id on host A must never satisfy B's tap")
+    }
+
+    // MARK: AC4 — unknown host fails closed, never deferred
+
+    /// An unknown/removed host identity is NON-ACTIONABLE immediately
+    /// (bounded diagnostic) — never held for a later replay, never opened
+    /// against another host even after that host comes live with rows.
+    func testUnknownHostTapFailsClosedImmediatelyAndIsNeverDeferred() async throws {
+        defer { cleanup() }
+        let model = makeProfilesModel(count: 2)
+        model.openNotification(agentId: "x", hostKeyB64: Self.unknownHostKey)
+        XCTAssertNil(model.recentsRequest, "an unknown host never opens a lane")
+        XCTAssertEqual(model.banner?.kind, "notification_host_unknown",
+                       "the bounded diagnostic fires at tap time, not later")
+        // Both hosts come live with rows; nothing may resurrect the tap.
+        model.startLive()
+        await waitUntil(model.keyContinuityState == .verified)
+        model.fleet.apply(.snapshot(Snapshot(
+            schemaVersion: 5, rev: 1, generatedAt: 0,
+            agents: ["x": Agent(agentId: "x", state: .idle, ts: 1,
+                                host: Self.hostKey)])))
+        model.recentsRequest = nil
+        model.banner = nil
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertNil(model.recentsRequest,
+                     "an unknown-host tap is never replayed after a later snapshot")
+    }
+
+    // MARK: AC5 — repeated taps after dismissal (notification path)
+
+    /// Notification taps after a dismissal must behave like row taps: each
+    /// tap is a FRESH monotonic presentation request (no stale latch, no
+    /// duplicate presentation, no dropped first tap).
+    func testRepeatedNotificationTapsAfterDismissalCreateFreshMonotonicRequests() throws {
+        defer { cleanup() }
+        let model = makeLegacyModel()
+        model.mode = .live
+        model.fleet.apply(.snapshot(Snapshot(
+            schemaVersion: 3, rev: 1, generatedAt: 1,
+            agents: ["a1": agent("a1")])))
+        var previousID: UInt64 = 0
+        for _ in 0..<3 {
+            model.openNotification(agentId: "a1", hostKeyB64: nil)
+            let request = try XCTUnwrap(model.recentsRequest)
+            XCTAssertEqual(request.agentId, "a1")
+            XCTAssertGreaterThan(request.id, previousID,
+                                 "every tap is a fresh monotonic presentation request")
+            previousID = request.id
+            // SwiftUI's .sheet(item:) wrote nil; dismissal completes clean.
+            model.recentsRequest = nil
+            model.recentsSheetDismissed()
+            XCTAssertNil(model.recentsRequest,
+                         "a clean dismissal leaves nothing pending")
+        }
+    }
+}
+
+/// #397 follow-up: the LocalNotifier notification-RESPONSE seam. A tap is
+/// a ONE-SHOT OS delivery (one `didReceive` per tap); a response racing
+/// the model's handler install must be queued — never dropped — and
+/// flushed in delivery order once the handler lands, and a delivery with
+/// the handler installed routes immediately (no duplicates).
+@MainActor
+final class LocalNotifierTapDeliveryTests: XCTestCase {
+    /// Records taps delivered through onOpenAgent. Every delivery in these
+    /// tests happens on the main actor (deliverTap serializes there), so
+    /// no lock is needed.
+    private final class TapRecorder: @unchecked Sendable {
+        var taps: [(agentId: String, hostId: String?)] = []
+    }
+
+    func testTapDeliveredBeforeHandlerInstallIsQueuedAndFlushedInOrder() {
+        let recorder = TapRecorder()
+        let notifier = LocalNotifier()
+        // Two responses arrive before the model installs its handler (a
+        // launch-time delivery racing the model's wiring).
+        notifier.deliverTap(agentId: "a1", hostId: "host-x")
+        notifier.deliverTap(agentId: "a2", hostId: nil)
+        XCTAssertTrue(recorder.taps.isEmpty,
+                      "nothing routes before the handler exists")
+        // The model installs the handler: queued taps flush in delivery
+        // order — the first tap is never dropped.
+        notifier.onOpenAgent = { agentId, hostId in
+            recorder.taps.append((agentId, hostId))
+        }
+        XCTAssertEqual(recorder.taps.map(\.agentId), ["a1", "a2"])
+        XCTAssertEqual(recorder.taps[0].hostId, "host-x")
+        XCTAssertNil(recorder.taps[1].hostId,
+                     "a host-less payload stays host-less through the queue")
+    }
+
+    func testTapWithHandlerInstalledDeliversImmediatelyWithoutDuplicates() {
+        let recorder = TapRecorder()
+        let notifier = LocalNotifier()
+        notifier.onOpenAgent = { agentId, hostId in
+            recorder.taps.append((agentId, hostId))
+        }
+        notifier.deliverTap(agentId: "b1", hostId: "host-y")
+        XCTAssertEqual(recorder.taps.map(\.agentId), ["b1"],
+                       "a live handler routes the tap immediately")
+        // A second delivery routes once — no queue, no double flush.
+        notifier.deliverTap(agentId: "b2", hostId: nil)
+        XCTAssertEqual(recorder.taps.map(\.agentId), ["b1", "b2"])
+        XCTAssertNil(recorder.taps[1].hostId)
+    }
+}

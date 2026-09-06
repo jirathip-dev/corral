@@ -42,8 +42,9 @@ struct HostProfile: Codable, Equatable, Identifiable, Sendable {
     var expiryTs: UInt64?
     /// Wall-clock epoch seconds when this device registered with the host.
     var registeredAt: UInt64
-    /// User-controlled order (chips/filters follow it, #401). New hosts
-    /// append at the end; drag-to-reorder mutates only this field.
+    /// User-controlled order (chips/Settings rows follow it, #401). New
+    /// hosts append at the end; #430 removed the drag-to-reorder mutation,
+    /// but persisted documents keep this field as the stable display order.
     var order: Int
     var connectionState: ProfileConnectionState
     /// Per-host SSE cursor (B1). The single-host FleetStore cursor mirrors

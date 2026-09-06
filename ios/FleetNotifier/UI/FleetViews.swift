@@ -1036,10 +1036,10 @@ struct FleetView: View {
 
     /// #401 D2/D3: the horizontal HOST-filter chip row rendered ABOVE the
     /// repo-chip row when 2+ profiles exist — All first, then every host in
-    /// the user-controlled order (Settings drag-to-reorder drives the same
-    /// store order). Each host chip always shows that host's TOTAL lane
-    /// count + health, independent of the repo filter; zero-lane and
-    /// offline hosts stay visible (D3).
+    /// the user-controlled persisted profile order (the store order the
+    /// Settings Hosts rows render in). Each host chip always shows that
+    /// host's TOTAL lane count + health, independent of the repo filter;
+    /// zero-lane and offline hosts stay visible (D3).
     @ViewBuilder
     private func hostChipsRow(chips: [BoardModel.HostFilterChip],
                               selection: UUID?) -> some View {
@@ -2707,13 +2707,6 @@ struct SettingsView: View {
                 }
                 .navigationTitle("Settings")
                 .toolbar {
-                    // #401 D2: drag-to-reorder the Hosts rows (2+ hosts) —
-                    // the same store order the board's host chips follow.
-                    ToolbarItem(placement: .topBarLeading) {
-                        if model.profiles.count > 1 {
-                            EditButton()
-                        }
-                    }
                     // #379: Settings-header '?' Help entry — opens the same
                     // shared HowToConnectSheet the unpaired first launch
                     // auto-presents over the board.
@@ -2942,12 +2935,13 @@ struct SettingsView: View {
     }
 
     /// #401 D2/D7: the Hosts section — one row per configured host in the
-    /// USER-CONTROLLED order (drag to reorder with 2+ hosts; the board's
-    /// host chips follow the same store order — D2), each row carrying the
-    /// full per-host surface: connection posture + error, last seen,
-    /// Retry, fingerprint (copyable), key id, grants/expiry, rename in
-    /// place (B5) and Remove Host (B7 local unlink). The Add Host entry
-    /// (fingerprint-verified pairing, B3) closes the section.
+    /// PERSISTED profile order (#430: rows render statically; the reorder
+    /// interaction is removed, the store order the board's host chips
+    /// follow is unchanged), each row carrying the full per-host surface:
+    /// connection posture + error, last seen, Retry, fingerprint
+    /// (copyable), key id, grants/expiry, rename in place (B5) and Remove
+    /// Host (B7 local unlink). The Add Host entry (fingerprint-verified
+    /// pairing, B3) closes the section.
     private var hostsSection: some View {
         Section {
             ForEach(model.profiles) { profile in
@@ -2958,7 +2952,6 @@ struct SettingsView: View {
                         ? "settings.hosts"
                         : profile.id.uuidString)
             }
-            .onMove(perform: moveHosts)
             Button {
                 showAddHost = true
             } label: {
@@ -2969,9 +2962,7 @@ struct SettingsView: View {
         } header: {
             Text("Hosts")
         } footer: {
-            Text(model.profiles.count > 1
-                 ? "Each host pairs independently with this device's shared key. Drag the rows to set the order the board's host chips follow; URL/key changes are remove-and-re-pair."
-                 : "Each host pairs independently with this device's shared key; adding a host verifies its fingerprint before any registration token is used.")
+            Text("Each host pairs independently with this device's shared key; URL/key changes are remove-and-re-pair. Adding a host verifies its fingerprint before any registration token is used.")
                 .foregroundStyle(theme.subtext1)
         }
     }
@@ -3136,13 +3127,6 @@ struct SettingsView: View {
     private func lastSeenText(lastSeenMs: UInt64) -> String {
         let now = UInt64(Date().timeIntervalSince1970 * 1000)
         return RelativeTime.lastSeenLabel(lastSeenMs: lastSeenMs, nowMs: now)
-    }
-
-    /// #401 D2: Settings drag-to-reorder (2+ hosts) — routes through the
-    /// model so the store order (and therefore the board's host chips)
-    /// updates atomically.
-    private func moveHosts(from source: IndexSet, to destination: Int) {
-        model.moveHosts(from: source, to: destination)
     }
 
     /// Per-host rename save: only the display name (B5); a duplicate or

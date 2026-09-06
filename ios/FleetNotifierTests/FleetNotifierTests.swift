@@ -8526,11 +8526,12 @@ private func startAndVerifyBothHosts(_ model: AppModel) async -> (UUID, UUID) {
     }
 }
 
-// MARK: - #401 multi-host host filter + session-only default (D1/D2/D6)
+// MARK: - #401/#430 multi-host host filter + session-only default (D1/D2/D6)
 
 /// D1 defaults (every fresh launch starts All Hosts + All Repos; both
 /// filters session-only), the D2 host selection lifecycle, removed-host
-/// reconciliation, Settings reorder/rename routing, and the #400 rev N2
+/// reconciliation, Settings rename routing (the #430 reorder removal keeps
+/// the persisted-order load + append semantics), and the #400 rev N2
 /// recents-route .unavailable guarantee for removed hosts.
 @MainActor
 final class MultiHostHostFilterModelTests: XCTestCase {
@@ -8656,19 +8657,72 @@ final class MultiHostHostFilterModelTests: XCTestCase {
                      "single-host F1: no composite board rows, no host row/badges")
     }
 
-    func testReorderDrivesTheStoreOrderThatChipsFollow() {
+    func testProfilesLoadInPersistedOrderAndNewHostsAppendAfterExisting() throws {
         defer { cleanup() }
-        let (model, store, _, _) = makeModel()
-        // [A, B] → move row 0 down to destination 2 ⇒ [B, A].
-        model.moveHosts(from: IndexSet(integer: 0), to: 2)
-        XCTAssertEqual(model.profiles.map(\.displayName), ["Host B", "Host A"])
-        XCTAssertEqual(store.orderedProfiles.map(\.displayName), ["Host B", "Host A"],
-                       "the store order (the chip order) follows the drag")
-        XCTAssertEqual(model.profiles.map(\.order), [0, 1],
-                       "store re-normalizes orders to consecutive integers")
-        // Move row 1 (A) up to destination 0 ⇒ [A, B].
-        model.moveHosts(from: IndexSet(integer: 1), to: 0)
+        // SAFETY: per-test temp directory + fresh suite under the system
+        // temp dir.
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("corral-h430-order-\\(UUID().uuidString)",
+                                    isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        suiteName = "corral.h430.order.\\(UUID().uuidString)"
+        // SAFETY: a fresh UUID suite name is always a valid suite.
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let store = HostProfileStore(directory: directory, defaults: defaults)
+        // SAFETY: fixed fixture URLs (distinct hostnames).
+        let profileA = try! store.addProfile(displayName: "Host A",
+                                             urlString: "https://order-a.example",
+                                             hostKeyB64: nil,
+                                             keyId: "dev_order_a",
+                                             grants: ["read_tail"],
+                                             expiryTs: 1_800_000_000,
+                                             registeredAt: 1)
+        let profileB = try! store.addProfile(displayName: "Host B",
+                                             urlString: "https://order-b.example",
+                                             hostKeyB64: nil,
+                                             keyId: "dev_order_b",
+                                             grants: ["read_tail"],
+                                             expiryTs: 1_800_000_000,
+                                             registeredAt: 1)
+        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        let model = AppModel(defaults: defaults,
+                             identityLoader: { (signer, .insecureFallback) },
+                             loadMeta: { nil }, saveMeta: { _ in },
+                             wipeIdentity: {}, profileStore: store)
+        self.model = model
+        XCTAssertEqual(model.profiles.map(\.id), [profileA.id, profileB.id],
+                       "#430: profiles load in their persisted order (A order 0, B order 1)")
         XCTAssertEqual(model.profiles.map(\.displayName), ["Host A", "Host B"])
+        XCTAssertEqual(model.profiles.map(\.order), [0, 1])
+        // A newly added host appends AFTER the existing profiles; the
+        // existing records keep their positions — no re-pairing and no
+        // migration, the display order stays the persisted order.
+        // SAFETY: fixed valid fixture URL (distinct hostname).
+        let profileC = try! store.addProfile(displayName: "Host C",
+                                             urlString: "https://order-c.example",
+                                             hostKeyB64: nil,
+                                             keyId: "dev_order_c",
+                                             grants: [],
+                                             expiryTs: nil,
+                                             registeredAt: 2)
+        XCTAssertEqual(profileC.order, 2, "new hosts append at the end")
+        // A fresh store + model over the SAME persisted document reloads
+        // every profile in persisted order — #430 removes the reorder
+        // interaction, never the load/append semantics.
+        let reloadedStore = HostProfileStore(directory: directory, defaults: defaults)
+        XCTAssertEqual(reloadedStore.orderedProfiles.map(\.displayName),
+                       ["Host A", "Host B", "Host C"],
+                       "the persisted order field stays authoritative on reload")
+        let relaunched = AppModel(defaults: defaults,
+                                  identityLoader: { (signer, .insecureFallback) },
+                                  loadMeta: { nil }, saveMeta: { _ in },
+                                  wipeIdentity: {}, profileStore: reloadedStore)
+        self.model = relaunched
+        XCTAssertEqual(relaunched.profiles.map(\.displayName),
+                       ["Host A", "Host B", "Host C"],
+                       "the model renders hosts in persisted order without migration")
+        XCTAssertEqual(relaunched.profiles.map(\.order), [0, 1, 2],
+                       "the order field stays consecutive after the append")
     }
 
     func testRenameHostInPlaceSurfacesDuplicateErrorWithoutChangingName() {
@@ -8923,13 +8977,14 @@ final class MultiHostBoardProjectionTests: XCTestCase {
     }
 }
 
-// MARK: - #401 multi-host surface wiring (FleetViews source bundle)
+// MARK: - #401/#430 multi-host surface wiring (FleetViews source bundle)
 
 /// Source-wiring pins over the bundled FleetViews source: the host-chip row
 /// renders ONLY with 2+ profiles (above the repo row), the All-Hosts row
 /// badges + stale/last-seen markers ride the composite renderer, Settings
-/// exposes the per-host D7 surface (reorder/rename/retry/remove + F2 copy),
-/// and the Add Host sheet prefills the name from the URL (B3).
+/// exposes the per-host D7 surface (rename/retry/remove + F2 copy) with NO
+/// drag-to-reorder chrome (#430), and the Add Host sheet prefills the name
+/// from the URL (B3).
 final class MultiHostSurfaceWiringTests: XCTestCase {
     private func bundledSource() throws -> String {
         let bundle = Bundle(for: MultiHostSurfaceWiringTests.self)
@@ -8995,15 +9050,27 @@ final class MultiHostSurfaceWiringTests: XCTestCase {
                       "row VoiceOver must carry the badge/staleness facts (D8)")
     }
 
-    func testSettingsExposesReorderRenameRetryRemoveAndPerHostNotifyState() throws {
+    func testSettingsHostsRenderStaticallyWithoutReorderChromeButKeepPerHostActions() throws {
         let source = try bundledSource()
         let start = try XCTUnwrap(source.range(of: "private var hostsSection: some View {"))
         let end = try XCTUnwrap(source.range(of: "// MARK: - #399 Add Host"))
         let slice = String(source[start.lowerBound..<end.lowerBound])
-        XCTAssertTrue(slice.contains(".onMove(perform: moveHosts)"),
-                      "D2: Settings must support drag-to-reorder")
-        XCTAssertTrue(source.contains("EditButton()"),
-                      "D2: the reorder affordance must exist with 2+ hosts")
+        // #430: Hosts rows render STATICALLY in the persisted profile
+        // order — restoring the drag-to-reorder wiring (.onMove) or the
+        // view-level moveHosts helper makes this RED.
+        XCTAssertFalse(slice.contains(".onMove"),
+                       "#430: no .onMove path may remain on the Hosts rows")
+        XCTAssertFalse(slice.contains("moveHosts"),
+                       "#430: no view-level moveHosts reorder helper may remain")
+        // The Settings toolbar carries no Edit button (with one or with
+        // multiple hosts) — restoring the #401 conditional EditButton
+        // makes this RED.
+        let toolbarStart = try XCTUnwrap(source.range(of: ".navigationTitle(\"Settings\")"))
+        let toolbarEnd = try XCTUnwrap(source.range(of: "// #379: Settings-header '?' Help entry"))
+        let toolbar = String(source[toolbarStart.lowerBound..<toolbarEnd.lowerBound])
+        XCTAssertFalse(toolbar.contains("EditButton"),
+                       "#430: Settings must show no Edit toolbar item (drag-to-reorder removed)")
+        // The remaining per-host surface stays reachable and unchanged.
         XCTAssertTrue(slice.contains("model.retryHostConnection(profile)"),
                       "D7: per-host Retry must route through the model")
         XCTAssertTrue(slice.contains("model.renameHost(id: profile.id, to: name)"),
@@ -9012,6 +9079,8 @@ final class MultiHostSurfaceWiringTests: XCTestCase {
                       "D7: Remove Host stays reachable per row")
         XCTAssertTrue(slice.contains("model.removeHost(profileID: profile.id)"),
                       "D7: Remove Host routes through the model")
+        XCTAssertTrue(slice.contains("Label(\"Add host\", systemImage: \"plus.circle\")"),
+                      "#430: the Add Host entry stays at the end of the Hosts section")
         XCTAssertTrue(slice.contains("LabeledContent(\"Grants expiry\","),
                       "D7: grants expiry must be readable per host")
         XCTAssertTrue(slice.contains("Last seen"),

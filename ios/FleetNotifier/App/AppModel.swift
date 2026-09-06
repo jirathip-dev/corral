@@ -880,21 +880,6 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// #401 D2/D7: drag-to-reorder (Settings). Order drives the host-chip
-    /// row; the store's moveProfile re-normalizes every profile's order.
-    /// SwiftUI `.onMove` delivers the destination in the ORIGINAL row
-    /// coordinates, so a downward move (destination after the removed row)
-    /// is converted to the store's post-removal insertion index.
-    func moveHosts(from source: IndexSet, to destination: Int) {
-        guard let store = profileStore,
-              let movedIndex = source.first,
-              profiles.indices.contains(movedIndex) else { return }
-        let movedID = profiles[movedIndex].id
-        let insertion = destination > movedIndex ? destination - 1 : destination
-        try? store.moveProfile(id: movedID, toOrder: insertion)
-        reloadProfiles(from: store)
-    }
-
     /// #401 D7: rename one host's DISPLAY NAME in place (B5 — URL/identity
     /// changes are remove-and-re-pair, never an edit). Returns the error
     /// text (duplicate/empty name) or nil on success.

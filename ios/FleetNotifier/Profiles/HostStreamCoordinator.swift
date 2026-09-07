@@ -236,6 +236,11 @@ final class HostStreamCoordinator: ObservableObject {
     /// raw agent ids on different hosts fire independently.
     var onAgentTransition: (@MainActor (PushPayload.PushType, String, UUID) -> Void)?
 
+    /// #397 follow-up: fired when one of this coordinator's host stores
+    /// applied frame data (rows changed) — AppModel replays deferred
+    /// notification taps whose target may now be available on that host.
+    var onSessionAgentsChanged: (@MainActor (UUID) -> Void)?
+
     init(defaults: UserDefaults = .standard,
          session: URLSession = .shared,
          profileStore: HostProfileStore? = nil,
@@ -364,6 +369,11 @@ final class HostStreamCoordinator: ObservableObject {
         }
         session.store.onFinished = { @MainActor [weak self] agentID in
             self?.onAgentTransition?(.finished, agentID, profile.id)
+        }
+        // #397 follow-up: rows applied on this host — replay deferred
+        // notification taps whose target may now be present here.
+        session.store.onAgentsChanged = { @MainActor [weak self] in
+            self?.onSessionAgentsChanged?(profile.id)
         }
         session.store.connect(client: client)
         objectWillChange.send()

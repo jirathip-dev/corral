@@ -1,0 +1,102 @@
+# 427 capture log — 2026-09-06 ~20:00-20:30 +0700 (final #427 tree 5e22ade)
+
+Fresh simulator `Corral427B` (iPhone 16, iOS 26.5, UDID
+F9A6A113-44FB-4F51-9483-3FC7198C7253), DEBUG build of the FINAL #427 tree:
+
+$ HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild build \
+    -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier \
+    -destination 'platform=iOS Simulator,id=F9A6A113-44FB-4F51-9483-3FC7198C7253' \
+    -derivedDataPath /tmp/fn427-ev build
+** BUILD SUCCEEDED **  (log: /tmp/fn427-ev-build.log)
+
+App: /tmp/fn427-ev/Build/Products/Debug-iphonesimulator/FleetNotifier.app
+Bundle id: com.corral.fleetnotifier (lowercase — simctl launch uses the
+Info.plist GENERATE_INFOPLIST_FILE id).
+Markers: <data>/Documents/ux-evidence/<phase>.marker written per phase
+(phase holds >= 9 s after each marker); the host capture script
+(/tmp/fn427-capture-b.sh — marker poll + `simctl io screenshot` per new
+marker) removes the app container's ux-evidence dir before each launch so
+stale markers are never re-captured. The evidence drivers single-fire
+after their final marker (the .task(id:) hook can re-fire on demo entry).
+
+Simulator:
+$ xcrun simctl create Corral427B "iPhone 16" com.apple.CoreSimulator.SimRuntime.iOS-26-5
+F9A6A113-44FB-4F51-9483-3FC7198C7253
+$ xcrun simctl boot F9A6A113-... && xcrun simctl bootstatus F9A6A113-... -b
+
+Run 1 — main Direction-A matrix (Liquid Glass on the iOS 26.5 runtime):
+$ /tmp/fn427-capture-b.sh <app> /tmp/fn427-evidence-glass phase-12-filters-done \
+    -corral427FilterEvidence
+captured phase-1-filters-board-all-mocha
+captured phase-2-filters-sheet-all-mocha
+captured phase-3-filters-sheet-host-only-mocha
+captured phase-4-filters-board-host-only-mocha
+captured phase-5-filters-sheet-repo-only-mocha
+captured phase-6-filters-sheet-both-mocha
+captured phase-7-filters-board-both-mocha
+captured phase-8-filters-sheet-host-b-offline-mocha
+captured phase-9-filters-board-zero-results-mocha
+captured phase-10-filters-board-all-latte
+captured phase-11-filters-sheet-both-latte
+captured phase-12-filters-done
+
+Run 2 — Dynamic Type (accessibility content size): the UIKit argument
+domain forces UICTContentSizeCategoryAccessibilityLarge (the XCUITest
+mechanism; the DEBUG app also accepts -corral427AccessibilitySizes for
+the shorter sheet sequence):
+$ /tmp/fn427-capture-b.sh <app> /tmp/fn427-evidence-ax phase-4-ax-done \
+    -corral427FilterEvidence -corral427AccessibilitySizes \
+    -UIPreferredContentSizeCategoryName UICTContentSizeCategoryAccessibilityLarge
+captured phase-1-ax-sheet-all-mocha
+captured phase-2-ax-sheet-host-only-mocha
+captured phase-3-ax-sheet-both-mocha
+captured phase-4-ax-done
+
+Run 3 — themed material FALLBACK (the #416 forced-fallback branch a
+pre-iOS-26 runtime executes — same source, availability check is the only
+difference):
+$ /tmp/fn427-capture-b.sh <app> /tmp/fn427-evidence-fallback phase-12-filters-done \
+    -corral427FilterEvidence -corral416ForceFallbackBackdrop
+captured phase-1-filters-board-all-mocha
+captured phase-2-filters-sheet-all-mocha
+captured phase-3-filters-sheet-host-only-mocha
+captured phase-4-filters-board-host-only-mocha
+captured phase-5-filters-sheet-repo-only-mocha
+captured phase-6-filters-sheet-both-mocha
+captured phase-7-filters-board-both-mocha
+captured phase-8-filters-sheet-host-b-offline-mocha
+captured phase-9-filters-board-zero-results-mocha
+captured phase-10-filters-board-all-latte
+captured phase-11-filters-sheet-both-latte
+captured phase-12-filters-done
+
+Run 4 — connecting host (Host B's session store seeded CONNECTING via
+enterMultiHostDemo(hostBConnecting:) — banner + sheet health read
+`connecting` textually):
+$ /tmp/fn427-capture-b.sh <app> /tmp/fn427-evidence-connecting phase-4-connecting-done \
+    -corral427ConnectingHostEvidence
+captured phase-1-connecting-board-all-mocha
+captured phase-2-connecting-sheet-all-mocha
+captured phase-3-connecting-sheet-host-b-mocha
+captured phase-4-connecting-done
+
+The seeding (DEBUG AppModel.enterMultiHostDemo, synthetic only) wipes the
+simulator's profile store and creates three profiles: Host A (live active
+store, demo-orbit/demo-atlas/demo-ledger rows), Host B (pinned;
+coordinator session store holds retained demo-orbit/demo-atlas rows —
+offline error in runs 1-3, CONNECTING posture in run 4), Host C (pinned,
+key mismatch, zero lanes). Fingerprint fixture keys are Data(repeating:)
+base64 — synthetic, never a real key.
+
+Resize (repo phone-size gate; this host has no 390x844 device — iPhone 16
+is 393x852 pt / 1179x2556 px @3x, resized per the issue-362+ conventions):
+
+$ sips -z 844 390 raw-phase-N-<name>.png --out phase-N-<name>-390x844.png
+$ sips -z 812 375 raw-phase-2-filters-sheet-all-mocha.png --out phase-2-filters-sheet-all-mocha-375x812.png
+$ sips -z 812 375 raw-phase-6-filters-sheet-both-mocha.png --out phase-6-filters-sheet-both-mocha-375x812.png
+
+Committed artifacts under ios/evidence/issue-427-filter-header/:
+README.md, SHA256SUMS.txt, capture.log, 20 phase frames (18x 390x844,
+2x 375x812). Visual audit: every frame was inspected (see README frame
+table); no system alert overlays any frame (fresh simulator, no keychain
+identity — same posture as the #401/#430 evidence sets).

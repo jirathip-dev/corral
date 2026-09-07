@@ -146,19 +146,16 @@ final class HostProfileStore {
         return profiles[idx]
     }
 
-    /// Order swap used by drag-to-reorder (#401 consumes it later).
-    func moveProfile(id: UUID, toOrder newOrder: Int) throws {
+    /// #426: fold a successful `/grants-read` response into ONE host
+    /// profile — grants + expiry ONLY (the registration key id/url are
+    /// pairing-owned and a grants refresh must never rewrite them).
+    @discardableResult
+    func applyGrants(id: UUID, grants: [String], expiryTs: UInt64?) throws -> HostProfile {
         guard let idx = index(of: id) else { throw HostProfileError.profileNotFound }
-        var moved = profiles.remove(at: idx)
-        let clamped = min(max(newOrder, 0), profiles.count)
-        moved.order = clamped
-        profiles.insert(moved, at: clamped)
-        // Re-normalize the order fields to consecutive integers.
-        for (index, var profile) in profiles.enumerated() {
-            profile.order = index
-            profiles[index] = profile
-        }
+        profiles[idx].grants = grants
+        profiles[idx].expiryTs = expiryTs
         save()
+        return profiles[idx]
     }
 
     /// #397: persist one host's per-host notification enrollment flag

@@ -19,7 +19,31 @@ final class LocalNotifier: NSObject, UNUserNotificationCenterDelegate, @unchecke
 
     /// Called with the agent id + host identity (nil = legacy host-less
     /// payload) when a delivered notification is tapped.
-    var onOpenAgent: (@MainActor @Sendable (String, String?) -> Void)?
+    var onOpenAgent: (@MainActor @Sendable (String, String?) -> Void)? {
+        didSet {
+            // #397 follow-up: a response delivered while the handler was
+            // not yet installed is queued (see `routeTap`) — flush it the
+            // moment the model installs the handler, in delivery order.
+            // Handler assignment happens on the main actor (AppModel init
+            // / startLive; test fixtures).
+            guard onOpenAgent != nil, !pendingTaps.isEmpty else { return }
+            let queued = pendingTaps
+            pendingTaps.removeAll()
+            MainActor.assumeIsolated {
+                for tap in queued {
+                    self.onOpenAgent?(tap.agentId, tap.hostId)
+                }
+            }
+        }
+    }
+
+    /// #397 follow-up: taps delivered before `onOpenAgent` was installed
+    /// (a launch-time delivery racing the model's handler assignment). A
+    /// `didReceive` response is a ONE-SHOT delivery — dropping it loses
+    /// the user's tap forever, so it is held until the handler lands.
+    /// MainActor-serialized: every mutation happens on the main actor.
+    private var pendingTaps: [(agentId: String, hostId: String?)] = []
+    private let pendingTapLimit = 3
 
     /// Global on/off (spec: notification pairing has ONE control). When
     /// disabled nothing is scheduled or presented.
@@ -105,10 +129,43 @@ final class LocalNotifier: NSObject, UNUserNotificationCenterDelegate, @unchecke
         // open. No action buttons are registered for these categories.
         if response.actionIdentifier == UNNotificationDefaultActionIdentifier,
            let payload = PushPayload.parse(userInfo: response.notification.request.content.userInfo) {
-            Task { @MainActor in
-                onOpenAgent?(payload.agentId, payload.hostId)
-            }
+            deliverTap(agentId: payload.agentId, hostId: payload.hostId)
         }
         completionHandler()
+    }
+
+    /// #397 follow-up: the notification-RESPONSE seam — the OS delegate
+    /// callback and the unit tests both enter here (a UNNotificationResponse
+    /// cannot be fabricated in tests). The system may call the delegate on
+    /// a background queue, so the delivery state is MainActor-serialized:
+    /// a tap whose handler is installed routes immediately; a tap that
+    /// arrives before the handler (launch-time delivery racing startLive)
+    /// is queued and flushed in order when the handler lands.
+    func deliverTap(agentId: String, hostId: String?) {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated {
+                self.routeTap(agentId: agentId, hostId: hostId)
+            }
+        } else {
+            DispatchQueue.main.sync {
+                MainActor.assumeIsolated {
+                    self.routeTap(agentId: agentId, hostId: hostId)
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func routeTap(agentId: String, hostId: String?) {
+        if let onOpenAgent {
+            onOpenAgent(agentId, hostId)
+            return
+        }
+        pendingTaps.append((agentId, hostId))
+        // Bounded FIFO: taps replay oldest-first; the cap only defends
+        // against a pathological burst. Keep the EARLIEST taps.
+        if pendingTaps.count > pendingTapLimit {
+            pendingTaps.removeLast(pendingTaps.count - pendingTapLimit)
+        }
     }
 }

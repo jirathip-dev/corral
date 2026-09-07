@@ -1,0 +1,78 @@
+# #428 rendered-frame gate — raw analysis output
+# GREEN = the FIXED head frames committed in this directory; RED = the
+# BASE head (a55018f) captures kept under /tmp during the lane. Same
+# script, same regions/floors; every line prints PASS/FAIL on rendered
+# pixels (never source strings).
+
+== GREEN: medium detent, native glass (mocha + latte) + fallback A/B ==
+[PASS] phase-416-5-settings-mocha-390x844.png form cells themed: dominant #1e1e2e ~= base (30, 30, 46)
+[PASS] phase-416-5-settings-mocha-390x844.png no system grouped surface: 0.3% (ceiling 3%)
+[PASS] phase-416-5-settings-mocha-390x844.png backdrop flavor cast: mean=(42,42,50) b-r=8.7 (floor 7)
+[PASS] phase-416-6-settings-latte-390x844.png form cells themed: dominant #eff1f5 ~= base (239, 241, 245)
+[PASS] phase-416-6-settings-latte-390x844.png no system grouped surface: 0.1% (ceiling 3%)
+[PASS] phase-416-6-settings-latte-390x844.png backdrop latte lift: mean=(220,222,225) (floor 219, neutral hue)
+[PASS] phase-416-2-recents-mocha-390x844.png backdrop flavor cast: mean=(32,32,41) b-r=9.0 (floor 7)
+[PASS] phase-416-3-recents-latte-390x844.png backdrop latte lift: mean=(230,232,235) (floor 229, neutral hue)
+[PASS] glass/fallback material A/B: backdrop delta=5.8 (floor 3)
+
+RESULT: 9/9 checks passed
+RC=0
+
+== GREEN: release LARGE-detent presentation (settings) ==
+[PASS] phase-416-5-settings-mocha-large-390x844.png form cells themed: dominant #1e1e2e ~= base (30, 30, 46)
+[PASS] phase-416-5-settings-mocha-large-390x844.png no system grouped surface: 0.4% (ceiling 3%)
+[PASS] phase-416-5-settings-mocha-large-390x844.png backdrop flavor cast: mean=(33,33,43) b-r=9.8 (floor 7)
+[PASS] phase-416-6-settings-latte-large-390x844.png form cells themed: dominant #eff1f5 ~= base (239, 241, 245)
+[PASS] phase-416-6-settings-latte-large-390x844.png no system grouped surface: 0.7% (ceiling 3%)
+[PASS] phase-416-6-settings-latte-large-390x844.png backdrop latte lift: mean=(236,239,241) (floor 210, neutral hue)
+[PASS] glass/fallback material A/B: backdrop delta=5.8 (floor 3)
+
+RESULT: 7/7 checks passed
+RC=0
+
+== GREEN: Frappe/Macchiato spot run (medium, glass) ==
+[PASS] phase-416-5-settings-frappe-390x844.png form cells themed: dominant #303446 ~= base (48, 52, 70)
+[PASS] phase-416-5-settings-frappe-390x844.png no system grouped surface: 0.3% (ceiling 3%)
+[PASS] phase-416-5-settings-frappe-390x844.png backdrop flavor cast: mean=(46,48,57) b-r=11.3 (floor 7)
+[PASS] phase-416-6-settings-macchiato-390x844.png form cells themed: dominant #24273a ~= base (36, 39, 58)
+[PASS] phase-416-6-settings-macchiato-390x844.png no system grouped surface: 0.3% (ceiling 3%)
+[PASS] phase-416-6-settings-macchiato-390x844.png backdrop flavor cast: mean=(43,45,54) b-r=11.0 (floor 7)
+[PASS] phase-416-2-recents-frappe-390x844.png backdrop flavor cast: mean=(36,38,47) b-r=11.0 (floor 7)
+[PASS] phase-416-3-recents-macchiato-390x844.png backdrop flavor cast: mean=(33,35,45) b-r=12.0 (floor 7)
+[PASS] glass/fallback material A/B: backdrop delta=5.8 (floor 3)
+
+RESULT: 9/9 checks passed
+RC=0
+
+== GREEN: Add Host entry + fingerprint confirm (medium) ==
+[PASS] phase-7-addhost-entry-mocha-390x844.png form cells themed: dominant #1e1e2e ~= base (30, 30, 46)
+[PASS] phase-7-addhost-entry-mocha-390x844.png no system grouped surface: 0.2% (ceiling 3%)
+[PASS] phase-8-addhost-confirm-latte-390x844.png form cells themed: dominant #eff1f5 ~= base (239, 241, 245)
+[PASS] phase-8-addhost-confirm-latte-390x844.png no system grouped surface: 0.4% (ceiling 3%)
+[PASS] glass/fallback material A/B: backdrop delta=5.8 (floor 3)
+
+RESULT: 5/5 checks passed
+RC=0
+
+== RED: BASE head a55018f frames (pre-fix captures, /tmp staging) ==
+### base medium glass
+[FAIL] phase-416-5-settings-mocha-390x844.png form cells NOT themed: dominant #2d2d31 (expected ~(30, 30, 46))
+[FAIL] phase-416-5-settings-mocha-390x844.png no system grouped surface: 35.4% (ceiling 3%)
+[FAIL] phase-416-5-settings-mocha-390x844.png backdrop flavor cast: mean=(42,42,46) b-r=4.0 (floor 7)
+[FAIL] phase-416-6-settings-latte-390x844.png form cells NOT themed: dominant #d0d5d4 (expected ~(239, 241, 245))
+[PASS] phase-416-6-settings-latte-390x844.png no system grouped surface: 0.0% (ceiling 3%)
+[FAIL] phase-416-6-settings-latte-390x844.png backdrop latte lift: mean=(215,217,220) (floor 219, neutral hue)
+[FAIL] phase-416-2-recents-mocha-390x844.png backdrop flavor cast: mean=(32,32,36) b-r=4.4 (floor 7)
+[FAIL] phase-416-3-recents-latte-390x844.png backdrop latte lift: mean=(224,228,229) (floor 229, neutral hue)
+
+RESULT: 1/8 checks passed
+
+### base large glass
+[FAIL] phase-416-5-settings-mocha-390x844.png form cells NOT themed: dominant #2c2c2e (expected ~(30, 30, 46))
+[FAIL] phase-416-5-settings-mocha-390x844.png no system grouped surface: 57.8% (ceiling 3%)
+[FAIL] phase-416-5-settings-mocha-390x844.png backdrop flavor cast: mean=(52,52,56) b-r=3.9 (floor 7)
+[FAIL] phase-416-6-settings-latte-390x844.png form cells NOT themed: dominant #ffffff (expected ~(239, 241, 245))
+[FAIL] phase-416-6-settings-latte-390x844.png no system grouped surface: 90.2% (ceiling 3%)
+[PASS] phase-416-6-settings-latte-390x844.png backdrop latte lift: mean=(246,246,247) (floor 210, neutral hue)
+
+RESULT: 1/6 checks passed

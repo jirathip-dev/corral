@@ -5039,6 +5039,77 @@ final class SheetTranslucencyWiringTests: XCTestCase {
         XCTAssertTrue(backdrop.contains("tint.opacity(SheetBackdrop.fallbackTintAlpha)"),
                       "the fallback must overlay the tint at the locked alpha")
     }
+
+    // MARK: #428 — the layered native-glass recipe + themed form rows
+
+    func testBackdropGlassBranchLayersTheRegularGlassOverTheTintedMaterial() throws {
+        let source = try bundledSource()
+        let backdrop = try slice(from: source,
+                                 startMarker: "// MARK: - #385/#416 Liquid Glass / translucent sheet backdrop",
+                                 endMarker: "// MARK: - Settings (Appearance")
+        // #428: the iOS 26 branch renders native REGULAR glass over the
+        // SAME tinted-material recipe the <26 fallback runs — the flavor
+        // and the frost no longer depend on what the glass samples (the
+        // old .clear-glass-only backdrop read as a flat flavor-less slab).
+        let glassBranch = try slice(from: backdrop,
+                                    startMarker: "if #available(iOS 26.0, *), !Corral416Evidence.forceFallbackBackdrop",
+                                    endMarker: "} else {")
+        XCTAssertTrue(glassBranch.contains(".glassEffect(.regular"),
+                      "the iOS 26 path must use the standard REGULAR glass, not .clear "
+                      + "(#428: .clear contributed no material response of its own)")
+        XCTAssertFalse(glassBranch.contains(".glassEffect(.clear"),
+                       "the flat .clear-glass-only recipe is banned on the glass path")
+        XCTAssertTrue(glassBranch.contains(".ultraThinMaterial"),
+                      "the iOS 26 branch must keep the tinted-material base under the glass")
+        XCTAssertTrue(glassBranch.contains("tint.opacity(SheetBackdrop.fallbackTintAlpha)"),
+                      "the flavor tint at the locked fallback alpha must sit under the glass")
+        XCTAssertTrue(glassBranch.contains("SheetBackdrop.glassTintOpacity"),
+                      "the glass keeps its locked whisper tint on top")
+        // The tinted material may never be REPLACED by an opaque paint in
+        // the glass branch (an opaque base fill over the presentation).
+        XCTAssertFalse(glassBranch.contains(".fill(theme.base)")
+                          || glassBranch.contains("opacity(1.0)"),
+                       "the glass branch must not paint an opaque whole-sheet fill")
+    }
+
+    func testSheetFormsPaintEveryRowWithTheThemedSurface() throws {
+        let source = try bundledSource()
+        // The shared helper: one definition whose body IS the themed row
+        // background (a re-point to a native/system row surface removes it).
+        XCTAssertEqual(source.components(separatedBy:
+            "func themedRowSurface(_ theme: ThemeStore) -> some View {").count - 1, 1,
+            "the themed row-surface helper must be defined exactly once")
+        // The helper body sits between its declaration and the Settings
+        // MARK — it must paint the active flavor's BASE token there.
+        let decl = try XCTUnwrap(source.range(of:
+            "func themedRowSurface(_ theme: ThemeStore) -> some View {"),
+            "helper declaration missing")
+        let sectionMark = try XCTUnwrap(source.range(of:
+            "// MARK: - Settings (Appearance", options: [], range:
+                decl.upperBound..<source.endIndex)?.lowerBound,
+            "Settings MARK must follow the helper")
+        let helperBody = String(source[decl.upperBound..<sectionMark])
+        XCTAssertTrue(helperBody.contains("listRowBackground(theme.base)"),
+                      "the helper must paint the active flavor's BASE token")
+        // Settings: Connection, Device, Notifications, Appearance, Hosts.
+        let settings = try slice(from: source,
+                                 startMarker: "struct SettingsView: View {",
+                                 endMarker: "\nprivate struct FlavorSwatchStrip")
+        XCTAssertEqual(settings.components(separatedBy: ".themedRowSurface(theme)").count - 1, 5,
+                       "every Settings section must theme its rows (#428)")
+        // Add Host: entry + identity-confirmation + token/pair sections.
+        let addHost = try slice(from: source,
+                                startMarker: "struct AddHostSheet: View {",
+                                endMarker: "/// #399 B6: the launch-time fingerprint confirmation")
+        XCTAssertEqual(addHost.components(separatedBy: ".themedRowSurface(theme)").count - 1, 3,
+                       "every Add Host section must theme its rows (#428)")
+        // Fingerprint confirmation: intro/loading/failed/ready/malformed.
+        let fingerprint = try slice(from: source,
+                                    startMarker: "struct FingerprintConfirmationSheet: View {",
+                                    endMarker: "\n// MARK: - Recents bottom sheet")
+        XCTAssertEqual(fingerprint.components(separatedBy: ".themedRowSurface(theme)").count - 1, 6,
+                       "every Fingerprint confirmation section must theme its rows (#428)")
+    }
 }
 
 // MARK: - #384 per-row repo label visibility (source wiring, bundled source)

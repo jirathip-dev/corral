@@ -1827,14 +1827,14 @@ struct FleetView: View {
     private func runTranslucencySequence() async {
         guard model.mode == .demo else { return }
         guard await themePause(0) else { return }
-        theme.setFlavor(.mocha)
+        theme.setFlavor(Corral416Evidence.firstEvidenceFlavor)
         EvidenceMarkers.write("phase-416-1-board-mocha")
         guard await themePause(4000) else { return }
         model.requestRecents(for: DemoFleet.featuredAgentID, haptic: false)
         guard await themePause(4000) else { return }
         EvidenceMarkers.write("phase-416-2-recents-mocha")
         guard await themePause(6000) else { return }
-        theme.setFlavor(.latte)
+        theme.setFlavor(Corral416Evidence.secondEvidenceFlavor)
         guard await themePause(4000) else { return }
         EvidenceMarkers.write("phase-416-3-recents-latte")
         guard await themePause(6000) else { return }
@@ -1844,7 +1844,7 @@ struct FleetView: View {
         // frame's underlying content for the pixel analysis).
         EvidenceMarkers.write("phase-416-4-board-latte")
         guard await themePause(4000) else { return }
-        theme.setFlavor(.mocha)
+        theme.setFlavor(Corral416Evidence.firstEvidenceFlavor)
         guard await themePause(1000) else { return }
         // Settings at the MEDIUM detent (the evidence arg) so the busy
         // board stays in view above the form surface.
@@ -1852,7 +1852,7 @@ struct FleetView: View {
         guard await themePause(4000) else { return }
         EvidenceMarkers.write("phase-416-5-settings-mocha")
         guard await themePause(6000) else { return }
-        theme.setFlavor(.latte)
+        theme.setFlavor(Corral416Evidence.secondEvidenceFlavor)
         guard await themePause(4000) else { return }
         EvidenceMarkers.write("phase-416-6-settings-latte")
         guard await themePause(6000) else { return }
@@ -2719,9 +2719,24 @@ struct RegistrationView: View {
 /// (`SheetBackdrop.glassTintOpacity` / `.fallbackTintAlpha`) so the glass
 /// and the material — not a tint fill — are what the eye meets first.
 ///
-/// - iOS 26+: the NATIVE Liquid Glass surface — SwiftUI `glassEffect`,
-///   availability-gated at compile time, with only a whisper of the active
-///   flavor's base token through the API's theme hook (`Glass.tint`).
+/// #428: the iOS 26 branch rendered ONLY `.clear` glass — a surface that
+/// samples whatever sits behind the sheet and adds no material response
+/// of its own. Over the system-dimmed board in the dark flavors the sheet
+/// then read as a flat, flavor-less dark slab (the physical complaint),
+/// and on the simulator the backdrop region measured neutral gray — not
+/// the active flavor's base — with no measurable difference from an
+/// opaque paint. The branch now layers the SAME tinted-material recipe
+/// the <26 fallback runs UNDER the native glass: the material's own frost
+/// and the flavor base at `fallbackTintAlpha` no longer depend on what
+/// the glass samples, and the `.regular` glass (the standard Liquid Glass
+/// appearance, instead of `.clear`) keeps the iOS 26 glass response on
+/// top. One shared visual contract: solid themed content surfaces over a
+/// frosted, flavor-tinted sheet surface on every supported runtime.
+///
+/// - iOS 26+: native Liquid Glass OVER the tinted-material base —
+///   `.regular` glass with the locked whisper tint, availability-gated at
+///   compile time, over the same ultraThinMaterial + base recipe the <26
+///   path renders alone.
 /// - iOS 17–25: the translucent fallback — the flavor's base at the locked
 ///   `SheetBackdrop.fallbackTintAlpha` OVER an ultra-thin material blur,
 ///   tinted at the lowest value the preserved WCAG floor allows so the
@@ -2737,16 +2752,20 @@ private struct TranslucentSheetBackdrop: View {
     var body: some View {
         ZStack {
             if #available(iOS 26.0, *), !Corral416Evidence.forceFallbackBackdrop {
-                // #385/#416 iOS 26+: Native Liquid Glass. The tint stays a
-                // WHISPER at `SheetBackdrop.glassTintOpacity` — a heavy
-                // tint paints the glass into a flat solid (measured on the
-                // 26.5 sim) and hides whatever the glass could reveal; the
-                // CLEAR style is used rather than `.regular` (over the
-                // system dimming scrim the regular glass reads as an
-                // opaque dark slab).
+                // #428: the iOS 26 surface is the tinted-material recipe
+                // (frost + flavor at the locked fallback alpha — content-
+                // independent, so the flavor can never vanish into the
+                // dimmed presenter) with the NATIVE `.regular` glass on
+                // top (the standard Liquid Glass appearance; `.clear`
+                // contributed no material response of its own and read as
+                // a flat flavor-less slab). The glass tint stays a
+                // WHISPER at `SheetBackdrop.glassTintOpacity`.
+                Rectangle()
+                    .fill(.ultraThinMaterial)
+                tint.opacity(SheetBackdrop.fallbackTintAlpha)
                 Rectangle()
                     .fill(Color.clear)
-                    .glassEffect(.clear
+                    .glassEffect(.regular
                         .tint(tint.opacity(SheetBackdrop.glassTintOpacity)),
                         in: Rectangle())
             } else {
@@ -2774,6 +2793,11 @@ enum Corral416Evidence {
     static let driverArgument = "-corral416TranslucencyEvidence"
     static let fallbackBackdropArgument = "-corral416ForceFallbackBackdrop"
     static let recentsMediumArgument = "-corral416MediumDetents"
+    /// #428 evidence: run the SAME translucent-sheet sequence in the dark
+    /// Frappé / Macchiato pair instead of Mocha / Latte (the driver's
+    /// phase substitutions below), so the flavor-independent system
+    /// surface regression (AC3) is captured on the actual rendered frames.
+    static let spotFlavorsArgument = "-corral428SpotFlavors"
 
     static var wantsDriver: Bool {
         CommandLine.arguments.contains(driverArgument)
@@ -2781,6 +2805,28 @@ enum Corral416Evidence {
 
     static var wantsMediumDetents: Bool {
         CommandLine.arguments.contains(recentsMediumArgument)
+    }
+
+    /// #428: the evidence phase flavors — Mocha/Latte by default; the
+    /// dark-pair spot run substitutes Frappé/Macchiato so every dark
+    /// flavor's sheet surfaces are pixel-verified (no flavor-independent
+    /// system surface may leak through).
+    static var spotFlavors: Bool {
+#if DEBUG
+        CommandLine.arguments.contains(spotFlavorsArgument)
+#else
+        false
+#endif
+    }
+
+    /// The flavor the sequence opens in (the "board" phase).
+    static var firstEvidenceFlavor: CatppuccinFlavor {
+        spotFlavors ? .frappe : .mocha
+    }
+
+    /// The flavor the sequence flips to live (the "sheet" phase).
+    static var secondEvidenceFlavor: CatppuccinFlavor {
+        spotFlavors ? .macchiato : .latte
     }
 
     /// Release never forces the fallback: the availability branch decides.
@@ -2813,6 +2859,19 @@ extension View {
     /// (native Liquid Glass on iOS 26+, tinted-material fallback below).
     func translucentSheetBackdrop(_ tint: Color) -> some View {
         presentationBackground { TranslucentSheetBackdrop(tint: tint) }
+    }
+
+    /// #428: paint a Form/List section's rows with the active flavor's
+    /// BASE token. Native inset-grouped cells render the SYSTEM grouped
+    /// surface (white in the light schemes, neutral #2c2c2e-class gray in
+    /// the dark ones) whatever the sheet's backdrop does — the "non-
+    /// translucent/non-themed surface" of the physical Settings report.
+    /// Attached to a Section it themes every row in that section while the
+    /// section's inset-grouped chrome (rounding, insets) is preserved.
+    /// ThemeStore resolves the CURRENT flavor, so a live flip re-traits
+    /// the rows like every other token surface.
+    func themedRowSurface(_ theme: ThemeStore) -> some View {
+        listRowBackground(theme.base)
     }
 }
 
@@ -3017,6 +3076,8 @@ struct SettingsView: View {
                                     .foregroundStyle(theme.subtext1)
                             }
                         }
+                        // #428: themed row surface (see themedRowSurface).
+                        .themedRowSurface(theme)
                     }
                     if model.hostProfilesConfigured {
                         hostsSection
@@ -3056,6 +3117,8 @@ struct SettingsView: View {
                         Text("Removing the device wipes its key and pairing from this phone — nothing is sent to the host.")
                             .foregroundStyle(theme.subtext1)
                     }
+                    // #428: themed row surface (see themedRowSurface).
+                    .themedRowSurface(theme)
                     Section("Notifications") {
                         // #397: with 2+ hosts every host enrolls and
                         // notifies INDEPENDENTLY — per-host state lives on
@@ -3114,6 +3177,8 @@ struct SettingsView: View {
                                 .id("settings.notifications.pending-clear")
                         }
                     }
+                    // #428: themed row surface (see themedRowSurface).
+                    .themedRowSurface(theme)
                     .task { await model.refreshNotificationPermission() }
                 }
                 .navigationTitle("Settings")
@@ -3346,6 +3411,13 @@ struct SettingsView: View {
             Text("Applies to the whole app — board, sheets, rail and settings.")
                 .foregroundStyle(theme.subtext1)
         }
+        // #428: the native grouped CELL surface is system white/gray in
+        // every flavor — the "non-themed surface" the physical Settings
+        // sheet reads as. Every row keeps the section's inset-grouped
+        // chrome but paints the active flavor's BASE token (the same
+        // surface the board rows use), so no system-default grouped
+        // surface leaks through the translucent backdrop.
+        .themedRowSurface(theme)
     }
 
     /// #401 D2/D7: the Hosts section — one row per configured host in the
@@ -3379,6 +3451,8 @@ struct SettingsView: View {
             Text("Each host pairs independently with this device's shared key; URL/key changes are remove-and-re-pair. Adding a host verifies its fingerprint before any registration token is used.")
                 .foregroundStyle(theme.subtext1)
         }
+        // #428: themed row surface (see themedRowSurface).
+        .themedRowSurface(theme)
     }
 
     /// One host's full Settings row (D7): health + display name header,
@@ -4046,6 +4120,8 @@ struct AddHostSheet: View {
             Text("Remote hosts must use https:// (the daemon's Tailscale HTTPS serve URL); http:// is accepted for loopback development hosts only.")
                 .foregroundStyle(theme.subtext1)
         }
+        // #428: themed row surface (see themedRowSurface).
+        .themedRowSurface(theme)
     }
 
     /// Phase 2: fingerprint confirmation + registration token.
@@ -4076,6 +4152,8 @@ struct AddHostSheet: View {
         } header: {
             Text("Confirm the host identity")
         }
+        // #428: themed row surface (see themedRowSurface).
+        .themedRowSurface(theme)
         Section {
             ConnectionField(title: "Registration token", secure: true,
                             text: $model.addHostDraft.token)
@@ -4097,6 +4175,8 @@ struct AddHostSheet: View {
         } header: {
             Text("Pair")
         }
+        // #428: themed row surface (see themedRowSurface).
+        .themedRowSurface(theme)
     }
 
     /// #415: submit the confirmed pairing through the model. The model
@@ -4145,6 +4225,8 @@ struct FingerprintConfirmationSheet: View {
                 } header: {
                     Text("Verify this host")
                 }
+                // #428: themed row surface (see themedRowSurface).
+                .themedRowSurface(theme)
                 switch phase {
                 case .loading:
                     Section {
@@ -4154,6 +4236,7 @@ struct FingerprintConfirmationSheet: View {
                             Spacer()
                         }
                     }
+                    .themedRowSurface(theme)
                 case .failed(let message):
                     Section {
                         Label("Could not fetch the host key — \(message)",
@@ -4162,6 +4245,7 @@ struct FingerprintConfirmationSheet: View {
                             .foregroundStyle(theme.peach)
                         Button("Retry") { load() }
                     }
+                    .themedRowSurface(theme)
                 case .ready(let response):
                     if HostKeyTrust.isWellFormed(response),
                        let fingerprint = HostKeyTrust.fingerprint(forBase64: response.publicKey) {
@@ -4181,6 +4265,8 @@ struct FingerprintConfirmationSheet: View {
                             Text("Compare it with the identity the host itself shows. Confirm only if it matches.")
                                 .foregroundStyle(theme.subtext1)
                         }
+                        // #428: themed row surface (see themedRowSurface).
+                        .themedRowSurface(theme)
                         Section {
                             Button("Confirm — it's my host") {
                                 model.confirmFingerprint(profileID: request.profileID,
@@ -4199,6 +4285,8 @@ struct FingerprintConfirmationSheet: View {
                             Text("Removing the host unlinks it on this phone only — the daemon registry entry stays until the host removes it.")
                                 .foregroundStyle(theme.subtext1)
                         }
+                        // #428: themed row surface (see themedRowSurface).
+                        .themedRowSurface(theme)
                         .confirmationDialog("Remove \(request.profileName)?",
                                             isPresented: $confirmRemove,
                                             titleVisibility: .visible) {
@@ -4224,6 +4312,8 @@ struct FingerprintConfirmationSheet: View {
                                 confirmRemove = true
                             }
                         }
+                        // #428: themed row surface (see themedRowSurface).
+                        .themedRowSurface(theme)
                         .confirmationDialog("Remove \(request.profileName)?",
                                             isPresented: $confirmRemove,
                                             titleVisibility: .visible) {

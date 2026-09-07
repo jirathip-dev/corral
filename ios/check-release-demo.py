@@ -295,7 +295,13 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # #426 r1: per-host refresh failure now logs the bound error instead of
     # an empty catch (anti-slop no-swallowed-errors) — AppModel.swift
     # changed again, so the release-source pin follows the r1 source set.
-    "5235f84379b875def8133f9e822f4e39e5f56bf10ca41195cc73903d81064cdb"
+    # #428: translucent-sheet runtime fix — TranslucentSheetBackdrop iOS 26
+    # branch layers .regular native glass over the tinted-material recipe
+    # (FleetViews), the themedRowSurface helper themes every Settings/Add
+    # Host/Fingerprint form row with the flavor base, AppTheme doc updated,
+    # and the DEBUG spot-flavor evidence route added — re-pinned over the
+    # #428 source set.
+    "6e3b2d2173ac82f7878e8084d3755a63ed2f334483f78e024bf2882025dc8063"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -438,7 +444,10 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # #397 follow-up: NotificationTapDeferredLifecycleTests +
     # LocalNotifierTapDeliveryTests added — re-pinned over the #397 test
     # source.
-    "df76d8136a18d905bb532c97867c50b36c426fbb3a74f963fac8222c71341f70"
+    # #428: SheetTranslucencyWiringTests gained the layered glass-branch
+    # pins + the themedRowSurface counts (Settings 5 / Add Host 3 /
+    # Fingerprint 6 sections) — re-pinned over the #428 test source.
+    "aa9c3dc9ef6accadce1d35787b02d032191ed5606ac08dac57ec7997ce08ce5a"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

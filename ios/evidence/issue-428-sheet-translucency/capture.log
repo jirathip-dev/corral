@@ -1,0 +1,90 @@
+# 428 capture log — runtime masking surfaces + layered glass/backdrop evidence
+
+2026-09-07 ~06:00-07:40 +0700 (base-head RED captures at a55018f, then the
+#428 DEBUG build at the fixed working tree; iPhone 16 / iOS 26.5 simulator
+UDID 59DDC0C5-891E-4EC0-91AF-4F50DF68D793 — the host's only iOS runtime;
+no keychain identity on the evidence installs).
+
+Base-head app (RED frames, /tmp staging — NOT committed):
+
+$ HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild build \
+    -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier \
+    -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/fn428-dd build
+** BUILD SUCCEEDED ** (log: /tmp/fn428-base-build.log, BUILD_RC=0)
+
+#428 app (GREEN frames — this directory):
+
+$ HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild build \
+    -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier \
+    -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/fn428-fix1 build
+** BUILD SUCCEEDED ** (log: /tmp/fn428-fix1-build.log, BUILD_RC=0)
+
+Bundle id: com.corral.fleetnotifier (lowercase). Each launch starts from a
+WIPED install (uninstall + install + launch) so stale multi-host profiles
+from earlier evidence never gate the recents presentation (observed:
+profiles persisted by the #401 add-host evidence runs make
+requestRecents return early — the single-host demo state must be clean).
+
+Capture driver: /tmp/fn428-capture.sh (marker poll under
+<data>/Documents/ux-evidence, `simctl io screenshot` per new marker,
+`sips -z 844 390` downscale; the DEBUG driver holds >= 4 s after each
+marker and the host shoots ~1.5-2.5 s into the hold).
+
+Native-glass branch (medium detent, Mocha+Latte + Frappé/Macchiato spot):
+
+$ xcrun simctl launch <udid> com.corral.fleetnotifier \
+    -corral416TranslucencyEvidence -corral416MediumDetents
+  -> the committed phase-416-{1..7} frames (medium glass)
+$ ... -corral416TranslucencyEvidence -corral416MediumDetents \
+    -corral428SpotFlavors
+  -> renamed to the committed phase-416-5-settings-frappe /
+     phase-416-6-settings-macchiato / phase-416-2-recents-frappe /
+     phase-416-3-recents-macchiato frames
+
+Release presentation path (system LARGE detent):
+
+$ xcrun simctl launch <udid> com.corral.fleetnotifier \
+    -corral416TranslucencyEvidence
+  -> renamed to the committed phase-416-5-settings-mocha-large /
+     phase-416-6-settings-latte-large frames
+
+Forced material fallback (iOS 17-25 recipe on the 26.5 runtime — see the
+README): every run above repeated with `-corral416ForceFallbackBackdrop`;
+frames renamed to the `-fallback` suffixed files in this directory.
+
+Add Host (multi-host seed, medium detent):
+
+$ xcrun simctl launch <udid> com.corral.fleetnotifier \
+    -corralDemoMultiHostAddEvidence -corral416MediumDetents
+  -> phase-7-addhost-entry-mocha / phase-8-addhost-confirm-latte
+  (+ `-corral416ForceFallbackBackdrop` -> the -fallback files)
+
+## Discriminating gate runs (raw exit codes)
+
+GREEN at the fixed head (frames committed here; script:
+translucency-analysis.py in this directory):
+
+$ python3 translucency-analysis.py .            -> RC 0 (medium 9 checks)
+$ python3 translucency-analysis.py . --mode=large   -> RC 0 (6 checks)
+$ python3 translucency-analysis.py . --mode=spots   -> RC 0 (8 checks)
+$ python3 translucency-analysis.py . --mode=addhost -> RC 0 (5 checks)
+
+RED at the base head a55018f (same script, pre-fix frames staged under
+/tmp/fn428-base + /tmp/fn428-large during the lane; captures made with
+the base-head build and the SAME driver commands above):
+
+$ python3 translucency-analysis.py /tmp/fn428-base/glass   -> RC 1 (1/8)
+$ python3 translucency-analysis.py /tmp/fn428-large/glass --mode=large -> RC 1 (1/6)
+$ python3 translucency-analysis.py /tmp/fn428-base/addhost-glass --mode=addhost -> RC 1 (1/4)
+
+The RED base frames are NOT committed (pre-fix state of the worktree —
+the repo keeps the post-fix evidence per convention); the raw outputs of
+both directions are in analysis.txt.
+
+## Sample measurements (backdrop regions, mean channel tone)
+
+Settings form surface (Mocha), base head .clear glass: (31,32,36) b-r=4.0
+-> fixed regular-glass-over-material: (42,42,50) b-r=8.7; forced fallback:
+(44,44,56) b-r=12.6. Settings cells (Mocha): base head (45,45,49) system
+gray -> fixed (30,30,46) == base token. Recents bottom strip (Mocha):
+base (32,32,36) b-r=4.4 -> fixed (32,32,41) b-r=9.0.

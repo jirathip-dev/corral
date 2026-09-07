@@ -590,11 +590,13 @@ extension ThemeStore {
 /// through softly (the approved terminal-transparency look; #373 AC that
 /// #378/#381 missed). Below iOS 26 the backdrop is an ultra-thin material
 /// blur tinted with the active flavor's base at `fallbackTintAlpha`; iOS
-/// 26+ renders the NATIVE Liquid Glass surface instead (see FleetViews.swift
-/// `TranslucentSheetBackdrop`). Text layers that need guaranteed AA keep
-/// their opaque token backing; the backdrop itself is verified against the
-/// spec's 4.5:1 minimum in the worst underlying-content case by
-/// `SheetBackdropTests`.
+/// 26+ layers the NATIVE Liquid Glass over that SAME tinted-material base
+/// (#428: the earlier clear-glass-only surface contributed no material
+/// response of its own and read as a flat flavor-less slab — see
+/// FleetViews.swift `TranslucentSheetBackdrop`). Text layers that need
+/// guaranteed AA keep their opaque token backing; the backdrop itself is
+/// verified against the spec's 4.5:1 minimum in the worst underlying-
+/// content case by `SheetBackdropTests`.
 ///
 /// #416: the first #385 pass locked the tint levels HIGH (glass 30 %,
 /// fallback 88 %) so the sheet surface read as a near-flat theme-base slab

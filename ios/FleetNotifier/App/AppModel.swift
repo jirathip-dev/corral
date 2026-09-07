@@ -158,6 +158,19 @@ enum RecentsRouteState: Equatable, Sendable {
     case unavailable
 }
 
+/// #397 follow-up: ONE deferred notification tap — a one-shot OS response
+/// delivered while the model could not route it yet (not live, owning
+/// host re-verifying/reconnecting, rows still loading). The composite
+/// HOST identity (never a resolved profile) is retained so replay resolves
+/// the owner against the CURRENT profile set — a host removed while a tap
+/// waits can never resurrect its lane.
+private struct PendingNotificationTap: Sendable, Equatable {
+    /// Raw agent id unchanged from the wire.
+    let agentId: String
+    /// The payload's host identity (nil = legacy host-less payload).
+    let hostKeyB64: String?
+}
+
 /// App-level orchestration for the READ-ONLY client (#354 L2): identity,
 /// registration, live connection, state-change notification hooks, the
 /// signed read_tail drive shared by the recents sheet, and the deep link
@@ -364,6 +377,12 @@ final class AppModel: ObservableObject {
     private let hapticTick: () -> Void
     /// Monotonic counter backing `RecentsRequest.id`.
     private var recentsSerial: UInt64 = 0
+    /// #397 follow-up: notification taps deferred because the model was
+    /// not ready to route them at delivery time (cold launch, reconnect
+    /// boundary, board rows still loading). Bounded FIFO — see
+    /// `deferNotificationTap` / `replayPendingNotificationTaps`.
+    private var pendingNotificationTaps: [PendingNotificationTap] = []
+    private let pendingNotificationTapLimit = 3
     /// #79 review F4: one-shot guard for the non-idempotent half of startLive().
     private var notificationsConfigured = false
     /// Every live read gets its own task handle. A mode/device boundary must
@@ -511,6 +530,24 @@ final class AppModel: ObservableObject {
         fleetChanges = fleet.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
+        // #397 follow-up: the notifier (UNUserNotificationCenter delegate)
+        // exists from MODEL BIRTH, so a launch-time notification response
+        // is never delivered to a nil delegate; the tap handler routes
+        // through openNotification, whose readiness gates DEFER instead of
+        // dropping a one-shot tap (see openNotification /
+        // replayPendingNotificationTaps). startLive keeps the OS side
+        // effects (authorization + APNs registration).
+        let notifier = LocalNotifier()
+        notifier.isEnabled = notificationsEnabled
+        notifier.onOpenAgent = { [weak self] agentId, hostID in
+            self?.openNotification(agentId: agentId, hostKeyB64: hostID)
+        }
+        self.notifier = notifier
+        // #397 follow-up: the ACTIVE store applied board data — a deferred
+        // tap's target agent may now be present (or provably absent).
+        fleet.onAgentsChanged = { [weak self] in
+            self?.replayPendingNotificationTaps()
+        }
         // #399 B4: the APNs upload path consults the app-wide continuity
         // gate; install the model predicate only when a profile store is
         // configured (legacy-only fixtures keep the default allow).
@@ -546,6 +583,22 @@ final class AppModel: ObservableObject {
                 // the retained token now (per-host dedupe makes this a
                 // no-op for already-enrolled hosts).
                 self?.uploadRetainedTokenToHosts()
+                // #426: the same "just became live" gap applies to the
+                // per-host grants refresh — a pinned host verifies AFTER
+                // the launch/foreground refreshGrants() fan-out ran, so it
+                // would otherwise keep stale grants until the next cycle.
+                // Refresh ITS grants now that its identity is verified.
+                Task { @MainActor [weak self] in
+                    await self?.refreshGrantsForConnectedHost(profileID: profileID)
+                }
+                // #397 follow-up: this host's session (re)connected — a
+                // notification tap deferred for this host may route now.
+                self?.replayPendingNotificationTaps()
+            }
+            // #397 follow-up: rows applied on a coordinator host — replay
+            // deferred notification taps whose target may now be present.
+            coordinator.onSessionAgentsChanged = { [weak self] _ in
+                self?.replayPendingNotificationTaps()
             }
             // #397: per-host state-change notifications fire through the
             // same model path as the ACTIVE host's store hooks — composite
@@ -880,21 +933,6 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// #401 D2/D7: drag-to-reorder (Settings). Order drives the host-chip
-    /// row; the store's moveProfile re-normalizes every profile's order.
-    /// SwiftUI `.onMove` delivers the destination in the ORIGINAL row
-    /// coordinates, so a downward move (destination after the removed row)
-    /// is converted to the store's post-removal insertion index.
-    func moveHosts(from source: IndexSet, to destination: Int) {
-        guard let store = profileStore,
-              let movedIndex = source.first,
-              profiles.indices.contains(movedIndex) else { return }
-        let movedID = profiles[movedIndex].id
-        let insertion = destination > movedIndex ? destination - 1 : destination
-        try? store.moveProfile(id: movedID, toOrder: insertion)
-        reloadProfiles(from: store)
-    }
-
     /// #401 D7: rename one host's DISPLAY NAME in place (B5 — URL/identity
     /// changes are remove-and-re-pair, never an edit). Returns the error
     /// text (duplicate/empty name) or nil on success.
@@ -1095,6 +1133,19 @@ final class AppModel: ObservableObject {
         // even though the profile record is gone.
         let removedProfile = store.profile(id: profileID)
         let wasActive = activeProfile?.id == profileID
+        // #397 follow-up: taps deferred for a removed host must never
+        // replay — a removed host's alert can never recreate its profile
+        // or open another host's lane. Removing the ACTIVE host also drops
+        // host-less pending taps (legacy sole-host payloads belonged to
+        // the whole single-host runtime being torn down below).
+        if let removedProfile {
+            pendingNotificationTaps.removeAll {
+                $0.hostKeyB64 == removedProfile.hostKeyB64
+            }
+        }
+        if wasActive {
+            pendingNotificationTaps.removeAll()
+        }
         if wasActive {
             // Removing the ACTIVE host tears down the whole single-host
             // runtime first (stream + every task), then unlinks the
@@ -1642,7 +1693,25 @@ final class AppModel: ObservableObject {
                         signerPublicKeyB64: candidateSigner.publicKeyB64)
                     self.keyContinuityState = .verified
                     self.fleet.acceptedHostIdentity = profile.hostKeyB64
-                    self.fleet.restoreCursor()
+                    if switchingHost {
+                        // #421: a runtime HOST SWITCH (a second host
+                        // fingerprint-confirmed while this app is running)
+                        // must not let the previous active host's rows/
+                        // cursor ride the shared legacy store into the NEW
+                        // host — they would project under the new host's
+                        // composite id until an authoritative snapshot
+                        // replaced them (stale rows under both host badges
+                        // until relaunch). The old host's state survives in
+                        // its own per-profile cursor + durable board cache
+                        // (persisted by stopLive above) and re-enters via
+                        // its fresh coordinator session. Same-URL re-pairing
+                        // (switchingHost == false) keeps the live store and
+                        // its rows untouched — they still belong to the
+                        // active host.
+                        fleet.reset()
+                    } else {
+                        fleet.restoreCursor()
+                    }
                     self.startLive()
                     self.banner = .info("Paired \(profile.displayName) · fingerprint confirmed")
                     // #415: the commit succeeded — ONLY now is the draft
@@ -1758,21 +1827,34 @@ final class AppModel: ObservableObject {
         return .failure(failure)
     }
 
-    // MARK: - Grants refresh (#101)
+    // MARK: - Grants refresh (#101, #426)
 
-    /// Signed self-service grants read: re-fetches THIS key's CURRENT
+    /// Signed self-service grants read: re-fetches the device's CURRENT
     /// grants + expiry from the daemon so a host-side promotion reaches the
     /// phone without a device reset. Idempotent and non-blocking: callers
     /// wrap it in a fire-and-forget `Task`, and it never touches the live
     /// stream. On ANY failure the cached grants are kept — a stale cached
     /// set is strictly better than a broken board, so grants are never
     /// cleared by a network error.
+    /// #426: in the multi-host runtime this is a PER-HOST fan-out — every
+    /// configured, live host (the ACTIVE profile and every verified
+    /// coordinator host) performs its OWN signed `/grants-read` against its
+    /// OWN url/key identity, and a successful response folds into ONLY
+    /// that host's profile grant set (persisted). The legacy single-host
+    /// runtime below is unchanged.
     @MainActor
     func refreshGrants() async {
         let context = lifecycleContext()
         guard context.mode == .live,
-              let hostURL = context.hostURL,
-              let signer = self.signer,
+              let signer = self.signer else {
+            return
+        }
+        if let store = profileStore, !store.orderedProfiles.isEmpty {
+            await refreshGrantsForHosts(context: context, store: store, signer: signer)
+            return
+        }
+        // Legacy single-host runtime (#101, no profile store): unchanged.
+        guard let hostURL = context.hostURL,
               let keyId = context.keyId else {
             return
         }
@@ -1807,7 +1889,109 @@ final class AppModel: ObservableObject {
         await task.value
     }
 
-    // MARK: - Live connection
+    /// #426: one signed `/grants-read` per configured, LIVE host. The
+    /// ACTIVE profile refreshes its own url/keyId under the same B4 gate
+    /// as the legacy runtime; each verified coordinator host refreshes
+    /// against ITS OWN profile url/keyId (the shared phone signer signs,
+    /// the profile's registration key id names the device record). A
+    /// success folds ONLY into that host's profile grant set and persists
+    /// it; a failure keeps the last-known grants and never touches another
+    /// host's state or any live stream.
+    private func refreshGrantsForHosts(context: LifecycleContext,
+                                       store: HostProfileStore,
+                                       signer: DeviceSigner) async {
+        for profile in store.orderedProfiles {
+            await refreshGrantsHost(profile: profile, context: context,
+                                    store: store, signer: signer)
+        }
+    }
+
+    /// #426: per-host signed `/grants-read` for ONE profile (shared by the
+    /// launch/foreground fan-out and the coordinator's session-connected
+    /// retry). Eligibility mirrors the read route's fail-closed gates.
+    private func refreshGrantsHost(profile: HostProfile,
+                                   context: LifecycleContext,
+                                   store: HostProfileStore,
+                                   signer: DeviceSigner) async {
+        guard let keyId = profile.keyId,
+              !keyId.isEmpty,
+              let url = URL(string: profile.urlString) else {
+            return
+        }
+        if profile.id == activeProfileID {
+            // B4: the ACTIVE host needs verified continuity before any
+            // signed request (same gate as the legacy path).
+            guard keyContinuityAllowsLiveWork else { return }
+        } else {
+            // A coordinator host may only be signed toward once its
+            // pinned identity is verified (B4) — mirror the read route.
+            guard profile.mayConnect,
+                  coordinator?.allowsLiveWork(profileID: profile.id) == true else {
+                return
+            }
+        }
+        let profileID = profile.id
+        let isActiveProfile = profileID == activeProfileID
+        let taskId = UUID()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.lifecycleTasks.removeValue(forKey: taskId) }
+            guard self.isCurrent(context) else { return }
+            let client = DriveClient(host: url, session: self.session)
+            do {
+                let response = try await client.fetchGrants(keyId: keyId, signer: signer)
+                guard !Task.isCancelled, self.isCurrent(context) else { return }
+                // The host may have been removed/re-paired/re-pointed
+                // while the read was in flight — only fold into a
+                // profile that still exists under the SAME key + url.
+                guard let current = store.profile(id: profileID),
+                      current.keyId == keyId,
+                      current.urlString == profile.urlString else { return }
+                _ = try? store.applyGrants(id: profileID,
+                                           grants: response.grants,
+                                           expiryTs: response.expiryTs)
+                self.reloadProfiles(from: store)
+                if isActiveProfile {
+                    // Legacy mirror parity for the ACTIVE host (#101):
+                    // the in-memory grant set + persisted meta follow
+                    // the refreshed values too.
+                    self.grants = response.grants
+                    if let meta = self.loadMeta() {
+                        self.saveMeta(DeviceKeyStore.DeviceMeta(
+                            keyId: meta.keyId,
+                            host: meta.host,
+                            grants: response.grants,
+                            expiryTs: response.expiryTs,
+                            registeredAt: meta.registeredAt))
+                    }
+                }
+            } catch {
+                // Silent by design: stale cached grants beat a broken
+                // board; another host's refresh is never affected. Logged
+                // so repeated failures stay diagnosable without ever
+                // clearing the cached set.
+                Self.log.error("host \(profile.displayName, privacy: .public): grants refresh failed — cached grants kept (\(error.localizedDescription))")
+            }
+        }
+        lifecycleTasks[taskId] = task
+        await task.value
+    }
+
+    /// #426: a coordinator host's session JUST connected (identity
+    /// verified + stream open). The launch/foreground fan-out may have run
+    /// while this host was still `.verifying` (pinned hosts re-check at
+    /// startLive), so refresh ITS grants now — mirroring the #397
+    /// retained-token retry on the same seam.
+    private func refreshGrantsForConnectedHost(profileID: UUID) async {
+        guard let store = profileStore,
+              let profile = store.profile(id: profileID),
+              profile.id != activeProfileID,
+              let signer = self.signer else {
+            return
+        }
+        await refreshGrantsHost(profile: profile, context: lifecycleContext(),
+                                store: store, signer: signer)
+    }
 
     /// Issue #219: one pull/toolbar snapshot refresh in flight. Guards
     /// coalescing (repeated pulls share one request) and drives the
@@ -1906,6 +2090,13 @@ final class AppModel: ObservableObject {
         // transitional daemon still pass).
         fleet.acceptedHostIdentity = activeProfile?.hostKeyB64
         fleet.connect(client: client)
+        // #397 follow-up: this startLive pass proved the ACTIVE host's
+        // identity (verified) and (re)opened its stream — the moment a tap
+        // deferred while the host was cold/reconnecting can route. A
+        // target whose rows are still loading presents via the
+        // agents-changed replay instead; one that is still not available
+        // stays deferred for the next event.
+        replayPendingNotificationTaps()
         // APNs upload/retry is independent from one-time local notification
         // setup. A token callback can arrive during demo; retry it now that
         // the shared lifecycle is live, even when notificationsConfigured is
@@ -1931,26 +2122,24 @@ final class AppModel: ObservableObject {
         uploadRetainedTokenToHosts()
         // #79 review F4: only connect() is idempotent by itself (its
         // streamTask guard). The notification/APNs setup below is NOT —
-        // re-running it allocates a fresh LocalNotifier (dropping the
-        // installed delegate) and re-fires APNs registration + a signed
+        // re-running it re-fires APNs registration + a signed
         // /device-token post — and startLive() now legitimately runs
         // more than once per launch (RootView task, .active transition,
-        // register()). Guard it to once per process.
+        // register()). Guard it to once per process. The notifier itself
+        // (delegate + tap handler) is created in `init` so a launch-time
+        // notification response is never delivered to a nil delegate;
+        // this block only repeats the OS side effects.
         guard !notificationsConfigured else { return }
         notificationsConfigured = true
-        notifier = LocalNotifier()
         notifier?.isEnabled = notificationsEnabled
         // This OS permission request captures no host, key, fleet, or mode;
-        // it cannot apply stale lifecycle state after a boundary.
+        // it cannot apply stale lifecycle state after a boundary. The
+        // notifier is copied into a LOCAL first: a Task closure must not
+        // capture `self` through the property (the authorization call can
+        // stay pending indefinitely on the simulator and would otherwise
+        // retain the whole model past its teardown).
         let notifierForAuthorization = notifier
         Task { await notifierForAuthorization?.requestAuthorization() }
-        // #354 L2: notification tap → deep link to the agent row's recents.
-        // #397: the tap carries the payload's host identity — the model
-        // resolves EXACTLY one host profile (never a guess from a bare
-        // agent id).
-        notifier?.onOpenAgent = { [weak self] agentId, hostID in
-            self?.openNotification(agentId: agentId, hostKeyB64: hostID)
-        }
         // APNs registration (D16): the token is sent to the daemon by the
         // AppDelegate; on the simulator this fails and the DEBUG local
         // bridge (PushBridge) stays active.
@@ -2010,6 +2199,11 @@ final class AppModel: ObservableObject {
     /// shared cursor. Failure ends the indicator and lands in the
     /// existing dismissible/retryable banner — never an endless spinner
     /// (`isRefreshingFleet` is cleared in `defer`).
+    /// #425: a successful snapshot also proves the ACTIVE host is
+    /// reachable — when its stream has not acknowledged a live connection
+    /// (ended or wedged), the refresh restarts it exactly once, so an
+    /// ordinary pull recovers a stale/offline host without a relaunch.
+    /// While the stream is healthy the refresh stays snapshot-only.
     func refreshFleet() async {
         guard mode == .live, let hostURL else { return }
         // #399 B4: no fetch may reach a host whose pinned identity is
@@ -2037,6 +2231,12 @@ final class AppModel: ObservableObject {
                 guard !Task.isCancelled, self.isCurrent(context) else { return }
                 self.fleet.applyRefresh(snapshot)
                 self.persistBoardMetadata()
+                // #425: the snapshot succeeded, so the active host is
+                // reachable — if its stream is not acknowledged live
+                // (ended/wedged), clear the stale task ownership and
+                // start exactly one replacement; a healthy stream is left
+                // untouched (idempotent refresh, no duplicate tasks).
+                self.fleet.reconnectIfNeeded(client: client)
             } catch {
                 guard !Task.isCancelled, self.isCurrent(context) else { return }
                 self.banner = .error("fleet_refresh",
@@ -2148,9 +2348,20 @@ final class AppModel: ObservableObject {
         notifier?.isEnabled = enabled
     }
 
+    // MARK: - #397 follow-up: notification-tap lifecycle (deferred deep link)
+
     /// Deep link from a tapped notification: open the agent's row recents.
-    /// Live mode only — setup/demo states have no live agent to show. A
-    /// deep link is not a row tap, so it plays no haptic.
+    /// A tap is a ONE-SHOT OS response and must never be silently dropped
+    /// just because the model is not ready to route it this instant —
+    /// cold/terminated launch (not live yet), background reconnect (the
+    /// owning host still re-verifying), or rows not loaded yet all DEFER
+    /// the composite target and replay it when ITS OWN host is live and
+    /// the agent is available (see `deferNotificationTap` /
+    /// `replayPendingNotificationTaps`). Demo ignores taps, and an
+    /// unknown/removed/mismatched host fails closed immediately with the
+    /// bounded diagnostic below — only a host this app is (or will be)
+    /// paired with can ever be deferred. A deep link is not a row tap, so
+    /// it plays no haptic.
     /// #397: the payload's `host_id` (the pinned X25519 key of the owning
     /// daemon) resolves EXACTLY one host profile; a host-less legacy
     /// payload may route to the SOLE configured host (F1 back-compat);
@@ -2159,43 +2370,204 @@ final class AppModel: ObservableObject {
     /// bounded diagnostic: the app never guesses another host's lane and a
     /// removed host's alert can never recreate its profile or cached lane.
     func openNotification(agentId: String, hostKeyB64: String?) {
-        guard mode == .live else { return }
+        guard mode == .live else {
+            // Setup/demo states have no live lane to open.
+#if DEBUG
+            // Demo stays inert (evidence drivers seed it) — no deferral.
+            if mode == .demo { return }
+#endif
+            // A COLD model may still restore/register the notified host,
+            // so only a target the app can ever own is remembered —
+            // everything else keeps the old silent pre-live drop.
+            if canDeferNotificationTap(hostKeyB64: hostKeyB64) {
+                deferNotificationTap(agentId: agentId, hostKeyB64: hostKeyB64)
+            }
+            return
+        }
+        if routeLiveNotificationTap(agentId: agentId, hostKeyB64: hostKeyB64) {
+            deferNotificationTap(agentId: agentId, hostKeyB64: hostKeyB64)
+        }
+    }
+
+    /// Whether a pre-live tap could ever belong to a host this app owns:
+    /// the legacy single-host runtime, or a configured profile matching
+    /// the payload's host identity (host-less payloads map to a sole
+    /// configured host — the F1 back-compat rule).
+    private func canDeferNotificationTap(hostKeyB64: String?) -> Bool {
+        if profileStore == nil { return true }
+        if let hostKeyB64 {
+            return profiles.contains { $0.hostKeyB64 == hostKeyB64 }
+        }
+        return profiles.count == 1
+    }
+
+    /// Route a notification tap against the CURRENT live state (shared by
+    /// `openNotification` and every replay attempt). Returns true when the
+    /// target is not routable yet and the tap must stay deferred. Every
+    /// non-deferred outcome runs through the PRE-EXISTING routing so its
+    /// behavior is unchanged: the legacy info banner for an agent that is
+    /// gone from a settled board, the silent denials for coordinator gaps,
+    /// the `notification_host_unknown` diagnostic for an identity no
+    /// profile pins.
+    private func routeLiveNotificationTap(agentId: String, hostKeyB64: String?) -> Bool {
         if profileStore == nil {
             // Pure legacy single-host runtime (no profile store): the
-            // fleet store is the only surface — pre-#397 route unchanged.
-            guard fleet.agent(agentId) != nil else {
-                banner = .info("This agent is no longer on the fleet — refresh the board.")
-                return
+            // fleet store is the only surface — pre-#397 route unchanged,
+            // except a missing agent defers while the board is still
+            // loading instead of being declared gone.
+            if fleet.agent(agentId) != nil {
+                requestRecents(for: agentId, hostProfileID: nil, haptic: false)
+                return false
             }
-            requestRecents(for: agentId, hostProfileID: nil, haptic: false)
-            return
+            if notificationBoardSettled(fleet) {
+                banner = .info("This agent is no longer on the fleet — refresh the board.")
+                return false
+            }
+            return true
         }
         if let hostKeyB64,
            let profile = profiles.first(where: { $0.hostKeyB64 == hostKeyB64 }) {
-            routeNotification(to: profile, agentId: agentId)
-            return
+            return routeLiveNotification(to: profile, agentId: agentId)
         }
         // Legacy host-less payload / an identity no profile pins. Exactly
         // one configured host keeps the pre-#397 route for host-less
         // payloads (and unpinned legacy hosts cannot be verified anyway).
         if profiles.count == 1, let only = profiles.first,
            hostKeyB64 == nil || only.hostKeyB64 == nil {
-            routeNotification(to: only, agentId: agentId)
-            return
+            return routeLiveNotification(to: only, agentId: agentId)
         }
         // 2+ hosts (or a pinned sole host receiving a foreign payload):
         // non-actionable — bounded diagnostic, never a cross-host guess.
-        guard !profiles.isEmpty else { return }
+        guard !profiles.isEmpty else { return false }
         banner = .error(
             "notification_host_unknown",
             "This alert doesn't match a paired host, so Corral won't guess which lane to open. Re-pair the host or dismiss the alert.")
+        return false
     }
 
-    /// #397: the routed half of a notification tap — the owning profile's
-    /// recents route (agent-existence, continuity, and posture gates all
-    /// live inside `requestRecents`).
-    private func routeNotification(to profile: HostProfile, agentId: String) {
+    /// The board is "settled" once its stream acknowledged a connection
+    /// AND data was applied this session (rows, or at least a revision —
+    /// `connect()` clears a restored cursor when the store is empty, so a
+    /// connected store with no revision is still waiting for its first
+    /// frame). Before that, a missing target agent means "rows still
+    /// loading", not "agent gone": cold launches must defer, not diagnose.
+    private func notificationBoardSettled(_ store: FleetStore) -> Bool {
+        guard store.connectionState == .connected else { return false }
+        return !store.agents.isEmpty || store.lastEventId != nil
+    }
+
+    /// The routed half of a notification tap — the owning profile's
+    /// readiness decides present / defer / fail-closed:
+    /// - ACTIVE host paused on fingerprint confirmation, or pinned but not
+    ///   yet re-verified → DEFER (the route opens once it is verified);
+    /// - a pinned key MISMATCH keeps the existing deny (fail closed);
+    /// - a coordinator host still verifying / not yet connected → DEFER
+    ///   for that host only (never another host's session — E1);
+    /// - the owning store holds the agent → present through the same
+    ///   requestRecents path as a row tap (fresh monotonic request);
+    /// - the owning store settled WITHOUT the agent → the pre-existing
+    ///   silent route consumes the entry (no other host is searched).
+    /// Returns true when the tap stays deferred.
+    private func routeLiveNotification(to profile: HostProfile, agentId: String) -> Bool {
+        if profile.id == activeProfileID {
+            if profile.connectionState == .awaitingFingerprintConfirmation {
+                return true
+            }
+            if profile.hostKeyB64 != nil {
+                if keyContinuityState == .pending { return true }
+                if keyContinuityState == .mismatch {
+                    requestRecents(for: agentId, hostProfileID: profile.id, haptic: false)
+                    return false
+                }
+            }
+            if fleet.agent(agentId) == nil {
+                if notificationBoardSettled(fleet) {
+                    // Settled board without the agent: the pre-fix silent
+                    // route (never another host's row).
+                    requestRecents(for: agentId, hostProfileID: profile.id, haptic: false)
+                    return false
+                }
+                return true
+            }
+            requestRecents(for: agentId, hostProfileID: profile.id, haptic: false)
+            return false
+        }
+        // Coordinator-owned host (E1): the owning session store must be
+        // verified, connected, and hold the row — never another host's.
+        guard let posture = coordinator?.posture(profileID: profile.id) else {
+            // Sessionless (a paused profile awaiting confirmation, or a
+            // session not created yet) = reconnect boundary — defer ONLY
+            // this host; the tap replays when its own session verifies.
+            return true
+        }
+        switch posture {
+        case .verifying:
+            return true
+        case .mismatch:
+            // Fail closed via the existing route (silent denial).
+            requestRecents(for: agentId, hostProfileID: profile.id, haptic: false)
+            return false
+        case .unpinned, .verified:
+            break
+        }
+        guard let sessionStore = coordinator?.store(profileID: profile.id) else {
+            return true
+        }
+        if sessionStore.connectionState != .connected {
+            // Verified posture but the session's stream has not acked this
+            // session yet (suspended/background window) — defer until the
+            // host's own reconnect completes.
+            return true
+        }
+        if sessionStore.agent(agentId) == nil {
+            if notificationBoardSettled(sessionStore) {
+                // Settled without the agent: the pre-fix silent route
+                // consumes the tap (no other host may satisfy it).
+                requestRecents(for: agentId, hostProfileID: profile.id, haptic: false)
+                return false
+            }
+            return true
+        }
         requestRecents(for: agentId, hostProfileID: profile.id, haptic: false)
+        return false
+    }
+
+    /// Remember one not-yet-routable tap. Bounded FIFO: iOS delivers ONE
+    /// response per tap, so the queue is normally 0-1 entries; the cap
+    /// only defends against a pathological burst and keeps the EARLIEST
+    /// taps (they replay first — never a dropped first tap).
+    private func deferNotificationTap(agentId: String, hostKeyB64: String?) {
+        pendingNotificationTaps.append(PendingNotificationTap(agentId: agentId,
+                                                              hostKeyB64: hostKeyB64))
+        if pendingNotificationTaps.count > pendingNotificationTapLimit {
+            pendingNotificationTaps.removeLast(
+                pendingNotificationTaps.count - pendingNotificationTapLimit)
+        }
+        // The state may have JUST become ready between the routing decision
+        // above and this append (a frame landed) — re-check so a ready tap
+        // is not left waiting for the next event.
+        replayPendingNotificationTaps()
+    }
+
+    /// Replay every deferred notification tap whose target can now route.
+    /// Runs at the moments a deferred tap can become routable: a startLive
+    /// pass that verified and (re)opened the stream, the ACTIVE store
+    /// applying board data, a coordinator session connecting, and a
+    /// coordinator store applying data. Each entry re-resolves ITS OWN
+    /// composite owner against the current profiles and routes exactly
+    /// once — a presented or consumed tap is removed, a still-not-ready
+    /// one stays for the next event. A host removed while a tap waits is
+    /// dropped by `removeHost` — replay can never open another lane.
+    private func replayPendingNotificationTaps() {
+        guard mode == .live, !pendingNotificationTaps.isEmpty else { return }
+        var stillPending: [PendingNotificationTap] = []
+        for tap in pendingNotificationTaps {
+            if routeLiveNotificationTap(agentId: tap.agentId,
+                                        hostKeyB64: tap.hostKeyB64) {
+                stillPending.append(tap)
+            }
+        }
+        pendingNotificationTaps = stillPending
     }
 
     // MARK: - Recents sheet request lifecycle (#364 C)
@@ -2307,8 +2679,21 @@ final class AppModel: ObservableObject {
             }
             return
         }
-        guard authorize(.readTail, for: live, grants: route.grants,
-                        silent: silent) else { return }
+        if let refusal = authorize(.readTail, for: live, grants: route.grants,
+                                   silent: silent) {
+            // #424: a read_tail refused BEFORE dispatch must fold the same
+            // typed failure the daemon's remote refusal folds. An ungranted
+            // read can never leave the pane in the successful-empty state
+            // ("No output yet."), which the sheet renders as the explicit
+            // permission state.
+            route.store.foldTailFailure(TranscriptFailure(
+                kind: refusal,
+                message: refusal == "not_granted"
+                    ? "read_tail is not granted on this host yet."
+                    : "read_tail is not available for this agent.",
+                candidates: []), for: live.agentId)
+            return
+        }
         // E1: sign against THAT profile's URL — for coordinator-owned
         // hosts the caller's (active-host) client is replaced by a client
         // bound to the owning profile, so a signed read can never cross
@@ -2442,24 +2827,27 @@ final class AppModel: ObservableObject {
     /// return a typed refusal, which the common drive path surfaces.
     /// #400 E1: composite routes authorize against the OWNING profile's
     /// grants (`grants`); the legacy runtime passes its global set.
+    /// #424: returns the typed refusal kind when the control is denied
+    /// locally (nil when authorized) so driveReadTail can fold the pane
+    /// failure instead of silently leaving the successful-empty state.
     private func authorize(_ capability: Capability, for agent: Agent,
                            grants: Set<Capability>? = nil,
-                           silent: Bool = false) -> Bool {
+                           silent: Bool = false) -> String? {
         guard agent.capabilities.contains(capability.rawValue) else {
             if !silent {
                 banner = .error("capability_unavailable",
                                 "\(capability.rawValue): not available for this agent.")
             }
-            return false
+            return "capability_unavailable"
         }
         guard (grants ?? actionGrants).contains(capability) else {
             if !silent {
                 banner = .error("not_granted",
                                 "requires the \(capability.rawValue) grant — ask the host.")
             }
-            return false
+            return "not_granted"
         }
-        return true
+        return nil
     }
 
     private func beginDriveAction(_ key: DriveActionKey, silent: Bool = false) -> String? {
@@ -2685,6 +3073,10 @@ final class AppModel: ObservableObject {
         fleet.seedDemo(agents: DemoFleet.seed(), rev: 1)
         mode = .demo
         demoDetailAgentId = detailAgentId
+        // #397 follow-up: a demo has no live notification surface — any tap
+        // deferred before the demo started belongs to the live session
+        // being torn down and must not replay after it.
+        pendingNotificationTaps.removeAll()
         // #399: demo has no host-key confirmation flow — a paused
         // migration confirmation is deferred until live mode restores.
         fingerprintConfirmation = nil
@@ -2700,7 +3092,11 @@ final class AppModel: ObservableObject {
     /// (paused, fails closed, no session). Everything routes through the
     /// #399/#400 public seams (profile store + coordinator sessions' own
     /// stores) — no network, no stream internals.
-    func enterMultiHostDemo() {
+    /// `hostBConnecting` (#427 evidence): seed Host B's session store in the
+    /// CONNECTING posture instead of the offline error, so the filter-header
+    /// frames can capture the textual `connecting` health inside the filter
+    /// sheet and the board banner.
+    func enterMultiHostDemo(hostBConnecting: Bool = false) {
         guard let store = profileStore, coordinator != nil else {
             enterDemo()
             return
@@ -2757,7 +3153,14 @@ final class AppModel: ObservableObject {
         // Host B: retained STALE rows in its coordinator session store.
         if let storeB = coordinator?.store(profileID: profileB.id) {
             storeB.seedDemo(agents: DemoFleet.multiHostSeedB(now: now), rev: 1)
-            storeB.noteConnectionError("host unreachable")
+            if hostBConnecting {
+                // #427 evidence: B mid-connect — rows stay retained (a
+                // connecting host is not connected), health reads
+                // `connecting` on the chip/sheet + banner.
+                storeB.noteConnecting()
+            } else {
+                storeB.noteConnectionError("host unreachable")
+            }
         }
         store.noteLastSuccessfulConnection(id: profileA.id,
                                            at: now - 2 * 60 * 1000)
@@ -2915,6 +3318,9 @@ final class AppModel: ObservableObject {
         pendingPushTokenClears.removeAll()
         pendingPushClearTargets.removeAll()
         enrolledTokenPerHost.removeAll()
+        // #397 follow-up: deferred notification taps belong to the session
+        // being wiped — a fresh start must not replay a previous life's tap.
+        pendingNotificationTaps.removeAll()
         notifier?.removeAll()
         keyContinuityState = .notPinned
         fingerprintConfirmation = nil

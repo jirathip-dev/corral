@@ -62,7 +62,17 @@ TEST_SOURCE_FILE = "ios/FleetNotifierTests/FleetNotifierTests.swift"
 # #315: canonical transcript provenance — Models (unknown kind + prompt_request_id),
 # RecentOutputModel (client reclassification removed), FleetViews (unknown rendering).
 APPROVED_RELEASE_SOURCE_DIGEST = (
+    # #397 follow-up (notification-tap lifecycle): AppModel deferred deep-link
+    # routing + replay, FleetStore onAgentsChanged, LocalNotifier tap queue,
+    # coordinator session-rows hook — re-pinned over the #397 source set.
     # #401: multi-host board + Settings UX — BoardModel host-chip/host-section projections, AppModel host filter/aggregate accessors + N2 recents-route fix, FleetViews multi-host renderer + Settings per-host rows + F2 text + Add-Host prefill, DemoFleet multi-host seed, TimeInState last-seen label — re-pinned over the #401 source set.
+    # #427: Direction-A filter/header redesign — FleetViews board header
+    # (top-left Filters control + summary, chip rows removed, No-lanes
+    # state), the new FilterScopeSheet (host/repo scopes over the shared
+    # translucent backdrop), the D7 banner extension (connecting hosts),
+    # FleetStore noteConnecting + AppModel demo variant, and the #427
+    # evidence launch args (FleetNotifierApp) — re-pinned over the #427
+    # source set.
     # #315: re-pinned after the canonical provenance read-model change.
     # #316 V3 context split: canonical-kind partition, structured session
     # status, and locked accessibility roles updated RecentOutputModel,
@@ -261,7 +271,37 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # (evidence launch-arg routing) — re-pinned over the #416 source set.
     # 416 doc: backdrop comment wording corrected (material share, not
     # dominance) — re-pinned.
-    "b072eb49a86bec6746bf0c66285bcba8cbf8cd2eb64105153c7f300a8ca6850f"
+    # 422: Settings host-card hit targets — FleetViews hostRow actions
+    # (Retry/Rename/Remove host) became independent plain-style 44 pt
+    # bounded controls with explicit theme tokens; digest re-pinned over
+    # the #422 source set.
+    # 423: the legacy single-host Connection section (host endpoint, key
+    # identity, Re-register) is gated on `!multiHostConfigured` in
+    # SettingsView — with 2+ host profiles the Hosts section is the sole
+    # host surface — and HowToConnectSheet's pairing copy branches by the
+    # multi-host variant — re-pinned over the #423 source set.
+    # 425: pull-to-refresh stale-stream recovery — FleetStore
+    # (applyRefresh no longer marks .connected from a snapshot,
+    # owner-exit stream-task cleanup, reconnectIfNeeded) + AppModel
+    # (refreshFleet restarts the un-acked active-host stream once) —
+    # re-pinned over the #425 source set.
+    # #426: per-host grants refresh — refreshGrants() now fans out a signed
+    # /grants-read to EVERY configured live host (ACTIVE profile + verified
+    # coordinator hosts) against each host's OWN url/keyId, persists each
+    # success into only that host's profile grant set (HostProfileStore
+    # applyGrants), and the coordinator session-connected hook refreshes a
+    # host that verified after the launch fan-out — re-pinned over the
+    # #426 source set.
+    # #426 r1: per-host refresh failure now logs the bound error instead of
+    # an empty catch (anti-slop no-swallowed-errors) — AppModel.swift
+    # changed again, so the release-source pin follows the r1 source set.
+    # #428: translucent-sheet runtime fix — TranslucentSheetBackdrop iOS 26
+    # branch layers .regular native glass over the tinted-material recipe
+    # (FleetViews), the themedRowSurface helper themes every Settings/Add
+    # Host/Fingerprint form row with the flavor base, AppTheme doc updated,
+    # and the DEBUG spot-flavor evidence route added — re-pinned over the
+    # #428 source set.
+    "6e3b2d2173ac82f7878e8084d3755a63ed2f334483f78e024bf2882025dc8063"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -378,7 +418,36 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # probe, backdrop overlay pin) — re-pinned over the #416 test source.
     # 416 fix: SettingsAccessWiringTests debug-gated settings-opener count
     # 9 -> 10 for the #416 translucency evidence driver — re-pinned.
-    "90156c585db3223d15a0a13ded6463397c282a6fae08ac88a5b4077d77e70799"
+    # 422: HostCardHitTargetWiringTests (per-host-action 44 pt plain
+    # controls, single removal-request pin, no row gestures, token colors)
+    # added to FleetNotifierTests.swift — re-pinned over the #422 test
+    # source.
+    # 427: FilterHeaderRedesignTests added (Direction-A header/sheet RED
+    # probes + independent host/repo selection pins) and the superseded
+    # chip-row wiring pins (MultiHostSurfaceWiringTests,
+    # SettingsAccessWiringTests, NavigationHeaderWiringTests,
+    # ThemeWiringTests) updated to the filter-sheet surface — re-pinned
+    # over the #427 test source.
+    # 423: SettingsHostsAuthorityWiringTests added (single-host Connection
+    # guard probes, Hosts-authority + VoiceOver pins, variant help-copy
+    # pins) and SettingsConnectWiringTests' '?'-entry pin updated to the
+    # multi-host call — re-pinned over the #423 test source.
+    # 425: RefreshRecoversStaleStreamTests added (snapshot-only refresh
+    # never marks the store live without a stream ack; a single
+    # pull-to-refresh restarts exactly ONE wedged active-host stream and
+    # stays idempotent while healthy) + the RefreshRecoveryURLProtocol
+    # wedge/live transport — re-pinned over the #425 test source.
+    # #426: PerHostGrantsRefreshTests added (per-host grants fan-out,
+    # per-profile persistence/isolation, failed-refresh preservation,
+    # refreshed-profile non-active drive, equal-raw-id separation,
+    # not-granted permission-state) — re-pinned over the #426 test source.
+    # #397 follow-up: NotificationTapDeferredLifecycleTests +
+    # LocalNotifierTapDeliveryTests added — re-pinned over the #397 test
+    # source.
+    # #428: SheetTranslucencyWiringTests gained the layered glass-branch
+    # pins + the themedRowSurface counts (Settings 5 / Add Host 3 /
+    # Fingerprint 6 sections) — re-pinned over the #428 test source.
+    "aa9c3dc9ef6accadce1d35787b02d032191ed5606ac08dac57ec7997ce08ce5a"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

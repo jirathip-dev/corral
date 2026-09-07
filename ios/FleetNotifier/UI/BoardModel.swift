@@ -376,7 +376,10 @@ extension BoardModel {
 
     /// The compact board-level outage summary (D7): nil when every host is
     /// live; otherwise "1 host offline"-style text naming each unreachable
-    /// kind. Never a full-width reconnect banner.
+    /// kind. Never a full-width reconnect banner. #427 AC5: a host whose
+    /// connection attempt is in flight stays textually visible too — the
+    /// D7 row names connecting hosts with the same aggregate form (color is
+    /// never the only channel on the board).
     static func hostOutageSummary(hosts: [HostFilterChip]) -> String? {
         var parts: [String] = []
         let offline = hosts.filter { $0.health == .offline }.count
@@ -396,6 +399,12 @@ extension BoardModel {
             parts.append("1 host awaiting fingerprint")
         } else if awaiting > 1 {
             parts.append("\(awaiting) hosts awaiting fingerprint")
+        }
+        let connecting = hosts.filter { $0.health == .connecting }.count
+        if connecting == 1 {
+            parts.append("1 host connecting")
+        } else if connecting > 1 {
+            parts.append("\(connecting) hosts connecting")
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }

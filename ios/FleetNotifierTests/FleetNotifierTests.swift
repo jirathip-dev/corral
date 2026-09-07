@@ -3188,6 +3188,198 @@ final class RecentBlockModelTests: XCTestCase {
     }
 }
 
+// MARK: - #424: not_granted read_tail vs successful-empty Recent Output
+
+/// #424 discriminating regressions: an ungranted read_tail (the host's
+/// registry has no read_tail grant for this device yet) must render the
+/// explicit permission state — it can NEVER land in the successful-empty
+/// state ("No output yet.") — while a zero-line SUCCESSFUL signed read
+/// keeps that copy. The typed DriveErrorBody refusal channel already
+/// exists; these tests prove where the mapping is lost at the unfixed
+/// head: a LOCAL silent stop leaves the pane untouched (empty), and only
+/// the REMOTE typed refusal folds a pane failure.
+@MainActor
+final class RecentOutputNotGrantedStateTests: XCTestCase {
+
+    private struct LiveFixture {
+        let model: AppModel
+        let session: URLSession
+        let defaults: UserDefaults
+        let suiteName: String
+        // SAFETY: a fixed valid URL literal.
+        let hostURL = URL(string: "http://daemon")!
+
+        @MainActor
+        func cleanup() {
+            model.stopLive()
+            session.invalidateAndCancel()
+            defaults.removePersistentDomain(forName: suiteName)
+            DeterministicDriveURLProtocol.clearScript()
+        }
+    }
+
+    private func liveModel(script: DeterministicDriveScript,
+                           grants: [String]) -> LiveFixture {
+        let suiteName = "corral.notgranted.\\(UUID().uuidString)"
+        // SAFETY: a fresh UUID-based suite name is always a valid suite.
+        let defaults = UserDefaults(suiteName: suiteName)!
+        DeterministicDriveURLProtocol.setScript(script)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [DeterministicDriveURLProtocol.self]
+        let session = URLSession(configuration: config)
+        // The fixture signs like a registered device: the same signer the
+        // identity loader hands the model is installed on the model, so the
+        // legacy live route resolves and authorize() is really exercised.
+        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        let model = AppModel(
+            session: session,
+            defaults: defaults,
+            identityLoader: { (signer, .insecureFallback) },
+            loadMeta: { nil },
+            saveMeta: { _ in },
+            wipeIdentity: {})
+        model.mode = .live
+        // SAFETY: a fixed valid URL literal.
+        model.hostURL = URL(string: "http://daemon")!
+        model.keyId = "dev_notgranted"
+        model.grants = grants
+        model.signer = signer
+        return LiveFixture(model: model, session: session, defaults: defaults,
+                           suiteName: suiteName)
+    }
+
+    private func seedConnectedReadableAgent(_ model: AppModel,
+                                            capabilities: [String] = ["read_tail"]) {
+        model.fleet.apply(.snapshot(Snapshot(
+            schemaVersion: 5, rev: 1, generatedAt: 1,
+            agents: ["herdr:a1": Agent(agentId: "herdr:a1", source: "herdr",
+                                       tool: "claude", state: .working,
+                                       reason: "writing", seq: 1, ts: 1,
+                                       capabilities: capabilities)])))
+        model.fleet.noteConnected()
+    }
+
+    private func waitUntil(_ condition: () -> Bool,
+                           timeout: TimeInterval = 5) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+    }
+
+    /// RED at the unfixed head (#424 AC7): the PRE-GRANT state — the
+    /// device's grant set does not include read_tail, so the signed drive
+    /// never leaves (the daemon's registry would refuse it too). The local
+    /// stop must fold a typed not_granted failure on the pane; at the
+    /// unfixed head the pane stays untouched and the sheet renders the
+    /// successful-empty state ("No output yet.").
+    func testNotGrantedLocalStopFoldsTypedFailureNeverTheEmptyState() async {
+        let script = DeterministicDriveScript(
+            response: Data(#"{"request_id":"r","ok":true,"rev":1}"#.utf8))
+        let fixture = liveModel(script: script, grants: [])
+        defer { fixture.cleanup() }
+        seedConnectedReadableAgent(fixture.model)
+        guard let agent = fixture.model.fleet.agent("herdr:a1") else {
+            return XCTFail("fixture agent missing")
+        }
+        let client = DriveClient(host: fixture.hostURL, session: fixture.session)
+        fixture.model.driveReadTail(agent: agent, driveClient: client, silent: true)
+        // The local stop is synchronous; the beat keeps a regression that
+        // (wrongly) drives from racing the assertions below.
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        let pane = fixture.model.fleet.tailPane(for: "herdr:a1")
+        XCTAssertEqual(pane?.error?.kind, "not_granted",
+                       "a locally ungranted read_tail must fold a typed not_granted failure")
+        guard case .error = RecentOutputModel.phase(for: pane) else {
+            return XCTFail("an ungranted read_tail must NOT render the successful-empty state")
+        }
+        XCTAssertTrue(script.log.requests.filter { $0.url?.path == "/drive" }.isEmpty,
+                      "without the grant the drive must stop locally (no signed request)")
+    }
+
+    /// AC4: a SUCCESSFUL signed read that returns zero lines/blocks still
+    /// renders the successful-empty state — "No output yet." is reserved
+    /// for exactly this case.
+    func testZeroLineSuccessfulReadStillRendersTheEmptyState() async {
+        let script = DeterministicDriveScript(
+            responses: ["/drive": Data(#"{"request_id":"r1","ok":true,"rev":1,"result":{"lines":[],"blocks":[]}}"#.utf8)])
+        let fixture = liveModel(script: script, grants: ["read_tail"])
+        defer { fixture.cleanup() }
+        seedConnectedReadableAgent(fixture.model)
+        guard let agent = fixture.model.fleet.agent("herdr:a1") else {
+            return XCTFail("fixture agent missing")
+        }
+        let client = DriveClient(host: fixture.hostURL, session: fixture.session)
+        fixture.model.driveReadTail(agent: agent, driveClient: client, silent: true)
+        let observed = await script.log.observed.waitFor(atLeast: 1)
+        XCTAssertTrue(observed, "the granted read must reach the daemon")
+        await waitUntil {
+            let pane = fixture.model.fleet.tailPane(for: "herdr:a1")
+            return pane != nil && pane?.loading == false && pane?.error == nil
+        }
+        let pane = fixture.model.fleet.tailPane(for: "herdr:a1")
+        XCTAssertNotNil(pane)
+        XCTAssertTrue(pane?.isEmpty ?? false, "a zero-line result must stay empty")
+        XCTAssertNil(pane?.error, "a successful read must not fold a failure")
+        XCTAssertEqual(RecentOutputModel.phase(for: pane), .empty,
+                       "a zero-line successful signed read keeps the successful-empty state")
+    }
+
+    /// AC7: the REMOTE typed refusal (the daemon answers 403 with a
+    /// not_granted DriveErrorBody) must keep folding the typed pane
+    /// failure — the sheet then renders the permission state, never the
+    /// successful-empty copy. This path exists at the unfixed head and
+    /// must survive the #424 fix.
+    func testRemoteNotGrantedRefusalFoldsTheTypedFailure() async {
+        let script = DeterministicDriveScript(
+            responses: ["/drive": Data(#"{"kind":"not_granted","message":"capability not granted: read_tail","request_id":"r1"}"#.utf8)],
+            statuses: ["/drive": 403])
+        let fixture = liveModel(script: script, grants: ["read_tail"])
+        defer { fixture.cleanup() }
+        seedConnectedReadableAgent(fixture.model)
+        guard let agent = fixture.model.fleet.agent("herdr:a1") else {
+            return XCTFail("fixture agent missing")
+        }
+        let client = DriveClient(host: fixture.hostURL, session: fixture.session)
+        fixture.model.driveReadTail(agent: agent, driveClient: client, silent: true)
+        await waitUntil {
+            fixture.model.fleet.tailPane(for: "herdr:a1")?.error != nil
+        }
+        let pane = fixture.model.fleet.tailPane(for: "herdr:a1")
+        XCTAssertEqual(pane?.error?.kind, "not_granted",
+                       "the remote typed refusal must fold kind not_granted")
+        guard case .error = RecentOutputModel.phase(for: pane) else {
+            return XCTFail("the refused read must not fall back to the empty state")
+        }
+    }
+
+    /// AC1-3 copy contract: the denial headline names the missing HOST
+    /// grant (never the agent's output), the guidance is the host-owner
+    /// action (no token/key/credential), and only the not_granted kind is
+    /// a denial — transport/stale/timeout/capability refusals keep their
+    /// own distinct paths.
+    func testPermissionCopyNamesTheHostGrantAndActionableStep() {
+        let denial = TranscriptFailure(kind: "not_granted",
+                                       message: "capability not granted: read_tail",
+                                       candidates: [])
+        XCTAssertTrue(TranscriptText.isGrantDenial(denial))
+        for other in ["transport", "stale_agent", "timeout",
+                      "capability_unavailable", "expired", "encoding"] {
+            XCTAssertFalse(TranscriptText.isGrantDenial(
+                TranscriptFailure(kind: other, message: "m", candidates: [])),
+                "\\(other) must stay on its own error path, never the permission state")
+        }
+        XCTAssertTrue(TranscriptText.notGrantedPermissionText.contains("isn't granted"),
+                      "the headline must say the GRANT is missing — never the output")
+        XCTAssertFalse(TranscriptText.notGrantedPermissionText.contains("No output yet."))
+        XCTAssertTrue(TranscriptText.notGrantedGuidanceText.contains("registry.json"),
+                      "the next step must name the host-side registry")
+        XCTAssertTrue(TranscriptText.notGrantedGuidanceText.contains("restart corrald"))
+        XCTAssertTrue(TranscriptText.notGrantedGuidanceText.contains("reopen the app"))
+        XCTAssertFalse(TranscriptText.notGrantedGuidanceText.contains("No output yet."))
+    }
+}
+
 // MARK: - #373 block-per-run session state (default-expanded + toggle)
 
 /// The sheet-session collapse/reveal contract: fresh sessions are ALL
@@ -3280,6 +3472,38 @@ final class ReadOnlySurfaceWiringTests: XCTestCase {
             XCTAssertFalse(slice.contains(chrome),
                            "role/card chrome \(chrome) must not be wired in the recents sheet")
         }
+    }
+
+    /// #424 decoy-resistant wiring over the bundled FleetViews source: the
+    /// sheet's content switch must branch a not_granted denial to the
+    /// explicit permission copy (headline + host-owner guidance, no Retry
+    /// — only the host owner can change a denial), and the
+    /// successful-empty copy stays EXACTLY once ("No output yet." for a
+    /// zero-line success, never for a refusal).
+    func testRecentsSheetRendersNotGrantedAsPermissionStateOnlyForDenials() throws {
+        let source = try bundledSource()
+        let sheetMarker = "struct RecentOutputSheet: View {"
+        let sheetStart = try XCTUnwrap(source.range(of: sheetMarker),
+                                       "RecentOutputSheet declaration not found")
+        let nextDecl = try XCTUnwrap(source.range(of: "\n// MARK: - Recents block renderer")?.lowerBound,
+                                     "the recents block renderer MARK must follow the sheet source")
+        let slice = String(source[sheetStart.lowerBound..<nextDecl])
+        // The denial gate and the permission copy live in the sheet.
+        XCTAssertTrue(slice.contains("TranscriptText.isGrantDenial(failure)"),
+                      "the sheet must route a not_granted denial to the permission state")
+        XCTAssertTrue(slice.contains("TranscriptText.notGrantedPermissionText"),
+                      "the permission headline must render for a not_granted refusal")
+        XCTAssertTrue(slice.contains("TranscriptText.notGrantedGuidanceText"),
+                      "the sheet must render the actionable host-owner next step")
+        // Retry stays on the generic error path only — a denial cannot be
+        // retried into success, so the permission state must never add a
+        // second Retry.
+        XCTAssertEqual(slice.components(separatedBy: "Button(\"Retry\")").count - 1, 1,
+                       "Retry remains the generic error path's control only")
+        // "No output yet." is the successful-empty copy ONLY (zero-line
+        // success) — exactly once in the sheet, never for a refusal.
+        XCTAssertEqual(slice.components(separatedBy: "Text(\"No output yet.\")").count - 1, 1,
+                       "the empty copy stays exactly once (zero-line success)")
     }
 
     /// #373 block renderer wiring pins (decoy-resistant over the bundled
@@ -3406,11 +3630,13 @@ final class ReadOnlySurfaceWiringTests: XCTestCase {
         // A.3: chip hit targets stay >= 44 pt.
         XCTAssertTrue(source.contains(".frame(minHeight: 44)"),
                       "chip hit targets must be >= 44 pt")
-        // B: chip row surfaces with the model-owned filter and selected
-        // state + VoiceOver selected trait.
-        XCTAssertTrue(source.contains("repoChipsRow(chips: chips,"))
+        // B: the filter surface lives in the #427 top-left control + sheet
+        // now (the old horizontal chip rows are gone) — selections still
+        // flow straight into the model-owned filters with the VoiceOver
+        // selected trait on the choice rows.
+        XCTAssertTrue(source.contains(".sheet(isPresented: $showFilters)"))
         XCTAssertTrue(source.contains("model.repoFilter = chip.repo"))
-        XCTAssertTrue(source.contains("accessibilityAddTraits(isSelected ? [.isSelected] : [])"))
+        XCTAssertTrue(source.contains(".accessibilityAddTraits(selected ? [.isSelected] : [])"))
         // C: dismissal reconciles the request (reopen lifecycle) — the
         // reconciler itself lives on the model and is pinned by
         // RecentsSheetLifecycleTests; here we pin the view call site.
@@ -3756,26 +3982,34 @@ final class SettingsAccessWiringTests: XCTestCase {
                              + "(a 'Button(\"Settings\", systemImage: \"gearshape\") { showSettings = true }' "
                              + "menu-item spelling is the removed surface)")
 
-        // >=44 pt target + VoiceOver label on the gear.
-        XCTAssertEqual(lineNumbers(of: ".accessibilityLabel(\"Settings\")",
-                                   in: source).count, 1,
-                       "the gear must carry a VoiceOver label")
-        XCTAssertEqual(lineNumbers(of: ".frame(minWidth: 44, minHeight: 44)",
-                                   in: source).count, 1,
-                       "the gear must keep a >=44 pt hit target")
+        // >=44 pt target + VoiceOver label on the gear. (#427: the board's
+        // other top-bar control — the leading Filters trigger — and the
+        // filter sheet controls carry their own >= 44 pt targets, so the
+        // gear's frame is pinned AFTER its own shape line, not by
+        // whole-source uniqueness.)
+        let gearLabelLine = try XCTUnwrap(
+            lineNumbers(of: ".accessibilityLabel(\"Settings\")", in: source).first,
+            "the gear must carry a VoiceOver label")
+        let gearFrameLine = try XCTUnwrap(
+            lineNumbers(of: ".frame(minWidth: 44, minHeight: 44)", in: source)
+                .filter { $0 > gearLines[0] }.first,
+            "the gear must keep a >=44 pt hit target")
+        XCTAssertGreaterThan(gearFrameLine, gearLabelLine,
+                             "the gear's >=44 pt frame must follow its VoiceOver label")
 
         // RELEASE-active: a DEBUG-gated gear would leave Release builds with
         // NO Settings access at all, so every gear line must sit OUTSIDE the
         // debug-active regions.
         for needle in ["gearshape",
-                       ".accessibilityLabel(\"Settings\")",
-                       ".frame(minWidth: 44, minHeight: 44)"] {
+                       ".accessibilityLabel(\"Settings\")"] {
             let lines = lineNumbers(of: needle, in: source)
             XCTAssertEqual(lines.count, 1, "\(needle) must appear exactly once")
             guard lines.count == 1 else { continue }
             XCTAssertFalse(debug.contains(lines[0]),
                            "\(needle) must be release-active (gear on the board in Release)")
         }
+        XCTAssertFalse(debug.contains(gearFrameLine),
+                       "the gear's >=44 pt frame must be release-active")
         // The sheet-open action: one release-active (the gear) + the
         // DEBUG-only recorded-evidence drivers (#365 settings, #372 theme,
         // #379 connect, #385 glass, #388 connection-inputs and #416
@@ -3800,11 +4034,17 @@ final class SettingsAccessWiringTests: XCTestCase {
         // Exactly ONE Menu in the board toolbar: the DEBUG demo overflow.
         XCTAssertEqual(toolbarSlice.components(separatedBy: "Menu {").count - 1, 1,
                        "the board toolbar must keep exactly one Menu (demo overflow only)")
-        guard let menuStart = toolbarSlice.range(of: "Menu {"),
-              let menuClose = toolbarSlice.range(of: "} label:") else {
+        guard let menuStart = toolbarSlice.range(of: "Menu {") else {
             return XCTFail("the demo Menu must have a label")
         }
-        let menuSlice = String(toolbarSlice[menuStart.lowerBound..<menuClose.lowerBound])
+        // #427: the leading Filters control opens `Button { ... } label: {`
+        // BEFORE the demo Menu, so the Menu's own label opener is the FIRST
+        // `} label:` AFTER the Menu declaration.
+        let menuTail = toolbarSlice[menuStart.lowerBound...]
+        guard let menuLabelOpen = menuTail.range(of: "} label:") else {
+            return XCTFail("the demo Menu must have a label")
+        }
+        let menuSlice = String(menuTail[..<menuLabelOpen.lowerBound])
         XCTAssertFalse(menuSlice.contains("showSettings"),
                        "Settings must NOT hide inside the demo overflow menu (#365)")
         XCTAssertTrue(menuSlice.contains("sparkles"),
@@ -3974,7 +4214,13 @@ final class NavigationHeaderWiringTests: XCTestCase {
         let toolbarLine = try XCTUnwrap(lineNumbers(of: ".toolbar {", in: slice).first)
         let gearLine = try XCTUnwrap(lineNumbers(of: "gearshape", in: slice).first)
         let labelLine = try XCTUnwrap(lineNumbers(of: ".accessibilityLabel(\"Settings\")", in: slice).first)
-        let frameLine = try XCTUnwrap(lineNumbers(of: ".frame(minWidth: 44, minHeight: 44)", in: slice).first)
+        // #427: the leading Filters trigger carries its own >= 44 pt frame
+        // BEFORE the gear's chain, so the gear's target is the FIRST frame
+        // line after its own shape line.
+        let frameLine = try XCTUnwrap(
+            lineNumbers(of: ".frame(minWidth: 44, minHeight: 44)", in: slice)
+                .filter { $0 > gearLine }.first,
+            "the gear must keep its own >=44 pt frame after its shape")
         let sheetLine = try XCTUnwrap(lineNumbers(of: ".sheet(isPresented: $showSettings)", in: slice).first)
         // Chrome order is unchanged from #365: empty title → inline lock →
         // gear toolbar → settings sheet, with the gear's >=44 pt target +
@@ -4147,8 +4393,8 @@ final class SettingsConnectWiringTests: XCTestCase {
         XCTAssertEqual(lineNumbers(of: ".sheet(isPresented: $showConnectHelp)",
                                    in: slice).count, 1,
                        "SettingsView must present the connect sheet from inside its own stack")
-        XCTAssertTrue(slice.contains("HowToConnectSheet(host: host)"),
-                      "the '?'-opened sheet must receive the LIVE host field text")
+        XCTAssertTrue(slice.contains("HowToConnectSheet(host: host, multiHost: model.multiHostConfigured)"),
+                      "the '?'-opened sheet must receive the LIVE host field text and the multi-host variant flag (#423)")
     }
 
     /// #379 B.1: an unpaired first launch auto-presents the connect sheet
@@ -4553,18 +4799,23 @@ final class ThemeWiringTests: XCTestCase {
         let boardEnd = try XCTUnwrap(source.range(of: "\n// MARK: - Banner"),
                                      "the banner section must follow FleetView")
         let slice = String(source[boardStart.lowerBound..<boardEnd.lowerBound])
-        XCTAssertTrue(slice.contains("theme.repoHueColor(for: repo, among: repos)"),
-                      "repo chips must carry the deterministic palette hue dot")
-        XCTAssertTrue(slice.contains("isSelected ? theme.accent : theme.base"),
-                      "a selected chip fills with the palette accent (mauve, never teal)")
-        XCTAssertTrue(slice.contains("isSelected ? theme.crust : theme.subtext1"),
-                      "chip ink follows the crust/subtext tokens")
+        // The repo-hue mapping still rides the row-level repo label chips
+        // (#371/#384 — the #427 sheet rows are text-first per the approved
+        // variant-A look, so the deterministic hue dots live on board rows).
+        XCTAssertTrue(source.contains("theme.repoHueColor(for: repo ?? \"\", among: repos)"),
+                      "repo rows must carry the deterministic palette hue dot")
+        XCTAssertTrue(source.contains("selected ? theme.accent.opacity(0.12) : Color.clear"),
+                      "a selected filter scope row tints with the palette accent (mauve, never teal)")
+        XCTAssertTrue(source.contains("selected ? theme.accent : theme.text"),
+                      "selected scope row ink follows the accent/text tokens")
         XCTAssertTrue(slice.contains(".scrollContentBackground(.hidden)"),
                       "the board surface must be token-backed")
         XCTAssertTrue(slice.contains(".background(theme.base)"),
                       "the board background must be the active flavor's base")
-        XCTAssertFalse(slice.contains("Color.accentColor"),
-                       "no system accent color may remain on the board")
+        XCTAssertTrue(slice.contains(".foregroundStyle(theme.accent)"),
+                      "the top-left Filters control icon must ride the palette accent")
+        XCTAssertFalse(source.contains("Color.accentColor"),
+                       "no system accent color may remain on the board or its filter surface")
     }
 
     func testRecentsSheetGatesAutoScrollOnReduceMotion() throws {
@@ -4788,6 +5039,77 @@ final class SheetTranslucencyWiringTests: XCTestCase {
         XCTAssertTrue(backdrop.contains("tint.opacity(SheetBackdrop.fallbackTintAlpha)"),
                       "the fallback must overlay the tint at the locked alpha")
     }
+
+    // MARK: #428 — the layered native-glass recipe + themed form rows
+
+    func testBackdropGlassBranchLayersTheRegularGlassOverTheTintedMaterial() throws {
+        let source = try bundledSource()
+        let backdrop = try slice(from: source,
+                                 startMarker: "// MARK: - #385/#416 Liquid Glass / translucent sheet backdrop",
+                                 endMarker: "// MARK: - Settings (Appearance")
+        // #428: the iOS 26 branch renders native REGULAR glass over the
+        // SAME tinted-material recipe the <26 fallback runs — the flavor
+        // and the frost no longer depend on what the glass samples (the
+        // old .clear-glass-only backdrop read as a flat flavor-less slab).
+        let glassBranch = try slice(from: backdrop,
+                                    startMarker: "if #available(iOS 26.0, *), !Corral416Evidence.forceFallbackBackdrop",
+                                    endMarker: "} else {")
+        XCTAssertTrue(glassBranch.contains(".glassEffect(.regular"),
+                      "the iOS 26 path must use the standard REGULAR glass, not .clear "
+                      + "(#428: .clear contributed no material response of its own)")
+        XCTAssertFalse(glassBranch.contains(".glassEffect(.clear"),
+                       "the flat .clear-glass-only recipe is banned on the glass path")
+        XCTAssertTrue(glassBranch.contains(".ultraThinMaterial"),
+                      "the iOS 26 branch must keep the tinted-material base under the glass")
+        XCTAssertTrue(glassBranch.contains("tint.opacity(SheetBackdrop.fallbackTintAlpha)"),
+                      "the flavor tint at the locked fallback alpha must sit under the glass")
+        XCTAssertTrue(glassBranch.contains("SheetBackdrop.glassTintOpacity"),
+                      "the glass keeps its locked whisper tint on top")
+        // The tinted material may never be REPLACED by an opaque paint in
+        // the glass branch (an opaque base fill over the presentation).
+        XCTAssertFalse(glassBranch.contains(".fill(theme.base)")
+                          || glassBranch.contains("opacity(1.0)"),
+                       "the glass branch must not paint an opaque whole-sheet fill")
+    }
+
+    func testSheetFormsPaintEveryRowWithTheThemedSurface() throws {
+        let source = try bundledSource()
+        // The shared helper: one definition whose body IS the themed row
+        // background (a re-point to a native/system row surface removes it).
+        XCTAssertEqual(source.components(separatedBy:
+            "func themedRowSurface(_ theme: ThemeStore) -> some View {").count - 1, 1,
+            "the themed row-surface helper must be defined exactly once")
+        // The helper body sits between its declaration and the Settings
+        // MARK — it must paint the active flavor's BASE token there.
+        let decl = try XCTUnwrap(source.range(of:
+            "func themedRowSurface(_ theme: ThemeStore) -> some View {"),
+            "helper declaration missing")
+        let sectionMark = try XCTUnwrap(source.range(of:
+            "// MARK: - Settings (Appearance", options: [], range:
+                decl.upperBound..<source.endIndex)?.lowerBound,
+            "Settings MARK must follow the helper")
+        let helperBody = String(source[decl.upperBound..<sectionMark])
+        XCTAssertTrue(helperBody.contains("listRowBackground(theme.base)"),
+                      "the helper must paint the active flavor's BASE token")
+        // Settings: Connection, Device, Notifications, Appearance, Hosts.
+        let settings = try slice(from: source,
+                                 startMarker: "struct SettingsView: View {",
+                                 endMarker: "\nprivate struct FlavorSwatchStrip")
+        XCTAssertEqual(settings.components(separatedBy: ".themedRowSurface(theme)").count - 1, 5,
+                       "every Settings section must theme its rows (#428)")
+        // Add Host: entry + identity-confirmation + token/pair sections.
+        let addHost = try slice(from: source,
+                                startMarker: "struct AddHostSheet: View {",
+                                endMarker: "/// #399 B6: the launch-time fingerprint confirmation")
+        XCTAssertEqual(addHost.components(separatedBy: ".themedRowSurface(theme)").count - 1, 3,
+                       "every Add Host section must theme its rows (#428)")
+        // Fingerprint confirmation: intro/loading/failed/ready/malformed.
+        let fingerprint = try slice(from: source,
+                                    startMarker: "struct FingerprintConfirmationSheet: View {",
+                                    endMarker: "\n// MARK: - Recents bottom sheet")
+        XCTAssertEqual(fingerprint.components(separatedBy: ".themedRowSurface(theme)").count - 1, 6,
+                       "every Fingerprint confirmation section must theme its rows (#428)")
+    }
 }
 
 // MARK: - #384 per-row repo label visibility (source wiring, bundled source)
@@ -4849,7 +5171,7 @@ final class RepoRowLabelWiringTests: XCTestCase {
         // builder) and AgentRow passes it into WorkspaceLine — two call
         // sites file-wide share the same spelling.
         let row = try slice(from: "private func agentRow(_ agent: Agent",
-                            to: "/// Board chrome: connection status",
+                            to: "/// Board chrome: the top-left #427 Filters control",
                             in: source)
         XCTAssertEqual(row.components(separatedBy: "hideRepoLabel: hideRepoLabel)").count - 1, 1,
                        "agentRow must pass the flag into AgentRow")
@@ -6857,6 +7179,274 @@ final class BoardMetadataCacheTests: XCTestCase {
     }
 }
 
+// MARK: - #421 active-host switch reconcile (stale cross-host projection)
+
+/// #421 regression: pairing a SECOND host (Settings -> Hosts, fingerprint
+/// confirmed) while the app is open switches the runtime binding to the
+/// new host WITHOUT a relaunch. The previous active host's rows live in
+/// the shared legacy store; if they survive the switch they project under
+/// the NEW host's composite identity until an authoritative replacement
+/// snapshot arrives (the issue's "Bazzite shows the Mac's lanes" repro).
+/// These tests drive the REAL add-host/commit/startLive flow against the
+/// scripted transport and assert the board re-scopes immediately: a host's
+/// rows appear only under its own badge, equal raw ids stay two composite
+/// rows, and refresh/background-foreground transitions keep per-host
+/// counts agreeing with the current stores.
+@MainActor
+final class HostSwitchReconcileTests: XCTestCase {
+    /// SAFETY: fixed synthetic X25519 fixture key (32-byte fill).
+    static let macKey = Data(repeating: 11, count: 32).base64EncodedString()
+    /// SAFETY: fixed synthetic X25519 fixture key (32-byte fill).
+    static let bazziteKey = Data(repeating: 12, count: 32).base64EncodedString()
+    /// SAFETY: fixed fixture register response (synthetic key id).
+    static let registerOK = Data(#"{"key_id":"dev_421","grants":["read_tail"],"expiry_ts":1800000000,"revoked":false,"algorithm":"Ed25519"}"#.utf8)
+
+    private var suiteName = ""
+    private var model: AppModel?
+    private var session: URLSession?
+
+    // SAFETY: fixed valid fixture URL literals (distinct hostnames).
+    private var macURL: URL { URL(string: "https://mac-421.example")! }
+    // SAFETY: fixed valid fixture URL literal (distinct hostname).
+    private var bazziteURL: URL { URL(string: "https://bazzite-421.example")! }
+    private var token = "tok-421-fixture"
+
+    private func cleanup() {
+        model?.stopLive()
+        model = nil
+        session?.invalidateAndCancel()
+        session = nil
+        AddHostFlowURLProtocol.clearScript()
+        AppDelegate.apnsRegistered = false
+        UserDefaults.standard.removeObject(forKey: AppDelegate.deviceTokenUploadedKey)
+        AppDelegate.shared?.clearRetainedDeviceToken()
+        KeyContinuityGate.reset()
+        if !suiteName.isEmpty {
+            // SAFETY: suiteName was freshly minted per test.
+            UserDefaults(suiteName: suiteName)!.removePersistentDomain(forName: suiteName)
+            suiteName = ""
+        }
+    }
+
+    private func waitUntil(_ condition: @autoclosure () -> Bool,
+                           timeout: TimeInterval = 6) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+    }
+
+    private func agent(_ id: String, state: AgentState, host: String, ts: UInt64,
+                       repo: String) -> Agent {
+        Agent(agentId: id, state: state, ts: ts,
+              capabilities: ["read_tail"], host: host,
+              workspace: Workspace(repo: repo, branch: "main"))
+    }
+
+    private func macSnapshot(_ rev: UInt64, ts: UInt64) throws -> Data {
+        // SAFETY: fixed synthetic snapshot of Mac's own lanes.
+        try JSONEncoder().encode(Snapshot(schemaVersion: 5, rev: rev, generatedAt: 0,
+            agents: [
+                "orch-corral": agent("orch-corral", state: .working,
+                                     host: Self.macKey, ts: ts, repo: "corral"),
+                "herdr:dup": agent("herdr:dup", state: .blocked,
+                                   host: Self.macKey, ts: ts, repo: "corral"),
+            ]))
+    }
+
+    private func bazziteSnapshot(_ rev: UInt64, ts: UInt64) throws -> Data {
+        // SAFETY: fixed synthetic snapshot of Bazzite's own two local lanes
+        // (the issue's Bazzite readback) — the SAME raw id "herdr:dup" also
+        // exists on Mac, with host-distinct metadata.
+        try JSONEncoder().encode(Snapshot(schemaVersion: 5, rev: rev, generatedAt: 0,
+            agents: [
+                "plush-a": agent("plush-a", state: .working,
+                                 host: Self.bazziteKey, ts: ts, repo: "plush-meadow"),
+                "plush-b": agent("plush-b", state: .idle,
+                                 host: Self.bazziteKey, ts: ts, repo: "plush-meadow"),
+                "herdr:dup": agent("herdr:dup", state: .blocked,
+                                   host: Self.bazziteKey, ts: ts, repo: "plush-meadow"),
+            ]))
+    }
+
+    /// One pinned ACTIVE "Mac" profile + scripted endpoints for BOTH hosts
+    /// (Mac's key matches its pin; Bazzite serves the new key; register is
+    /// accepted), then the app is started LIVE on Mac (key re-verified,
+    /// SSE open) — the "Mac paired and live, app running" repro state.
+    private func makeLiveMac() async -> (AppModel, HostProfile) {
+        suiteName = "corral.g421.switch.\\(UUID().uuidString)"
+        // SAFETY: a fresh UUID suite name is always a valid suite.
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let store = HostProfileStore(directory: nil, defaults: defaults)
+        // SAFETY: fixed fixture URL/key literals from the constants above.
+        let mac = try! store.addProfile(
+            displayName: "Mac",
+            urlString: macURL.absoluteString,
+            hostKeyB64: Self.macKey,
+            fingerprint: "FINGER-MAC",
+            keyId: "dev_mac_421",
+            grants: ["read_tail"],
+            expiryTs: 1_800_000_000,
+            registeredAt: 1)
+        defaults.set(mac.id.uuidString, forKey: "fleetnotifier.activeHostProfileID")
+        let script: [URL: (Int, Data, Bool)] = [
+            macURL.appendingPathComponent("/host-key"): (200,
+                Data(#"{"algorithm":"X25519","public_key":"\#(Self.macKey)"}"#.utf8), false),
+            bazziteURL.appendingPathComponent("/host-key"): (200,
+                Data(#"{"algorithm":"X25519","public_key":"\#(Self.bazziteKey)"}"#.utf8), false),
+            // /events hold open (SSE) so post-commit startLive connects.
+            macURL.appendingPathComponent("/events"): (200, Data(), true),
+            bazziteURL.appendingPathComponent("/events"): (200, Data(), true),
+            bazziteURL.appendingPathComponent("/register"): (200, Self.registerOK, false),
+        ]
+        AddHostFlowURLProtocol.setScript(script)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AddHostFlowURLProtocol.self]
+        let session = URLSession(configuration: config)
+        self.session = session
+        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        let model = AppModel(session: session, defaults: defaults,
+                             identityLoader: { (signer, .insecureFallback) },
+                             loadMeta: { nil }, saveMeta: { _ in },
+                             wipeIdentity: {},
+                             profileStore: store)
+        self.model = model
+        model.startLive()
+        await waitUntil(model.keyContinuityState == .verified)
+        return (model, mac)
+    }
+
+    /// Drive the sheet's phase-1 (scripted /host-key) + return the
+    /// confirmation-phase pairing for `completeAddHost`.
+    private func primeBazziteDraft(_ model: AppModel) async throws -> AppModel.PreparedHostPairing {
+        model.addHostDraft.name = "Bazzite"
+        model.addHostDraft.urlString = bazziteURL.absoluteString
+        model.addHostDraft.token = token
+        await model.verifyAddHostDraft()
+        let pairing = try XCTUnwrap(model.addHostDraft.prepared,
+                                    "the scripted /host-key must reach the confirmation phase")
+        return pairing
+    }
+
+    /// Seed the ACTIVE (Mac) read model with its live lanes — the rows the
+    /// board must keep scoped to Mac across the switch.
+    private func seedMacFleet(_ model: AppModel) throws {
+        // SAFETY: fixed synthetic snapshot (see macSnapshot).
+        let data = try macSnapshot(5, ts: 5)
+        let snapshot = try XCTUnwrap(try? JSONDecoder().decode(Snapshot.self, from: data))
+        model.fleet.apply(.snapshot(snapshot))
+    }
+
+    /// The board rows under one host's badge plus the raw ids under the
+    /// OTHER host's badge — the cross-host contamination surface.
+    private func rows(_ model: AppModel) -> [HostBoardRow] {
+        model.aggregateBoardRows ?? []
+    }
+
+    func testAddedHostBadgeNeverProjectsPreviousActiveHostRowsAfterConfirm() async throws {
+        defer { cleanup() }
+        let (model, mac) = await makeLiveMac()
+        // The Mac read model is live with rows when Bazzite gets paired.
+        try seedMacFleet(model)
+        let pairing = try await primeBazziteDraft(model)
+        let outcome = await model.completeAddHost(pairing, token: model.addHostDraft.token)
+        XCTAssertEqual(outcome, .success)
+        // Runtime switched to Bazzite in the SAME process — no relaunch.
+        let bazziteID = try XCTUnwrap(model.activeProfileID)
+        XCTAssertNotEqual(bazziteID, mac.id)
+        let macRawIDs = Set(["orch-corral", "herdr:dup"])
+        let aggregate = rows(model)
+        // AC2/AC4: one host's lanes never appear under the other host's
+        // badge merely because the app was already running when it was added.
+        let underBazzite = aggregate.filter { $0.identity.hostProfileID == bazziteID }
+        XCTAssertTrue(underBazzite.allSatisfy { !macRawIDs.contains($0.identity.agentID) },
+                      "the previous active host's lanes projected under the newly added host's badge: "
+                      + underBazzite.map(\.identity.description).sorted().joined(separator: ", "))
+        // AC2: a Mac raw id keeps exactly ONE composite row, on the Mac.
+        let dupScopes = Set(aggregate.filter { $0.identity.agentID == "herdr:dup" }
+            .map(\.identity.hostProfileID))
+        XCTAssertEqual(dupScopes, [mac.id],
+                       "the Mac lane must keep exactly one composite row, scoped to Mac")
+        // AC6: the previous host's retained rows stay visible under its OWN
+        // badge (stale until its coordinator session reconnects) — never
+        // erased by the switch.
+        let underMac = aggregate.filter { $0.identity.hostProfileID == mac.id }
+        XCTAssertTrue(underMac.contains { $0.identity.agentID == "orch-corral" },
+                      "the previous host's retained rows must remain under its own badge")
+        XCTAssertTrue(underMac.allSatisfy(\.isStale),
+                      "pre-reconnect retained rows of the previous host render stale")
+    }
+
+    func testRefreshAndForegroundKeepPerHostRowsAndCountsAfterSwitch() async throws {
+        defer { cleanup() }
+        let (model, mac) = await makeLiveMac()
+        try seedMacFleet(model)
+        let pairing = try await primeBazziteDraft(model)
+        let outcome = await model.completeAddHost(pairing, token: model.addHostDraft.token)
+        XCTAssertEqual(outcome, .success)
+        let bazziteID = try XCTUnwrap(model.activeProfileID)
+
+        // Authoritative pull: Bazzite answers with its OWN snapshot at rev 2
+        // (LOWER than the Mac cursor the switch inherits at base — a fix
+        // that just waited for a refresh must still be red) and Mac answers
+        // with its own live read model at rev 6.
+        var script: [URL: (Int, Data, Bool)] = [
+            macURL.appendingPathComponent("/host-key"): (200,
+                Data(#"{"algorithm":"X25519","public_key":"\#(Self.macKey)"}"#.utf8), false),
+            bazziteURL.appendingPathComponent("/host-key"): (200,
+                Data(#"{"algorithm":"X25519","public_key":"\#(Self.bazziteKey)"}"#.utf8), false),
+            macURL.appendingPathComponent("/events"): (200, Data(), true),
+            bazziteURL.appendingPathComponent("/events"): (200, Data(), true),
+            macURL.appendingPathComponent("/snapshot"): (200, try macSnapshot(6, ts: 6), false),
+            bazziteURL.appendingPathComponent("/snapshot"): (200, try bazziteSnapshot(2, ts: 2), false),
+        ]
+        script[bazziteURL.appendingPathComponent("/register")] = (200, Self.registerOK, false)
+        AddHostFlowURLProtocol.setScript(script)
+        await model.refreshFleet()
+
+        func assertScoped() throws {
+            let aggregate = rows(model)
+            // AC2: the equal raw id exists on BOTH hosts — two composite
+            // rows, each carrying ITS OWN host's metadata.
+            let dups = aggregate.filter { $0.identity.agentID == "herdr:dup" }
+            XCTAssertEqual(dups.count, 2,
+                           "an equal raw id on two hosts must stay two composite rows")
+            XCTAssertEqual(Set(dups.map(\.identity.hostProfileID)),
+                           Set([mac.id, bazziteID]))
+            let bazziteDup = dups.first { $0.identity.hostProfileID == bazziteID }
+            XCTAssertEqual(bazziteDup?.agent.workspace.repo, "plush-meadow",
+                           "the row under Bazzite's badge must carry Bazzite's OWN lane metadata")
+            XCTAssertEqual(dups.first { $0.identity.hostProfileID == mac.id }?
+                .agent.workspace.repo, "corral")
+            // AC3/AC4: Bazzite's badge shows EXACTLY its own two local
+            // lanes + its dup — never Mac's "orch-corral" lane.
+            let underBazzite = aggregate.filter { $0.identity.hostProfileID == bazziteID }
+            XCTAssertEqual(Set(underBazzite.map(\.identity.agentID)),
+                           Set(["herdr:dup", "plush-a", "plush-b"]),
+                           "Bazzite's badge must show only Bazzite's lanes")
+            // The Mac badge keeps Mac's lanes.
+            let underMac = aggregate.filter { $0.identity.hostProfileID == mac.id }
+            XCTAssertEqual(Set(underMac.map(\.identity.agentID)),
+                           Set(["herdr:dup", "orch-corral"]))
+            // All Hosts total = the per-host sum (no duplicated rows).
+            XCTAssertEqual(aggregate.count, underBazzite.count + underMac.count)
+            XCTAssertEqual(aggregate.count, 5)
+        }
+
+        // After the pull-to-refresh transition (AC5) the board must already
+        // be host-scoped — no relaunch, no second refresh.
+        try assertScoped()
+
+        // Background -> foreground transition (AC3/AC5): rows stay retained
+        // in each host's store across the reconnect boundary and the board
+        // re-projects from the SAME per-host stores.
+        model.stopLive()
+        model.startLive()
+        await waitUntil(model.keyContinuityState == .verified)
+        try assertScoped()
+    }
+}
+
 // MARK: - #399 host-profile Settings/board wiring (source pins)
 
 /// Source-wiring pins over the bundled FleetViews source: the Settings
@@ -8258,11 +8848,12 @@ private func startAndVerifyBothHosts(_ model: AppModel) async -> (UUID, UUID) {
     }
 }
 
-// MARK: - #401 multi-host host filter + session-only default (D1/D2/D6)
+// MARK: - #401/#430 multi-host host filter + session-only default (D1/D2/D6)
 
 /// D1 defaults (every fresh launch starts All Hosts + All Repos; both
 /// filters session-only), the D2 host selection lifecycle, removed-host
-/// reconciliation, Settings reorder/rename routing, and the #400 rev N2
+/// reconciliation, Settings rename routing (the #430 reorder removal keeps
+/// the persisted-order load + append semantics), and the #400 rev N2
 /// recents-route .unavailable guarantee for removed hosts.
 @MainActor
 final class MultiHostHostFilterModelTests: XCTestCase {
@@ -8388,19 +8979,72 @@ final class MultiHostHostFilterModelTests: XCTestCase {
                      "single-host F1: no composite board rows, no host row/badges")
     }
 
-    func testReorderDrivesTheStoreOrderThatChipsFollow() {
+    func testProfilesLoadInPersistedOrderAndNewHostsAppendAfterExisting() throws {
         defer { cleanup() }
-        let (model, store, _, _) = makeModel()
-        // [A, B] → move row 0 down to destination 2 ⇒ [B, A].
-        model.moveHosts(from: IndexSet(integer: 0), to: 2)
-        XCTAssertEqual(model.profiles.map(\.displayName), ["Host B", "Host A"])
-        XCTAssertEqual(store.orderedProfiles.map(\.displayName), ["Host B", "Host A"],
-                       "the store order (the chip order) follows the drag")
-        XCTAssertEqual(model.profiles.map(\.order), [0, 1],
-                       "store re-normalizes orders to consecutive integers")
-        // Move row 1 (A) up to destination 0 ⇒ [A, B].
-        model.moveHosts(from: IndexSet(integer: 1), to: 0)
+        // SAFETY: per-test temp directory + fresh suite under the system
+        // temp dir.
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("corral-h430-order-\\(UUID().uuidString)",
+                                    isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        suiteName = "corral.h430.order.\\(UUID().uuidString)"
+        // SAFETY: a fresh UUID suite name is always a valid suite.
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let store = HostProfileStore(directory: directory, defaults: defaults)
+        // SAFETY: fixed fixture URLs (distinct hostnames).
+        let profileA = try! store.addProfile(displayName: "Host A",
+                                             urlString: "https://order-a.example",
+                                             hostKeyB64: nil,
+                                             keyId: "dev_order_a",
+                                             grants: ["read_tail"],
+                                             expiryTs: 1_800_000_000,
+                                             registeredAt: 1)
+        let profileB = try! store.addProfile(displayName: "Host B",
+                                             urlString: "https://order-b.example",
+                                             hostKeyB64: nil,
+                                             keyId: "dev_order_b",
+                                             grants: ["read_tail"],
+                                             expiryTs: 1_800_000_000,
+                                             registeredAt: 1)
+        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        let model = AppModel(defaults: defaults,
+                             identityLoader: { (signer, .insecureFallback) },
+                             loadMeta: { nil }, saveMeta: { _ in },
+                             wipeIdentity: {}, profileStore: store)
+        self.model = model
+        XCTAssertEqual(model.profiles.map(\.id), [profileA.id, profileB.id],
+                       "#430: profiles load in their persisted order (A order 0, B order 1)")
         XCTAssertEqual(model.profiles.map(\.displayName), ["Host A", "Host B"])
+        XCTAssertEqual(model.profiles.map(\.order), [0, 1])
+        // A newly added host appends AFTER the existing profiles; the
+        // existing records keep their positions — no re-pairing and no
+        // migration, the display order stays the persisted order.
+        // SAFETY: fixed valid fixture URL (distinct hostname).
+        let profileC = try! store.addProfile(displayName: "Host C",
+                                             urlString: "https://order-c.example",
+                                             hostKeyB64: nil,
+                                             keyId: "dev_order_c",
+                                             grants: [],
+                                             expiryTs: nil,
+                                             registeredAt: 2)
+        XCTAssertEqual(profileC.order, 2, "new hosts append at the end")
+        // A fresh store + model over the SAME persisted document reloads
+        // every profile in persisted order — #430 removes the reorder
+        // interaction, never the load/append semantics.
+        let reloadedStore = HostProfileStore(directory: directory, defaults: defaults)
+        XCTAssertEqual(reloadedStore.orderedProfiles.map(\.displayName),
+                       ["Host A", "Host B", "Host C"],
+                       "the persisted order field stays authoritative on reload")
+        let relaunched = AppModel(defaults: defaults,
+                                  identityLoader: { (signer, .insecureFallback) },
+                                  loadMeta: { nil }, saveMeta: { _ in },
+                                  wipeIdentity: {}, profileStore: reloadedStore)
+        self.model = relaunched
+        XCTAssertEqual(relaunched.profiles.map(\.displayName),
+                       ["Host A", "Host B", "Host C"],
+                       "the model renders hosts in persisted order without migration")
+        XCTAssertEqual(relaunched.profiles.map(\.order), [0, 1, 2],
+                       "the order field stays consecutive after the append")
     }
 
     func testRenameHostInPlaceSurfacesDuplicateErrorWithoutChangingName() {
@@ -8655,12 +9299,14 @@ final class MultiHostBoardProjectionTests: XCTestCase {
     }
 }
 
-// MARK: - #401 multi-host surface wiring (FleetViews source bundle)
+// MARK: - #401/#430/#427 multi-host surface wiring (FleetViews source bundle)
 
-/// Source-wiring pins over the bundled FleetViews source: the host-chip row
-/// renders ONLY with 2+ profiles (above the repo row), the All-Hosts row
-/// badges + stale/last-seen markers ride the composite renderer, Settings
-/// exposes the per-host D7 surface (reorder/rename/retry/remove + F2 copy),
+/// Source-wiring pins over the bundled FleetViews source: #427 Direction A
+/// moved the filter chrome off the board (no chip rows render in ANY mode)
+/// while the D7 textual host-health line stays inside the 2+ profile
+/// guard; the All-Hosts row badges + stale/last-seen markers ride the
+/// composite renderer; Settings exposes the per-host D7 surface
+/// (rename/retry/remove + F2 copy) with NO drag-to-reorder chrome (#430);
 /// and the Add Host sheet prefills the name from the URL (B3).
 final class MultiHostSurfaceWiringTests: XCTestCase {
     private func bundledSource() throws -> String {
@@ -8670,25 +9316,23 @@ final class MultiHostSurfaceWiringTests: XCTestCase {
         return try String(contentsOf: url, encoding: .utf8)
     }
 
-    func testHostChipRowSitsAboveRepoRowUnderTheMultiHostGuard() throws {
+    func testFilterChromeLivesInTheHeaderSheetWhileTheBannerStaysUnderTheMultiHostGuard() throws {
         let source = try bundledSource()
-        // The host chips row + outage summary live INSIDE the 2+ profile
-        // guard (probe (a): removing the guard or hoisting the row out of
-        // it makes this RED — the single-host layout stays byte-comparable).
-        let start = try XCTUnwrap(source.range(of: "// #401 D2: with 2+ profiles the HOST-chip row"))
+        // The board list region (chrome section → the model banner) renders
+        // NO chip rows in any mode (the #427 duplicate-unexplained-All
+        // defect); the compact D7 outage line stays INSIDE the 2+ profile
+        // guard as the board's textual host health.
+        let start = try XCTUnwrap(source.range(of: "// #427 Direction A: the horizontal chip rows moved"))
         let end = try XCTUnwrap(source.range(of: "if let banner = model.banner"))
         let slice = String(source[start.lowerBound..<end.lowerBound])
-        let guardRange = try XCTUnwrap(slice.range(of: "if model.multiHostConfigured {"),
-                                       "the host chip row must sit inside the 2+ profile guard")
-        let chipsRange = try XCTUnwrap(slice.range(of: "hostChipsRow(chips: hostChipRow,"),
-                                       "the host chip row must be wired above the repo row")
-        XCTAssertLessThan(guardRange.lowerBound, chipsRange.lowerBound)
-        XCTAssertEqual(slice.components(separatedBy: "hostChipsRow(chips: hostChipRow,").count - 1, 1,
-                       "exactly one host-chip row call site")
-        XCTAssertTrue(slice.contains("hostOutageSummaryRow(hostOutageSummary)"),
-                      "the compact D7 summary must ride under the host chips")
-        XCTAssertTrue(slice.contains("} else {\n                            repoChipsRow(chips: chips,"),
-                      "the single-host repo row must keep its own (unchanged) branch")
+        XCTAssertTrue(slice.contains("if model.multiHostConfigured, let hostOutageSummary {"),
+                      "the D7 textual host-health line must stay inside the 2+ profile guard")
+        XCTAssertEqual(slice.components(separatedBy: "hostOutageSummaryRow(hostOutageSummary)").count - 1, 1,
+                       "exactly one D7 outage row call site on the board")
+        XCTAssertEqual(source.components(separatedBy: "hostChipsRow(").count - 1, 0,
+                       "the host chip row must not return to the board (#427)")
+        XCTAssertEqual(source.components(separatedBy: "repoChipsRow(").count - 1, 0,
+                       "the repo chip row must not return to the board (#427)")
     }
 
     func testHostSelectionFlowsThroughTheModelAndProjections() throws {
@@ -8727,15 +9371,27 @@ final class MultiHostSurfaceWiringTests: XCTestCase {
                       "row VoiceOver must carry the badge/staleness facts (D8)")
     }
 
-    func testSettingsExposesReorderRenameRetryRemoveAndPerHostNotifyState() throws {
+    func testSettingsHostsRenderStaticallyWithoutReorderChromeButKeepPerHostActions() throws {
         let source = try bundledSource()
         let start = try XCTUnwrap(source.range(of: "private var hostsSection: some View {"))
         let end = try XCTUnwrap(source.range(of: "// MARK: - #399 Add Host"))
         let slice = String(source[start.lowerBound..<end.lowerBound])
-        XCTAssertTrue(slice.contains(".onMove(perform: moveHosts)"),
-                      "D2: Settings must support drag-to-reorder")
-        XCTAssertTrue(source.contains("EditButton()"),
-                      "D2: the reorder affordance must exist with 2+ hosts")
+        // #430: Hosts rows render STATICALLY in the persisted profile
+        // order — restoring the drag-to-reorder wiring (.onMove) or the
+        // view-level moveHosts helper makes this RED.
+        XCTAssertFalse(slice.contains(".onMove"),
+                       "#430: no .onMove path may remain on the Hosts rows")
+        XCTAssertFalse(slice.contains("moveHosts"),
+                       "#430: no view-level moveHosts reorder helper may remain")
+        // The Settings toolbar carries no Edit button (with one or with
+        // multiple hosts) — restoring the #401 conditional EditButton
+        // makes this RED.
+        let toolbarStart = try XCTUnwrap(source.range(of: ".navigationTitle(\"Settings\")"))
+        let toolbarEnd = try XCTUnwrap(source.range(of: "// #379: Settings-header '?' Help entry"))
+        let toolbar = String(source[toolbarStart.lowerBound..<toolbarEnd.lowerBound])
+        XCTAssertFalse(toolbar.contains("EditButton"),
+                       "#430: Settings must show no Edit toolbar item (drag-to-reorder removed)")
+        // The remaining per-host surface stays reachable and unchanged.
         XCTAssertTrue(slice.contains("model.retryHostConnection(profile)"),
                       "D7: per-host Retry must route through the model")
         XCTAssertTrue(slice.contains("model.renameHost(id: profile.id, to: name)"),
@@ -8744,6 +9400,8 @@ final class MultiHostSurfaceWiringTests: XCTestCase {
                       "D7: Remove Host stays reachable per row")
         XCTAssertTrue(slice.contains("model.removeHost(profileID: profile.id)"),
                       "D7: Remove Host routes through the model")
+        XCTAssertTrue(slice.contains("Label(\"Add host\", systemImage: \"plus.circle\")"),
+                      "#430: the Add Host entry stays at the end of the Hosts section")
         XCTAssertTrue(slice.contains("LabeledContent(\"Grants expiry\","),
                       "D7: grants expiry must be readable per host")
         XCTAssertTrue(slice.contains("Last seen"),
@@ -8776,18 +9434,1567 @@ final class MultiHostSurfaceWiringTests: XCTestCase {
                       "B3: the prefill must track URL entry")
     }
 
-    func testHostChipsAre44PtAccessibleAndTokenThemed() throws {
+    func testFilterSheetHostScopeRowsStayReachableAndTextuallyHealthy() throws {
         let source = try bundledSource()
-        let start = try XCTUnwrap(source.range(of: "private func hostChipButton("))
-        let end = try XCTUnwrap(source.range(of: "/// #401 D7: the ONE compact board-level outage summary"))
+        let start = try XCTUnwrap(source.range(of: "struct FilterScopeSheet: View {"),
+                                  "the #427 filter sheet must exist")
+        let end = try XCTUnwrap(source.range(of: "// MARK: - Registration"),
+                                "the sheet must precede the Registration MARK")
         let slice = String(source[start.lowerBound..<end.lowerBound])
-        XCTAssertTrue(slice.contains(".frame(minHeight: 44)"),
-                      "D8: interactive host chips keep the ≥44 pt target")
-        XCTAssertTrue(slice.contains(".accessibilityAddTraits(isSelected ? [.isSelected] : [])"),
-                      "D8: selected host chips carry the VoiceOver selected trait")
-        XCTAssertTrue(source.contains(".id(\"board.host-chips\")"),
-                      "the host chip row carries its scroll anchor")
+        XCTAssertTrue(slice.contains("chip.health.label"),
+                      "AC5: host scope rows must render the textual health label (live/connecting/offline)")
+        XCTAssertTrue(slice.contains(".frame(maxWidth: .infinity, minHeight: 50"),
+                      "D8: scope choice rows keep the 50 pt minimum hit target")
+        XCTAssertTrue(slice.contains(".frame(minWidth: 44, minHeight: 44)"),
+                      "D8: the scope clear/close/reset controls keep the >= 44 pt target")
+        XCTAssertTrue(slice.contains(".accessibilityAddTraits(selected ? [.isSelected] : [])"),
+                      "D8: selected scope rows carry the VoiceOver selected trait")
         XCTAssertTrue(source.contains("BoardModel.hostHealthToken(health)"),
-                      "D8: health colors resolve through the shared token mapping")
+                      "the shared health-token mapping stays consumed (Settings host rows)")
+    }
+}
+
+// MARK: - #422 Settings host-card hit targets (independent action controls)
+
+/// #422: source-wiring regression over the bundled FleetViews.swift.txt.
+/// The Settings -> Hosts host card must give Retry / Rename / Remove host
+/// each an INDEPENDENT, bounded (>= 44 pt) plain-style control so a tap on
+/// the card body, URL/fingerprint/key metadata, or the notification row can
+/// never land on the destructive Remove-host control, and each action
+/// invokes only its own handler. RED at the #422 base head (the three
+/// actions shared ONE automatic-style Form-row stack whose row-wide hit
+/// area landed on the trailing destructive button); GREEN only once every
+/// action is individually bounded and token-colored.
+final class HostCardHitTargetWiringTests: XCTestCase {
+    private func bundledSource() throws -> String {
+        let bundle = Bundle(for: HostCardHitTargetWiringTests.self)
+        let url = try XCTUnwrap(bundle.url(forResource: "FleetViews",
+                                           withExtension: "swift.txt"))
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    /// 1-based line numbers of every line containing the needle.
+    private func lineNumbers(of needle: String, in text: String) -> [Int] {
+        text.split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+            .compactMap { index, line in line.contains(needle) ? index + 1 : nil }
+    }
+
+    /// The whole per-host Settings row builder (one host's card).
+    private func hostRowSlice(_ source: String) throws -> String {
+        let start = try XCTUnwrap(
+            source.range(of: "private func hostRow(_ profile: HostProfile) -> some View {"),
+            "the per-host row builder must exist")
+        let end = try XCTUnwrap(
+            source.range(of: "/// The per-host connection failure copy shown under the row"),
+            "the row builder must be followed by hostConnectionFailure")
+        return String(source[start.lowerBound..<end.lowerBound])
+    }
+
+    /// The host card's ACTION BAND: from the action HStack to the row's own
+    /// vertical padding (everything below the metadata/notification rows).
+    private func actionBand(_ row: String) throws -> String {
+        let start = try XCTUnwrap(row.range(of: "HStack(spacing: 16) {"),
+                                  "the host card must have an action band")
+        let end = try XCTUnwrap(row.range(of: ".padding(.vertical, 4)"),
+                                "the action band must end at the row padding")
+        return String(row[start.lowerBound..<end.lowerBound])
+    }
+
+    func testHostActionsEachOwnABounded44PointPlainControl() throws {
+        let source = try bundledSource()
+        let actions = try actionBand(try hostRowSlice(source))
+        // #422 AC5: the OLD wiring put ONE shared `.frame(minHeight: 44)`
+        // on the whole action HStack of three automatic-style Buttons — the
+        // Form row's automatic borderless hit-area expansion then routed
+        // card-body taps onto the trailing destructive control and made
+        // Retry/Rename effectively unreachable. Every action must instead
+        // declare its OWN >= 44 pt target on its label.
+        XCTAssertEqual(lineNumbers(of: ".frame(minHeight: 44)", in: actions).count, 3,
+                       "each of Retry/Rename/Remove host must carry its OWN >= 44 pt label frame "
+                       + "(a single shared frame on the action HStack is the #422 hazard)")
+        XCTAssertEqual(lineNumbers(of: ".buttonStyle(.plain)", in: actions).count, 3,
+                       "no host action may rely on the Form row's automatic borderless "
+                       + "hit-area expansion (plain style bounds each target to its own label)")
+        XCTAssertEqual(lineNumbers(of: ".contentShape(Rectangle())", in: actions).count, 3,
+                       "each action's full >= 44 pt label frame must be hit-testable")
+    }
+
+    func testOnlyTheRemoveControlCanRequestRemovalAndNoRowGestureRoutesTaps() throws {
+        let source = try bundledSource()
+        let row = try hostRowSlice(source)
+        // #422 AC6 core pin: `hostBeingRemoved` may be REQUESTED in exactly
+        // one place per row — the Remove host control's own action.
+        let assignmentLines = lineNumbers(of: "hostBeingRemoved = profile", in: row)
+        XCTAssertEqual(assignmentLines.count, 1,
+                       "the Remove-host confirmation may be requested in exactly one place")
+        // SAFETY: assignmentLines was asserted non-empty immediately above.
+        let assignmentLine = try XCTUnwrap(assignmentLines.first)
+        let destructiveOpeners = lineNumbers(of: "role: .destructive) {", in: row)
+        XCTAssertTrue(destructiveOpeners.contains { assignmentLine - $0 == 1 },
+                      "the ONLY removal request must sit directly inside a destructive "
+                      + "control's own action (never on a row/card tap path)")
+        // #422 AC1: no row-level gesture may forward card-body taps anywhere.
+        for needle in [".onTapGesture", ".simultaneousGesture", ".highPriorityGesture"] {
+            XCTAssertEqual(lineNumbers(of: needle, in: row).count, 0,
+                           "no card/row-level gesture may route taps into the host actions (\(needle))")
+        }
+    }
+
+    func testHostActionsStayTokenColoredAndScaledForLegibility() throws {
+        let source = try bundledSource()
+        let actions = try actionBand(try hostRowSlice(source))
+        // #422 AC3: the actions resolve explicit theme tokens (dark-mode and
+        // flavor-safe) instead of the automatic Form tint, and keep the
+        // Dynamic-Type-scaled subheadline.
+        XCTAssertEqual(lineNumbers(of: "theme.accent", in: actions).count, 2,
+                       "Retry and Rename must resolve the themed accent explicitly")
+        XCTAssertEqual(lineNumbers(of: "theme.red", in: actions).count, 1,
+                       "the destructive Remove host text must resolve theme.red explicitly")
+        XCTAssertEqual(lineNumbers(of: ".font(.subheadline)", in: actions).count, 3,
+                       "every host action must keep the Dynamic-Type-scaled subheadline font")
+    }
+}
+
+// MARK: - #427 filter/header redesign (Direction A): discriminating RED + pins
+
+/// #427 Direction A regression + positive pins over the bundled FleetViews
+/// source and the BoardModel projections. The RED probes bite at the #427
+/// BASE head — the board chrome still spends two horizontal chip rows (two
+/// unexplained `All` chips), the top-left header is empty, there is no
+/// filter sheet, and a connecting host has no textual board summary — every
+/// assertion below names the Direction-A surface that must exist after the
+/// redesign. The positive pins (host/repository selections stay
+/// independent, the All chip keeps unified counts, repo chips rescope to
+/// the selected host, composite rows merge across hosts) must be green at
+/// the base head AND after the redesign.
+final class FilterHeaderRedesignTests: XCTestCase {
+
+    private func bundledSource() throws -> String {
+        let bundle = Bundle(for: FilterHeaderRedesignTests.self)
+        let url = try XCTUnwrap(bundle.url(forResource: "FleetViews",
+                                           withExtension: "swift.txt"))
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    private func occurrences(of needle: String, in text: String) -> Int {
+        text.components(separatedBy: needle).count - 1
+    }
+
+    /// The board region: FleetView declaration → Banner MARK (the same
+    /// boundary the #365/#386/#387 wiring tests slice).
+    private func boardSlice(from source: String) throws -> String {
+        let start = try XCTUnwrap(source.range(of: "\nstruct FleetView: View {"),
+                                  "FleetView declaration must exist")
+        let end = try XCTUnwrap(source.range(of: "\n// MARK: - Banner"),
+                                "the banner section must follow FleetView")
+        return String(source[start.lowerBound..<end.lowerBound])
+    }
+
+    /// The Direction-A filter sheet region: its struct declaration up to
+    /// the next section MARK.
+    private func sheetSlice(from source: String) throws -> String {
+        let start = try XCTUnwrap(source.range(of: "struct FilterScopeSheet: View {"),
+                                  "the Direction-A filter sheet must exist")
+        let end = try XCTUnwrap(source.range(of: "// MARK: - Settings"),
+                                "the Settings MARK must follow the filter sheet")
+        return String(source[start.lowerBound..<end.lowerBound])
+    }
+
+    // MARK: RED probes — each FAILS at the #427 base head.
+
+    func testTopLeftHeaderLeadsWithTheFiltersControlAndSummary() throws {
+        let source = try bundledSource()
+        let slice = try boardSlice(from: source)
+        // The Filters control rides the board's OWN pinned chrome (the
+        // top-left header strip) — the nav bar's toolbar holds ONLY the
+        // Settings gear (top-right), so the two can never compete (AC3).
+        XCTAssertEqual(occurrences(of: "ToolbarItem(placement: .topBarLeading)", in: slice), 0,
+                       "the toolbar must not carry a leading item — Settings alone stays top-right")
+        // Exactly ONE release-active opener (the chrome trigger; the DEBUG
+        // evidence drivers flip the same binding behind #if DEBUG, so the
+        // opener is pinned by its Button-label chain).
+        XCTAssertEqual(occurrences(of: "showFilters = true\n        } label: {", in: slice), 1,
+                       "exactly one opener must present the filter sheet (#427 C)")
+        XCTAssertEqual(occurrences(of: "Image(systemName: \"line.3.horizontal.decrease\")",
+                                   in: slice), 1,
+                       "the Filters control must carry the slider icon")
+        XCTAssertTrue(slice.contains("\"Filters · \\(activeFilterCount)\""),
+                      "the control must show the active-count label form 'Filters · N'")
+        XCTAssertTrue(slice.contains("\"All hosts\""),
+                      "the selected summary must name the All-hosts scope explicitly")
+        XCTAssertTrue(slice.contains("\"All repositories\""),
+                      "the selected summary must name the All-repositories scope explicitly")
+        XCTAssertTrue(slice.contains(".sheet(isPresented: $showFilters)"),
+                      "the Filters control must open the filter sheet")
+        XCTAssertTrue(slice.contains("Text(\"No lanes match\")"),
+                      "a filtered board with no matching rows must show the No-lanes state")
+        XCTAssertTrue(slice.contains("Both scopes remain active and reversible."),
+                      "the No-lanes state must explain that both scopes stay active")
+    }
+
+    func testBoardChromeRendersNoChipRowsAndNoDuplicateGenericAllLabels() throws {
+        let source = try bundledSource()
+        // Direction A removes the two horizontal chip rows from the board:
+        // their builders + scroll anchors must be GONE (a restored row is
+        // the exact #427 defect — two unexplained All chips).
+        XCTAssertEqual(occurrences(of: "hostChipsRow(", in: source), 0,
+                       "the host chip row must not render on the board (#427)")
+        XCTAssertEqual(occurrences(of: "repoChipsRow(", in: source), 0,
+                       "the repo chip row must not render on the board (#427)")
+        XCTAssertEqual(occurrences(of: "hostChipButton(", in: source), 0,
+                       "the generic 'All' host chip button must be gone")
+        XCTAssertEqual(occurrences(of: "repoChipButton(", in: source), 0,
+                       "the generic 'All' repo chip button must be gone")
+        XCTAssertEqual(occurrences(of: ".id(\"board.host-chips\")", in: source), 0,
+                       "the host chip row scroll anchor must be gone")
+        XCTAssertEqual(occurrences(of: ".id(\"board.filter-chips\")", in: source), 0,
+                       "the repo chip row scroll anchor must be gone")
+        // No remaining visible 'All'-only chip label (any All control must
+        // say its full scope in visible text — AC1).
+        XCTAssertEqual(occurrences(of: "chip.isAll ? \"All\"", in: source), 0,
+                       "no chip may render the bare 'All' label")
+    }
+
+    func testFilterSheetLeadsWithHostScopeAndCarriesScopedActions() throws {
+        let source = try bundledSource()
+        let slice = try sheetSlice(from: source)
+        let hostScope = try XCTUnwrap(slice.range(of: "\"Host scope\""),
+                                      "the sheet must open with the Host scope heading")
+        let repoScope = try XCTUnwrap(slice.range(of: "\"Repository scope\""),
+                                      "the Repository scope must follow the Host scope")
+        XCTAssertLessThan(hostScope.lowerBound, repoScope.lowerBound,
+                          "Host scope must come FIRST, then Repository scope (#427 C/D)")
+        for needle in ["\"All hosts\"", "\"All repositories\"",
+                       "\"Clear host\"", "\"Clear repository\"",
+                       "\"Reset all filters\"", "\"Close filters\"",
+                       "model.selectHostFilter(nil)",
+                       ".frame(maxWidth: .infinity, minHeight: 50",
+                       ".accessibilityAddTraits(selected ? [.isSelected] : [])"] {
+            XCTAssertTrue(slice.contains(needle),
+                          "the filter sheet must wire: \(needle)")
+        }
+    }
+
+    func testConnectingHostsGetTextualOutageSummaryParts() {
+        // AC5: connecting stays textually available ON the board through
+        // the D7 compact summary (never color alone). Base head returns nil
+        // for a connecting-only host set → RED.
+        XCTAssertEqual(BoardModel.hostOutageSummary(hosts: [
+            BoardModel.HostFilterChip(profileID: UUID(), displayName: "B",
+                                      laneCount: 2, health: .connecting)]),
+            "1 host connecting")
+        XCTAssertEqual(BoardModel.hostOutageSummary(hosts: [
+            BoardModel.HostFilterChip(profileID: UUID(), displayName: "A",
+                                      laneCount: 1, health: .offline),
+            BoardModel.HostFilterChip(profileID: UUID(), displayName: "B",
+                                      laneCount: 2, health: .connecting)]),
+            "1 host offline · 1 host connecting")
+        XCTAssertEqual(BoardModel.hostOutageSummary(hosts: [
+            BoardModel.HostFilterChip(profileID: UUID(), displayName: "A",
+                                      laneCount: 0, health: .connecting),
+            BoardModel.HostFilterChip(profileID: UUID(), displayName: "B",
+                                      laneCount: 0, health: .connecting)]),
+            "2 hosts connecting")
+    }
+
+    // MARK: Positive pins — green at the base head AND after the redesign.
+
+    func testIndependentHostAndRepositorySelectionSemanticsRemainUntouched() {
+        let a = UUID(), b = UUID()
+        func agent(_ id: String, state: AgentState, ts: UInt64,
+                   repo: String?) -> Agent {
+            Agent(agentId: id, state: state, reason: nil, ts: ts,
+                  capabilities: [], workspace: Workspace(repo: repo,
+                                                         branch: "main"))
+        }
+        func row(_ hostID: UUID, _ id: String, state: AgentState,
+                 ts: UInt64, repo: String?) -> HostBoardRow {
+            HostBoardRow(identity: CompositeAgentID(hostProfileID: hostID,
+                                                    agentID: id),
+                         agent: agent(id, state: state, ts: ts, repo: repo),
+                         isStale: false, lastSeen: ts)
+        }
+        let rows = [row(a, "herdr:a1", state: .working, ts: 10, repo: "corral"),
+                    row(a, "herdr:a2", state: .working, ts: 20, repo: "demo-atlas"),
+                    row(b, "herdr:b1", state: .blocked, ts: 30, repo: "demo-atlas"),
+                    row(b, "herdr:b2", state: .blocked, ts: 40, repo: "demo-garden")]
+        // AC7: host and repo remain TWO independent selections — host keeps
+        // the host's rows, repo keeps the repo's rows, both intersect.
+        XCTAssertEqual(BoardModel.rows(rows, forHost: a).count, 2)
+        XCTAssertEqual(BoardModel.rows(rows, in: "demo-atlas").count, 2)
+        XCTAssertEqual(BoardModel.rows(BoardModel.rows(rows, forHost: b),
+                                       in: "demo-atlas").count, 1)
+        XCTAssertEqual(BoardModel.rows(BoardModel.rows(rows, forHost: a),
+                                       in: "demo-garden").count, 0,
+                       "an intersection with no rows must stay EMPTY — never fall back")
+        // The All chip keeps the unified count; repo chips rescope to the
+        // selected host (D3/D4) — the sheet consumes the same projections.
+        let chips = BoardModel.hostChips(hosts: [
+            BoardModel.HostFilterChip(profileID: a, displayName: "Host A",
+                                      laneCount: 2, health: .live),
+            BoardModel.HostFilterChip(profileID: b, displayName: "Host B",
+                                      laneCount: 2, health: .offline)])
+        XCTAssertEqual(chips.first?.laneCount, 4)
+        XCTAssertEqual(chips.first?.health, .offline,
+                       "All hosts is never 'live' while a host is offline")
+        XCTAssertEqual(BoardModel.repoFilters(BoardModel.rows(rows, forHost: a))
+            .map(\.repo), ["corral", "demo-atlas"])
+        // Reconcile keeps a live repo choice and falls back to All (nil)
+        // only when the repo vanished.
+        XCTAssertEqual(BoardModel.reconcile("demo-atlas", against:
+            BoardModel.repoFilters(rows)), "demo-atlas")
+        XCTAssertNil(BoardModel.reconcile("vanished", against:
+            BoardModel.repoFilters(rows)))
+        // Composite rows with one repo name across hosts share ONE subgroup
+        // INSIDE each status section (D5) — equal repo names never split
+        // within a section, but different statuses stay separate sections.
+        let sections = BoardModel.hostSections(rows)
+        let blockedAtlas = sections.statuses.first { $0.state == .blocked }?
+            .subgroups.filter { $0.repo == "demo-atlas" } ?? []
+        XCTAssertEqual(blockedAtlas.count, 1)
+        XCTAssertEqual(blockedAtlas.first?.rows.count, 1)
+        let workingAtlas = sections.statuses.first { $0.state == .working }?
+            .subgroups.filter { $0.repo == "demo-atlas" } ?? []
+        XCTAssertEqual(workingAtlas.count, 1)
+        XCTAssertEqual(workingAtlas.first?.rows.count, 1)
+    }
+}
+
+// MARK: - #423 Settings host-management authority (Hosts is THE surface at 2+)
+
+/// #423: source-wiring regression over the bundled FleetViews.swift.txt.
+/// The legacy single-host Connection section — host endpoint field, shared
+/// key-id status row and Re-register action — must render ONLY on the
+/// unpaired and ONE-host Settings variants. With TWO OR MORE host profiles
+/// (`multiHostConfigured`) the Hosts section is the single authoritative
+/// host-management surface, so the whole legacy section must sit inside a
+/// `!multiHostConfigured` guard: multi-host users can never see the
+/// duplicated active-host endpoint/key identity (AC2) while unpaired and
+/// single-host flows keep the full Connection/pairing form (AC4). The
+/// How-to-connect sheet's Settings '?' entry must pass the variant so its
+/// copy never directs multi-host users to the hidden Connection section
+/// (AC5). RED at the #423 base head (the section renders unconditionally
+/// and the help copy knows no variant); GREEN only once the guard wraps the
+/// section and the help copy branches by variant.
+final class SettingsHostsAuthorityWiringTests: XCTestCase {
+
+    private func bundledSource() throws -> String {
+        let bundle = Bundle(for: SettingsHostsAuthorityWiringTests.self)
+        let url = try XCTUnwrap(bundle.url(forResource: "FleetViews",
+                                           withExtension: "swift.txt"))
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    private func lineNumbers(of needle: String, in text: String) -> [Int] {
+        text.split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+            .filter { $0.element.contains(needle) }
+            .map { $0.offset + 1 }
+    }
+
+    private func occurrences(of needle: String, in text: String) -> Int {
+        text.components(separatedBy: needle).count - 1
+    }
+
+    /// The Settings sheet's own region: SettingsView → How-to-connect MARK.
+    private func settingsSlice(_ source: String) throws -> String {
+        let start = try XCTUnwrap(source.range(of: "\nstruct SettingsView: View {"),
+                                  "SettingsView declaration must exist")
+        let end = try XCTUnwrap(source.range(of: "\n// MARK: - How to connect"),
+                                "the How-to-connect MARK must follow SettingsView")
+        return String(source[start.lowerBound..<end.lowerBound])
+    }
+
+    /// The shared How-to-connect sheet's own region: its MARK → Add Host.
+    private func connectSheetSlice(_ source: String) throws -> String {
+        let start = try XCTUnwrap(source.range(of: "\n// MARK: - How to connect"),
+                                  "the How-to-connect MARK must exist")
+        let end = try XCTUnwrap(source.range(of: "\n// MARK: - #399 Add Host"),
+                                "the Add Host MARK must follow the connect sheet")
+        return String(source[start.lowerBound..<end.lowerBound])
+    }
+
+    /// The 1-based line where the `{` opened on `openLine` first balances
+    /// back to depth zero (the caller's own closing brace).
+    private func braceCloseLine(after openLine: Int,
+                                in lines: [Substring]) -> Int? {
+        var depth = 0
+        for index in (openLine - 1)..<lines.count {
+            for char in lines[index] where char == "{" || char == "}" {
+                depth += char == "{" ? 1 : -1
+                if depth == 0 { return index + 1 }
+            }
+        }
+        return nil
+    }
+
+    // MARK: RED probes — each FAILS at the #423 base head.
+
+    /// AC2/AC4: the legacy Connection section (host field, shared key-id
+    /// status, Re-register, unpaired Register action) must live INSIDE a
+    /// `!multiHostConfigured` guard, rendered only while fewer than two
+    /// host profiles exist. At the base head the section renders
+    /// unconditionally — the guard count is 0 → RED.
+    func testLegacyConnectionSectionRendersOnlyOutsideTheTwoHostVariant() throws {
+        let slice = try settingsSlice(try bundledSource())
+        // RED at base: the legacy section is NOT gated on the multi-host
+        // state, so exactly-zero single-host guards exist in the sheet.
+        let gates = lineNumbers(of: "if !model.multiHostConfigured {", in: slice)
+        XCTAssertEqual(gates.count, 1,
+                       "the legacy Connection section must be gated on the single-host state exactly once (#423)")
+        let gateLine = try XCTUnwrap(gates.first,
+                                     "the single-host guard must exist (see count pin)")
+        // The legacy section itself stays for the unpaired/one-host
+        // variants (AC4) — deleting it breaks first-time setup.
+        let sections = lineNumbers(of: "Section(\"Connection\")", in: slice)
+        XCTAssertEqual(sections.count, 1,
+                       "exactly one legacy Connection section may exist in Settings")
+        let sectionLine = try XCTUnwrap(sections.first,
+                                        "the Connection section must exist (see count pin)")
+        XCTAssertLessThan(gateLine, sectionLine,
+                          "the single-host guard must open before the legacy Connection section")
+        // Every legacy single-host surface piece sits inside the guard's
+        // braces, so a 2+ profile Settings screen can never render them.
+        let lines = slice.split(separator: "\n", omittingEmptySubsequences: false)
+        let closeLine = try XCTUnwrap(braceCloseLine(after: gateLine, in: lines),
+                                      "the single-host guard must close")
+        XCTAssertLessThan(sectionLine, closeLine,
+                          "the Connection section must sit inside the single-host guard")
+        for needle in ["Button(\"Re-register\")",
+                       "revealTokenField = true",
+                       "ConnectionField(title: \"Registration token\"",
+                       "model.register(host: host, token: token)"] {
+            let hits = lineNumbers(of: needle, in: slice)
+            XCTAssertEqual(hits.count, 1,
+                           "\"\(needle)\" must exist exactly once in Settings (#423)")
+            if let hit = hits.first {
+                XCTAssertGreaterThan(hit, gateLine,
+                                     "\"\(needle)\" must not render ahead of the single-host guard")
+                XCTAssertLessThan(hit, closeLine,
+                                  "\"\(needle)\" must not escape the single-host guard")
+            }
+        }
+        // The Hosts section gate stays OUTSIDE the single-host guard — the
+        // authoritative multi-host surface is never swallowed with the
+        // legacy section (AC1).
+        let hostsGate = try XCTUnwrap(lineNumbers(of: "if model.hostProfilesConfigured {",
+                                                  in: slice).first,
+                                      "the Hosts section gate must exist")
+        XCTAssertGreaterThan(hostsGate, closeLine,
+                             "the Hosts section must render outside the single-host guard")
+    }
+
+    /// AC1/AC6: with two or more hosts the Hosts section is the ONE host
+    /// surface — it keeps its header, the per-host row read-outs (URL, key
+    /// id, grants), the Active marker with its VoiceOver label, Retry /
+    /// Rename / Remove host, and the Add host entry closing the section.
+    func testTwoHostVariantKeepsHostsAsTheOnlyHostManagementSurface() throws {
+        let slice = try settingsSlice(try bundledSource())
+        let header = try XCTUnwrap(lineNumbers(of: "Text(\"Hosts\")", in: slice).first,
+                                   "the Hosts section header must exist")
+        for needle in ["LabeledContent(\"URL\"",
+                       "LabeledContent(\"Key ID\", value: String(keyID.prefix(16))",
+                       "LabeledContent(\"Grants expiry\"",
+                       "Text(\"Active\")",
+                       ".accessibilityLabel(\"Active host\")",
+                       "model.retryHostConnection(profile)",
+                       "model.renameHost(id: profile.id, to: name)",
+                       "Button(\"Remove host\", role: .destructive)",
+                       "model.removeHost(profileID: profile.id)"] {
+            XCTAssertTrue(slice.contains(needle),
+                          "the multi-host Hosts surface must wire: \(needle)")
+        }
+        let rows = try XCTUnwrap(lineNumbers(of: "ForEach(model.profiles)",
+                                             in: slice).first,
+                                 "the Hosts rows must iterate the profiles")
+        let addHost = try XCTUnwrap(lineNumbers(of: "Label(\"Add host\", systemImage: \"plus.circle\")",
+                                                in: slice).first,
+                                    "the Add host entry must close the Hosts section")
+        // SwiftUI section code order: content rows, then the Add host entry,
+        // then the header text literal that closes the section.
+        XCTAssertLessThan(rows, addHost,
+                          "the per-host rows must render before the Add host entry")
+        XCTAssertLessThan(addHost, header,
+                          "the Add host entry must close the Hosts section")
+    }
+
+    /// AC5: the How-to-connect copy is variant-aware — the Settings '?'
+    /// entry passes the multi-host state, and the pairing steps direct 2+
+    /// host users to Settings → Hosts → Add host instead of the now-hidden
+    /// Connection section, while the unpaired/single-host copy (which still
+    /// has a real Connection section) is preserved verbatim.
+    func testHelpCopyNeverDirectsMultiHostUsersToTheHiddenConnectionSection() throws {
+        let source = try bundledSource()
+        let settings = try settingsSlice(source)
+        // RED at base: the help entry passes only the live host — no
+        // variant flag exists yet.
+        XCTAssertTrue(settings.contains("HowToConnectSheet(host: host, multiHost: model.multiHostConfigured)"),
+                      "the Settings help entry must pass the live host AND the multi-host variant (#423)")
+        let sheet = try connectSheetSlice(source)
+        XCTAssertEqual(occurrences(of: "var multiHost: Bool = false", in: sheet), 1,
+                       "HowToConnectSheet must declare the multi-host variant flag")
+        // The legacy Connection-directed instructions survive exactly once
+        // each — the unpaired/single-host branch keeps them (AC4).
+        for needle in ["Not set — type it in Settings → Connection",
+                       "Open Settings → Connection and paste the host into the Host field.",
+                       "Paste the daemon's registration token into the Registration token field and tap Register device (read-only)."] {
+            XCTAssertEqual(occurrences(of: needle, in: sheet), 1,
+                           "the single-host help copy must stay intact: \(needle)")
+        }
+        // Two if/else copy blocks (steps 3 and 4) branch on the variant;
+        // the multi-host branches direct to the Hosts → Add host surface.
+        let multiIfs = lineNumbers(of: "if multiHost {", in: sheet)
+        let elses = lineNumbers(of: "} else {", in: sheet)
+        XCTAssertEqual(multiIfs.count, 2,
+                       "the pairing copy must branch twice on the variant")
+        XCTAssertEqual(elses.count, 2,
+                       "each multi-host branch must carry its single-host else")
+        // The count pins above already failed when the variant branches do
+        // not exist — never index an empty array (crashes the runner).
+        guard multiIfs.count == 2, elses.count == 2 else { return }
+        XCTAssertLessThan(multiIfs[0], elses[0],
+                          "the first variant branch must close with its else")
+        XCTAssertLessThan(multiIfs[1], elses[1],
+                          "the second variant branch must close with its else")
+        let step3Multi = try XCTUnwrap(lineNumbers(of: "Open Settings → Hosts → Add host:",
+                                                   in: sheet).first,
+                                       "step 3 must carry the multi-host direction")
+        XCTAssertTrue(step3Multi > multiIfs[0] && step3Multi < elses[0],
+                      "the step-3 multi-host direction must sit in the first variant branch")
+        let step4Multi = try XCTUnwrap(lineNumbers(of: "tap Confirm fingerprint & register",
+                                                   in: sheet).first,
+                                       "step 4 must name the Add-host register action")
+        XCTAssertTrue(step4Multi > multiIfs[1] && step4Multi < elses[1],
+                      "the step-4 multi-host register copy must sit in the second variant branch")
+        // The preserved single-host instructions live in the else branches,
+        // never inside a multi-host branch.
+        let step3Legacy = try XCTUnwrap(
+            lineNumbers(of: "Open Settings → Connection and paste the host into the Host field.",
+                        in: sheet).first)
+        XCTAssertTrue(step3Legacy > elses[0] && step3Legacy < multiIfs[1],
+                      "the Connection-directed step-3 copy must stay on the single-host branch")
+        let step4Legacy = try XCTUnwrap(
+            lineNumbers(of: "Paste the daemon's registration token into the Registration token field",
+                        in: sheet).first)
+        XCTAssertTrue(step4Legacy > elses[1],
+                      "the Connection register step must stay on the single-host branch")
+    }
+}
+
+// MARK: - #425 pull-to-refresh must recover a stale active-host stream
+
+/// #425 transport: counts `/events` attempts; until `serveLive` is set a
+/// request is held open with NO response — the wedged/half-open stream
+/// that never acks (request #1 stays pending exactly like a dead SSE
+/// socket). After `serveLive`, `/events` answers 200 `text/event-stream`
+/// and stays open with ZERO frames (an idle fleet), so `onConnected` is
+/// the ONLY ack. `/snapshot` answers the scripted body; any other path
+/// gets a benign 200 so unrelated calls never wedge the fixture.
+private final class RefreshRecoveryURLProtocol: URLProtocol {
+    private static let lock = NSLock()
+    private static var serveLiveStorage = false
+    private static var eventsCountStorage = 0
+    private static var eventsRequestsStorage: [URLRequest] = []
+    private static var snapshotBodyStorage = Data(#"{"ok":true}"#.utf8)
+
+    static func reset(snapshotBody: Data) {
+        lock.lock()
+        serveLiveStorage = false
+        eventsCountStorage = 0
+        eventsRequestsStorage = []
+        snapshotBodyStorage = snapshotBody
+        lock.unlock()
+    }
+
+    static func serveLive() {
+        lock.lock()
+        serveLiveStorage = true
+        lock.unlock()
+    }
+
+    static var eventRequestCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return eventsCountStorage
+    }
+
+    static var lastEventsRequest: URLRequest? {
+        lock.lock()
+        defer { lock.unlock() }
+        return eventsRequestsStorage.last
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.lock.lock()
+        let serveLive = Self.serveLiveStorage
+        let snapshotBody = Self.snapshotBodyStorage
+        guard let url = request.url else {
+            Self.lock.unlock()
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        if url.path == "/events" {
+            Self.eventsCountStorage += 1
+            Self.eventsRequestsStorage.append(request)
+        }
+        Self.lock.unlock()
+
+        // SAFETY: fixed HTTPURLResponse construction from the request's own URL.
+        let response = HTTPURLResponse(
+            url: url, statusCode: 200, httpVersion: "HTTP/1.1",
+            headerFields: url.path == "/events"
+                ? ["Content-Type": "text/event-stream"]
+                : ["Content-Type": "application/json"])!
+        if url.path == "/events" {
+            if !serveLive {
+                // Wedge: hold the connection open WITHOUT ANY response —
+                // the stream task suspends forever on its first attempt
+                // (no headers, no status, no ack).
+                return
+            }
+            // Live SSE connection with zero frames; never finish, so the
+            // stream stays open and the attempt count stays stable.
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data())
+            return
+        }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        if url.path == "/snapshot" {
+            client?.urlProtocol(self, didLoad: snapshotBody)
+        } else {
+            client?.urlProtocol(self, didLoad: Data(#"{"ok":true}"#.utf8))
+        }
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+/// #425 regression: a stale/offline ACTIVE host must recover from an
+/// ordinary pull-to-refresh without an app relaunch, ending with either a
+/// live acked stream or an honest non-live state — and a snapshot-only
+/// success must never be rendered as live. AC8's exact task-count /
+/// no-duplicate invariant: an ended/wedged stream task followed by one
+/// pull produces EXACTLY ONE replacement /events attempt.
+@MainActor
+final class RefreshRecoversStaleStreamTests: XCTestCase {
+
+    // SAFETY: fixed valid URL literal for the fixture host.
+    private let host = URL(string: "http://g425.example")!
+
+    private func agent(_ id: String, state: AgentState, title: String? = nil) -> Agent {
+        Agent(agentId: id, state: state, seq: 1, ts: 1,
+              capabilities: ["read_tail"], displayName: id, title: title)
+    }
+
+    private func snapshot(rev: UInt64, agents: [String: Agent]) -> Snapshot {
+        Snapshot(schemaVersion: 5, rev: rev, generatedAt: 1, agents: agents)
+    }
+
+    private func waitFor(_ condition: () -> Bool,
+                         timeout: TimeInterval = 5) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+        return condition()
+    }
+
+    private struct LiveFixture {
+        let model: AppModel
+        let session: URLSession
+        let defaults: UserDefaults
+        let suiteName: String
+
+        @MainActor
+        func cleanup() {
+            model.stopLive()
+            session.invalidateAndCancel()
+            defaults.removePersistentDomain(forName: suiteName)
+            RefreshRecoveryURLProtocol.reset(
+                snapshotBody: Data(#"{"ok":true}"#.utf8))
+        }
+    }
+
+    private func liveModel(agents: [String: Agent], rev: UInt64) -> LiveFixture {
+        let suiteName = "corral.g425.\\(UUID().uuidString)"
+        // SAFETY: a fresh UUID-based suite name is always a valid suite.
+        let defaults = UserDefaults(suiteName: suiteName)!
+        // SAFETY: fixture snapshots encode through the same Codable the
+        // wire uses.
+        let body = try! JSONEncoder().encode(snapshot(rev: rev, agents: agents))
+        RefreshRecoveryURLProtocol.reset(snapshotBody: body)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RefreshRecoveryURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let model = AppModel(
+            session: session,
+            defaults: defaults,
+            identityLoader: { (DeviceSigner(key: Curve25519.Signing.PrivateKey()),
+                               .insecureFallback) },
+            loadMeta: { nil },
+            saveMeta: { _ in },
+            wipeIdentity: {})
+        model.mode = .live
+        model.hostURL = host
+        return LiveFixture(model: model, session: session, defaults: defaults,
+                           suiteName: suiteName)
+    }
+
+    /// AC5 (store half): applying a REFRESH snapshot is data, not a
+    /// liveness claim — a store with no stream must stay .disconnected.
+    func testApplyRefreshKeepsStoreDisconnectedWithoutStreamAck() {
+        let store = FleetStore()
+        store.applyRefresh(snapshot(rev: 5,
+                                    agents: ["a": agent("a", state: .working, title: "fresh")]))
+
+        XCTAssertEqual(store.agents["a"]?.title, "fresh",
+                       "the refresh snapshot must still apply its data")
+        XCTAssertEqual(store.lastEventId, 5)
+        XCTAssertEqual(store.connectionState, .disconnected,
+                       "a snapshot-only refresh must not mark the store live without a stream ack (#425)")
+    }
+
+    /// AC5: after a successful pull-to-refresh with NO acked stream the
+    /// host must read as connecting (a fresh attempt in flight), never as
+    /// live; rows still update. Base head marks .connected straight from
+    /// the snapshot — the false-live bug.
+    func testSnapshotOnlyRefreshNeverRendersHostLiveWithoutStreamAck() async {
+        let fixture = liveModel(agents: ["a": agent("a", state: .working, title: "fresh")],
+                                rev: 9)
+        defer { fixture.cleanup() }
+
+        await fixture.model.refreshFleet()
+
+        XCTAssertEqual(fixture.model.fleet.agents["a"]?.title, "fresh",
+                       "the refresh snapshot must apply its data")
+        XCTAssertFalse(fixture.model.isRefreshingFleet)
+        XCTAssertNil(fixture.model.banner)
+        XCTAssertEqual(fixture.model.fleet.connectionState, .connecting,
+                       "a snapshot-only success must not render the host live; only the stream's 200 ack may mark .connected (#425)")
+    }
+
+    /// AC1/AC2/AC8: a wedged active-host stream (task alive, never acked)
+    /// followed by ONE pull-to-refresh must clear the stale task ownership
+    /// and start EXACTLY ONE replacement stream — request count 1 -> 2,
+    /// resuming from the refreshed cursor; no duplicate SSE tasks. Base
+    /// head never issues the replacement: FleetStore.connect() no-ops on
+    /// the wedged streamTask, so the board stays dead until a relaunch.
+    func testSinglePullToRefreshRestartsExactlyOneWedgedActiveStream() async {
+        let fixture = liveModel(agents: ["a": agent("a", state: .working, title: "recovered")],
+                                rev: 9)
+        defer { fixture.cleanup() }
+
+        // A live session whose /events connection is wedged: the store
+        // holds a stream task that never acks.
+        fixture.model.fleet.connect(client: CorraldClient(host: host,
+                                                          session: fixture.session))
+        let firstAttempt = await waitFor({ RefreshRecoveryURLProtocol.eventRequestCount == 1 })
+        XCTAssertTrue(firstAttempt, "the initial stream attempt must reach the transport")
+        XCTAssertTrue(fixture.model.fleet.isStreaming)
+        XCTAssertNotEqual(fixture.model.fleet.connectionState, .connected,
+                          "a wedged stream must not read as live")
+
+        // The host becomes reachable: the pull's snapshot answers, then
+        // the refresh must tear the wedged task down and start ONE
+        // replacement stream.
+        RefreshRecoveryURLProtocol.serveLive()
+        await fixture.model.refreshFleet()
+
+        let replacement = await waitFor({ RefreshRecoveryURLProtocol.eventRequestCount == 2 },
+                                        timeout: 2)
+        XCTAssertTrue(replacement,
+                      "a single pull-to-refresh must cause a NEW active-host stream attempt (1 -> 2); base head keeps the stale wedged task (#425)")
+        XCTAssertEqual(RefreshRecoveryURLProtocol.eventRequestCount, 2,
+                       "exactly ONE replacement stream — no duplicate SSE tasks (#425)")
+
+        let acked = await waitFor({ fixture.model.fleet.connectionState == .connected })
+        XCTAssertTrue(acked, "the replacement stream's 200 must ack the host live")
+        XCTAssertEqual(fixture.model.fleet.agents["a"]?.title, "recovered",
+                       "the refreshed rows must be applied")
+        XCTAssertEqual(fixture.model.fleet.lastEventId, 9)
+        XCTAssertEqual(RefreshRecoveryURLProtocol.lastEventsRequest?
+            .value(forHTTPHeaderField: "Last-Event-ID"), "9",
+            "the replacement stream must resume from the refreshed cursor")
+    }
+
+    /// AC3: while the stream is healthy (acked .connected), pull-to-refresh
+    /// stays snapshot-only — no second stream task is created.
+    func testPullToRefreshIsIdempotentWhileStreamIsLive() async {
+        let fixture = liveModel(agents: ["a": agent("a", state: .working, title: "fresh")],
+                                rev: 9)
+        defer { fixture.cleanup() }
+
+        RefreshRecoveryURLProtocol.serveLive() // healthy from the first attempt
+        fixture.model.fleet.connect(client: CorraldClient(host: host,
+                                                          session: fixture.session))
+        let acked = await waitFor({ fixture.model.fleet.connectionState == .connected })
+        XCTAssertTrue(acked, "the live stream must ack before the pull")
+        XCTAssertEqual(RefreshRecoveryURLProtocol.eventRequestCount, 1)
+
+        await fixture.model.refreshFleet()
+
+        XCTAssertEqual(RefreshRecoveryURLProtocol.eventRequestCount, 1,
+                       "refreshing a healthy live host must not create a second stream (#425)")
+        XCTAssertEqual(fixture.model.fleet.connectionState, .connected)
+        XCTAssertEqual(fixture.model.fleet.agents["a"]?.title, "fresh")
+        XCTAssertFalse(fixture.model.isRefreshingFleet)
+    }
+}
+
+// MARK: - #426 per-host grants refresh (multi-host)
+
+/// Regression for #426. `refreshGrants()` at the unfixed head refreshes
+/// ONLY the ACTIVE profile's grants (and only the legacy in-memory
+/// mirrors at that), so a NON-active host that was granted `read_tail`
+/// host-side keeps an empty per-profile grant set and its Recent Output
+/// route denies the read locally — Bazzite stays on the empty state even
+/// though the host and agent both authorize. The fix fans the signed
+/// `/grants-read` out to EVERY configured, live host against that host's
+/// OWN URL/key identity and persists each response into ONLY that host's
+/// profile grant set.
+@MainActor
+final class PerHostGrantsRefreshTests: XCTestCase {
+    private var suiteName = ""
+    private var model: AppModel?
+    private var session: URLSession?
+    private var store: HostProfileStore?
+
+    // SAFETY: fixed valid 32-byte X25519 public-key fixtures.
+    static let hostAKey = Data(repeating: 7, count: 32).base64EncodedString()
+    // SAFETY: fixed valid 32-byte X25519 public-key fixtures.
+    static let hostBKey = Data(repeating: 8, count: 32).base64EncodedString()
+
+    // SAFETY: fixed valid fixture URLs under distinct hostnames.
+    private let urlA = URL(string: "https://route-a.example")!
+    // SAFETY: fixed valid fixture URLs under distinct hostnames.
+    private let urlB = URL(string: "https://route-b.example")!
+
+    private func cleanup() {
+        model?.stopLive()
+        model = nil
+        store = nil
+        session?.invalidateAndCancel()
+        session = nil
+        AppDelegate.apnsRegistered = false
+        UserDefaults.standard.removeObject(forKey: AppDelegate.deviceTokenUploadedKey)
+        AppDelegate.shared?.clearRetainedDeviceToken()
+        KeyContinuityGate.reset()
+        HostSwitchURLProtocol.clearScript()
+        if !suiteName.isEmpty {
+            // SAFETY: suiteName was freshly minted per test.
+            UserDefaults(suiteName: suiteName)!.removePersistentDomain(forName: suiteName)
+            suiteName = ""
+        }
+    }
+
+    private func waitUntil(_ condition: @autoclosure () -> Bool,
+                           timeout: TimeInterval = 5) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+    }
+
+    private func requests(to url: URL) -> [URLRequest] {
+        HostSwitchURLProtocol.requests.filter { $0.url?.absoluteString == url.absoluteString }
+    }
+
+    /// Two pinned live hosts: A = ACTIVE (Mac), B = coordinator
+    /// (Bazzite). B's seeded grants model the #426 bug state: the HOST
+    /// granted read_tail AFTER Bazzite was paired, so B's cached profile
+    /// grant set is empty. `/grants-read` answers per host URL with that
+    /// host's OWN key id / grant set / expiry.
+    private func makeModel(bSeedGrants: [String],
+                           bGrantsReadStatus: Int = 200,
+                           scriptDrive: Bool = true) -> (AppModel, HostProfile, HostProfile) {
+        suiteName = "corral.h426.refresh.\(UUID().uuidString)"
+        // SAFETY: a fresh UUID suite name is always a valid suite.
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let store = HostProfileStore(directory: nil, defaults: defaults)
+        self.store = store
+        // SAFETY: fixed fixture profiles (see the class doc).
+        let profileA = try! store.addProfile(displayName: "Mac",
+                                             urlString: urlA.absoluteString,
+                                             hostKeyB64: Self.hostAKey,
+                                             fingerprint: "FINGER",
+                                             keyId: "dev_route_a",
+                                             grants: ["read_tail"],
+                                             expiryTs: 1_800_000_000,
+                                             registeredAt: 1)
+        // SAFETY: fixed fixture profiles (see the class doc).
+        let profileB = try! store.addProfile(displayName: "Bazzite",
+                                             urlString: urlB.absoluteString,
+                                             hostKeyB64: Self.hostBKey,
+                                             fingerprint: "FINGER",
+                                             keyId: "dev_route_b",
+                                             grants: bSeedGrants,
+                                             expiryTs: 1_800_000_000,
+                                             registeredAt: 1)
+        defaults.set(profileA.id.uuidString, forKey: "fleetnotifier.activeHostProfileID")
+        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        var script: [URL: (Int, Data, Bool)] = [:]
+        for (url, key) in [(urlA, Self.hostAKey), (urlB, Self.hostBKey)] {
+            // SAFETY: fixed fixture JSON from the fixture keys.
+            script[url.appendingPathComponent("/host-key")] = (
+                200, Data(#"{"algorithm":"X25519","public_key":"\#(key)"}"#.utf8), false)
+            script[url.appendingPathComponent("/events")] = (200, Data(), true)
+        }
+        // A's own daemon answer stays its current grant set; B's answer is
+        // the #426 host-side promotion (read_tail + prompt, fresh expiry).
+        script[urlA.appendingPathComponent("/grants-read")] = (
+            200,
+            Data(#"{"ok":true,"key_id":"dev_route_a","grants":["read_tail"],"expiry_ts":1800000000,"revoked":false}"#.utf8),
+            false)
+        script[urlB.appendingPathComponent("/grants-read")] = (
+            bGrantsReadStatus,
+            Data(#"{"ok":true,"key_id":"dev_route_b","grants":["read_tail","prompt"],"expiry_ts":1800000001,"revoked":false}"#.utf8),
+            false)
+        if scriptDrive {
+            // SAFETY: a fixed minimal drive response fixture.
+            let driveOK = Data(#"{"request_id":"r1","ok":true,"rev":5,"result":{"lines":["l1"],"blocks":[]}}"#.utf8)
+            script[urlA.appendingPathComponent("/drive")] = (200, driveOK, false)
+            script[urlB.appendingPathComponent("/drive")] = (200, driveOK, false)
+        }
+        HostSwitchURLProtocol.setScript(script)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [HostSwitchURLProtocol.self]
+        let session = URLSession(configuration: config)
+        self.session = session
+        let model = AppModel(session: session, defaults: defaults,
+                             identityLoader: { (signer, .insecureFallback) },
+                             loadMeta: { nil }, saveMeta: { _ in },
+                             wipeIdentity: {}, profileStore: store)
+        self.model = model
+        model.startLive()
+        return (model, profileA, profileB)
+    }
+
+    private func agent(_ id: String, state: AgentState, host: String, ts: UInt64) -> Agent {
+        Agent(agentId: id, state: state, ts: ts,
+              capabilities: ["read_tail"], host: host,
+              workspace: Workspace(repo: "corral", branch: "main"))
+    }
+
+    /// Wait until BOTH hosts are live (ACTIVE verified, B verified and
+    /// streaming) and seed the equal raw agent id into both stores.
+    private func seed(model: AppModel, profileA: HostProfile, profileB: HostProfile) async {
+        model.fleet.apply(.snapshot(Snapshot(schemaVersion: 5, rev: 5, generatedAt: 0,
+                                             agents: ["herdr:dup": agent("herdr:dup",
+                                                                         state: .working,
+                                                                         host: Self.hostAKey,
+                                                                         ts: 5)])))
+        // SAFETY: fixed test fixture invariant (see the fixture builder); failure here is a harness bug, not a product defect.
+        let coordinator = try! XCTUnwrap(model.coordinator)
+        await waitUntil(coordinator.allowsLiveWork(profileID: profileB.id))
+        await waitUntil(model.keyContinuityState == .verified)
+        // SAFETY: fixed test fixture invariant (see the fixture builder); failure here is a harness bug, not a product defect.
+        let storeB = try! XCTUnwrap(coordinator.store(profileID: profileB.id))
+        storeB.apply(.snapshot(Snapshot(schemaVersion: 5, rev: 5, generatedAt: 0,
+                                        agents: ["herdr:dup": agent("herdr:dup",
+                                                                    state: .blocked,
+                                                                    host: Self.hostBKey,
+                                                                    ts: 5)])))
+        await waitUntil(storeB.connectionState == .connected)
+        await waitUntil(model.fleet.connectionState == .connected)
+    }
+
+    private func grantsBodyKeyID(at url: URL) -> String? {
+        guard let body = requests(to: url.appendingPathComponent("/grants-read")).first?.httpBody,
+              let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else {
+            return nil
+        }
+        return json["key_id"] as? String
+    }
+
+    /// AC1 + AC2: refreshGrants() fans out to EVERY live host (ACTIVE and
+    /// coordinator), each signed against its OWN URL/key id, and a
+    /// successful response updates ONLY that host's profile grant set
+    /// (persisted) — Bazzite's answer never touches Mac's record.
+    func testRefreshGrantsFansOutToEveryLiveHostAndPersistsPerHostGrantSets() async {
+        defer { cleanup() }
+        let (model, profileA, profileB) = makeModel(bSeedGrants: [])
+        await seed(model: model, profileA: profileA, profileB: profileB)
+        // SAFETY: store was created in makeModel above.
+        let store = try! XCTUnwrap(self.store)
+
+        await model.refreshGrants()
+
+        // Every configured live host performed a signed /grants-read.
+        XCTAssertEqual(requests(to: urlA.appendingPathComponent("/grants-read")).count, 1,
+                       "the ACTIVE host must still refresh its own grants")
+        XCTAssertGreaterThanOrEqual(requests(to: urlB.appendingPathComponent("/grants-read")).count, 1,
+                                    "a coordinator host must refresh its OWN grants too (#426)")
+        XCTAssertEqual(grantsBodyKeyID(at: urlA), "dev_route_a",
+                       "A's read is signed with A's own key id")
+        XCTAssertEqual(grantsBodyKeyID(at: urlB), "dev_route_b",
+                       "B's read is signed with B's own key id (never A's)")
+        // B's own answer persisted into B's profile grant set only.
+        // SAFETY: profileB.id comes from the fixture above.
+        XCTAssertEqual(store.profile(id: profileB.id)?.grants, ["read_tail", "prompt"],
+                       "Bazzite's refreshed grant set must persist in B's profile record")
+        XCTAssertEqual(store.profile(id: profileB.id)?.expiryTs, 1_800_000_001,
+                       "Bazzite's refreshed expiry must persist too")
+        // Mac's grant set and host state remain untouched by B's refresh.
+        // SAFETY: profileA.id comes from the fixture above.
+        XCTAssertEqual(store.profile(id: profileA.id)?.grants, ["read_tail"],
+                       "Mac's grant set must stay its own (never B's answer)")
+        XCTAssertEqual(store.profile(id: profileA.id)?.expiryTs, 1_800_000_000)
+        XCTAssertEqual(store.profile(id: profileA.id)?.keyId, "dev_route_a")
+        XCTAssertEqual(store.profile(id: profileA.id)?.urlString, urlA.absoluteString)
+        XCTAssertEqual(store.profile(id: profileB.id)?.keyId, "dev_route_b",
+                       "a grants refresh never rewrites the host's key identity")
+        XCTAssertEqual(store.profile(id: profileB.id)?.urlString, urlB.absoluteString)
+    }
+
+    /// AC3: a FAILED coordinator-host refresh keeps the last-known grants,
+    /// never clears them, never breaks that host's stream, and never
+    /// touches the other host's refresh.
+    func testFailedBazziteRefreshPreservesLastKnownGrantsAndOtherHostState() async {
+        defer { cleanup() }
+        // B's grants-read fails (500); B's last-known grant set is
+        // ["prompt"] (a previous grant that must survive the failure).
+        let (model, profileA, profileB) = makeModel(bSeedGrants: ["prompt"],
+                                                    bGrantsReadStatus: 500)
+        await seed(model: model, profileA: profileA, profileB: profileB)
+        // SAFETY: store was created in makeModel above.
+        let store = try! XCTUnwrap(self.store)
+
+        await model.refreshGrants()
+
+        // The per-host refresh was still ATTEMPTED for B (fan-out + the
+        // session-connect retry), then the failure preserved the
+        // last-known set.
+        XCTAssertGreaterThanOrEqual(requests(to: urlB.appendingPathComponent("/grants-read")).count, 1,
+                                    "the coordinator host's refresh must be attempted even when it fails")
+        XCTAssertEqual(requests(to: urlA.appendingPathComponent("/grants-read")).count, 1,
+                       "A's own refresh still runs")
+        // SAFETY: profileB.id comes from the fixture above.
+        XCTAssertEqual(store.profile(id: profileB.id)?.grants, ["prompt"],
+                       "a failed refresh must preserve Bazzite's last-known grants")
+        XCTAssertEqual(store.profile(id: profileB.id)?.expiryTs, 1_800_000_000,
+                       "a failed refresh must not touch Bazzite's expiry either")
+        // SAFETY: profileA.id comes from the fixture above.
+        XCTAssertEqual(store.profile(id: profileA.id)?.grants, ["read_tail"],
+                       "Mac's grant set is untouched by Bazzite's failure")
+        // B's stream is not broken by the failed refresh.
+        // SAFETY: fixed test fixture invariant (see the fixture builder); failure here is a harness bug, not a product defect.
+        let coordinator = try! XCTUnwrap(model.coordinator)
+        XCTAssertTrue(coordinator.allowsLiveWork(profileID: profileB.id),
+                      "Bazzite's session must stay live after a failed grants refresh")
+        XCTAssertEqual(coordinator.store(profileID: profileB.id)?.connectionState, .connected)
+        XCTAssertEqual(model.fleet.connectionState, .connected,
+                       "the ACTIVE host's stream must stay live too")
+    }
+
+    /// AC4 + AC5: after the fan-out persists Bazzite's refreshed grants,
+    /// the NON-active route authorizes read_tail and the signed /drive
+    /// goes to Bazzite (never Mac), rendering real returned lines.
+    func testRefreshedBazziteProfileAuthorizesNonActiveRouteAndDrivesBazzite() async {
+        defer { cleanup() }
+        let (model, profileA, profileB) = makeModel(bSeedGrants: [])
+        await seed(model: model, profileA: profileA, profileB: profileB)
+        // SAFETY: store was created in makeModel above.
+        let store = try! XCTUnwrap(self.store)
+
+        await model.refreshGrants()
+        // SAFETY: profileB.id comes from the fixture above.
+        XCTAssertEqual(store.profile(id: profileB.id)?.grants, ["read_tail", "prompt"],
+                       "precondition: B's profile now carries the refreshed grant set")
+        // SAFETY: fixed test fixture invariant (see the fixture builder); failure here is a harness bug, not a product defect.
+        let coordinator = try! XCTUnwrap(model.coordinator)
+        let bAgent = try! XCTUnwrap(coordinator.agent(profileID: profileB.id, agentID: "herdr:dup"))
+        // Drive with a client bound to host A on purpose: the composite
+        // route must sign against B's URL with B's key id.
+        let clientForA = DriveClient(host: urlA, session: session ?? .shared)
+        model.driveReadTail(agent: bAgent, hostProfileID: profileB.id,
+                            driveClient: clientForA)
+        await waitUntil(!requests(to: urlB.appendingPathComponent("/drive")).isEmpty)
+        XCTAssertTrue(requests(to: urlA.appendingPathComponent("/drive")).isEmpty,
+                      "a read_tail for host B must NEVER reach host A")
+        let driveBody = try! XCTUnwrap(requests(to: urlB.appendingPathComponent("/drive")).first?.httpBody)
+        let json = try! XCTUnwrap(try JSONSerialization.jsonObject(with: driveBody)
+                                  as? [String: Any])
+        XCTAssertEqual(json["key_id"] as? String, "dev_route_b",
+                       "the read must be signed with the OWNING profile's key id")
+        let envelope = try! XCTUnwrap(json["envelope"] as? [String: Any])
+        XCTAssertEqual(envelope["target"] as? String, "herdr:dup",
+                       "the raw agent id is sent untouched")
+        // Real returned lines land in B's store pane — not the empty state.
+        await waitUntil(coordinator.tailPane(profileID: profileB.id, agentID: "herdr:dup") != nil)
+        XCTAssertEqual(coordinator.tailPane(profileID: profileB.id, agentID: "herdr:dup")?.lines,
+                       ["l1"], "Recent Output must render the real returned lines")
+        // SAFETY: fixed test fixture invariant (see the fixture builder); failure here is a harness bug, not a product defect.
+        let pane = try! XCTUnwrap(coordinator.tailPane(profileID: profileB.id, agentID: "herdr:dup"))
+        XCTAssertNil(pane.error)
+        XCTAssertEqual(RecentOutputModel.phase(for: pane), .loaded,
+                       "real lines render the loaded state, never successful-empty")
+        XCTAssertNil(model.fleet.tailPane(for: "herdr:dup"),
+                     "host B's tail must never land in host A's read model")
+    }
+
+    /// AC6: equal raw agent IDs on two hosts use SEPARATE per-profile
+    /// grant sets and SEPARATE drive URLs (each signed with its own key).
+    func testEqualRawAgentIDsUseSeparateGrantSetsAndDriveURLs() async {
+        defer { cleanup() }
+        let (model, profileA, profileB) = makeModel(bSeedGrants: [])
+        await seed(model: model, profileA: profileA, profileB: profileB)
+        // SAFETY: store was created in makeModel above.
+        let store = try! XCTUnwrap(self.store)
+
+        await model.refreshGrants()
+        // SAFETY: profile ids come from the fixture above.
+        XCTAssertEqual(store.profile(id: profileA.id)?.grants, ["read_tail"])
+        XCTAssertEqual(store.profile(id: profileB.id)?.grants, ["read_tail", "prompt"],
+                       "each host keeps its OWN grant set under the equal raw id")
+        // SAFETY: fixed test fixture invariant (see the fixture builder); failure here is a harness bug, not a product defect.
+        let coordinator = try! XCTUnwrap(model.coordinator)
+        let aAgent = try! XCTUnwrap(model.fleet.agent("herdr:dup"))
+        let bAgent = try! XCTUnwrap(coordinator.agent(profileID: profileB.id, agentID: "herdr:dup"))
+        let clientForA = DriveClient(host: urlA, session: session ?? .shared)
+
+        // Drive A's dup: only A's URL may be hit.
+        model.driveReadTail(agent: aAgent, hostProfileID: profileA.id,
+                            driveClient: clientForA)
+        await waitUntil(!requests(to: urlA.appendingPathComponent("/drive")).isEmpty)
+        XCTAssertTrue(requests(to: urlB.appendingPathComponent("/drive")).isEmpty,
+                      "A's dup drive must never reach host B")
+        // SAFETY: waitUntil above guarantees A's drive request is recorded; the body is scripted fixture JSON.
+        let aDriveBody = try! XCTUnwrap(requests(to: urlA.appendingPathComponent("/drive")).first?.httpBody)
+        // SAFETY: the drive body is the scripted fixture JSON (see makeModel).
+        let aJSON = try! XCTUnwrap(try JSONSerialization.jsonObject(with: aDriveBody)
+                                   as? [String: Any])
+        XCTAssertEqual(aJSON["key_id"] as? String, "dev_route_a")
+
+        // Drive B's dup: only B's URL may be hit.
+        model.driveReadTail(agent: bAgent, hostProfileID: profileB.id,
+                            driveClient: clientForA)
+        await waitUntil(!requests(to: urlB.appendingPathComponent("/drive")).isEmpty)
+        XCTAssertEqual(requests(to: urlA.appendingPathComponent("/drive")).count, 1,
+                       "B's dup drive adds no second request to host A")
+        // SAFETY: waitUntil above guarantees B's drive request is recorded; the body is scripted fixture JSON.
+        let bDriveBody = try! XCTUnwrap(requests(to: urlB.appendingPathComponent("/drive")).first?.httpBody)
+        // SAFETY: the drive body is the scripted fixture JSON (see makeModel).
+        let bJSON = try! XCTUnwrap(try JSONSerialization.jsonObject(with: bDriveBody)
+                                   as? [String: Any])
+        XCTAssertEqual(bJSON["key_id"] as? String, "dev_route_b",
+                       "each equal raw id is driven under its OWN host key")
+    }
+
+    /// AC7: a genuine not_granted state (refreshed set WITHOUT read_tail)
+    /// still renders the #424 permission state — never the empty state.
+    func testGenuineNotGrantedAfterRefreshStillRendersPermissionState() async {
+        defer { cleanup() }
+        // B's daemon answers a grants-read WITHOUT read_tail — Bazzite was
+        // genuinely not granted the capability. B's agent still advertises
+        // read_tail (host capabilities are independent of this device's
+        // grant set).
+        suiteName = "corral.h426.notgranted.\(UUID().uuidString)"
+        // SAFETY: a fresh UUID suite name is always a valid suite.
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let store = HostProfileStore(directory: nil, defaults: defaults)
+        self.store = store
+        // SAFETY: fixed fixture profiles (see the class doc).
+        let profileA = try! store.addProfile(displayName: "Mac",
+                                             urlString: urlA.absoluteString,
+                                             hostKeyB64: Self.hostAKey,
+                                             fingerprint: "FINGER",
+                                             keyId: "dev_route_a",
+                                             grants: ["read_tail"],
+                                             expiryTs: 1_800_000_000,
+                                             registeredAt: 1)
+        // SAFETY: fixed fixture profiles (see the class doc).
+        let profileB = try! store.addProfile(displayName: "Bazzite",
+                                             urlString: urlB.absoluteString,
+                                             hostKeyB64: Self.hostBKey,
+                                             fingerprint: "FINGER",
+                                             keyId: "dev_route_b",
+                                             grants: [],
+                                             expiryTs: 1_800_000_000,
+                                             registeredAt: 1)
+        defaults.set(profileA.id.uuidString, forKey: "fleetnotifier.activeHostProfileID")
+        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        var script: [URL: (Int, Data, Bool)] = [:]
+        for (url, key) in [(urlA, Self.hostAKey), (urlB, Self.hostBKey)] {
+            // SAFETY: fixed fixture JSON from the fixture keys.
+            script[url.appendingPathComponent("/host-key")] = (
+                200, Data(#"{"algorithm":"X25519","public_key":"\#(key)"}"#.utf8), false)
+            script[url.appendingPathComponent("/events")] = (200, Data(), true)
+        }
+        script[urlA.appendingPathComponent("/grants-read")] = (
+            200,
+            Data(#"{"ok":true,"key_id":"dev_route_a","grants":["read_tail"],"expiry_ts":1800000000,"revoked":false}"#.utf8),
+            false)
+        // B's genuine answer: prompt only, NO read_tail.
+        script[urlB.appendingPathComponent("/grants-read")] = (
+            200,
+            Data(#"{"ok":true,"key_id":"dev_route_b","grants":["prompt"],"expiry_ts":1800000001,"revoked":false}"#.utf8),
+            false)
+        HostSwitchURLProtocol.setScript(script)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [HostSwitchURLProtocol.self]
+        let session = URLSession(configuration: config)
+        self.session = session
+        let model = AppModel(session: session, defaults: defaults,
+                             identityLoader: { (signer, .insecureFallback) },
+                             loadMeta: { nil }, saveMeta: { _ in },
+                             wipeIdentity: {}, profileStore: store)
+        self.model = model
+        model.startLive()
+        await seed(model: model, profileA: profileA, profileB: profileB)
+
+        await model.refreshGrants()
+        // SAFETY: profileB.id comes from the fixture above.
+        XCTAssertEqual(store.profile(id: profileB.id)?.grants, ["prompt"],
+                       "B's refreshed grant set persists even when it excludes read_tail")
+        // The sheet's drive attempt is denied locally with the typed
+        // not_granted failure — the #424 permission state renders.
+        // SAFETY: fixed test fixture invariant (see the fixture builder); failure here is a harness bug, not a product defect.
+        let coordinator = try! XCTUnwrap(model.coordinator)
+        let bAgent = try! XCTUnwrap(coordinator.agent(profileID: profileB.id, agentID: "herdr:dup"))
+        let clientForA = DriveClient(host: urlA, session: session ?? .shared)
+        model.driveReadTail(agent: bAgent, hostProfileID: profileB.id,
+                            driveClient: clientForA, silent: true)
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        let pane = coordinator.tailPane(profileID: profileB.id, agentID: "herdr:dup")
+        XCTAssertEqual(pane?.error?.kind, "not_granted",
+                       "a locally ungranted read_tail must fold the typed not_granted failure")
+        guard case .error = RecentOutputModel.phase(for: pane) else {
+            return XCTFail("the permission state must render — never the successful-empty state")
+        }
+        XCTAssertTrue(requests(to: urlB.appendingPathComponent("/drive")).isEmpty,
+                      "without the grant the drive stops locally (no signed request)")
+    }
+}
+// MARK: - #397 follow-up: notification-tap lifecycle (deferred deep link)
+
+/// Discriminating regressions for the notification-RESPONSE lifecycle: a
+/// tap is a ONE-SHOT OS delivery (one `didReceive` per tap) and must never
+/// be lost just because the model was not ready to route it the instant it
+/// arrived — cold/terminated launch before live setup, background
+/// reconnect while the owning profile re-verifies, or board rows not
+/// loaded yet. The pre-fix code dropped every tap that hit a not-ready
+/// gate (`mode != .live`, key continuity pending, agent row absent, host
+/// session still verifying); these tests pin the deferred-deep-link
+/// contract — the tap is remembered per composite target and replayed
+/// exactly once when ITS OWN host is live and the agent is available.
+@MainActor
+final class NotificationTapDeferredLifecycleTests: XCTestCase {
+    static let hostKey = Data(repeating: 9, count: 32).base64EncodedString()
+    static let otherHostKey = Data(repeating: 10, count: 32).base64EncodedString()
+    static let unknownHostKey = Data(repeating: 11, count: 32).base64EncodedString()
+
+    private var suiteName = ""
+    private var model: AppModel?
+    private var session: URLSession?
+
+    private func cleanup() {
+        model?.stopLive()
+        model = nil
+        session?.invalidateAndCancel()
+        session = nil
+        KeyContinuityGate.reset()
+        HostSwitchURLProtocol.clearScript()
+        if !suiteName.isEmpty {
+            // SAFETY: suiteName was freshly minted per test.
+            UserDefaults(suiteName: suiteName)!.removePersistentDomain(forName: suiteName)
+            suiteName = ""
+        }
+    }
+
+    /// Fresh legacy-runtime model (NO profile store): starts in
+    /// `.needsSetup` — the cold-launch posture before an identity is
+    /// restored/registered.
+    private func makeLegacyModel() -> AppModel {
+        suiteName = "corral.h397tap.legacy.\(UUID().uuidString)"
+        // SAFETY: a fresh UUID suite name is always a valid suite.
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let model = AppModel(defaults: defaults,
+                             identityLoader: {
+                                 (DeviceSigner(key: Curve25519.Signing.PrivateKey()),
+                                  .insecureFallback)
+                             },
+                             loadMeta: { nil }, saveMeta: { _ in },
+                             wipeIdentity: {})
+        self.model = model
+        return model
+    }
+
+    private func agent(_ id: String, state: AgentState = .working) -> Agent {
+        Agent(agentId: id, state: state, seq: 1, ts: 100,
+              capabilities: ["read_tail"],
+              workspace: Workspace(repo: "corral", branch: "main"),
+              displayName: id)
+    }
+
+    /// Profile-store fixture: A (pinned, ACTIVE) + optional B (pinned,
+    /// coordinator-owned); both hosts' /host-key + /events are scripted.
+    /// Returns a model that is ALREADY `.live` (the active profile binds at
+    /// init) but has NOT started any stream — the test calls startLive().
+    private func makeProfilesModel(count: Int = 2) -> AppModel {
+        suiteName = "corral.h397tap.profiles.\(UUID().uuidString)"
+        // SAFETY: a fresh UUID suite name is always a valid suite.
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let store = HostProfileStore(directory: nil, defaults: defaults)
+        // SAFETY: fixed fixture URLs (distinct hostnames).
+        let urlA = URL(string: "https://tap-a.example")!
+        // SAFETY: fixed fixture URLs (distinct hostnames).
+        let urlB = URL(string: "https://tap-b.example")!
+        // SAFETY: fixture addProfile calls only throw on invalid fixture input.
+        let profileA = try! store.addProfile(displayName: "Host A",
+                                             urlString: urlA.absoluteString,
+                                             hostKeyB64: Self.hostKey,
+                                             fingerprint: "FINGER",
+                                             keyId: "dev_tap_a",
+                                             grants: ["read_tail"],
+                                             expiryTs: 1_800_000_000,
+                                             registeredAt: 1)
+        if count > 1 {
+            try! store.addProfile(displayName: "Host B",
+                                  urlString: urlB.absoluteString,
+                                  hostKeyB64: Self.otherHostKey,
+                                  fingerprint: "FINGER",
+                                  keyId: "dev_tap_b",
+                                  grants: ["read_tail"],
+                                  expiryTs: 1_800_000_000,
+                                  registeredAt: 1)
+        }
+        defaults.set(profileA.id.uuidString, forKey: "fleetnotifier.activeHostProfileID")
+        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        var script: [URL: (Int, Data, Bool)] = [:]
+        for (url, key) in [(urlA, Self.hostKey), (urlB, Self.otherHostKey)] {
+            // SAFETY: fixed fixture JSON from the fixture keys.
+            script[url.appendingPathComponent("/host-key")] = (
+                200, Data(#"{"algorithm":"X25519","public_key":"\#(key)"}"#.utf8), false)
+            script[url.appendingPathComponent("/events")] = (200, Data(), true)
+        }
+        HostSwitchURLProtocol.setScript(script)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [HostSwitchURLProtocol.self]
+        let session = URLSession(configuration: config)
+        self.session = session
+        let model = AppModel(session: session, defaults: defaults,
+                             identityLoader: { (signer, .insecureFallback) },
+                             loadMeta: { nil }, saveMeta: { _ in },
+                             wipeIdentity: {}, profileStore: store)
+        self.model = model
+        return model
+    }
+
+    private func waitUntil(_ condition: @autoclosure () -> Bool,
+                           timeout: TimeInterval = 3) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+    }
+
+    // MARK: AC2 — cold/terminated-launch tap before live setup
+
+    /// A tap can arrive as soon as the process is up — BEFORE startLive /
+    /// the identity restore put the model in `.live` (and before the first
+    /// board snapshot carried the notified agent). It must not be dropped:
+    /// once the owning host is live and the agent row is available the
+    /// sheet opens exactly once.
+    func testTerminatedLaunchTapBeforeLiveSetupIsNotLost() {
+        defer { cleanup() }
+        let model = makeLegacyModel()
+        XCTAssertEqual(model.mode, .needsSetup, "fixture starts cold")
+        // The OS delivers the tap response while the model is still cold.
+        model.openNotification(agentId: "a1", hostKeyB64: nil)
+        XCTAssertNil(model.recentsRequest, "no UI may present before the model is live")
+        // The host comes live and its first board data carries the agent.
+        model.mode = .live
+        model.fleet.apply(.snapshot(Snapshot(
+            schemaVersion: 3, rev: 1, generatedAt: 1,
+            agents: ["a1": agent("a1")])))
+        XCTAssertEqual(model.recentsRequest?.agentId, "a1",
+                       "a tap received before live setup must open the sheet once the agent is available")
+        XCTAssertNil(model.recentsRequest?.hostProfileID,
+                     "the legacy runtime opens the single-host store")
+    }
+
+    // MARK: AC2/AC3 — background reconnect (active host re-verifying)
+
+    /// The app backgrounds (stream stopped, pinned key back to `.pending`)
+    /// and the tap lands while the OWNING profile is reconnecting. Nothing
+    /// may present pre-verification, and once the host re-verifies and the
+    /// agent is available the deferred tap must open exactly once.
+    func testTapDuringBackgroundReconnectIsDeferredUntilTheHostReVerifies() async throws {
+        defer { cleanup() }
+        let model = makeProfilesModel(count: 1)
+        let profileID = try XCTUnwrap(model.activeProfile?.id)
+        model.startLive()
+        await waitUntil(model.keyContinuityState == .verified)
+        // Seed the notified agent's row on the ACTIVE store (host-stamped
+        // so the pinned feed accepts it).
+        model.fleet.apply(.snapshot(Snapshot(
+            schemaVersion: 5, rev: 1, generatedAt: 0,
+            agents: ["a1": Agent(agentId: "a1", state: .idle, ts: 1,
+                                 host: Self.hostKey)])))
+        // Background boundary: stream down, key continuity back to pending.
+        model.stopLive()
+        XCTAssertEqual(model.keyContinuityState, .pending)
+        // The tap arrives while the owning profile is reconnecting.
+        model.openNotification(agentId: "a1", hostKeyB64: Self.hostKey)
+        XCTAssertNil(model.recentsRequest,
+                     "nothing may present while the owning host is unverified")
+        XCTAssertNil(model.banner, "a reconnect deferral is silent")
+        // Foreground: the host re-verifies; the deferred tap replays.
+        model.startLive()
+        await waitUntil(model.keyContinuityState == .verified)
+        await waitUntil(model.recentsRequest?.agentId == "a1")
+        XCTAssertEqual(model.recentsRequest?.hostProfileID, profileID,
+                       "the replayed tap opens the OWNING profile's lane")
+    }
+
+    // MARK: AC3 — coordinator host not yet connected; equal raw id on A
+
+    /// A tap for host B's agent arrives while B's session is still
+    /// verifying (post-foreground reconnect boundary) and host A ALREADY
+    /// holds an equal raw agent id. The tap must defer for B only and open
+    /// B's lane when B's agent becomes available — never A's.
+    func testTapForCoordinatorHostBeforeItsSessionConnectsDefersToThatHostOnly() async throws {
+        defer { cleanup() }
+        let model = makeProfilesModel(count: 2)
+        let profileB = try XCTUnwrap(model.profiles.first {
+            $0.hostKeyB64 == Self.otherHostKey
+        })
+        // B's session exists but has NOT verified/connected (no startLive
+        // yet): posture `.verifying` — the reconnect boundary.
+        XCTAssertEqual(model.coordinator?.posture(profileID: profileB.id), .verifying)
+        // Host A already holds an equal RAW agent id (host-stamped).
+        model.fleet.apply(.snapshot(Snapshot(
+            schemaVersion: 5, rev: 1, generatedAt: 0,
+            agents: ["dup": Agent(agentId: "dup", state: .idle, ts: 1,
+                                  host: Self.hostKey)])))
+        // A tap for B's agent lands while B is still reconnecting.
+        model.openNotification(agentId: "dup", hostKeyB64: Self.otherHostKey)
+        XCTAssertNil(model.recentsRequest,
+                     "nothing may present while B is unverified — and never A's lane")
+        XCTAssertNil(model.banner, "a reconnect deferral is silent")
+        // Both hosts come live; B's session connects and its snapshot
+        // carries the notified agent.
+        model.startLive()
+        await waitUntil(model.keyContinuityState == .verified)
+        await waitUntil(model.coordinator?.posture(profileID: profileB.id) == .verified)
+        let bStore = try XCTUnwrap(model.coordinator?.store(profileID: profileB.id))
+        bStore.apply(.snapshot(Snapshot(
+            schemaVersion: 5, rev: 1, generatedAt: 0,
+            agents: ["dup": Agent(agentId: "dup", state: .blocked, ts: 1,
+                                  host: Self.otherHostKey)])))
+        await waitUntil(model.recentsRequest?.hostProfileID == profileB.id)
+        XCTAssertEqual(model.recentsRequest?.agentId, "dup",
+                       "the raw agent id stays untouched on B's lane")
+        XCTAssertNotEqual(model.recentsRequest?.hostProfileID, model.activeProfileID,
+                          "the equal raw id on host A must never satisfy B's tap")
+    }
+
+    // MARK: AC4 — unknown host fails closed, never deferred
+
+    /// An unknown/removed host identity is NON-ACTIONABLE immediately
+    /// (bounded diagnostic) — never held for a later replay, never opened
+    /// against another host even after that host comes live with rows.
+    func testUnknownHostTapFailsClosedImmediatelyAndIsNeverDeferred() async throws {
+        defer { cleanup() }
+        let model = makeProfilesModel(count: 2)
+        model.openNotification(agentId: "x", hostKeyB64: Self.unknownHostKey)
+        XCTAssertNil(model.recentsRequest, "an unknown host never opens a lane")
+        XCTAssertEqual(model.banner?.kind, "notification_host_unknown",
+                       "the bounded diagnostic fires at tap time, not later")
+        // Both hosts come live with rows; nothing may resurrect the tap.
+        model.startLive()
+        await waitUntil(model.keyContinuityState == .verified)
+        model.fleet.apply(.snapshot(Snapshot(
+            schemaVersion: 5, rev: 1, generatedAt: 0,
+            agents: ["x": Agent(agentId: "x", state: .idle, ts: 1,
+                                host: Self.hostKey)])))
+        model.recentsRequest = nil
+        model.banner = nil
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertNil(model.recentsRequest,
+                     "an unknown-host tap is never replayed after a later snapshot")
+    }
+
+    // MARK: AC5 — repeated taps after dismissal (notification path)
+
+    /// Notification taps after a dismissal must behave like row taps: each
+    /// tap is a FRESH monotonic presentation request (no stale latch, no
+    /// duplicate presentation, no dropped first tap).
+    func testRepeatedNotificationTapsAfterDismissalCreateFreshMonotonicRequests() throws {
+        defer { cleanup() }
+        let model = makeLegacyModel()
+        model.mode = .live
+        model.fleet.apply(.snapshot(Snapshot(
+            schemaVersion: 3, rev: 1, generatedAt: 1,
+            agents: ["a1": agent("a1")])))
+        var previousID: UInt64 = 0
+        for _ in 0..<3 {
+            model.openNotification(agentId: "a1", hostKeyB64: nil)
+            let request = try XCTUnwrap(model.recentsRequest)
+            XCTAssertEqual(request.agentId, "a1")
+            XCTAssertGreaterThan(request.id, previousID,
+                                 "every tap is a fresh monotonic presentation request")
+            previousID = request.id
+            // SwiftUI's .sheet(item:) wrote nil; dismissal completes clean.
+            model.recentsRequest = nil
+            model.recentsSheetDismissed()
+            XCTAssertNil(model.recentsRequest,
+                         "a clean dismissal leaves nothing pending")
+        }
+    }
+}
+
+/// #397 follow-up: the LocalNotifier notification-RESPONSE seam. A tap is
+/// a ONE-SHOT OS delivery (one `didReceive` per tap); a response racing
+/// the model's handler install must be queued — never dropped — and
+/// flushed in delivery order once the handler lands, and a delivery with
+/// the handler installed routes immediately (no duplicates).
+@MainActor
+final class LocalNotifierTapDeliveryTests: XCTestCase {
+    /// Records taps delivered through onOpenAgent. Every delivery in these
+    /// tests happens on the main actor (deliverTap serializes there), so
+    /// no lock is needed.
+    private final class TapRecorder: @unchecked Sendable {
+        var taps: [(agentId: String, hostId: String?)] = []
+    }
+
+    func testTapDeliveredBeforeHandlerInstallIsQueuedAndFlushedInOrder() {
+        let recorder = TapRecorder()
+        let notifier = LocalNotifier()
+        // Two responses arrive before the model installs its handler (a
+        // launch-time delivery racing the model's wiring).
+        notifier.deliverTap(agentId: "a1", hostId: "host-x")
+        notifier.deliverTap(agentId: "a2", hostId: nil)
+        XCTAssertTrue(recorder.taps.isEmpty,
+                      "nothing routes before the handler exists")
+        // The model installs the handler: queued taps flush in delivery
+        // order — the first tap is never dropped.
+        notifier.onOpenAgent = { agentId, hostId in
+            recorder.taps.append((agentId, hostId))
+        }
+        XCTAssertEqual(recorder.taps.map(\.agentId), ["a1", "a2"])
+        XCTAssertEqual(recorder.taps[0].hostId, "host-x")
+        XCTAssertNil(recorder.taps[1].hostId,
+                     "a host-less payload stays host-less through the queue")
+    }
+
+    func testTapWithHandlerInstalledDeliversImmediatelyWithoutDuplicates() {
+        let recorder = TapRecorder()
+        let notifier = LocalNotifier()
+        notifier.onOpenAgent = { agentId, hostId in
+            recorder.taps.append((agentId, hostId))
+        }
+        notifier.deliverTap(agentId: "b1", hostId: "host-y")
+        XCTAssertEqual(recorder.taps.map(\.agentId), ["b1"],
+                       "a live handler routes the tap immediately")
+        // A second delivery routes once — no queue, no double flush.
+        notifier.deliverTap(agentId: "b2", hostId: nil)
+        XCTAssertEqual(recorder.taps.map(\.agentId), ["b1", "b2"])
+        XCTAssertNil(recorder.taps[1].hostId)
     }
 }

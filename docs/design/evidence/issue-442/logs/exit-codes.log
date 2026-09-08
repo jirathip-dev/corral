@@ -8,3 +8,5 @@ privacy exit=0 log=logs/privacy-scan.log
 verify exit=0 log=logs/verify.log
 manifest-check exit=0 log=logs/manifest-check.log
 overall exit=0
+git-diff-check exit=0
+scope-audit exit=0

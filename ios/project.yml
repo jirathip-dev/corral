@@ -36,6 +36,7 @@ targets:
           - "$(SRCROOT)/FleetNotifier/App/FleetNotifierApp.swift"
           - "$(SRCROOT)/FleetNotifier/App/FleetStore.swift"
           - "$(SRCROOT)/FleetNotifier/Demo/DemoFleet.swift"
+          - "$(SRCROOT)/FleetNotifier/Demo/HerdEvidence.swift"
           - "$(SRCROOT)/FleetNotifier/Keychain/DeviceKeyStore.swift"
           - "$(SRCROOT)/FleetNotifier/Models/Models.swift"
           - "$(SRCROOT)/FleetNotifier/Network/CorraldClient.swift"
@@ -53,6 +54,11 @@ targets:
           - "$(SRCROOT)/FleetNotifier/UI/AppTheme.swift"
           - "$(SRCROOT)/FleetNotifier/UI/BoardModel.swift"
           - "$(SRCROOT)/FleetNotifier/UI/FleetViews.swift"
+          - "$(SRCROOT)/FleetNotifier/UI/Herd/HerdArt.swift"
+          - "$(SRCROOT)/FleetNotifier/UI/Herd/HerdEnvironmentChoice.swift"
+          - "$(SRCROOT)/FleetNotifier/UI/Herd/HerdModel.swift"
+          - "$(SRCROOT)/FleetNotifier/UI/Herd/HerdView.swift"
+          - "$(SRCROOT)/FleetNotifier/UI/Herd/RanchEnvironment.swift"
           - "$(SRCROOT)/FleetNotifier/UI/RecentOutputModel.swift"
           - "$(SRCROOT)/FleetNotifier/UI/StateStyle.swift"
           - "$(SRCROOT)/FleetNotifier/UI/TimeInState.swift"
@@ -141,10 +147,14 @@ targets:
           mkdir -p "$TARGET_BUILD_DIR/$WRAPPER_NAME"
           cp "$SRCROOT/FleetNotifier/UI/FleetViews.swift" \
              "$TARGET_BUILD_DIR/$WRAPPER_NAME/FleetViews.swift.txt"
+          cp "$SRCROOT/FleetNotifier/UI/Herd/HerdView.swift" \
+             "$TARGET_BUILD_DIR/$WRAPPER_NAME/HerdView.swift.txt"
         inputFiles:
           - "$(SRCROOT)/FleetNotifier/UI/FleetViews.swift"
+          - "$(SRCROOT)/FleetNotifier/UI/Herd/HerdView.swift"
         outputFiles:
           - "$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/FleetViews.swift.txt"
+          - "$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/HerdView.swift.txt"
         basedOnDependencyAnalysis: false
     dependencies:
       - target: FleetNotifier

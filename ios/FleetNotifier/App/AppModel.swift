@@ -177,6 +177,7 @@ private struct PendingNotificationTap: Sendable, Equatable {
 /// that opens an agent's recents from a notification tap.
 @MainActor
 final class AppModel: ObservableObject {
+    @Published var fleetPresentation: FleetPresentation = .board
     enum Mode: Equatable, Sendable {
         case needsSetup
         case live

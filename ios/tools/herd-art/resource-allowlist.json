@@ -1,0 +1,7 @@
+{
+  "base": "6544bb6b9a4abe9c11f4048a2bc3c2eea1bed4ea",
+  "files": {
+    "ios/FleetNotifier/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png": "e2c754cf3dd7cbc8f10090597360eb56c56fb4672856d48407453dc8190e15e7"
+  },
+  "catalog_names": ["AppIcon"]
+}

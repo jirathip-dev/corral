@@ -1,20 +1,16 @@
-# Source and provenance
+# Provenance and editable sources
 
-Horse and ranch artwork are original authored SVG geometry and procedural illustration
-in `art.py`; no stock horse, copied mascot, provider logo, photograph, diffusion output,
-or third-party world art. Python-seeded foliage, grass, stars and coat marks are
-reproducible. No remote art service or asset download was used.
+Original deterministic procedural/vector illustration in art.py. Geometry and material math
+are authored locally. Coat/ground paint is generated with Pillow and embedded in SVG; no
+external art files, image-generation model/service, paid API or stock/borrowed mascot.
+Randomness uses explicit fixed seeds. Original fixture identities are defined in fixtures.py
+and protected against exact base ecd3938a72cdfce256128c7d437dcd589141baf5.
 
-`fixtures.py` and `control-input.html` are byte-exact accepted-control copies, verified
-against source SHA-256. All repositories, agent names, host examples, branches and
-output fixtures are the pre-existing fictional design dataset. No live fleet data,
-credentials or private production output were queried for the artwork.
+The 79 baseline evidence files are SHA-256 and Git-blob verified; protected-control-baseline.txt
+is preserved. R2 is confined to this evidence directory. All values/names are fictional fixture
+content; no live host/worktree credentials or production data are rendered.
 
-Identity stays SHA-256(agent_name) → coat / mane / breed / tack / accessory, with the
-same lookup axes as the accepted control. Identity does not depend on operational
-state or Day/Night selection. The verifier matches each named horse to its identity
-and raw state, not merely to an unordered palette list.
-
-Native-style chrome uses system fonts already present on macOS. The vector source
-and deterministic capture process are retained; no asset licensing claim beyond
-original authored illustration and preserved project control inputs is required.
+Editable masters: art.py, build.py, fixtures.py, export-layers.py. Browser capture: capture.py.
+Source/export metadata: layers/index.json. Frozen decision hashes: decision-freeze.json.
+SCOPE-CAP.md is the authoritative latest owner constraint copied from the supplied file.
+No existing app-icon input or output is involved; square SVGs are future source handoff only.

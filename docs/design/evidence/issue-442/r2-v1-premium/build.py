@@ -28,7 +28,7 @@ CSS='''
 .nameplate{position:absolute;bottom:19px;left:50%;transform:translateX(-50%);z-index:3;background:none;border:none;padding:0;font-size:11px!important;line-height:14px;color:#f0ede5;max-width:156px!important}
 .state-flag{position:absolute;top:auto;bottom:1px;left:50%;border:none!important;background:none!important;padding:0!important;font-size:11px!important;line-height:16px;z-index:3}
 .horse-btn:before{content:"";position:absolute;bottom:-2px;left:4px;right:4px;height:41px;background:linear-gradient(125deg,#273240ec,#172630f5);border:1px solid #c5cdd42e;border-radius:9px;box-shadow:0 2px 5px #19242924;z-index:2}
-.horse-btn .horse-svg{filter:drop-shadow(0 -1px 0 #e7dab23b)}
+.horse-btn .horse-svg{filter:none}
 .v1 .rail-row{padding-top:30px;padding-bottom:9px;min-height:208px;border:none;background:none;overflow-y:visible}
 .v1 .rail-row .horse-svg{width:148px;height:112px}
 .v1 .rail-row::before{display:none}
@@ -40,7 +40,7 @@ CSS='''
 .v1 .paddock{padding-top:14px}.v1 .paddock-strip{overflow-y:hidden}
 .v1 .field{gap:8px 6px}.v1 .paddock-name{font-size:15px}.v1 .paddock-count{font-size:10px}
 .moon-rim{display:none}.night .moon-rim{display:block}
-.night .horse-svg{filter:drop-shadow(1px -1px 0 #c5d5e030)}
+.night .horse-svg{filter:brightness(.86) saturate(.82)}
 .night .physical-rail{filter:drop-shadow(0 -1px 0 #c4d6e0a0)}
 .night .cast-shadow{transform:translate(135px,0) scale(-1,1);transform-origin:0 0}
 
@@ -72,7 +72,7 @@ def build(out):
         (out/f'{mode}.html').write_text(text)
     ident=F.horse_identity('willow-bend')
     rows=[]
-    for j,(pose,title,note) in enumerate([('stand','Calm standing','Ears and poll distinct from forehead.\nBroad shoulder, tapered neck; long cannon bones.'),('shift','Weight shift','One hind hoof lifts; hock angle stays readable.\nCroup, barrel and identity remain unchanged.'),('graze','Grazing','Broad neck bends to a distinct poll and jaw.\nLong face lowers to ground; legs stay load-bearing.'),('stand','Reduce Motion · selected','Intentional calm standing. No roaming or parallax.\nNot a frozen grazing or transitional pose.')]):
+    for j,(pose,title,note) in enumerate([('stand','Calm standing','Ears and poll distinct from forehead.\nBroad shoulder, tapered neck; long cannon bones.'),('shift','Weight shift','Resting hip drops; one hind toe relaxes.\nRibcage shifts over the planted supporting limb.'),('graze','Grazing','Shorter neck, clear throatlatch, poll and jaw.\nLong face lowers to ground; legs stay load-bearing.'),('stand','Reduce Motion · selected','Intentional calm standing. No roaming or parallax.\nNot a frozen grazing or transitional pose.')]):
         rows.append(f'<section><div class="specimen">{horse(ident,pose=pose,uid="study"+str(j))}</div><div><h2>{title}</h2><p>{note.replace(chr(10),"<br>")}</p></div></section>')
     study='''<!doctype html><html><head><meta charset="utf-8"><style>*{box-sizing:border-box}body{margin:0;width:600px;height:760px;background:#e9e4d7;color:#28342f;font:14px -apple-system,BlinkMacSystemFont,Arial}header{padding:27px 28px 20px;border-bottom:1px solid #b4b5a2}h1{font-size:23px;margin:8px 0}header p{margin:8px 0;color:#566053;font-size:12px}small{font-size:11px;letter-spacing:.1em}section{height:142px;border-bottom:1px solid #c7c8b6;display:grid;grid-template-columns:180px 1fr;align-items:center;padding:0 24px;gap:12px}.specimen{width:148px;height:112px;background:linear-gradient(transparent 89%,#b8be97 90%,#a3ad88)}.horse-svg{width:148px;height:112px}.moon-rim{display:none}h2{font-size:16px;margin:0 0 10px}section p{font-size:12px;line-height:1.65;margin:0;color:#4f5c4f}footer{font-size:11px;padding:16px 28px;color:#59644f}</style></head><body><header><small>V1 R2 / ANATOMY &amp; POSE STUDY</small><h1>One idle horse. Four intentional poses.</h1><p>willow-bend · original deterministic identity · fictional fixture<br>Every specimen is 148 × 112 px — exactly the V1 paddock sprite size.</p></header>'''+''.join(rows)+'<footer>Roan · draft breed · cropped mane · red pad · no accessory. Original vector art.</footer></body></html>'
     (out/'study.html').write_text(study)

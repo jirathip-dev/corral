@@ -1,0 +1,11 @@
+COMMAND: /Users/jirathip/.local/bin/python3 -B verify-layers.py
+EXPORTED 74 SVG layers; no decision PNG changed
+PASS deliberate Reduce Motion calm-standing source equality
+PASS independent expected names/count, viewBoxes/dimensions, hashes, metadata, square safe frames: 74
+PASS exact scope-cap decision PNG freeze
+PASS deterministic layer + metadata rerender equality
+PASS actual-browser intact vs exported layer-stack pixel equality day
+PASS actual-browser intact vs exported layer-stack pixel equality night
+LAYER VERIFIER PASS
+
+RAW_EXIT: 0

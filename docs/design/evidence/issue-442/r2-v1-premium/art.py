@@ -7,121 +7,125 @@ def mix(a,b,t):
 def path(d,fill,**attrs):
     return '<path d="'+d+'" fill="'+fill+'" '+' '.join(f'{k.replace("_","-")}="{v}"' for k,v in attrs.items())+'/>'
 def horse(i,state='idle',pose='stand',uid='h',facing=1):
-    c=F.COAT_HEX[i['coat']]['body']; dark=mix(c,'#161e22',.53); light=mix(c,'#fff0c7',.48); middle=mix(c,'#efd6b1',.16);mane=MANES[F.COATS.index(i['coat'])]
-    g=f'url(#{uid}-coat)';muscle=f'url(#{uid}-muscle)'; hoof=f'url(#{uid}-hoof)'
-    s=f'<svg class="horse-svg" viewBox="0 0 148 112" xmlns="http://www.w3.org/2000/svg" data-pose="{pose}" data-identity="{i}"><defs><linearGradient id="{uid}-coat" x1=".1" y1="0" x2=".7" y2="1"><stop stop-color="{light}"/><stop offset=".28" stop-color="{middle}"/><stop offset=".55" stop-color="{c}"/><stop offset="1" stop-color="{dark}"/></linearGradient><radialGradient id="{uid}-muscle" cx=".28" cy=".2" r=".85"><stop stop-color="{light}"/><stop offset=".37" stop-color="{c}"/><stop offset="1" stop-color="{dark}"/></radialGradient><linearGradient id="{uid}-hoof"><stop stop-color="#776b5d"/><stop offset=".48" stop-color="#443c34"/><stop offset="1" stop-color="#27282b"/></linearGradient></defs>'
-    contacts=[(43,104),(96,105),(89,106)]+([] if pose=='shift' else [(34,105)])
-    for x,y in contacts:
-        s+=f'<ellipse cx="{x}" cy="{y+.4}" rx="6.5" ry="1.15" fill="#152224" opacity=".5"/>'
-    s+='<path class="cast-shadow" d="M26 104 Q81 99 141 108 Q113 113 42 108Z" fill="#162323" opacity=".18"/><ellipse cx="72" cy="105" rx="48" ry="2.4" fill="#152125" opacity=".29"/>'
+    """Continuous anatomical silhouette; light is clipped, never joint plates."""
+    import re
+    c=F.COAT_HEX[i['coat']]['body']; mane=MANES[F.COATS.index(i['coat'])]
+    dark=mix(c,'#15212b',.56); light=mix(c,'#ffe6bd',.45)
+    is_shift=pose=='shift'; grazing=pose=='graze'
+    def warp(d):
+        # Weight shift moves the ribcage over the support line and drops the
+        # resting hip. Transform CONTINUOUS body, not a detached thigh piece.
+        if not is_shift:return d
+        def point(m):
+            x,y=map(float,m.groups())
+            weight=max(0,min(1,(78-y)/25))
+            return f'{x+weight*3.2:.2f} {y+weight*max(0,(82-x)/55)*4.8:.2f}'
+        return re.sub(r'(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)',point,d)
+    if grazing:
+        crown='C91 35 100 43 105 54 Q108 60 110 67 L106 63 L103 57 Q101 59 105 67 L111 70 L111 60 Q114 59 114 70 Q119 73 122 82 L130 95 Q132 100 126 101 L120 99 L113 87 Q106 87 105 79 Q98 72 94 63'
+        crest='M84 38 C97 37 102 49 108 66'
+        eye=(115,78); nostril=(127,97)
+        blaze='M116 73 Q120 80 122 87 L126 95 L124 96 Q118 85 113 77Z'
+    else:
+        crown='Q91 31 98 21 Q101 15 105 17 L103 9 Q105 7 108 17 L111 17 L113 8 Q116 9 114 20 Q118 23 120 29 L132 40 Q136 45 130 47 L124 45 L116 37 Q111 40 107 36 Q104 45 103 54 Q102 61 98 64'
+        crest='M84 39 Q94 27 98 21 Q101 16 106 18'
+        eye=(116,27);nostril=(131,43)
+        blaze='M115 22 Q119 29 124 34 L130 41 L128 43 L121 35 Q117 29 113 24Z'
+    top='M24 44 C30 39 41 37 51 41 C62 44 71 43 80 39 L85 35 '
+    front=' C98 71 93 75 92 80 Q92 83 90 85 L89 97 Q91 99 91 101 L97 104 L97 107 L85 107 L83 104 L85 100 L86 85 Q83 82 84 78 Q86 71 83 66 '
+    belly={'draft':'Q68 76 44 67','stock':'Q66 69 47 64','light':'Q66 66 47 62'}[i['breed']]
+    hind=(' C45 72 39 76 36 82 Q39 88 46 96 L49 101 L55 105 L54 107 L49 106 L44 100 L31 85 Q29 81 31 77 L34 71 ' if is_shift else ' C45 71 38 76 34 82 L34 96 Q36 99 36 101 L41 104 L40 107 L28 107 L27 104 L29 100 L30 85 Q27 82 28 79 L32 71 ')
+    outline=warp(top+crown+front+belly+hind+'C21 65 19 53 24 44 Z')
+    farhind=('M43 56 C53 64 51 72 46 80 L46 98 L51 102 L51 106 L42 106 L41 102 L42 82 L41 73 L36 62 Z' if is_shift else 'M43 56 Q52 64 47 74 L41 83 L43 99 L49 102 L48 105 L40 105 L38 101 L37 82 L39 72 L35 62Z')
+    farfront='M94 53 Q105 60 102 70 L99 81 L100 98 L106 102 L105 105 L97 105 L96 101 L95 82 L94 68Z'
+    s=f'<svg class="horse-svg" viewBox="0 0 148 112" xmlns="http://www.w3.org/2000/svg" data-pose="{pose}" data-identity="{i}"><defs><clipPath id="{uid}-silhouette">'+path(outline,'white')+f'</clipPath><linearGradient id="{uid}-coat" x1=".2" y1="0" x2=".6" y2="1"><stop stop-color="{light}"/><stop offset=".32" stop-color="{c}"/><stop offset=".69" stop-color="{c}"/><stop offset="1" stop-color="{dark}"/></linearGradient><radialGradient id="{uid}-light"><stop stop-color="{light}" stop-opacity=".32"/><stop offset=".48" stop-color="{light}" stop-opacity=".15"/><stop offset="1" stop-color="{light}" stop-opacity="0"/></radialGradient><radialGradient id="{uid}-shade"><stop stop-color="{dark}" stop-opacity=".8"/><stop offset="1" stop-color="{dark}" stop-opacity="0"/></radialGradient><linearGradient id="{uid}-leather" x2="0" y2="1"><stop stop-color="#c36b4a"/><stop offset="1" stop-color="#683a30"/></linearGradient><filter id="{uid}-soft" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="1.4"/></filter></defs>'
     s+=f'<g transform="translate({148 if facing==-1 else 0} 0) scale({facing} 1)">'
-    # Four separate load paths: hoof/fetlock/cannon/knee or hock, to mass.
-    s+=path('M42 57 Q51 65 45 74 L39 82 L42 99 L47 101 L46 104 L39 104 L35 82 L38 72 L34 61Z',dark)
-    s+=path('M93 54 Q102 58 100 69 L98 76 L99 80 L96 84 L96 96 Q99 98 98 100 L101 102 L100 105 L92 105 L92 101 L93 97 L94 84 L92 80 L94 76 L91 68Z',dark)
-    s+=path('M93 100L99 101L101 105H93Z',hoof)
-    s+=path('M39 100L45 100L47 104H39Z',hoof)
-    # Tail dock anchored high on croup, flowing mass with strands.
-    s+=path('M32 42 C24 41 23 50 23 61 C23 77 17 85 12 90 Q24 88 27 76 Q33 56 34 47Z',mane)
-    s+=path('M29 47Q25 67 23 76L18 86','none',stroke=mix(mane,light,.35),stroke_width='.7')
-    s+=path('M33 48Q30 72 25 82M25 68Q22 81 15 86','none',stroke=mix(mane,'#101b21',.4),stroke_width='1')
-    belly={'draft':65,'stock':63,'light':61}[i['breed']]
-    # Withers peak, back saddle, croup and chest form one continuous contour.
-    s+=path(f'M29 43 Q35 37 46 39 C57 42 66 45 80 40 L86 35 Q93 34 96 41 C103 44 106 53 101 61 Q96 68 84 {belly+1} Q62 {belly+4} 45 {belly} Q31 64 28 58 Q23 49 29 43Z',g)
-    s+=path('M29 45 C32 37 44 39 48 47 Q51 56 42 63 Q28 63 27 53Z',muscle)
-    s+=path('M83 40 Q98 36 101 49 Q106 59 96 65 Q86 64 82 56 Q88 49 83 40Z',muscle)
-    s+=path(f'M49 49 Q69 44 83 48 Q81 61 67 {belly} Q53 {belly} 45 58Z',muscle,opacity='.52')
-    s+=path('M33 42 Q42 39 48 43 M50 44Q66 48 80 42 L86 38','none',stroke=light,stroke_width='1.1',opacity='.74')
-    s+=path('M47 58 Q60 65 77 62 M84 46 Q94 48 91 58','none',stroke=dark,stroke_width='.7',opacity='.55')
-    # Near hindquarter to stifle, diagonal gaskin, hock, narrow cannon.
-    if pose=='shift':
-        leg='M32 54 Q45 52 46 64 Q45 71 39 76 L35 82 L44 92 L49 94 L49 98 L45 99 L32 85 Q29 82 32 78 L35 71 Q28 64 32 54Z'
-        foot='M44 93L49 94L49 98L45 100L43 98Z'
-    else:
-        leg='M32 54 Q46 54 46 64 Q45 71 38 76 L34 79 L30 79 L29 83 L33 86 L33 95 Q36 97 35 100 L40 102 L40 106 L28 106 L28 102 L30 97 L29 86 L26 82 L28 78 L33 72 Q28 65 32 54Z'
-        foot='M30 101Q35 100 37 102L40 106H28L29 103Z'
-    s+=path(leg,g);s+=path(foot,hoof)
-    s+=path('M34 57Q40 57 40 64L36 71','none',stroke=light,stroke_width='1.2',opacity='.45')
-    # Near foreleg: scapular mass flows into elbow, forearm, knee and fetlock.
-    s+=path('M86 53 Q98 54 97 64 Q97 70 93 75 L94 79 L92 83 L90 84 L89 95 Q92 97 92 100 L97 103 L97 107 L84 107 L83 103 L85 100 L86 96 L86 84 L83 81 L83 77 L86 73 L83 65Z',g)
-    s+=path('M85 102Q91 101 94 103L97 107H84L83 105Z',hoof)
-    s+=path('M88 66 L90 74 M89 82 L87 98','none',stroke=light,stroke_width='.9',opacity='.6')
-    s+=path('M84 77Q88 75 93 78L91 81L85 81Z',muscle)
-    s+=path('M86 96Q90 95 92 99L88 101L85 100Z',muscle)
-    s+=path('M84 102Q90 101 94 103','none',stroke=light,stroke_width='1')
-    s+=path('M28 79L32 79L34 82L30 85L27 82Z',muscle)
-    if pose!='shift':
-        s+=path('M30 96Q34 95 35 98L33 101L29 100Z',muscle)
-        s+=path('M29 102Q34 100 38 103','none',stroke=light,stroke_width='1')
-    # Distinct cervical mass, poll flexion and jaw. No tubular neck/muzzle.
-    if pose=='graze':
-        s+=path('M84 37 C95 34 105 42 110 53 Q115 65 119 75 L111 81 Q106 70 99 65 Q91 65 88 58 Q91 47 84 37Z',g)
-        s+=path('M90 43 Q102 43 107 55 L114 74 Q105 66 100 58Z',muscle,opacity='.5')
-        crest='M87 37Q101 36 109 51L117 72'; head='translate(117 74) rotate(31)'
-    else:
-        s+=path('M83 42 Q92 32 96 24 Q99 17 105 16 L111 23 Q108 29 105 37 L103 52 Q102 61 96 64 Q87 62 85 56 Q91 48 83 42Z',g)
-        s+=path('M100 23Q97 36 92 43L96 58Q104 45 105 30Z',muscle,opacity='.64')
-        s+=path('M89 46Q97 41 102 34','none',stroke=light,stroke_width='.9',opacity='.45')
-        crest='M85 41Q95 29 97 23Q100 16 105 16';head=f'translate(106 20) rotate({-10 if state=="blocked" else 6})'
-    if i['mane']=='braided':
-        s+=path(crest,'none',stroke=mane,stroke_width='3.4',stroke_dasharray='2 1.5')
-    else:
-        s+=path(crest,'none',stroke=mane,stroke_width='3',stroke_linecap='round')
-        if i['mane']=='flowing':
-            s+=path('M99 19Q95 35 86 45L82 50Q95 46 103 22Z' if pose!='graze' else 'M94 39Q105 48 111 65L108 70Q100 52 90 43Z',mane)
-    s+=f'<g transform="{head}">'
-    s+=path('M-5 0L-6 -8Q-3 -9 -1 -1Z',g)
-    s+=path('M2 -2L4 -9Q7 -8 6 -1Z',g)
-    s+=path('M-4 -1 Q2 -5 8 0 L14 9 L23 17 Q26 21 22 24 L16 23 L8 15 Q2 17 -3 11 Q-7 9 -7 3Z',g)
-    s+=path('M-3 3Q3 2 7 8Q7 14 2 15Q-5 12 -3 3Z',muscle)
-    s+=path('M17 15Q23 16 25 20L23 23L17 22L14 18Z',mix(c,'#302c2d',.4))
-    s+=path('M9 2L20 17','none',stroke=light,stroke_width='1',opacity='.6')
-    if i['coat'] in ['dun','palomino','buckskin','chestnut']:
-        s+=path('M7 0L18 14L17 18L13 12L5 1Z','#eee2c9')
-    s+='<ellipse cx="6" cy="4" rx="1.25" ry=".95" fill="#191c1e"/><circle cx="6.3" cy="3.8" r=".3" fill="#e8e3d3"/><ellipse cx="22" cy="20" rx="1" ry=".65" fill="#242322"/>'
-    s+=path('M17 22L22 23','none',stroke=dark,stroke_width='.65')
-    s+=path('M-5 -7L-3 -1M4 -8L6 -2L8 0L14 9L23 17','none',stroke='#cbddea',stroke_width='1.15',opacity='.85',**{'class':'moon-rim'})
-    s+=path('M-4 -2Q1 -4 5 0L2 3Z',mane)
-    if i['accessory']=='hat':
-        s+=path('M-10 -4Q1 -8 11 -3L9 -1L-10 -1Z','#d8b46a')
-        s+=path('M-5 -4L-4 -10H3L6 -4Z','#c5a267')
-    s+='</g>'
-    if i['tack']!='none':
-        s+=path('M49 42Q63 46 76 42L78 53Q64 57 49 53Z','#a74735' if i['tack']=='pad' else '#795031')
-        s+=path('M50 43Q63 48 75 43L76 51','none',stroke='#d29b68',stroke_width='.75')
-        if i['tack']=='saddle':
-            s+=path('M53 42Q61 39 71 43L70 48L55 47Z','#624029')
-            s+=path('M67 48L68 61L73 61L73 58','none',stroke='#b2a28b',stroke_width='.9')
-    if i['accessory']=='bandana':s+=path('M94 42L104 44L96 51Z','#c2543f')
+    s+=f'<path class="cast-shadow" d="M29 106 Q50 95 93 101 L143 109 Q100 114 37 110Z" fill="#142924" opacity=".43" filter="url(#{uid}-soft)"/>'
+    contacts=[(47 if is_shift else 44,105),(101,105),(91,107)]+([] if is_shift else [(34,107)])
+    for x,y in contacts:s+=f'<ellipse cx="{x}" cy="{y}" rx="6.2" ry="1.1" fill="#132521" opacity=".57"/>'
+    if is_shift:s+='<ellipse cx="54" cy="106" rx="2" ry=".7" fill="#132521" opacity=".36"/>'
+    s+=path(warp(farhind),mix(c,'#1e2929',.34))+path(farfront,mix(c,'#1e2929',.34))
+    # Tail grows from the top of the pelvis, with a continuous dock and hairs.
+    s+=path(warp('M25 43 C18 45 22 62 18 74 Q17 84 11 90 Q24 88 27 71 L31 50Z'),mane)
+    for j in range(5):s+=path(warp(f'M{27+j*.4} 46 Q{23+j*.5} 69 {18+j} 84'),'none',stroke=mix(mane,light,.28),stroke_width='.45',opacity='.55')
+    s+=path(outline,f'url(#{uid}-coat)')
+    s+=f'<g clip-path="url(#{uid}-silhouette)">'
+    s+=f'<image x="0" y="0" width="148" height="112" href="{paint_surface(c,pose=pose)}"/>'
+    # Broad feathered illumination crosses anatomical regions rather than
+    # tracing round hip/shoulder pieces. No component seams, caps or bevels.
+    s+=f'<ellipse cx="57" cy="43" rx="42" ry="18" fill="url(#{uid}-light)" transform="rotate(6 57 43)"/><ellipse cx="73" cy="67" rx="37" ry="12" fill="url(#{uid}-shade)"/><ellipse cx="95" cy="51" rx="19" ry="24" fill="url(#{uid}-light)" transform="rotate(28 95 51)"/>'
+    s+=path(warp('M23 52 C32 66 39 62 47 65 Q66 73 85 63 Q90 66 86 77 L85 98 L94 103 L87 110 L81 96 L80 72 Q64 77 45 69 L37 82 L34 106 L26 107 L25 80Z'),dark,opacity='.28',filter=f'url(#{uid}-soft)')
+    s+=path(warp('M29 44 Q32 61 37 68 M89 40 Q92 53 86 62'),'none',stroke=dark,stroke_width='1.4',opacity='.32',filter=f'url(#{uid}-soft)')
+    # Tendon planes are narrow diffuse strokes, not circular joint drawings.
+    s+=path(warp('M32 73 L30 80 L32 94 M88 68 Q90 76 88 83 L87 96'),'none',stroke=light,stroke_width='1.15',opacity='.45')
+    s+=path('M85 100 Q90 100 93 103 L98 105 L98 109 L83 109Z','#3b3931')
+    s+=path('M85 102 Q91 102 96 105','none',stroke='#b1a28c',stroke_width='.65')
+    if is_shift:s+=path('M49 100 L54 104 L56 106 L53 108 L49 104Z','#403c32')
+    else:s+=path('M28 101 Q33 100 38 104 L42 105 L42 110 L26 110Z','#3b3931')
     if i['breed']=='draft':
-        s+=path('M85 96L90 97L92 101L83 101Z',mane,opacity='.8')
-        if pose!='shift':s+=path('M29 96L34 97L36 101L28 101Z',mane,opacity='.8')
-    s+=path('M28 44Q35 37 46 40M49 43Q65 47 80 41L86 36','none',stroke='#cbddea',stroke_width='1.05',opacity='.82',**{'class':'moon-rim'})
-    s+=path('M105 17L111 23Q108 29 105 37L103 52' if pose!='graze' else 'M96 39Q109 44 113 59L119 74','none',stroke='#cbddea',stroke_width='1.15',opacity='.85',**{'class':'moon-rim'})
-    # Sparse coat hair catches directional light; deterministic anatomical ROI.
-    rng=random.Random(42)
-    for _ in range(35):
-        x=rng.uniform(48,80);y=rng.uniform(49,59)
-        s+=path(f'M{x:.2f} {y:.2f}l1.1 .4','none',stroke=light,stroke_width='.24',opacity='.23')
+        s+=path('M85 96 L88 100 L90 97 L92 101 L84 102Z',mix(mane,c,.48),opacity='.7')
+    # Original roan/tactile coat marks follow the ribcage; deterministic.
+    rng=random.Random(442)
+    for _ in range(90):
+        x=rng.uniform(27,102); y=rng.uniform(39,67)
+        s+=path(f'M{x:.2f} {y:.2f}q1 .1 1.7 .7','none',stroke=light if i['coat']=='roan' or rng.random()<.6 else dark,stroke_width='.55',opacity='.19')
     s+='</g>'
-    if state=='blocked':
-        s+=path('M140 79V105','none',stroke='#bda980',stroke_width='1.3')
-        s+=path('M140 79H148L145 83L148 87H140Z','#ae5b61')
+    # Cheek/throatlatch are low-contrast planes within the continuous head.
+    if grazing:
+        s+=path('M110 74 Q118 77 117 84 L113 85 Q108 84 107 79Z',dark,opacity='.22')
+        s+=path('M124 94 Q130 94 131 98 L127 100 L122 98Z',mix(c,'#393330',.38))
+        rim='M86 36 Q100 42 105 56 L110 67 M112 61 L114 70 Q120 74 122 82 L130 96'
+    else:
+        s+=path('M109 26 Q117 27 118 33 Q112 39 108 33Z',dark,opacity='.23')
+        s+=path('M128 38 Q135 41 133 45 L129 47 L125 44Z',mix(c,'#393330',.38))
+        rim='M105 10 L108 18 M114 10 L114 20 Q118 23 121 30 L133 41 M107 38 Q104 45 103 54'
+    s+=f'<ellipse cx="{eye[0]}" cy="{eye[1]}" rx="1.05" ry=".75" fill="#1b211f"/><ellipse cx="{nostril[0]}" cy="{nostril[1]}" rx=".9" ry=".65" fill="#252925"/>'
+    if i['coat'] in ['palomino','chestnut','dun','buckskin']:s+=path(blaze,'#e8dfc8',opacity='.9')
+    if i['mane']=='braided':s+=path(crest,'none',stroke=mane,stroke_width='3',stroke_dasharray='1.5 1')
+    else:
+        s+=path(crest,'none',stroke=mane,stroke_width='2.4')
+        if i['mane']=='flowing':s+=path('M99 21 Q94 37 84 44 L82 51 Q96 45 103 24Z' if not grazing else 'M91 39 Q104 48 107 64 L103 65 Q98 50 88 43Z',mane)
+    if i['tack']!='none':
+        s+=path(warp('M49 42 Q61 46 75 42 L77 54 Q62 58 49 52Z'),f'url(#{uid}-leather)')
+        s+=path(warp('M50 43 Q64 48 74 44'),'none',stroke='#d19a72',stroke_width='.7')
+        if i['tack']=='saddle':
+            s+=path(warp('M54 43 Q62 40 71 44 L70 48 L55 47Z'),'#68442e')
+            s+=path('M68 48 L69 60 L73 61 L73 58','none',stroke='#aa9a80',stroke_width='.8')
+    if i['accessory']=='bandana':s+=path('M92 43 L102 47 L95 53Z','#b14b3c')
+    if i['accessory']=='hat':
+        s+=path('M99 14 Q110 10 119 17 L115 19 L100 17Z' if not grazing else 'M103 65 Q112 62 121 69 L119 72 L104 68Z','#caa96e')
+    s+=path(warp('M28 43 Q37 36 50 41 Q65 45 80 39 L85 35'),'none',stroke='#d3dfeb',stroke_width='1',opacity='.68',**{'class':'moon-rim'})
+    s+=path(rim,'none',stroke='#d3dfeb',stroke_width='1.05',opacity='.8',**{'class':'moon-rim'})
+    # Tufts in front of planted feet integrate the terrain, not a green oval.
+    for x in [31,49,87,104]:s+=path(f'M{x} 108 l-1 -2 m1 2 l2 -1.6','none',stroke='#7e8b60',stroke_width='.5',opacity='.65')
+    s+='</g>'
+    if state=='blocked':s+=path('M140 79V105','none',stroke='#bda980',stroke_width='1.3')+path('M140 79H148L145 83L148 87H140Z','#ae5b61')
     return s+'</svg>'
 
 def world(night):
     r=random.Random(442)
     sky=('#121a32','#667991') if night else ('#388fc4','#e5e8c9')
-    s=f'<svg class="world" viewBox="0 0 390 640" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="sky" x2="0" y2="1"><stop stop-color="{sky[0]}"/><stop offset="1" stop-color="{sky[1]}"/></linearGradient><linearGradient id="field" x1=".1" y1="0" x2=".8" y2="1"><stop stop-color="{"#63746a" if night else "#bcc17b"}"/><stop offset=".4" stop-color="{"#415d55" if night else "#8e9c58"}"/><stop offset="1" stop-color="{"#273f3e" if night else "#485e3b"}"/></linearGradient><radialGradient id="light"><stop stop-color="{"#c4d4ea" if night else "#fff3c7"}" stop-opacity=".35"/><stop offset="1" stop-color="#fff3c7" stop-opacity="0"/></radialGradient><filter id="haze"><feGaussianBlur stdDeviation="6"/></filter><linearGradient id="wood" x2="0" y2="1"><stop stop-color="{"#a4a99d" if night else "#d6bd85"}"/><stop offset=".25" stop-color="{"#7e867d" if night else "#b09662"}"/><stop offset="1" stop-color="{"#444e4c" if night else "#665537"}"/></linearGradient><filter id="grain"><feTurbulence type="fractalNoise" baseFrequency=".8" numOctaves="3" seed="442"/><feColorMatrix type="saturate" values="0"/><feComponentTransfer><feFuncA type="linear" slope=".07"/></feComponentTransfer><feBlend in="SourceGraphic" mode="soft-light"/></filter></defs>'
+    s=f'<svg class="world" viewBox="0 0 390 640" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="sky" x2="0" y2="1"><stop stop-color="{sky[0]}"/><stop offset="1" stop-color="{sky[1]}"/></linearGradient><linearGradient id="field" x1=".1" y1="0" x2=".8" y2="1"><stop stop-color="{"#63746a" if night else "#bcc17b"}"/><stop offset=".4" stop-color="{"#415d55" if night else "#8e9c58"}"/><stop offset="1" stop-color="{"#273f3e" if night else "#485e3b"}"/></linearGradient><radialGradient id="light"><stop stop-color="{"#c4d4ea" if night else "#fff3c7"}" stop-opacity=".15"/><stop offset="1" stop-color="#fff3c7" stop-opacity="0"/></radialGradient><filter id="haze"><feGaussianBlur stdDeviation="6"/></filter><linearGradient id="wood" x2="0" y2="1"><stop stop-color="{"#a4a99d" if night else "#d6bd85"}"/><stop offset=".25" stop-color="{"#7e867d" if night else "#b09662"}"/><stop offset="1" stop-color="{"#444e4c" if night else "#665537"}"/></linearGradient><filter id="grain"><feTurbulence type="fractalNoise" baseFrequency=".8" numOctaves="3" seed="442"/><feColorMatrix type="saturate" values="0"/><feComponentTransfer><feFuncA type="linear" slope=".07"/></feComponentTransfer><feBlend in="SourceGraphic" mode="soft-light"/></filter></defs>'
     s+=path('M0 0H390V640H0Z','url(#sky)')
     if night:
-        s+='<path d="M30 -20Q164 70 360 204" fill="none" stroke="#8e9cb2" stroke-width="39" opacity=".12" filter="url(#haze)"/>'
+        s+='<defs><linearGradient id="galactic" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#93a4c3" stop-opacity=".12"/><stop offset=".35" stop-color="#cec5d5" stop-opacity=".32"/><stop offset=".65" stop-color="#b6c8d2" stop-opacity=".26"/><stop offset="1" stop-color="#8f99b9" stop-opacity=".08"/></linearGradient><filter id="stellar-cloud"><feTurbulence type="fractalNoise" baseFrequency=".045 .05" numOctaves="4" seed="844"/><feColorMatrix type="matrix" values="0 0 0 0 .76 0 0 0 0 .79 0 0 0 0 .92 0 0 0 1.9 -.65"/><feComposite in2="SourceGraphic" operator="in"/></filter></defs>'
+        band='M-8 -20 C63 -7 103 39 168 70 C240 107 316 147 398 195 L404 232 C311 191 235 145 156 113 C86 83 41 31 -8 21Z'
+        s+=path(band,'url(#galactic)',filter='url(#haze)')
+        s+='<g filter="url(#haze)">'+path(band,'#bdc9d8',filter='url(#stellar-cloud)',opacity='.42')+'</g>'
+        s+=path('M87 29 Q112 61 155 75 L145 78 Q104 64 98 48 L83 43Z','#222a45',opacity='.3',filter='url(#haze)')
+        s+=path('M172 92 Q189 108 215 112 L203 118 L178 108 L165 105Z','#222a45',opacity='.38')
+        cloud=random.Random(884)
+        for _ in range(95):
+            yy=cloud.uniform(-15,210);xx=45+yy*1.48+cloud.gauss(0,14)
+            s+=f'<ellipse cx="{xx:.1f}" cy="{yy:.1f}" rx="{cloud.uniform(3,13):.1f}" ry="{cloud.uniform(2,8):.1f}" fill="{cloud.choice(["#ccd7dd","#c8bed3","#ded1bf"])}" opacity=".06" filter="url(#haze)"/>'
+        s+=path('M102 49Q151 83 213 109','none',stroke='#e3d9d2',stroke_width='11',opacity='.10',filter='url(#haze)')
         # Granular astronomical band: core points and offset dust lane, not fog.
         star=random.Random(844)
-        for _ in range(1800):
+        for _ in range(1200):
             y=star.uniform(-10,206); center=45+y*1.48
             x=center+star.gauss(0,19)
             if 0<x<390:
-                s+=f'<circle cx="{x:.2f}" cy="{y:.2f}" r="{star.uniform(.15,.7):.2f}" fill="{star.choice(["#b7c8df","#d6cbd6","#f4e4d0"])}" opacity="{star.uniform(.15,.7):.2f}"/>'
+                s+=f'<circle cx="{x:.2f}" cy="{y:.2f}" r="{star.uniform(.15,.48):.2f}" fill="{star.choice(["#b7c8df","#d6cbd6","#f4e4d0"])}" opacity="{star.uniform(.15,.48):.2f}"/>'
         for _ in range(130):
             x=star.uniform(0,390);y=star.uniform(0,205)
             s+=f'<circle cx="{x:.2f}" cy="{y:.2f}" r="{star.uniform(.45,1.15):.2f}" fill="#ebedf4" opacity="{star.uniform(.5,1):.2f}"/>'
@@ -132,10 +136,22 @@ def world(night):
             s+=f'<g transform="translate({x} {y}) scale({k})" opacity=".56" filter="url(#haze)"><path d="M-58 5Q-37 -6 -18 0Q-1 -21 14 -11Q27 -16 47 -1Q69 0 85 7Q15 19 -58 5Z" fill="#f8f3da"/></g>'
     # Multiple irregular ridge planes, warm haze and shadowed valleys.
     layers=[('M0 192L20 181L41 185L72 160L91 163L121 147L146 154L176 137L198 144L217 167L238 159L258 166L287 141L309 149L333 171L360 157L390 168V640H0Z','#5f7188' if night else '#9db7b3'),('M0 218Q35 187 65 192L98 209Q131 173 164 185L196 201Q241 166 277 196L310 187Q355 192 390 210V640H0Z','#4e666f' if night else '#819e91'),('M0 243Q46 205 104 234Q159 200 220 235Q278 210 322 233Q358 225 390 234V640H0Z','#425c5d' if night else '#698c72')]
-    for d,c in layers:s+=path(d,c)
+    for idx,(d,c) in enumerate(layers):
+        s+=f'<defs><linearGradient id="ridge-volume{idx}" x1="0" y1="0" x2=".65" y2="1"><stop stop-color="{mix(c,"#cad3d0",.23)}"/><stop offset=".24" stop-color="{c}"/><stop offset=".42" stop-color="{mix(c,"#284d43",.24)}"/><stop offset="1" stop-color="{c}"/></linearGradient></defs>'
+        s+=path(d,f'url(#ridge-volume{idx})')
+        s+=f'<defs><clipPath id="ridge{idx}">'+path(d,'white')+'</clipPath></defs>'
+        brush=random.Random(442+idx)
+        s+=f'<g clip-path="url(#ridge{idx})">'
+        for _ in range(75):
+            x=brush.uniform(-20,390);y=brush.uniform(163+idx*20,235+idx*16);w=brush.uniform(9,43)
+            s+=path(f'M{x:.1f} {y:.1f}q{w*.4:.1f} -8 {w:.1f} -3l{-w*.6:.1f} 8Z',mix(c,'#dde0c0' if not night else '#9baac0',.3),opacity=f'{brush.uniform(.03,.12):.2f}')
+        s+='</g>'
+    s+='<ellipse cx="157" cy="227" rx="245" ry="18" fill="'+('#adbac5' if night else '#e8e4c4')+'" opacity=".13" filter="url(#haze)"/>'
     s+=path('M76 193L117 186L150 208L179 214L127 202Z','#c0c6ab' if not night else '#72818b',opacity='.27')
     s+=path('M239 210L272 204L296 214L335 228L290 219Z','#cad0a4' if not night else '#7b8b8b',opacity='.3')
     s+=path('M0 259Q80 228 163 255Q258 278 390 249V640H0Z','url(#field)')
+    s+='<defs><clipPath id="ground-paint">'+path('M0 259Q80 228 163 255Q258 278 390 249V640H0Z','white')+'</clipPath></defs>'
+    s+=f'<image x="0" y="250" width="390" height="390" opacity=".75" clip-path="url(#ground-paint)" href="{paint_surface("#516757" if night else "#809253",kind="ground",night=night)}"/>'
     s+=path('M0 338Q121 291 227 320T390 298V326Q302 344 204 343Q86 310 0 354Z','#d9ce92' if not night else '#879182',opacity='.22')
     s+=path('M0 476Q114 437 227 471T390 448V488Q248 511 164 479Q74 471 0 506Z','#253f37',opacity='.16')
     # Receding field tracks: converging width and reduced contrast.
@@ -160,9 +176,13 @@ def world(night):
             colors=['#3d614a','#547449','#70844e','#91a163'] if not night else ['#263f43','#354e4e','#48625a','#687b67']
             color=colors[min(3,max(0,int((24-xx-yy)/22)))]
             size=r.uniform(4,9)
-            t+=path(f'M{xx-size:.1f} {yy:.1f}q2 {-size:.1f} {size:.1f} {-size*.8:.1f}q{size:.1f} -1 {size*1.3:.1f} {size*.7:.1f}q-1 {size:.1f} {-size:.1f} {size*.8:.1f}q{-size:.1f} 2 {-size*1.3:.1f} {-size*.7:.1f}Z',color)
+            gid=f'leaf{x}-{y}-{_}'
+            t+=f'<defs><linearGradient id="{gid}" x1="0" y1="0" x2=".7" y2="1"><stop stop-color="{mix(color,"#ccd2a0" if not night else "#9aaeb1",.18)}"/><stop offset=".5" stop-color="{color}"/><stop offset="1" stop-color="{mix(color,"#203c37",.28)}"/></linearGradient></defs>'
+            t+=path(f'M{xx-size:.1f} {yy:.1f}q2 {-size:.1f} {size:.1f} {-size*.8:.1f}q{size:.1f} -1 {size*1.3:.1f} {size*.7:.1f}q-1 {size:.1f} {-size:.1f} {size*.8:.1f}q{-size:.1f} 2 {-size*1.3:.1f} {-size*.7:.1f}Z',f'url(#{gid})')
         return t+'</g>'
-    for x,y,k in [(46,223,.36),(98,233,.25),(258,223,.4),(317,230,.32),(381,200,1.2),(-7,199,1.1)]:s+=tree(x,y,k)
+    for x,y,k in [(46,223,.36),(98,233,.25),(258,223,.4),(317,230,.32),(381,200,1.2),(-7,199,1.1)]:
+        s+=f'<ellipse cx="{x+20*k}" cy="{y+54*k}" rx="{39*k}" ry="{4*k}" fill="#183c33" opacity=".2"/>'
+        s+=tree(x,y,k)
     # Rear fence is small and recessed; foreground gate is its own DOM overlay.
     for y in [271,535]:
         s+=path(f'M0 {y}Q180 {y-7} 390 {y+2}','none',stroke='#aaa783' if not night else '#818f86',stroke_width='2',opacity='.6')
@@ -179,3 +199,70 @@ def world(night):
 
 def rail():
     return '''<svg class="physical-rail" viewBox="0 0 390 44" preserveAspectRatio="none" aria-hidden="true"><defs><linearGradient id="railwood" x2="0" y2="1"><stop stop-color="#c9b18b"/><stop offset=".2" stop-color="#a58b65"/><stop offset="1" stop-color="#5b5140"/></linearGradient></defs><g fill="#172626" opacity=".4"><path d="M6 40L30 43H42L17 39ZM190 40L214 44H227L201 39ZM372 40L390 44V40L382 39Z"/></g><path d="M0 40H390" stroke="#19282a" stroke-width="5" opacity=".2"/><path d="M0 11L390 14V21L0 18ZM0 28L390 30V36L0 34Z" fill="url(#railwood)"/><path d="M0 17L390 20V22L0 19ZM0 33L390 35V37L0 35Z" fill="#393f35" opacity=".7"/><path d="M6 2L18 0V43H6ZM190 2L201 0V43H190ZM372 2L384 0V43H372Z" fill="url(#railwood)"/><path d="M0 12H390M0 29H390M8 3V41M192 3V41M374 3V41" fill="none" stroke="#dec9a0" stroke-width=".7"/><path d="M20 19L187 29M204 29L369 19" stroke="#74634b" stroke-width="3"/><g fill="#454c46"><circle cx="12" cy="15" r="1.3"/><circle cx="195" cy="15" r="1.3"/><circle cx="378" cy="15" r="1.3"/></g><path d="M194 3H216L210 9L216 15H194Z" fill="#a6545c"/></svg>'''
+
+# Procedural paint is embedded in SVG; no downloaded/generated-service assets.
+# Analytic depth provides one connected body surface, never joint discs.
+def paint_surface(color, kind='coat', pose='stand', night=False):
+    import base64, io
+    from PIL import Image
+    key=(color,kind,pose,night)
+    if key in _PAINT_CACHE:return _PAINT_CACHE[key]
+    rgb=tuple(int(color[k:k+2],16) for k in (1,3,5))
+    w,h=(148,112) if kind=='coat' else (390,390)
+    im=Image.new('RGBA',(w,h));pix=im.load()
+    def noise(x,y):
+        ix,iy=math.floor(x),math.floor(y);fx=x-ix;fy=y-iy
+        fx=fx*fx*(3-2*fx);fy=fy*fy*(3-2*fy)
+        def v(a,b):
+            z=(a*374761393+b*668265263+442)&0xffffffff
+            z=((z^(z>>13))*1274126177)&0xffffffff
+            return (z^(z>>16))/4294967295
+        return (v(ix,iy)*(1-fx)+v(ix+1,iy)*fx)*(1-fy)+(v(ix,iy+1)*(1-fx)+v(ix+1,iy+1)*fx)*fy
+    def depth(x,y):
+        # Elliptic ribcage, smooth withers/neck union and narrow tendon volumes.
+        fields=[]
+        for cx,cy,rx,ry,z in [(56,52,43,19,17),(91,49,14,24,10),(29,54,14,18,10)]:
+            q=1-((x-cx)/rx)**2-((y-cy)/ry)**2
+            fields.append(z*math.sqrt(max(0,q)))
+        if pose=='graze':a,b,c,d=91,47,111,76
+        else:a,b,c,d=93,45,106,24
+        vx,vy=c-a,d-b;t=max(0,min(1,((x-a)*vx+(y-b)*vy)/(vx*vx+vy*vy)))
+        distance=((x-a-t*vx)**2+(y-b-t*vy)**2)**.5
+        fields.append(8*math.sqrt(max(0,1-(distance/10)**2)))
+        if y>66:
+            leg=88 if x>65 else (34+(y-82)*.8 if pose=='shift' else 32)
+            fields.append(3*math.sqrt(max(0,1-((x-leg)/5)**2)))
+        # Smooth union, so intersecting muscles do not acquire separate edges.
+        z=0
+        for f in fields:
+            k=5;blend=max(k-abs(z-f),0)/k
+            z=max(z,f)+blend*blend*k*.25
+        return z
+    for y in range(h):
+        for x in range(w):
+            if kind=='coat':
+                dx=(depth(x+1,y)-depth(x-1,y))*.5;dy=(depth(x,y+1)-depth(x,y-1))*.5
+                inv=1/math.sqrt(dx*dx+dy*dy+1)
+                diffuse=max(0,(-dx*-.44-dy*-.67+.6)*inv)
+                broad=noise(x*.075,y*.11)-.5
+                bristle=noise(x*.35+y*.08,y*.72)-.5
+                value=.46+.68*diffuse+.10*broad+.05*bristle
+                warm=max(0,diffuse-.58)*.22
+                shadow=max(0,.6-diffuse)*.15
+                out=[rgb[j]*value+(245,210,160)[j]*warm+(31,47,58)[j]*shadow for j in range(3)]
+            else:
+                # Domain-warped pasture: large light/shade masses, then broken
+                # grass strokes. Distance compression gives material recession.
+                t=y/(h-1);scale=1.5+3*t
+                u=x/(25*scale);v=y/(11*scale)
+                n=noise(u+noise(u*.4,v*.5)*2,v)
+                fine=noise(x*.42,y*.85)
+                ridge=noise(x*.027,y*.016)
+                value=.65+.48*n+.18*ridge+(fine-.5)*(.08+.13*t)
+                out=[rgb[j]*value for j in range(3)]
+            pix[x,y]=tuple(max(0,min(255,round(a))) for a in out)+(255,)
+    bio=io.BytesIO();im.save(bio,format='PNG',optimize=False)
+    uri='data:image/png;base64,'+base64.b64encode(bio.getvalue()).decode()
+    _PAINT_CACHE[key]=uri
+    return uri
+_PAINT_CACHE={}

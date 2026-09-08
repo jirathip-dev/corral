@@ -1,0 +1,4 @@
+COMMAND: /Users/jirathip/.local/bin/python3 -B export-layers.py
+EXPORTED 74 SVG layers; no decision PNG changed
+
+RAW_EXIT: 0

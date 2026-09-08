@@ -1,0 +1,751 @@
+{
+  "decisionCaptureDPR": 2,
+  "decisionOutputScale": 1,
+  "elements": {
+    ".chrome": {
+      "background": "rgba(0, 0, 0, 0) linear-gradient(125deg, rgba(40, 49, 67, 0.933), rgba(22, 30, 48, 0.96)) repeat scroll 0% 0% / auto padding-box border-box",
+      "color": "rgb(205, 214, 244)",
+      "font": "16px / 20.8px -apple-system, \"system-ui\", \"SF Pro Text\", \"Helvetica Neue\", Helvetica, Arial, sans-serif",
+      "gap": "normal",
+      "padding": "52px 12px 8px",
+      "rect": {
+        "bottom": 133.296875,
+        "height": 133.296875,
+        "left": 0,
+        "right": 390,
+        "top": 0,
+        "width": 390,
+        "x": 0,
+        "y": 0
+      },
+      "z": "auto"
+    },
+    ".dots": {
+      "background": "rgba(27, 38, 54, 0.94) none repeat scroll 0% 0% / auto padding-box border-box",
+      "color": "rgb(205, 214, 244)",
+      "font": "16px / 20.8px -apple-system, \"system-ui\", \"SF Pro Text\", \"Helvetica Neue\", Helvetica, Arial, sans-serif",
+      "gap": "6px",
+      "padding": "8px 0px 10px",
+      "rect": {
+        "bottom": 817.703125,
+        "height": 26,
+        "left": 0,
+        "right": 390,
+        "top": 791.703125,
+        "width": 390,
+        "x": 0,
+        "y": 791.703125
+      },
+      "z": "1"
+    },
+    ".field": {
+      "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+      "color": "rgb(205, 214, 244)",
+      "font": "16px / 20.8px -apple-system, \"system-ui\", \"SF Pro Text\", \"Helvetica Neue\", Helvetica, Arial, sans-serif",
+      "gap": "8px 6px",
+      "padding": "6px 0px 8px",
+      "rect": {
+        "bottom": 779.703125,
+        "height": 234.40625,
+        "left": 12,
+        "right": 378,
+        "top": 545.296875,
+        "width": 366,
+        "x": 12,
+        "y": 545.296875
+      },
+      "z": "auto"
+    },
+    ".hint": {
+      "background": "rgba(27, 38, 54, 0.94) none repeat scroll 0% 0% / auto padding-box border-box",
+      "color": "rgb(208, 214, 223)",
+      "font": "11px / 14.3px -apple-system, \"system-ui\", \"SF Pro Text\", \"Helvetica Neue\", Helvetica, Arial, sans-serif",
+      "gap": "normal",
+      "padding": "0px 0px 12px",
+      "rect": {
+        "bottom": 844,
+        "height": 26.296875,
+        "left": 0,
+        "right": 390,
+        "top": 817.703125,
+        "width": 390,
+        "x": 0,
+        "y": 817.703125
+      },
+      "z": "1"
+    },
+    ".paddock": {
+      "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+      "color": "rgb(205, 214, 244)",
+      "font": "16px / 20.8px -apple-system, \"system-ui\", \"SF Pro Text\", \"Helvetica Neue\", Helvetica, Arial, sans-serif",
+      "gap": "normal",
+      "padding": "14px 12px 12px",
+      "rect": {
+        "bottom": 791.703125,
+        "height": 298.40625,
+        "left": 0,
+        "right": 390,
+        "top": 493.296875,
+        "width": 390,
+        "x": 0,
+        "y": 493.296875
+      },
+      "z": "auto"
+    },
+    ".paddock-head": {
+      "background": "rgba(32, 45, 58, 0.8) none repeat scroll 0% 0% / auto padding-box border-box",
+      "color": "rgb(205, 214, 244)",
+      "font": "16px / 20.8px -apple-system, \"system-ui\", \"SF Pro Text\", \"Helvetica Neue\", Helvetica, Arial, sans-serif",
+      "gap": "5px",
+      "padding": "0px 7px",
+      "rect": {
+        "bottom": 545.296875,
+        "height": 38,
+        "left": 12,
+        "right": 378,
+        "top": 507.296875,
+        "width": 366,
+        "x": 12,
+        "y": 507.296875
+      },
+      "z": "auto"
+    },
+    ".paddock-strip": {
+      "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+      "color": "rgb(205, 214, 244)",
+      "font": "16px / 20.8px -apple-system, \"system-ui\", \"SF Pro Text\", \"Helvetica Neue\", Helvetica, Arial, sans-serif",
+      "gap": "normal",
+      "padding": "0px",
+      "rect": {
+        "bottom": 791.703125,
+        "height": 298.40625,
+        "left": 0,
+        "right": 390,
+        "top": 493.296875,
+        "width": 390,
+        "x": 0,
+        "y": 493.296875
+      },
+      "z": "1"
+    },
+    ".pasture": {
+      "background": "rgb(82, 100, 58) none repeat scroll 0% 0% / auto padding-box border-box",
+      "color": "rgb(205, 214, 244)",
+      "font": "16px / 20.8px -apple-system, \"system-ui\", \"SF Pro Text\", \"Helvetica Neue\", Helvetica, Arial, sans-serif",
+      "gap": "normal",
+      "padding": "108px 0px 0px",
+      "rect": {
+        "bottom": 844,
+        "height": 666.703125,
+        "left": 0,
+        "right": 390,
+        "top": 177.296875,
+        "width": 390,
+        "x": 0,
+        "y": 177.296875
+      },
+      "z": "auto"
+    },
+    ".physical-rail": {
+      "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+      "color": "rgb(205, 214, 244)",
+      "font": "16px / 20.8px -apple-system, \"system-ui\", \"SF Pro Text\", \"Helvetica Neue\", Helvetica, Arial, sans-serif",
+      "gap": "normal",
+      "padding": "0px",
+      "rect": {
+        "bottom": 451.296875,
+        "height": 44,
+        "left": 0,
+        "right": 390,
+        "top": 407.296875,
+        "width": 390,
+        "x": 0,
+        "y": 407.296875
+      },
+      "z": "2"
+    },
+    ".rail-row": {
+      "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+      "color": "rgb(205, 214, 244)",
+      "font": "16px / 20.8px -apple-system, \"system-ui\", \"SF Pro Text\", \"Helvetica Neue\", Helvetica, Arial, sans-serif",
+      "gap": "10px",
+      "padding": "30px 12px 9px",
+      "rect": {
+        "bottom": 493.296875,
+        "height": 208,
+        "left": 0,
+        "right": 390,
+        "top": 285.296875,
+        "width": 390,
+        "x": 0,
+        "y": 285.296875
+      },
+      "z": "1"
+    },
+    ".rail-summary": {
+      "background": "rgb(32, 42, 56) none repeat scroll 0% 0% / auto padding-box border-box",
+      "color": "rgb(205, 214, 244)",
+      "font": "13px / 16.9px -apple-system, \"system-ui\", \"SF Pro Text\", \"Helvetica Neue\", Helvetica, Arial, sans-serif",
+      "gap": "3px",
+      "padding": "8px 6px",
+      "rect": {
+        "bottom": 177.296875,
+        "height": 44,
+        "left": 0,
+        "right": 390,
+        "top": 133.296875,
+        "width": 390,
+        "x": 0,
+        "y": 133.296875
+      },
+      "z": "auto"
+    },
+    ".scope": {
+      "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+      "color": "rgb(166, 173, 200)",
+      "font": "13px / 16.9px -apple-system, \"system-ui\", \"SF Pro Text\", \"Helvetica Neue\", Helvetica, Arial, sans-serif",
+      "gap": "6px",
+      "padding": "0px",
+      "rect": {
+        "bottom": 124.296875,
+        "height": 20.296875,
+        "left": 12,
+        "right": 378,
+        "top": 104,
+        "width": 366,
+        "x": 12,
+        "y": 104
+      },
+      "z": "auto"
+    }
+  },
+  "horses": [
+    {
+      "button": {
+        "bottom": 484.296875,
+        "height": 162,
+        "left": 12,
+        "right": 176,
+        "top": 322.296875,
+        "width": 164,
+        "x": 12,
+        "y": 322.296875
+      },
+      "name": "birch-clearing",
+      "nameplate": {
+        "bottom": 465.296875,
+        "height": 14,
+        "left": 47.640625,
+        "right": 140.359375,
+        "top": 451.296875,
+        "width": 92.71875,
+        "x": 47.640625,
+        "y": 451.296875
+      },
+      "sprite": {
+        "bottom": 434.296875,
+        "height": 112,
+        "left": 20,
+        "right": 168,
+        "top": 322.296875,
+        "width": 148,
+        "x": 20,
+        "y": 322.296875
+      },
+      "state": {
+        "bottom": 483.296875,
+        "height": 16,
+        "left": 60.8203125,
+        "right": 127.1796875,
+        "top": 467.296875,
+        "width": 66.359375,
+        "x": 60.8203125,
+        "y": 467.296875
+      }
+    },
+    {
+      "button": {
+        "bottom": 484.296875,
+        "height": 162,
+        "left": 186,
+        "right": 350,
+        "top": 322.296875,
+        "width": 164,
+        "x": 186,
+        "y": 322.296875
+      },
+      "name": "oak-before-dark",
+      "nameplate": {
+        "bottom": 465.296875,
+        "height": 14,
+        "left": 218.328125,
+        "right": 317.671875,
+        "top": 451.296875,
+        "width": 99.34375,
+        "x": 218.328125,
+        "y": 451.296875
+      },
+      "sprite": {
+        "bottom": 434.296875,
+        "height": 112,
+        "left": 194,
+        "right": 342,
+        "top": 322.296875,
+        "width": 148,
+        "x": 194,
+        "y": 322.296875
+      },
+      "state": {
+        "bottom": 483.296875,
+        "height": 16,
+        "left": 234.8203125,
+        "right": 301.1796875,
+        "top": 467.296875,
+        "width": 66.359375,
+        "x": 234.8203125,
+        "y": 467.296875
+      }
+    },
+    {
+      "button": {
+        "bottom": 742.5,
+        "height": 162,
+        "left": 32,
+        "right": 192,
+        "top": 580.5,
+        "width": 160,
+        "x": 32,
+        "y": 580.5
+      },
+      "name": "spruce-hollow",
+      "nameplate": {
+        "bottom": 723.5,
+        "height": 14,
+        "left": 68.953125,
+        "right": 155.046875,
+        "top": 709.5,
+        "width": 86.09375,
+        "x": 68.953125,
+        "y": 709.5
+      },
+      "sprite": {
+        "bottom": 692.5,
+        "height": 112,
+        "left": 38,
+        "right": 186,
+        "top": 580.5,
+        "width": 148,
+        "x": 38,
+        "y": 580.5
+      },
+      "state": {
+        "bottom": 741.5,
+        "height": 16,
+        "left": 92.125,
+        "right": 131.875,
+        "top": 725.5,
+        "width": 39.75,
+        "x": 92.125,
+        "y": 725.5
+      }
+    },
+    {
+      "button": {
+        "bottom": 742.5,
+        "height": 162,
+        "left": 198,
+        "right": 358,
+        "top": 580.5,
+        "width": 160,
+        "x": 198,
+        "y": 580.5
+      },
+      "name": "willow-bend",
+      "nameplate": {
+        "bottom": 723.5,
+        "height": 14,
+        "left": 241.5703125,
+        "right": 314.4296875,
+        "top": 709.5,
+        "width": 72.859375,
+        "x": 241.5703125,
+        "y": 709.5
+      },
+      "sprite": {
+        "bottom": 692.5,
+        "height": 112,
+        "left": 204,
+        "right": 352,
+        "top": 580.5,
+        "width": 148,
+        "x": 204,
+        "y": 580.5
+      },
+      "state": {
+        "bottom": 741.5,
+        "height": 16,
+        "left": 258.125,
+        "right": 297.875,
+        "top": 725.5,
+        "width": 39.75,
+        "x": 258.125,
+        "y": 725.5
+      }
+    },
+    {
+      "button": {
+        "bottom": 657.5,
+        "height": 162,
+        "left": 423.5,
+        "right": 583.5,
+        "top": 495.5,
+        "width": 160,
+        "x": 423.5,
+        "y": 495.5
+      },
+      "name": "juniper-south",
+      "nameplate": {
+        "bottom": 638.5,
+        "height": 14,
+        "left": 460.453125,
+        "right": 546.546875,
+        "top": 624.5,
+        "width": 86.09375,
+        "x": 460.453125,
+        "y": 624.5
+      },
+      "sprite": {
+        "bottom": 607.5,
+        "height": 112,
+        "left": 429.5,
+        "right": 577.5,
+        "top": 495.5,
+        "width": 148,
+        "x": 429.5,
+        "y": 495.5
+      },
+      "state": {
+        "bottom": 656.5,
+        "height": 16,
+        "left": 469.3203125,
+        "right": 537.6796875,
+        "top": 640.5,
+        "width": 68.359375,
+        "x": 469.3203125,
+        "y": 640.5
+      }
+    },
+    {
+      "button": {
+        "bottom": 657.5,
+        "height": 162,
+        "left": 589.5,
+        "right": 749.5,
+        "top": 495.5,
+        "width": 160,
+        "x": 589.5,
+        "y": 495.5
+      },
+      "name": "elder-flats",
+      "nameplate": {
+        "bottom": 638.5,
+        "height": 14,
+        "left": 633.0703125,
+        "right": 705.9296875,
+        "top": 624.5,
+        "width": 72.859375,
+        "x": 633.0703125,
+        "y": 624.5
+      },
+      "sprite": {
+        "bottom": 607.5,
+        "height": 112,
+        "left": 595.5,
+        "right": 743.5,
+        "top": 495.5,
+        "width": 148,
+        "x": 595.5,
+        "y": 495.5
+      },
+      "state": {
+        "bottom": 656.5,
+        "height": 16,
+        "left": 649.625,
+        "right": 689.375,
+        "top": 640.5,
+        "width": 39.75,
+        "x": 649.625,
+        "y": 640.5
+      }
+    },
+    {
+      "button": {
+        "bottom": 827.5,
+        "height": 162,
+        "left": 506.5,
+        "right": 666.5,
+        "top": 665.5,
+        "width": 160,
+        "x": 506.5,
+        "y": 665.5
+      },
+      "name": "maple-stand",
+      "nameplate": {
+        "bottom": 808.5,
+        "height": 14,
+        "left": 550.0703125,
+        "right": 622.9296875,
+        "top": 794.5,
+        "width": 72.859375,
+        "x": 550.0703125,
+        "y": 794.5
+      },
+      "sprite": {
+        "bottom": 777.5,
+        "height": 112,
+        "left": 512.5,
+        "right": 660.5,
+        "top": 665.5,
+        "width": 148,
+        "x": 512.5,
+        "y": 665.5
+      },
+      "state": {
+        "bottom": 826.5,
+        "height": 16,
+        "left": 566.625,
+        "right": 606.375,
+        "top": 810.5,
+        "width": 39.75,
+        "x": 566.625,
+        "y": 810.5
+      }
+    },
+    {
+      "button": {
+        "bottom": 742.5,
+        "height": 162,
+        "left": 813.5,
+        "right": 973.5,
+        "top": 580.5,
+        "width": 160,
+        "x": 813.5,
+        "y": 580.5
+      },
+      "name": "cedar-ridge",
+      "nameplate": {
+        "bottom": 723.5,
+        "height": 14,
+        "left": 857.0703125,
+        "right": 929.9296875,
+        "top": 709.5,
+        "width": 72.859375,
+        "x": 857.0703125,
+        "y": 709.5
+      },
+      "sprite": {
+        "bottom": 692.5,
+        "height": 112,
+        "left": 819.5,
+        "right": 967.5,
+        "top": 580.5,
+        "width": 148,
+        "x": 819.5,
+        "y": 580.5
+      },
+      "state": {
+        "bottom": 741.5,
+        "height": 16,
+        "left": 859.3203125,
+        "right": 927.6796875,
+        "top": 725.5,
+        "width": 68.359375,
+        "x": 859.3203125,
+        "y": 725.5
+      }
+    },
+    {
+      "button": {
+        "bottom": 742.5,
+        "height": 162,
+        "left": 979.5,
+        "right": 1139.5,
+        "top": 580.5,
+        "width": 160,
+        "x": 979.5,
+        "y": 580.5
+      },
+      "name": "sumac-row",
+      "nameplate": {
+        "bottom": 723.5,
+        "height": 14,
+        "left": 1029.6953125,
+        "right": 1089.3046875,
+        "top": 709.5,
+        "width": 59.609375,
+        "x": 1029.6953125,
+        "y": 709.5
+      },
+      "sprite": {
+        "bottom": 692.5,
+        "height": 112,
+        "left": 985.5,
+        "right": 1133.5,
+        "top": 580.5,
+        "width": 148,
+        "x": 985.5,
+        "y": 580.5
+      },
+      "state": {
+        "bottom": 741.5,
+        "height": 16,
+        "left": 1029.6953125,
+        "right": 1089.3046875,
+        "top": 725.5,
+        "width": 59.609375,
+        "x": 1029.6953125,
+        "y": 725.5
+      }
+    },
+    {
+      "button": {
+        "bottom": 657.5,
+        "height": 162,
+        "left": 1203.5,
+        "right": 1363.5,
+        "top": 495.5,
+        "width": 160,
+        "x": 1203.5,
+        "y": 495.5
+      },
+      "name": "hawthorn-fork",
+      "nameplate": {
+        "bottom": 638.5,
+        "height": 14,
+        "left": 1240.453125,
+        "right": 1326.546875,
+        "top": 624.5,
+        "width": 86.09375,
+        "x": 1240.453125,
+        "y": 624.5
+      },
+      "sprite": {
+        "bottom": 607.5,
+        "height": 112,
+        "left": 1209.5,
+        "right": 1357.5,
+        "top": 495.5,
+        "width": 148,
+        "x": 1209.5,
+        "y": 495.5
+      },
+      "state": {
+        "bottom": 656.5,
+        "height": 16,
+        "left": 1249.3203125,
+        "right": 1317.6796875,
+        "top": 640.5,
+        "width": 68.359375,
+        "x": 1249.3203125,
+        "y": 640.5
+      }
+    },
+    {
+      "button": {
+        "bottom": 657.5,
+        "height": 162,
+        "left": 1369.5,
+        "right": 1529.5,
+        "top": 495.5,
+        "width": 160,
+        "x": 1369.5,
+        "y": 495.5
+      },
+      "name": "hazel-hollow",
+      "nameplate": {
+        "bottom": 638.5,
+        "height": 14,
+        "left": 1409.7578125,
+        "right": 1489.2421875,
+        "top": 624.5,
+        "width": 79.484375,
+        "x": 1409.7578125,
+        "y": 624.5
+      },
+      "sprite": {
+        "bottom": 607.5,
+        "height": 112,
+        "left": 1375.5,
+        "right": 1523.5,
+        "top": 495.5,
+        "width": 148,
+        "x": 1375.5,
+        "y": 495.5
+      },
+      "state": {
+        "bottom": 656.5,
+        "height": 16,
+        "left": 1415.3203125,
+        "right": 1483.6796875,
+        "top": 640.5,
+        "width": 68.359375,
+        "x": 1415.3203125,
+        "y": 640.5
+      }
+    },
+    {
+      "button": {
+        "bottom": 827.5,
+        "height": 162,
+        "left": 1286.5,
+        "right": 1446.5,
+        "top": 665.5,
+        "width": 160,
+        "x": 1286.5,
+        "y": 665.5
+      },
+      "name": "aspen-grove",
+      "nameplate": {
+        "bottom": 808.5,
+        "height": 14,
+        "left": 1330.0703125,
+        "right": 1402.9296875,
+        "top": 794.5,
+        "width": 72.859375,
+        "x": 1330.0703125,
+        "y": 794.5
+      },
+      "sprite": {
+        "bottom": 777.5,
+        "height": 112,
+        "left": 1292.5,
+        "right": 1440.5,
+        "top": 665.5,
+        "width": 148,
+        "x": 1292.5,
+        "y": 665.5
+      },
+      "state": {
+        "bottom": 826.5,
+        "height": 16,
+        "left": 1346.625,
+        "right": 1386.375,
+        "top": 810.5,
+        "width": 39.75,
+        "x": 1346.625,
+        "y": 810.5
+      }
+    }
+  ],
+  "measurementDevicePixelRatio": 1,
+  "scroll": {
+    "paddock": 0,
+    "pageX": 0,
+    "pageY": 0,
+    "rail": 0
+  },
+  "viewport": [
+    390,
+    844
+  ]
+}

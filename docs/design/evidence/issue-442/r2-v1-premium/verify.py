@@ -20,10 +20,11 @@ def verify(mirror=None,repro=False):
         assert struct.unpack('>II',(ROOT/name).read_bytes()[16:24])==(w,h);print('PASS dimensions',name,w,h)
     for p in ROOT.rglob('*'):
         assert not any(x in p.name.lower() for x in ['__pycache__','.pyc','.pyo','.ds_store','.bak','.tmp','.swp','preview','scratch','~']),p
-    allowed={'art.py','build.py','capture.py','probe.py','verify.py','run-gates.py','fixtures.py','control-input.html','control-sha256.json','protected-control-baseline.txt','day.html','night.html','study.html','README.md','comparison-note.md','PROVENANCE.md','visual-review.md','manifest.sha256'}|expected
+    allowed={'NATIVE-HANDOFF.md','EXPORTS.md','SCOPE-CAP.md','decision-freeze.json','export-layers.py','verify-layers.py','art.py','build.py','capture.py','probe.py','verify.py','run-gates.py','fixtures.py','control-input.html','control-sha256.json','protected-control-baseline.txt','day.html','night.html','study.html','README.md','comparison-note.md','PROVENANCE.md','visual-review.md','manifest.sha256'}|expected
     assert allowed-{'manifest.sha256'} <= paths, ('missing supporting artifact',allowed-paths)
-    allowed_logs={'build.log','capture.log','browser.log','verify.log','manifest-check.log','exit-codes.json','delivery.log'}
-    assert all(p in allowed or (p.startswith('logs/') and p.split('/')[1] in allowed_logs) for p in paths),paths-allowed
+    allowed_logs={'build.log','capture.log','browser.log','verify.log','manifest-check.log','exit-codes.json','delivery.log','exports.log','layers.log'}
+    layer_paths={'layers/'+p.relative_to(ROOT/'layers').as_posix() for p in (ROOT/'layers').rglob('*') if p.is_file()}
+    assert all(p in allowed or p in layer_paths or (p.startswith('logs/') and p.split('/')[1] in allowed_logs) for p in paths),paths-allowed
     repo=next((p for p in ROOT.parents if (p/'.git').exists()),None)
     assert repo and (repo/'docs/design/evidence/issue-442').exists(),'Run canonical verification from Corral worktree'
     baseline=json.loads((ROOT/'control-sha256.json').read_text())

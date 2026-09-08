@@ -784,6 +784,26 @@ struct FleetView: View {
             // (simctl cannot drag the list). The reader itself is passive;
             // no scroll machinery compiles into Release.
             ScrollViewReader { proxy in
+                Group {
+                    if model.fleetPresentation == .herd && model.mode != .needsSetup {
+                        VStack(spacing: 0) {
+                            filterHeaderControl(filterButtonLabel: filterButtonLabel,
+                                                filterSummaryText: filterSummaryText)
+                            HerdView(horses: multiHost
+                                ? HerdProjection.multiple(hostSections, names: Dictionary(uniqueKeysWithValues:
+                                    model.profiles.map { ($0.id, $0.displayName) }))
+                                : HerdProjection.single(sections, host: model.activeProfile?.id,
+                                    disconnected: herdDisconnected),
+                                obscured: showSettings || showFilters || showConnectHelp
+                                    || model.recentsRequest != nil || model.fingerprintConfirmation != nil,
+                                select: { horse in
+                                    model.requestRecents(for: horse.agent.agentId,
+                                                         hostProfileID: horse.hostProfileID, haptic: false)
+                                },
+                                openBoard: { model.fleetPresentation = .board },
+                                retry: { await model.refreshFleet() })
+                        }
+                    } else {
                 List {
                     // Issue #219: the board chrome is the FIRST section of the same
                     // physical scroll surface (a pinned header) instead of a
@@ -923,7 +943,10 @@ struct FleetView: View {
                 // the collapsed bar shows no text when scrolled either — the
                 // freed space belongs to the board (content starts naturally
                 // higher; no extra insets forced).
+                    }
+                }
                 .navigationTitle("")
+                .background(theme.base)
                 .navigationBarTitleDisplayMode(.inline)
                 // #365: Settings is an ALWAYS-VISIBLE top-bar control — a plain
                 // gear Button (system gear shape, >=44 pt target, VoiceOver
@@ -932,6 +955,20 @@ struct FleetView: View {
                 // that exists only in Debug builds (Release shows the gear
                 // alone).
                 .toolbar {
+                    ToolbarItem(placement: .principal) {
+                        HStack(spacing: 0) {
+                            ForEach(FleetPresentation.allCases, id: \.self) { mode in
+                                Button { model.fleetPresentation = mode } label: {
+                                    Text(mode.rawValue).font(.subheadline.weight(.semibold))
+                                        .frame(minWidth: 64, minHeight: 44)
+                                        .background(model.fleetPresentation == mode ? theme.surface1 : .clear,
+                                                    in: RoundedRectangle(cornerRadius: 9))
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityAddTraits(model.fleetPresentation == mode ? .isSelected : [])
+                            }
+                        }
+                    }
                     ToolbarItemGroup(placement: .topBarTrailing) {
 #if DEBUG
                         Menu {
@@ -1033,6 +1070,14 @@ struct FleetView: View {
         }
         .tint(theme.accent)
         .preferredColorScheme(theme.flavor.isLight ? .light : .dark)
+    }
+
+    private var herdDisconnected: Bool {
+#if DEBUG
+        if CommandLine.arguments.contains("-corralHerdOffline") { return true }
+#endif
+        return model.mode == .live
+            && BoardModel.connectionStatus(for: model.fleet.connectionState) != .connected
     }
 
     /// #401 D7: the ONE compact board-level outage summary row ("1 host
@@ -3025,6 +3070,7 @@ struct SettingsView: View {
             ScrollViewReader { proxy in
                 Form {
                     appearanceSection
+                    HerdEnvironmentSettings()
                     // #423: the legacy single-host Connection section — host
                     // endpoint, registration status, Re-register — serves the
                     // UNPAIRED pairing form and the ONE-host setup path only.

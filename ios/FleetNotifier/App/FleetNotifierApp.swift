@@ -52,7 +52,9 @@ struct FleetNotifierApp: App {
                 .task {
                     // Dev-only launch-arg harnesses (Debug only).
 #if DEBUG
-                    if CorralDemoLaunch.wantsDetail(arguments: CommandLine.arguments) {
+                    if CommandLine.arguments.contains("-corralHerdEvidence") {
+                        HerdEvidence.seed(model)
+                    } else if CorralDemoLaunch.wantsDetail(arguments: CommandLine.arguments) {
                         model.enterDemo(detailAgentId: CorralDemoLaunch.detailAgentID)
                     } else if CorralDemoLaunch.wantsConnectEvidence(arguments: CommandLine.arguments) {
                         // #379 evidence: guarantee the UNPAIRED first-launch

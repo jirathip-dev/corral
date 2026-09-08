@@ -301,7 +301,9 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # Host/Fingerprint form row with the flavor base, AppTheme doc updated,
     # and the DEBUG spot-flavor evidence route added — re-pinned over the
     # #428 source set.
-    "6e3b2d2173ac82f7878e8084d3755a63ed2f334483f78e024bf2882025dc8063"
+    # #444 correction 1: native procedural Herd plus DEBUG-only evidence;
+    # original V1 paths and scene/lifecycle sources are all digest-bound.
+    "b5e3a3b3a3bb1f06c914d78b41752e1f38f66adbaa94ccc59001041d22cbf656"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -459,7 +461,11 @@ RELEASE_BUILD_INPUTS = tuple(
 RELEASE_BUILD_OUTPUT = "$(DERIVED_FILE_DIR)/corral-release-source-digest"
 
 SOURCE_MARKERS: dict[str, tuple[str, ...]] = {
+    "ios/FleetNotifier/Demo/HerdEvidence.swift": (r"HerdEvidence", r"herd-fixture", r"-corralHerdEvidence"),
+    "ios/FleetNotifier/UI/Herd/HerdView.swift": (r"HerdEvidence", r"\bevidence[A-Z]\w*"),
     "ios/FleetNotifier/App/FleetNotifierApp.swift": (
+        r"-corralHerdEvidence",
+        r"HerdEvidence",
         r"-demoMode",
         r"-corralDemoDetail",
         r"enterDemo",
@@ -481,6 +487,7 @@ SOURCE_MARKERS: dict[str, tuple[str, ...]] = {
         r"demo-",
     ),
     "ios/FleetNotifier/UI/FleetViews.swift": (
+        r"-corralHerdOffline",
         r"\.demo\b",
         r"enterDemo",
         r"exitDemo",
@@ -492,6 +499,8 @@ SOURCE_MARKERS: dict[str, tuple[str, ...]] = {
 }
 
 SOURCE_REQUIRED: dict[str, tuple[str, ...]] = {
+    "ios/FleetNotifier/Demo/HerdEvidence.swift": ("#if DEBUG", "enum HerdEvidence"),
+    "ios/FleetNotifier/UI/Herd/HerdView.swift": ("#if DEBUG", "runHerdEvidence"),
     "ios/FleetNotifier/App/FleetNotifierApp.swift": ("#if DEBUG", "-demoMode"),
     "ios/FleetNotifier/App/AppModel.swift": ("#if DEBUG", "func enterDemo"),
     "ios/FleetNotifier/App/FleetStore.swift": ("#if DEBUG", "func seedDemo"),
@@ -500,6 +509,8 @@ SOURCE_REQUIRED: dict[str, tuple[str, ...]] = {
 }
 
 RELEASE_SOURCE_REQUIRED: dict[str, tuple[str, ...]] = {
+    "ios/FleetNotifier/UI/Herd/HerdView.swift": ("RanchEnvironment(", "clock.stop()"),
+    "ios/FleetNotifier/UI/Herd/HerdArt.swift": ("func drawing(", "art.grazing()"),
     "ios/FleetNotifier/App/FleetNotifierApp.swift": ("model.startLive()",),
     "ios/FleetNotifier/App/AppModel.swift": (
         "func register(",
@@ -527,6 +538,10 @@ RELEASE_SOURCE_REQUIRED: dict[str, tuple[str, ...]] = {
 }
 
 BINARY_FORBIDDEN = (
+    "HerdEvidence",
+    "-corralHerdEvidence",
+    "-corralHerdOffline",
+    "herd-fixture",
     "-demoMode",
     "Demo mode",
     "Exit demo",
@@ -1859,6 +1874,10 @@ def main() -> int:
             _check_release_source(ROOT / relative, markers)
         if args.binary:
             _check_binary(args.binary)
+        native_art = [sys.executable, str(ROOT / "ios/tools/herd-art/check-native-art.py")]
+        if args.binary:
+            native_art.extend(("--bundle", str(args.binary.parent)))
+        subprocess.run(native_art, check=True, timeout=90)
     except (CheckFailure, OSError, subprocess.CalledProcessError) as error:
         print(f"release-demo check: FAIL: {error}", file=sys.stderr)
         return 1

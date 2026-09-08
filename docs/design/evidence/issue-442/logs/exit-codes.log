@@ -8,3 +8,5 @@ overall exit=0
 privacy exit=0
 git-diff-check exit=0
 scope-audit exit=0
+review-copy exit=0
+review-copy exit=0

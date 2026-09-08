@@ -1,0 +1,9 @@
+canonical: /Users/jirathip/.herdr/worktrees/corral/design-442-herd-prototype/docs/design/evidence/issue-442
+review:    /Users/jirathip/design-output/corral/442-herd-view
+(this log is excluded from the comparison: it is the only file written after the copy)
+canonical files: 72
+review files:    72
+relative path sets identical
+Files ./logs/exit-codes.log and /Users/jirathip/design-output/corral/442-herd-view/logs/exit-codes.log differ
+review-copy manifest check OK (60/60)
+FINAL: canonical and review copy byte-identical (diff -rq, 72 files, no exclusions)

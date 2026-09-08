@@ -187,9 +187,10 @@ stdlib only (no venv needed; nothing installed). Renderer is the local
 Playwright `chrome-headless-shell` (set `CHROME_HEADLESS_SHELL` to override).
 
 ```
-bash scripts/run-gates.sh                              # all six steps below, raw exit codes -> logs/exit-codes.log
+bash scripts/run-gates.sh                              # complete serial workflow; raw exits -> logs/exit-codes.log
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/build.py     # all HTML + stage/  (logs/build.log)
-PYTHONDONTWRITEBYTECODE=1 python3 scripts/render.py    # 21 PNGs, IHDR-checked 390x844 (logs/capture.log)
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/repro-mutate.py # forced disposable mismatch RED, pristine GREEN
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/repro.py --promote # capture twice, compare 21/21, promote compared bytes only
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/measure.py   # README comparison numbers (logs/measure.log)
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/check-dimensions.py  # independent 390x844 + count (logs/dimensions.log)
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/verify.py    # DOM/interaction gate + manifest (logs/verify.log)
@@ -203,7 +204,42 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/mutate.py    # ~5 min RED/GREEN proof 
 Scripts: `fixtures.py` (fictional fleet + palette/mix ports, self-checking),
 `horsesvg.py` (original horse art), `build.py` (one CSS, all screens),
 `render.py`, `verify.py`, `mutate.py`. A visual change = edit the generator,
-rerun the five commands; every SHA regenerates.
+rerun `bash scripts/run-gates.sh`; every SHA regenerates.
+
+### R1 deterministic capture and verification
+
+`render.py` inserts a capture-only stylesheet into a disposable stage copy,
+before first style resolution: all CSS animations paused with delay -500ms
+(fixed active time 500ms), transitions disabled. It does not edit shipped
+stages or interactive prototypes. Reduce Motion retains `animation:none`,
+planted poses and static heartbeat; the normal DOM gate still requires live
+animations outside Reduce Motion. Stage scripts are rejected rather than
+allowing an uncontrolled JavaScript clock. Virtual-time budget is only a
+load budget, not the animation-phase control. Reproduction assumes the same
+Chrome build, macOS fonts and sips version; cross-platform byte parity is not claimed.
+
+`repro.py` renders all 21 stages consecutively into isolated A/B directories,
+asserts the exact filename sets and unchanged input hashes, prints both SHA-256
+values and byte comparison for every PNG, and exits 1 on any mismatch.
+`--promote` copies only the compared A bytes and checks canonical equality to B.
+No render runs after this comparison in the final workflow. `repro-mutate.py`
+flips one byte in isolated B (never canonical), requires exactly one mismatch
+and raw exit 1, then requires pristine 21/21 and raw exit 0.
+
+| Verification | Named log | Expected raw exit |
+|---|---|---|
+| Build | logs/build.log | 0 |
+| Reproducibility discriminator | logs/repro-red-green.log | RED 1; GREEN 0; wrapper 0 |
+| Two pristine captures / canonical promotion | logs/reproducibility.log (also capture.log) | A 0; B 0; comparison 0; 21/21 |
+| Measurement | logs/measure.log | 0 |
+| Dimensions / required set | logs/dimensions.log | 0; 21/21 at 390×844; 12/12 required |
+| Existing mutation battery | logs/verify-mutation.log | 0; 14/14 RED, untouched GREEN |
+| Privacy / gitleaks / fixture audit | logs/privacy-scan.log | 0 |
+| DOM / interaction / manifest generation | logs/verify.log | 0 |
+| Independent manifest check | logs/manifest-check.log | 0 |
+| Post-commit diff/scope | logs/git-diff-check.log; logs/scope-audit.log | 0 |
+
+Measured outcomes are recorded in those raw logs, not inferred from this table.
 
 ## Artifact inventory
 

@@ -1,0 +1,12 @@
+R1 visual capture review
+Surface remains Monitor; no composition, palette, typography or interaction redesign.
+Inspected all 21 final PNGs at phone size through three contact sheets.
+Compared flagged repo-scoped, disconnected and filter-sheet captures against
+starting head 5ab57c9def458651f15fd8f15b4d55cf2d4bb895.
+The scoped front-rail crop, footer beneath outage card, and opaque filter-sheet
+occlusion already exist at base. They are not new timing/capture regressions.
+Retained under the capture-only scope fence; no speculative mid-transition claim.
+Slop delta audit: no new cards, gradients, metrics, copy, icons, typography,
+spacing, radii, composition or chrome. Interactive HTML and generated stages
+remain byte-identical to base. Only capture pose changes on animated PNGs.
+This review does not approve a variant or authorize implementation.

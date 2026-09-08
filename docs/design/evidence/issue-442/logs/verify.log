@@ -16,7 +16,7 @@ PASS P05 shared filters v2: Herd scope 'All hosts · atlas-vector' == Board scop
 PASS P06 detail path v2: horse 'birch-clearing' -> sheet 'birch-clearing'; Board row -> sheet 'birch-clearing'
 PASS P-nav v2: overflow rows ['Show all 5 · 1 more']
 PASS P01 console v2 interactive: 0 errors
-PASS manifest: 60 files -> manifest.sha256 (manifest sha256 669d17a5bb32afcb6e5c412abb41e4525a6c00fa1e5bd768f896c45c434c686b)
+PASS manifest: 62 files -> manifest.sha256 (manifest sha256 b739446154e159deff8f504f91d922abcd94c835d068fad8b7fd4756cad849f8)
 
 19 pass, 0 findings
 VERIFY OK

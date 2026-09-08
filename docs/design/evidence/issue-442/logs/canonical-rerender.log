@@ -1,0 +1,48 @@
+renderer: /Users/jirathip/Library/Caches/ms-playwright/chromium_headless_shell-1234/chrome-headless-shell-mac-arm64/chrome-headless-shell
+stages: 21
+capture pose: CSS paused from first style resolution; delay=-500ms; transitions disabled
+OK  herd-v1-mocha-blocked-heavy-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-mocha-dense-fleet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-mocha-disconnected-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-latte-blocked-heavy-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-latte-dense-fleet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-latte-disconnected-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-mocha-detail-sheet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-mocha-filter-sheet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-mocha-reduce-motion-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-latte-repo-scoped-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-mocha-blocked-heavy-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-mocha-dense-fleet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-mocha-disconnected-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-latte-blocked-heavy-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-latte-dense-fleet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-latte-disconnected-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-mocha-detail-sheet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-mocha-filter-sheet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-mocha-reduce-motion-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-latte-repo-scoped-390x844.png  390x844  (2x 780x1688)
+OK  board-mocha-blocked-heavy-390x844.png  390x844  (2x 780x1688)
+RENDER OK: 21 PNGs at exactly 390x844
+render RAW_EXIT=0
+MATCH board-mocha-blocked-heavy-390x844.png dd6de8a8efb3d97f622175403c180c2aaf3937bf9c29adf04136f8c3342aa451
+MATCH herd-v1-latte-blocked-heavy-390x844.png f83931f5b8e4820de315bcf66ebb3f1dd24caef744848d61a5fb8bbc11bd81b2
+MATCH herd-v1-latte-dense-fleet-390x844.png e7914dd4e5fae624cc5f2b433b78addbc171f691fae9a263f2691468bef200f8
+MATCH herd-v1-latte-disconnected-390x844.png 3f3003cae31f120ca33ba263529bf7dda533ed211fd19a275746284f96da272f
+MATCH herd-v1-latte-repo-scoped-390x844.png 75c6e58b0a8a75d32ea91c012d2d708d18e82e87174ffb6c88bf0733b2ee3536
+MATCH herd-v1-mocha-blocked-heavy-390x844.png 447a42c1e6a4547c7ec535d5ea17cf6020bc5221b8561fbb6aa965e9ba95c121
+MATCH herd-v1-mocha-dense-fleet-390x844.png 602ee47efd72e770037b741d9d5bb035955a8525deeb0e43ee0d46b83e58e5f0
+MATCH herd-v1-mocha-detail-sheet-390x844.png 6cbaff4f3947b3d5b289f5ed8194d9c028fa2d9fb2dc21a610d9fa4caa8c2edc
+MATCH herd-v1-mocha-disconnected-390x844.png e845a6467109979b39239c130f18eb62dcb83374421d3f6accacf4ae8ea64730
+MATCH herd-v1-mocha-filter-sheet-390x844.png 575248632f80a0837c932079d3de918773e2f74699d7665757cc42030c5cd82f
+MATCH herd-v1-mocha-reduce-motion-390x844.png 7d3868a897b04b64ae4eb3cc49091c1c8d850f26573ba044ec969deee5d3884f
+MATCH herd-v2-latte-blocked-heavy-390x844.png 4b0c843017843fc6ab01cb6ad69d313e925ce3236354b6ca4ba64644451a6fb3
+MATCH herd-v2-latte-dense-fleet-390x844.png caee3b40752031069142e116208cd160d9a9c54e08d41b50d339e53a30f389d3
+MATCH herd-v2-latte-disconnected-390x844.png 18ccf0866fcb9d6335a4895071387f11098212942a9c8f80c16064a8136b19a7
+MATCH herd-v2-latte-repo-scoped-390x844.png 7b4f6b062c19e748fac22d781d6f8a9412c0e09e8b123e7717a86519e3825003
+MATCH herd-v2-mocha-blocked-heavy-390x844.png 4170eefbe17cd183c5706c54bb21e43e31439f574fc671f3c33858bc3b7845dd
+MATCH herd-v2-mocha-dense-fleet-390x844.png aa4c4312c40e381bf98d629de2884c0fd0e7a5db6006ae98c604e49e2a7539df
+MATCH herd-v2-mocha-detail-sheet-390x844.png 292f67e645d9bb3a8dc625baa795cebb894959c952e383360a3b9c9a811d464f
+MATCH herd-v2-mocha-disconnected-390x844.png f857cb4c5e4dd579b755c79036e6692c74043a1d908cdf4188b873654130f194
+MATCH herd-v2-mocha-filter-sheet-390x844.png faa3643180554e5e2507a19bd1f97755f7ac70f5948402e164752a4d29acf8cb
+MATCH herd-v2-mocha-reduce-motion-390x844.png 218e9a870516bcff3b486bd91e59b874e3082ae1f81f84af8dd8fbb1e2faeb5a
+canonical-rerender MATCH_COUNT=21 MISMATCH_COUNT=0 RAW_EXIT=0

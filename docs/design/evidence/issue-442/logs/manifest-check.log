@@ -32,6 +32,8 @@ scripts/measure.py: OK
 scripts/mutate.py: OK
 scripts/privacy-scan.sh: OK
 scripts/render.py: OK
+scripts/repro-mutate.py: OK
+scripts/repro.py: OK
 scripts/run-gates.sh: OK
 scripts/scope-audit.sh: OK
 scripts/verify.py: OK

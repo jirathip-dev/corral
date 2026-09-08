@@ -15,4 +15,3 @@ RED   reduce-motion-still-animates     expect P13 rc=1
 RED   label-shrunk                     expect P15 rc=1
 GREEN untouched tree rc=0
 MUTATION OK: 14/14 mutants killed, untouched tree GREEN
-exit=0

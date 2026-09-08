@@ -66,3 +66,8 @@ Screenshots: `chrome-headless-shell` from the local Playwright cache
 invocation per stage at `--window-size=390,844
 --force-device-scale-factor=2`, downscaled with macOS `sips` to exactly
 390×844. `render.py` reads the PNG IHDR and refuses anything else.
+R1 capture-only temporary CSS pauses animations before first paint at a fixed
+500ms active time (delay -500ms); Reduce Motion animation:none is preserved.
+Shipped HTML remains animated. `repro.py` captures isolated A/B runs, compares
+every PNG byte and SHA-256, and promotes only compared bytes. See README and
+logs/repro-red-green.log for the disposable mismatch discriminator.

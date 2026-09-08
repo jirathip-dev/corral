@@ -14,6 +14,7 @@ trusted. Exit non-zero if any PNG is not exactly 390x844.
 """
 from __future__ import annotations
 
+import argparse
 import glob
 import json
 import os
@@ -51,17 +52,30 @@ def png_size(path: Path) -> tuple[int, int]:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output-dir", type=Path, default=EVID)
+    args = parser.parse_args()
+    args.output_dir.mkdir(parents=True, exist_ok=True)
     shell = find_shell()
     specs = json.loads((EVID / "stage" / "specs.json").read_text())
     print(f"renderer: {shell}")
     print(f"stages: {len(specs)}")
+    print("capture pose: CSS paused from first style resolution; delay=-500ms; transitions disabled")
     bad = []
     with tempfile.TemporaryDirectory() as tmp:
         for spec in specs:
             name = spec["name"]
             src = EVID / "stage" / f"{name}.html"
+            # Capture-only copy: never disable motion in the shipped HTML.
+            # Paused before first paint, fixed active time 500ms; RM animation:none survives.
+            source = src.read_text()
+            assert "<script" not in source.lower(), "timed JS needs explicit capture control"
+            assert source.count("</head>") == 1
+            frozen = Path(tmp) / f"{name}.html"
+            frozen.write_text(source.replace("</head>", "<style>*,*::before,*::after{animation-play-state:paused!important;animation-delay:-500ms!important;transition:none!important}</style></head>"))
+            src = frozen
             out2x = Path(tmp) / f"{name}-2x.png"
-            out = EVID / f"{name}-{W}x{H}.png"
+            out = args.output_dir / f"{name}-{W}x{H}.png"
             udd = tempfile.mkdtemp(prefix="hs-", dir=tmp)
             cmd = [shell, "--headless", "--disable-gpu", "--no-first-run",
                    "--hide-scrollbars", f"--user-data-dir={udd}",

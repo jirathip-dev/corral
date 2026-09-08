@@ -1,0 +1,160 @@
+RED command: python3 scripts/repro.py --inject-mismatch
+RUN A: python3 scripts/render.py --output-dir <isolated-A>
+renderer: /Users/jirathip/Library/Caches/ms-playwright/chromium_headless_shell-1234/chrome-headless-shell-mac-arm64/chrome-headless-shell
+stages: 21
+capture pose: CSS paused from first style resolution; delay=-500ms; transitions disabled
+OK  herd-v1-mocha-blocked-heavy-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-mocha-dense-fleet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-mocha-disconnected-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-latte-blocked-heavy-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-latte-dense-fleet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-latte-disconnected-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-mocha-detail-sheet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-mocha-filter-sheet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-mocha-reduce-motion-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-latte-repo-scoped-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-mocha-blocked-heavy-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-mocha-dense-fleet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-mocha-disconnected-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-latte-blocked-heavy-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-latte-dense-fleet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-latte-disconnected-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-mocha-detail-sheet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-mocha-filter-sheet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-mocha-reduce-motion-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-latte-repo-scoped-390x844.png  390x844  (2x 780x1688)
+OK  board-mocha-blocked-heavy-390x844.png  390x844  (2x 780x1688)
+RENDER OK: 21 PNGs at exactly 390x844
+RENDER_A_RAW_EXIT=0
+RUN B: python3 scripts/render.py --output-dir <isolated-B>
+renderer: /Users/jirathip/Library/Caches/ms-playwright/chromium_headless_shell-1234/chrome-headless-shell-mac-arm64/chrome-headless-shell
+stages: 21
+capture pose: CSS paused from first style resolution; delay=-500ms; transitions disabled
+OK  herd-v1-mocha-blocked-heavy-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-mocha-dense-fleet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-mocha-disconnected-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-latte-blocked-heavy-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-latte-dense-fleet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-latte-disconnected-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-mocha-detail-sheet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-mocha-filter-sheet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-mocha-reduce-motion-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-latte-repo-scoped-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-mocha-blocked-heavy-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-mocha-dense-fleet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-mocha-disconnected-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-latte-blocked-heavy-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-latte-dense-fleet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-latte-disconnected-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-mocha-detail-sheet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-mocha-filter-sheet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-mocha-reduce-motion-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-latte-repo-scoped-390x844.png  390x844  (2x 780x1688)
+OK  board-mocha-blocked-heavy-390x844.png  390x844  (2x 780x1688)
+RENDER OK: 21 PNGs at exactly 390x844
+RENDER_B_RAW_EXIT=0
+MUTATION: flip final byte of isolated B/board-mocha-blocked-heavy-390x844.png only
+MISMATCH board-mocha-blocked-heavy-390x844.png A=dd6de8a8efb3d97f622175403c180c2aaf3937bf9c29adf04136f8c3342aa451 B=a8b1d145917ab5c632f4adcf61ad38852e3bb85eff3f66d4a05e5d7c42731231
+MATCH herd-v1-latte-blocked-heavy-390x844.png A=f83931f5b8e4820de315bcf66ebb3f1dd24caef744848d61a5fb8bbc11bd81b2 B=f83931f5b8e4820de315bcf66ebb3f1dd24caef744848d61a5fb8bbc11bd81b2
+MATCH herd-v1-latte-dense-fleet-390x844.png A=e7914dd4e5fae624cc5f2b433b78addbc171f691fae9a263f2691468bef200f8 B=e7914dd4e5fae624cc5f2b433b78addbc171f691fae9a263f2691468bef200f8
+MATCH herd-v1-latte-disconnected-390x844.png A=3f3003cae31f120ca33ba263529bf7dda533ed211fd19a275746284f96da272f B=3f3003cae31f120ca33ba263529bf7dda533ed211fd19a275746284f96da272f
+MATCH herd-v1-latte-repo-scoped-390x844.png A=75c6e58b0a8a75d32ea91c012d2d708d18e82e87174ffb6c88bf0733b2ee3536 B=75c6e58b0a8a75d32ea91c012d2d708d18e82e87174ffb6c88bf0733b2ee3536
+MATCH herd-v1-mocha-blocked-heavy-390x844.png A=447a42c1e6a4547c7ec535d5ea17cf6020bc5221b8561fbb6aa965e9ba95c121 B=447a42c1e6a4547c7ec535d5ea17cf6020bc5221b8561fbb6aa965e9ba95c121
+MATCH herd-v1-mocha-dense-fleet-390x844.png A=602ee47efd72e770037b741d9d5bb035955a8525deeb0e43ee0d46b83e58e5f0 B=602ee47efd72e770037b741d9d5bb035955a8525deeb0e43ee0d46b83e58e5f0
+MATCH herd-v1-mocha-detail-sheet-390x844.png A=6cbaff4f3947b3d5b289f5ed8194d9c028fa2d9fb2dc21a610d9fa4caa8c2edc B=6cbaff4f3947b3d5b289f5ed8194d9c028fa2d9fb2dc21a610d9fa4caa8c2edc
+MATCH herd-v1-mocha-disconnected-390x844.png A=e845a6467109979b39239c130f18eb62dcb83374421d3f6accacf4ae8ea64730 B=e845a6467109979b39239c130f18eb62dcb83374421d3f6accacf4ae8ea64730
+MATCH herd-v1-mocha-filter-sheet-390x844.png A=575248632f80a0837c932079d3de918773e2f74699d7665757cc42030c5cd82f B=575248632f80a0837c932079d3de918773e2f74699d7665757cc42030c5cd82f
+MATCH herd-v1-mocha-reduce-motion-390x844.png A=7d3868a897b04b64ae4eb3cc49091c1c8d850f26573ba044ec969deee5d3884f B=7d3868a897b04b64ae4eb3cc49091c1c8d850f26573ba044ec969deee5d3884f
+MATCH herd-v2-latte-blocked-heavy-390x844.png A=4b0c843017843fc6ab01cb6ad69d313e925ce3236354b6ca4ba64644451a6fb3 B=4b0c843017843fc6ab01cb6ad69d313e925ce3236354b6ca4ba64644451a6fb3
+MATCH herd-v2-latte-dense-fleet-390x844.png A=caee3b40752031069142e116208cd160d9a9c54e08d41b50d339e53a30f389d3 B=caee3b40752031069142e116208cd160d9a9c54e08d41b50d339e53a30f389d3
+MATCH herd-v2-latte-disconnected-390x844.png A=18ccf0866fcb9d6335a4895071387f11098212942a9c8f80c16064a8136b19a7 B=18ccf0866fcb9d6335a4895071387f11098212942a9c8f80c16064a8136b19a7
+MATCH herd-v2-latte-repo-scoped-390x844.png A=7b4f6b062c19e748fac22d781d6f8a9412c0e09e8b123e7717a86519e3825003 B=7b4f6b062c19e748fac22d781d6f8a9412c0e09e8b123e7717a86519e3825003
+MATCH herd-v2-mocha-blocked-heavy-390x844.png A=4170eefbe17cd183c5706c54bb21e43e31439f574fc671f3c33858bc3b7845dd B=4170eefbe17cd183c5706c54bb21e43e31439f574fc671f3c33858bc3b7845dd
+MATCH herd-v2-mocha-dense-fleet-390x844.png A=aa4c4312c40e381bf98d629de2884c0fd0e7a5db6006ae98c604e49e2a7539df B=aa4c4312c40e381bf98d629de2884c0fd0e7a5db6006ae98c604e49e2a7539df
+MATCH herd-v2-mocha-detail-sheet-390x844.png A=292f67e645d9bb3a8dc625baa795cebb894959c952e383360a3b9c9a811d464f B=292f67e645d9bb3a8dc625baa795cebb894959c952e383360a3b9c9a811d464f
+MATCH herd-v2-mocha-disconnected-390x844.png A=f857cb4c5e4dd579b755c79036e6692c74043a1d908cdf4188b873654130f194 B=f857cb4c5e4dd579b755c79036e6692c74043a1d908cdf4188b873654130f194
+MATCH herd-v2-mocha-filter-sheet-390x844.png A=faa3643180554e5e2507a19bd1f97755f7ac70f5948402e164752a4d29acf8cb B=faa3643180554e5e2507a19bd1f97755f7ac70f5948402e164752a4d29acf8cb
+MATCH herd-v2-mocha-reduce-motion-390x844.png A=218e9a870516bcff3b486bd91e59b874e3082ae1f81f84af8dd8fbb1e2faeb5a B=218e9a870516bcff3b486bd91e59b874e3082ae1f81f84af8dd8fbb1e2faeb5a
+PNG_COUNT=21 MATCH_COUNT=20 MISMATCH_COUNT=1
+REPRO FAIL
+RED_RAW_EXIT=1
+GREEN command: python3 scripts/repro.py
+RUN A: python3 scripts/render.py --output-dir <isolated-A>
+renderer: /Users/jirathip/Library/Caches/ms-playwright/chromium_headless_shell-1234/chrome-headless-shell-mac-arm64/chrome-headless-shell
+stages: 21
+capture pose: CSS paused from first style resolution; delay=-500ms; transitions disabled
+OK  herd-v1-mocha-blocked-heavy-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-mocha-dense-fleet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-mocha-disconnected-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-latte-blocked-heavy-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-latte-dense-fleet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-latte-disconnected-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-mocha-detail-sheet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-mocha-filter-sheet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-mocha-reduce-motion-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-latte-repo-scoped-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-mocha-blocked-heavy-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-mocha-dense-fleet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-mocha-disconnected-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-latte-blocked-heavy-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-latte-dense-fleet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-latte-disconnected-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-mocha-detail-sheet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-mocha-filter-sheet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-mocha-reduce-motion-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-latte-repo-scoped-390x844.png  390x844  (2x 780x1688)
+OK  board-mocha-blocked-heavy-390x844.png  390x844  (2x 780x1688)
+RENDER OK: 21 PNGs at exactly 390x844
+RENDER_A_RAW_EXIT=0
+RUN B: python3 scripts/render.py --output-dir <isolated-B>
+renderer: /Users/jirathip/Library/Caches/ms-playwright/chromium_headless_shell-1234/chrome-headless-shell-mac-arm64/chrome-headless-shell
+stages: 21
+capture pose: CSS paused from first style resolution; delay=-500ms; transitions disabled
+OK  herd-v1-mocha-blocked-heavy-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-mocha-dense-fleet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-mocha-disconnected-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-latte-blocked-heavy-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-latte-dense-fleet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-latte-disconnected-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-mocha-detail-sheet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-mocha-filter-sheet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-mocha-reduce-motion-390x844.png  390x844  (2x 780x1688)
+OK  herd-v1-latte-repo-scoped-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-mocha-blocked-heavy-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-mocha-dense-fleet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-mocha-disconnected-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-latte-blocked-heavy-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-latte-dense-fleet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-latte-disconnected-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-mocha-detail-sheet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-mocha-filter-sheet-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-mocha-reduce-motion-390x844.png  390x844  (2x 780x1688)
+OK  herd-v2-latte-repo-scoped-390x844.png  390x844  (2x 780x1688)
+OK  board-mocha-blocked-heavy-390x844.png  390x844  (2x 780x1688)
+RENDER OK: 21 PNGs at exactly 390x844
+RENDER_B_RAW_EXIT=0
+MATCH board-mocha-blocked-heavy-390x844.png A=dd6de8a8efb3d97f622175403c180c2aaf3937bf9c29adf04136f8c3342aa451 B=dd6de8a8efb3d97f622175403c180c2aaf3937bf9c29adf04136f8c3342aa451
+MATCH herd-v1-latte-blocked-heavy-390x844.png A=f83931f5b8e4820de315bcf66ebb3f1dd24caef744848d61a5fb8bbc11bd81b2 B=f83931f5b8e4820de315bcf66ebb3f1dd24caef744848d61a5fb8bbc11bd81b2
+MATCH herd-v1-latte-dense-fleet-390x844.png A=e7914dd4e5fae624cc5f2b433b78addbc171f691fae9a263f2691468bef200f8 B=e7914dd4e5fae624cc5f2b433b78addbc171f691fae9a263f2691468bef200f8
+MATCH herd-v1-latte-disconnected-390x844.png A=3f3003cae31f120ca33ba263529bf7dda533ed211fd19a275746284f96da272f B=3f3003cae31f120ca33ba263529bf7dda533ed211fd19a275746284f96da272f
+MATCH herd-v1-latte-repo-scoped-390x844.png A=75c6e58b0a8a75d32ea91c012d2d708d18e82e87174ffb6c88bf0733b2ee3536 B=75c6e58b0a8a75d32ea91c012d2d708d18e82e87174ffb6c88bf0733b2ee3536
+MATCH herd-v1-mocha-blocked-heavy-390x844.png A=447a42c1e6a4547c7ec535d5ea17cf6020bc5221b8561fbb6aa965e9ba95c121 B=447a42c1e6a4547c7ec535d5ea17cf6020bc5221b8561fbb6aa965e9ba95c121
+MATCH herd-v1-mocha-dense-fleet-390x844.png A=602ee47efd72e770037b741d9d5bb035955a8525deeb0e43ee0d46b83e58e5f0 B=602ee47efd72e770037b741d9d5bb035955a8525deeb0e43ee0d46b83e58e5f0
+MATCH herd-v1-mocha-detail-sheet-390x844.png A=6cbaff4f3947b3d5b289f5ed8194d9c028fa2d9fb2dc21a610d9fa4caa8c2edc B=6cbaff4f3947b3d5b289f5ed8194d9c028fa2d9fb2dc21a610d9fa4caa8c2edc
+MATCH herd-v1-mocha-disconnected-390x844.png A=e845a6467109979b39239c130f18eb62dcb83374421d3f6accacf4ae8ea64730 B=e845a6467109979b39239c130f18eb62dcb83374421d3f6accacf4ae8ea64730
+MATCH herd-v1-mocha-filter-sheet-390x844.png A=575248632f80a0837c932079d3de918773e2f74699d7665757cc42030c5cd82f B=575248632f80a0837c932079d3de918773e2f74699d7665757cc42030c5cd82f
+MATCH herd-v1-mocha-reduce-motion-390x844.png A=7d3868a897b04b64ae4eb3cc49091c1c8d850f26573ba044ec969deee5d3884f B=7d3868a897b04b64ae4eb3cc49091c1c8d850f26573ba044ec969deee5d3884f
+MATCH herd-v2-latte-blocked-heavy-390x844.png A=4b0c843017843fc6ab01cb6ad69d313e925ce3236354b6ca4ba64644451a6fb3 B=4b0c843017843fc6ab01cb6ad69d313e925ce3236354b6ca4ba64644451a6fb3
+MATCH herd-v2-latte-dense-fleet-390x844.png A=caee3b40752031069142e116208cd160d9a9c54e08d41b50d339e53a30f389d3 B=caee3b40752031069142e116208cd160d9a9c54e08d41b50d339e53a30f389d3
+MATCH herd-v2-latte-disconnected-390x844.png A=18ccf0866fcb9d6335a4895071387f11098212942a9c8f80c16064a8136b19a7 B=18ccf0866fcb9d6335a4895071387f11098212942a9c8f80c16064a8136b19a7
+MATCH herd-v2-latte-repo-scoped-390x844.png A=7b4f6b062c19e748fac22d781d6f8a9412c0e09e8b123e7717a86519e3825003 B=7b4f6b062c19e748fac22d781d6f8a9412c0e09e8b123e7717a86519e3825003
+MATCH herd-v2-mocha-blocked-heavy-390x844.png A=4170eefbe17cd183c5706c54bb21e43e31439f574fc671f3c33858bc3b7845dd B=4170eefbe17cd183c5706c54bb21e43e31439f574fc671f3c33858bc3b7845dd
+MATCH herd-v2-mocha-dense-fleet-390x844.png A=aa4c4312c40e381bf98d629de2884c0fd0e7a5db6006ae98c604e49e2a7539df B=aa4c4312c40e381bf98d629de2884c0fd0e7a5db6006ae98c604e49e2a7539df
+MATCH herd-v2-mocha-detail-sheet-390x844.png A=292f67e645d9bb3a8dc625baa795cebb894959c952e383360a3b9c9a811d464f B=292f67e645d9bb3a8dc625baa795cebb894959c952e383360a3b9c9a811d464f
+MATCH herd-v2-mocha-disconnected-390x844.png A=f857cb4c5e4dd579b755c79036e6692c74043a1d908cdf4188b873654130f194 B=f857cb4c5e4dd579b755c79036e6692c74043a1d908cdf4188b873654130f194
+MATCH herd-v2-mocha-filter-sheet-390x844.png A=faa3643180554e5e2507a19bd1f97755f7ac70f5948402e164752a4d29acf8cb B=faa3643180554e5e2507a19bd1f97755f7ac70f5948402e164752a4d29acf8cb
+MATCH herd-v2-mocha-reduce-motion-390x844.png A=218e9a870516bcff3b486bd91e59b874e3082ae1f81f84af8dd8fbb1e2faeb5a B=218e9a870516bcff3b486bd91e59b874e3082ae1f81f84af8dd8fbb1e2faeb5a
+PNG_COUNT=21 MATCH_COUNT=21 MISMATCH_COUNT=0
+REPRO OK
+GREEN_RAW_EXIT=0
+REPRO MUTATION OK: isolated RED exit=1; pristine GREEN exit=0; canonical untouched

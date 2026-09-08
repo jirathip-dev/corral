@@ -5,9 +5,9 @@
 #
 #   bash scripts/run-gates.sh
 #
-# Steps: build -> render -> measure -> dimensions -> verify(+manifest) ->
-# independent manifest check. Mutation proof (scripts/mutate.py, ~5 min)
-# is run separately and logged to logs/verify-mutation.log.
+# Steps: build -> reproducibility RED/GREEN -> two-run capture+promotion ->
+# measure -> dimensions -> existing mutations -> privacy -> verify+manifest ->
+# independent manifest check. No later render can invalidate comparison.
 set -u
 cd "$(dirname "$0")/.." || exit 2
 [ "$(basename "$PWD")" = "issue-442" ] || { echo "wrong dir: $PWD"; exit 2; }
@@ -26,9 +26,14 @@ step() {  # step <name> <logfile> <cmd...>
 
 rm -f manifest.sha256
 step build      logs/build.log      python3 scripts/build.py
-step render     logs/capture.log    python3 scripts/render.py
+step repro-mutation logs/repro-red-green.log python3 scripts/repro-mutate.py
+step reproducibility logs/reproducibility.log python3 scripts/repro.py --promote
+# No render after comparison: canonical PNGs are the exact compared run A.
+cp logs/reproducibility.log logs/capture.log
 step measure    logs/measure.log    python3 scripts/measure.py
 step dimensions logs/dimensions.log python3 scripts/check-dimensions.py
+step mutation logs/verify-mutation.log python3 scripts/mutate.py
+step privacy logs/privacy-scan.log bash scripts/privacy-scan.sh
 step verify     logs/verify.log     python3 scripts/verify.py
 # independent manifest check with a different tool (shasum, not verify.py)
 step manifest-check logs/manifest-check.log shasum -a 256 -c manifest.sha256

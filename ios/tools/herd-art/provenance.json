@@ -1,0 +1,49 @@
+{
+  "design_commit": "28ff3cbf02429b92f22dae2c8a7578ff19abda5e",
+  "correction": 1,
+  "horse_source_copy": "byte-identical to original V1",
+  "references": [
+    {
+      "path": "docs/design/evidence/issue-442/scripts/horsesvg.py",
+      "sha256": "a9c172de9aa42080daf987ca6919f827895c363903c16e1ec3fbdf865b6041ec",
+      "bytes": 14314,
+      "shipping": false
+    },
+    {
+      "path": "docs/design/evidence/issue-442/scripts/fixtures.py",
+      "sha256": "8172fe141a297718a4736d503dfb985e6a2994d41100ec8ac28c3b2083d05e3d",
+      "bytes": 15415,
+      "shipping": false
+    },
+    {
+      "path": "docs/design/evidence/issue-442/r2-v1-premium/NATIVE-HANDOFF.md",
+      "sha256": "7b9bc88c6058f063e695ce5c5844aebe3ca857da0879281becad612c87705f85",
+      "bytes": 36263,
+      "shipping": false
+    },
+    {
+      "path": "docs/design/evidence/issue-442/r2-v1-premium/layers/geometry.json",
+      "sha256": "079eda6833d813012c86d55cdce3767b7e768a4dd6eccae574577fa3cf1ed4de",
+      "bytes": 18000,
+      "shipping": false
+    },
+    {
+      "path": "docs/design/evidence/issue-442/r2-v1-premium/v1-r2-day-390x844.png",
+      "sha256": "d9ac6571b5a3ce640c27c9f6d0f376171e4ff543a85ef89d1aff462c1bc9cb03",
+      "bytes": 346415,
+      "shipping": false
+    },
+    {
+      "path": "docs/design/evidence/issue-442/r2-v1-premium/v1-r2-night-390x844.png",
+      "sha256": "44380520b8535afcb34b0fa0db9dbd5bd9ae241ffcb0adb512113c3a8a51cc96",
+      "bytes": 349325,
+      "shipping": false
+    },
+    {
+      "path": "docs/design/evidence/issue-442/herd-v1-mocha-blocked-heavy-390x844.png",
+      "sha256": "447a42c1e6a4547c7ec535d5ea17cf6020bc5221b8561fbb6aa965e9ba95c121",
+      "bytes": 104576,
+      "shipping": false
+    }
+  ]
+}

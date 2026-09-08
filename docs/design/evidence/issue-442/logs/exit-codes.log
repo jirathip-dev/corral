@@ -1,0 +1,10 @@
+build exit=0 log=logs/build.log
+render exit=0 log=logs/capture.log
+measure exit=0 log=logs/measure.log
+dimensions exit=0 log=logs/dimensions.log
+verify exit=0 log=logs/verify.log
+manifest-check exit=0 log=logs/manifest-check.log
+overall exit=0
+privacy exit=0
+git-diff-check exit=0
+scope-audit exit=0

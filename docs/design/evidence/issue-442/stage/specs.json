@@ -1,0 +1,220 @@
+[
+ {
+  "name": "herd-v1-mocha-blocked-heavy",
+  "variant": "v1",
+  "palette": "mocha",
+  "frame": "blocked-heavy",
+  "mode": "herd",
+  "rm": false,
+  "overlay": null,
+  "opts": {}
+ },
+ {
+  "name": "herd-v1-mocha-dense-fleet",
+  "variant": "v1",
+  "palette": "mocha",
+  "frame": "dense-fleet",
+  "mode": "herd",
+  "rm": false,
+  "overlay": null,
+  "opts": {}
+ },
+ {
+  "name": "herd-v1-mocha-disconnected",
+  "variant": "v1",
+  "palette": "mocha",
+  "frame": "disconnected",
+  "mode": "herd",
+  "rm": false,
+  "overlay": null,
+  "opts": {}
+ },
+ {
+  "name": "herd-v1-latte-blocked-heavy",
+  "variant": "v1",
+  "palette": "latte",
+  "frame": "blocked-heavy",
+  "mode": "herd",
+  "rm": false,
+  "overlay": null,
+  "opts": {}
+ },
+ {
+  "name": "herd-v1-latte-dense-fleet",
+  "variant": "v1",
+  "palette": "latte",
+  "frame": "dense-fleet",
+  "mode": "herd",
+  "rm": false,
+  "overlay": null,
+  "opts": {}
+ },
+ {
+  "name": "herd-v1-latte-disconnected",
+  "variant": "v1",
+  "palette": "latte",
+  "frame": "disconnected",
+  "mode": "herd",
+  "rm": false,
+  "overlay": null,
+  "opts": {}
+ },
+ {
+  "name": "herd-v1-mocha-detail-sheet",
+  "variant": "v1",
+  "palette": "mocha",
+  "frame": "blocked-heavy",
+  "mode": "herd",
+  "rm": false,
+  "overlay": "detail-sheet",
+  "opts": {
+   "selected": "oak-before-dark"
+  }
+ },
+ {
+  "name": "herd-v1-mocha-filter-sheet",
+  "variant": "v1",
+  "palette": "mocha",
+  "frame": "blocked-heavy",
+  "mode": "herd",
+  "rm": false,
+  "overlay": "filter-sheet",
+  "opts": {}
+ },
+ {
+  "name": "herd-v1-mocha-reduce-motion",
+  "variant": "v1",
+  "palette": "mocha",
+  "frame": "blocked-heavy",
+  "mode": "herd",
+  "rm": true,
+  "overlay": null,
+  "opts": {}
+ },
+ {
+  "name": "herd-v1-latte-repo-scoped",
+  "variant": "v1",
+  "palette": "latte",
+  "frame": "dense-fleet",
+  "mode": "herd",
+  "rm": false,
+  "overlay": null,
+  "opts": {
+   "repo": "project-hearthwild-monorepo"
+  }
+ },
+ {
+  "name": "herd-v2-mocha-blocked-heavy",
+  "variant": "v2",
+  "palette": "mocha",
+  "frame": "blocked-heavy",
+  "mode": "herd",
+  "rm": false,
+  "overlay": null,
+  "opts": {}
+ },
+ {
+  "name": "herd-v2-mocha-dense-fleet",
+  "variant": "v2",
+  "palette": "mocha",
+  "frame": "dense-fleet",
+  "mode": "herd",
+  "rm": false,
+  "overlay": null,
+  "opts": {}
+ },
+ {
+  "name": "herd-v2-mocha-disconnected",
+  "variant": "v2",
+  "palette": "mocha",
+  "frame": "disconnected",
+  "mode": "herd",
+  "rm": false,
+  "overlay": null,
+  "opts": {}
+ },
+ {
+  "name": "herd-v2-latte-blocked-heavy",
+  "variant": "v2",
+  "palette": "latte",
+  "frame": "blocked-heavy",
+  "mode": "herd",
+  "rm": false,
+  "overlay": null,
+  "opts": {}
+ },
+ {
+  "name": "herd-v2-latte-dense-fleet",
+  "variant": "v2",
+  "palette": "latte",
+  "frame": "dense-fleet",
+  "mode": "herd",
+  "rm": false,
+  "overlay": null,
+  "opts": {}
+ },
+ {
+  "name": "herd-v2-latte-disconnected",
+  "variant": "v2",
+  "palette": "latte",
+  "frame": "disconnected",
+  "mode": "herd",
+  "rm": false,
+  "overlay": null,
+  "opts": {}
+ },
+ {
+  "name": "herd-v2-mocha-detail-sheet",
+  "variant": "v2",
+  "palette": "mocha",
+  "frame": "blocked-heavy",
+  "mode": "herd",
+  "rm": false,
+  "overlay": "detail-sheet",
+  "opts": {
+   "selected": "oak-before-dark"
+  }
+ },
+ {
+  "name": "herd-v2-mocha-filter-sheet",
+  "variant": "v2",
+  "palette": "mocha",
+  "frame": "blocked-heavy",
+  "mode": "herd",
+  "rm": false,
+  "overlay": "filter-sheet",
+  "opts": {}
+ },
+ {
+  "name": "herd-v2-mocha-reduce-motion",
+  "variant": "v2",
+  "palette": "mocha",
+  "frame": "blocked-heavy",
+  "mode": "herd",
+  "rm": true,
+  "overlay": null,
+  "opts": {}
+ },
+ {
+  "name": "herd-v2-latte-repo-scoped",
+  "variant": "v2",
+  "palette": "latte",
+  "frame": "dense-fleet",
+  "mode": "herd",
+  "rm": false,
+  "overlay": null,
+  "opts": {
+   "repo": "project-hearthwild-monorepo"
+  }
+ },
+ {
+  "name": "board-mocha-blocked-heavy",
+  "variant": "v2",
+  "palette": "mocha",
+  "frame": "blocked-heavy",
+  "mode": "board",
+  "rm": false,
+  "overlay": null,
+  "opts": {}
+ }
+]

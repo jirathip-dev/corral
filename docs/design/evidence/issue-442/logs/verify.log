@@ -1,0 +1,22 @@
+PASS P11 dimensions: 21 PNGs all exactly 390x844; 12/12 required present
+PASS P12 fictional-only: 0 forbidden strings across HTML/MD/PY
+PASS P14 static: no http(s) src/href in prototypes/stages
+PASS P07 states present across stages: ['blocked', 'done', 'idle', 'unknown', 'working']
+PASS P10 identity stable for 18 agents across 21 stages
+PASS stages probed: 21 (P01/P02/P03/P08/P09/P13/P15)
+PASS P14 self-contained v1: 0 external resources
+PASS P04 switch v1: herd->board(12 rows)->herd(12 horses)
+PASS P05 shared filters v1: Herd scope 'All hosts · atlas-vector' == Board scope; both show only atlas-vector; Filters button 'Filters · 1'
+PASS P06 detail path v1: horse 'birch-clearing' -> sheet 'birch-clearing'; Board row -> sheet 'birch-clearing'
+PASS P-nav v1: 4 paddock pages, 4 page dots (swipe navigation)
+PASS P01 console v1 interactive: 0 errors
+PASS P14 self-contained v2: 0 external resources
+PASS P04 switch v2: herd->board(12 rows)->herd(12 horses)
+PASS P05 shared filters v2: Herd scope 'All hosts · atlas-vector' == Board scope; both show only atlas-vector; Filters button 'Filters · 1'
+PASS P06 detail path v2: horse 'birch-clearing' -> sheet 'birch-clearing'; Board row -> sheet 'birch-clearing'
+PASS P-nav v2: overflow rows ['Show all 5 · 1 more']
+PASS P01 console v2 interactive: 0 errors
+PASS manifest: 60 files -> manifest.sha256 (manifest sha256 669d17a5bb32afcb6e5c412abb41e4525a6c00fa1e5bd768f896c45c434c686b)
+
+19 pass, 0 findings
+VERIFY OK

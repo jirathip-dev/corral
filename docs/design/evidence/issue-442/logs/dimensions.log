@@ -1,0 +1,24 @@
+OK  board-mocha-blocked-heavy-390x844.png 390x844
+OK  herd-v1-latte-blocked-heavy-390x844.png 390x844
+OK  herd-v1-latte-dense-fleet-390x844.png 390x844
+OK  herd-v1-latte-disconnected-390x844.png 390x844
+OK  herd-v1-latte-repo-scoped-390x844.png 390x844
+OK  herd-v1-mocha-blocked-heavy-390x844.png 390x844
+OK  herd-v1-mocha-dense-fleet-390x844.png 390x844
+OK  herd-v1-mocha-detail-sheet-390x844.png 390x844
+OK  herd-v1-mocha-disconnected-390x844.png 390x844
+OK  herd-v1-mocha-filter-sheet-390x844.png 390x844
+OK  herd-v1-mocha-reduce-motion-390x844.png 390x844
+OK  herd-v2-latte-blocked-heavy-390x844.png 390x844
+OK  herd-v2-latte-dense-fleet-390x844.png 390x844
+OK  herd-v2-latte-disconnected-390x844.png 390x844
+OK  herd-v2-latte-repo-scoped-390x844.png 390x844
+OK  herd-v2-mocha-blocked-heavy-390x844.png 390x844
+OK  herd-v2-mocha-dense-fleet-390x844.png 390x844
+OK  herd-v2-mocha-detail-sheet-390x844.png 390x844
+OK  herd-v2-mocha-disconnected-390x844.png 390x844
+OK  herd-v2-mocha-filter-sheet-390x844.png 390x844
+OK  herd-v2-mocha-reduce-motion-390x844.png 390x844
+count: 21 PNGs (stage specs: 21)
+required 12: 12/12 present
+DIMENSIONS OK: 21/21 exactly 390x844

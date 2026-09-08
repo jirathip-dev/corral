@@ -1,0 +1,18 @@
+mutation cases: 14
+RED   console-error                    expect P01 rc=1
+RED   horizontal-overflow              expect P02 rc=1
+RED   small-tap-target                 expect P03 rc=1
+RED   switch-broken                    expect P04 rc=1
+RED   filters-not-shared               expect P05 rc=1
+RED   detail-sheet-wrong-agent         expect P06 rc=1
+RED   blocked-off-rail                 expect P08 rc=1
+RED   blocked-color-only               expect P08 rc=1
+RED   disconnected-fake-live           expect P09 rc=1
+RED   identity-drift                   expect P10 rc=1
+RED   png-wrong-size                   expect P11 rc=1
+RED   real-token-leak                  expect P12 rc=1
+RED   reduce-motion-still-animates     expect P13 rc=1
+RED   label-shrunk                     expect P15 rc=1
+GREEN untouched tree rc=0
+MUTATION OK: 14/14 mutants killed, untouched tree GREEN
+exit=0

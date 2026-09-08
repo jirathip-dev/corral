@@ -1,0 +1,28 @@
+COMMAND: shasum -a 256 -c manifest.sha256
+PROVENANCE.md: OK
+README.md: OK
+art.py: OK
+build.py: OK
+capture.py: OK
+comparison-note.md: OK
+control-input.html: OK
+control-sha256.json: OK
+day.html: OK
+fixtures.py: OK
+logs/browser.log: OK
+logs/build.log: OK
+logs/capture.log: OK
+logs/exit-codes.json: OK
+logs/verify.log: OK
+night.html: OK
+probe.py: OK
+protected-control-baseline.txt: OK
+run-gates.py: OK
+study.html: OK
+v1-r2-day-390x844.png: OK
+v1-r2-idle-anatomy-study.png: OK
+v1-r2-night-390x844.png: OK
+verify.py: OK
+visual-review.md: OK
+
+RAW_EXIT: 0

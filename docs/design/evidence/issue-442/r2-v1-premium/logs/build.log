@@ -1,0 +1,4 @@
+COMMAND: /Users/jirathip/.local/bin/python3 -B build.py
+BUILD: day.html night.html study.html; 12 unchanged fixture identities; raw exits 0
+
+RAW_EXIT: 0

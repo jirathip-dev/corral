@@ -1,0 +1,118 @@
+COMMAND: /Users/jirathip/.local/bin/python3 -B verify.py --repro
+PASS raw canonical PNG count 3 ['v1-r2-day-390x844.png', 'v1-r2-idle-anatomy-study.png', 'v1-r2-night-390x844.png']
+PASS dimensions v1-r2-day-390x844.png 390 844
+PASS dimensions v1-r2-night-390x844.png 390 844
+PASS dimensions v1-r2-idle-anatomy-study.png 600 760
+COMMAND ['git', 'ls-tree', '-r', '--name-only', 'ecd3938a72cdfce256128c7d437dcd589141baf5', '--', 'docs/design/evidence/issue-442/'] raw_exit= 0
+docs/design/evidence/issue-442/PROVENANCE.md
+docs/design/evidence/issue-442/README.md
+docs/design/evidence/issue-442/board-mocha-blocked-heavy-390x844.png
+docs/design/evidence/issue-442/herd-v1-latte-blocked-heavy-390x844.png
+docs/design/evidence/issue-442/herd-v1-latte-dense-fleet-390x844.png
+docs/design/evidence/issue-442/herd-v1-latte-disconnected-390x844.png
+docs/design/evidence/issue-442/herd-v1-latte-repo-scoped-390x844.png
+docs/design/evidence/issue-442/herd-v1-mocha-blocked-heavy-390x844.png
+docs/design/evidence/issue-442/herd-v1-mocha-dense-fleet-390x844.png
+docs/design/evidence/issue-442/herd-v1-mocha-detail-sheet-390x844.png
+docs/design/evidence/issue-442/herd-v1-mocha-disconnected-390x844.png
+docs/design/evidence/issue-442/herd-v1-mocha-filter-sheet-390x844.png
+docs/design/evidence/issue-442/herd-v1-mocha-reduce-motion-390x844.png
+docs/design/evidence/issue-442/herd-v2-latte-blocked-heavy-390x844.png
+docs/design/evidence/issue-442/herd-v2-latte-dense-fleet-390x844.png
+docs/design/evidence/issue-442/herd-v2-latte-disconnected-390x844.png
+docs/design/evidence/issue-442/herd-v2-latte-repo-scoped-390x844.png
+docs/design/evidence/issue-442/herd-v2-mocha-blocked-heavy-390x844.png
+docs/design/evidence/issue-442/herd-v2-mocha-dense-fleet-390x844.png
+docs/design/evidence/issue-442/herd-v2-mocha-detail-sheet-390x844.png
+docs/design/evidence/issue-442/herd-v2-mocha-disconnected-390x844.png
+docs/design/evidence/issue-442/herd-v2-mocha-filter-sheet-390x844.png
+docs/design/evidence/issue-442/herd-v2-mocha-reduce-motion-390x844.png
+docs/design/evidence/issue-442/index.html
+docs/design/evidence/issue-442/logs/build.log
+docs/design/evidence/issue-442/logs/canonical-rerender.log
+docs/design/evidence/issue-442/logs/capture.log
+docs/design/evidence/issue-442/logs/dimensions.log
+docs/design/evidence/issue-442/logs/exit-codes.log
+docs/design/evidence/issue-442/logs/git-diff-check.log
+docs/design/evidence/issue-442/logs/manifest-check.log
+docs/design/evidence/issue-442/logs/measure.log
+docs/design/evidence/issue-442/logs/privacy-scan.log
+docs/design/evidence/issue-442/logs/repro-red-green.log
+docs/design/evidence/issue-442/logs/reproducibility.log
+docs/design/evidence/issue-442/logs/review-copy-equivalence.log
+docs/design/evidence/issue-442/logs/scope-audit.log
+docs/design/evidence/issue-442/logs/verify-mutation.log
+docs/design/evidence/issue-442/logs/verify.log
+docs/design/evidence/issue-442/logs/visual-r1.log
+docs/design/evidence/issue-442/manifest.sha256
+docs/design/evidence/issue-442/prototype-v1-pasture-panorama.html
+docs/design/evidence/issue-442/prototype-v2-ranch-map.html
+docs/design/evidence/issue-442/scripts/build.py
+docs/design/evidence/issue-442/scripts/check-dimensions.py
+docs/design/evidence/issue-442/scripts/fixtures.py
+docs/design/evidence/issue-442/scripts/horsesvg.py
+docs/design/evidence/issue-442/scripts/measure.py
+docs/design/evidence/issue-442/scripts/mutate.py
+docs/design/evidence/issue-442/scripts/privacy-scan.sh
+docs/design/evidence/issue-442/scripts/render.py
+docs/design/evidence/issue-442/scripts/repro-mutate.py
+docs/design/evidence/issue-442/scripts/repro.py
+docs/design/evidence/issue-442/scripts/run-gates.sh
+docs/design/evidence/issue-442/scripts/scope-audit.sh
+docs/design/evidence/issue-442/scripts/verify.py
+docs/design/evidence/issue-442/sprite-sheet.html
+docs/design/evidence/issue-442/stage/board-mocha-blocked-heavy.html
+docs/design/evidence/issue-442/stage/herd-v1-latte-blocked-heavy.html
+docs/design/evidence/issue-442/stage/herd-v1-latte-dense-fleet.html
+docs/design/evidence/issue-442/stage/herd-v1-latte-disconnected.html
+docs/design/evidence/issue-442/stage/herd-v1-latte-repo-scoped.html
+docs/design/evidence/issue-442/stage/herd-v1-mocha-blocked-heavy.html
+docs/design/evidence/issue-442/stage/herd-v1-mocha-dense-fleet.html
+docs/design/evidence/issue-442/stage/herd-v1-mocha-detail-sheet.html
+docs/design/evidence/issue-442/stage/herd-v1-mocha-disconnected.html
+docs/design/evidence/issue-442/stage/herd-v1-mocha-filter-sheet.html
+docs/design/evidence/issue-442/stage/herd-v1-mocha-reduce-motion.html
+docs/design/evidence/issue-442/stage/herd-v2-latte-blocked-heavy.html
+docs/design/evidence/issue-442/stage/herd-v2-latte-dense-fleet.html
+docs/design/evidence/issue-442/stage/herd-v2-latte-disconnected.html
+docs/design/evidence/issue-442/stage/herd-v2-latte-repo-scoped.html
+docs/design/evidence/issue-442/stage/herd-v2-mocha-blocked-heavy.html
+docs/design/evidence/issue-442/stage/herd-v2-mocha-dense-fleet.html
+docs/design/evidence/issue-442/stage/herd-v2-mocha-detail-sheet.html
+docs/design/evidence/issue-442/stage/herd-v2-mocha-disconnected.html
+docs/design/evidence/issue-442/stage/herd-v2-mocha-filter-sheet.html
+docs/design/evidence/issue-442/stage/herd-v2-mocha-reduce-motion.html
+docs/design/evidence/issue-442/stage/specs.json
+
+PASS protected control SHA-256 plus Git blobs 79
+COMMAND ['git', 'diff', '--name-only', 'ecd3938a72cdfce256128c7d437dcd589141baf5..HEAD'] raw_exit= 0
+
+COMMAND ['git', 'diff', '--check', 'ecd3938a72cdfce256128c7d437dcd589141baf5..HEAD'] raw_exit= 0
+
+PASS committed scope
+PASS keyed identity/state, identical Day/Night horses, deliberate RM stand
+PASS fictional fixture + private-data/secret-pattern scan; no credentials used
+COMMAND ['/Users/jirathip/.local/bin/python3', '-B', '/Users/jirathip/.herdr/worktrees/corral/design-442-herd-prototype/docs/design/evidence/issue-442/r2-v1-premium/build.py', '--out', '/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/r2-repro-svezbkjo'] raw_exit= 0
+BUILD: day.html night.html study.html; 12 unchanged fixture identities; raw exits 0
+
+COMMAND ['/Users/jirathip/.local/bin/python3', '-B', '/Users/jirathip/.herdr/worktrees/corral/design-442-herd-prototype/docs/design/evidence/issue-442/r2-v1-premium/capture.py', '--src', '/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/r2-repro-svezbkjo', '--out', '/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/r2-repro-svezbkjo'] raw_exit= 0
+Renderer: /Users/jirathip/Library/Caches/ms-playwright/chromium_headless_shell-1234/chrome-headless-shell-mac-arm64/chrome-headless-shell
+/Users/jirathip/Library/Caches/ms-playwright/chromium_headless_shell-1234/chrome-headless-shell-mac-arm64/chrome-headless-shell --headless --disable-gpu --hide-scrollbars --no-first-run --user-data-dir=/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/r2-capture-e74nr1o6/day --window-size=390,844 --force-device-scale-factor=2 --virtual-time-budget=2000 --screenshot=/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/r2-capture-e74nr1o6/day.png file:///private/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/r2-repro-svezbkjo/day.html raw_exit= 0
+sips v1-r2-day-390x844.png raw_exit= 0
+PASS v1-r2-day-390x844.png 390 844
+/Users/jirathip/Library/Caches/ms-playwright/chromium_headless_shell-1234/chrome-headless-shell-mac-arm64/chrome-headless-shell --headless --disable-gpu --hide-scrollbars --no-first-run --user-data-dir=/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/r2-capture-e74nr1o6/night --window-size=390,844 --force-device-scale-factor=2 --virtual-time-budget=2000 --screenshot=/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/r2-capture-e74nr1o6/night.png file:///private/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/r2-repro-svezbkjo/night.html raw_exit= 0
+sips v1-r2-night-390x844.png raw_exit= 0
+PASS v1-r2-night-390x844.png 390 844
+/Users/jirathip/Library/Caches/ms-playwright/chromium_headless_shell-1234/chrome-headless-shell-mac-arm64/chrome-headless-shell --headless --disable-gpu --hide-scrollbars --no-first-run --user-data-dir=/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/r2-capture-e74nr1o6/study --window-size=600,760 --force-device-scale-factor=2 --virtual-time-budget=2000 --screenshot=/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/r2-capture-e74nr1o6/study.png file:///private/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/r2-repro-svezbkjo/study.html raw_exit= 0
+sips v1-r2-idle-anatomy-study.png raw_exit= 0
+PASS v1-r2-idle-anatomy-study.png 600 760
+
+PASS deterministic byte equality day.html
+PASS deterministic byte equality v1-r2-night-390x844.png
+PASS deterministic byte equality v1-r2-day-390x844.png
+PASS deterministic byte equality v1-r2-idle-anatomy-study.png
+PASS deterministic byte equality night.html
+PASS deterministic byte equality study.html
+PASS hygiene; raw package files 24 raw PNG count 3
+
+RAW_EXIT: 0

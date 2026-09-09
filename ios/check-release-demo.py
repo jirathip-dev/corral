@@ -303,7 +303,15 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # #428 source set.
     # #444 correction 1: native procedural Herd plus DEBUG-only evidence;
     # original V1 paths and scene/lifecycle sources are all digest-bound.
-    "b5e3a3b3a3bb1f06c914d78b41752e1f38f66adbaa94ccc59001041d22cbf656"
+    # #458: persisted Board/Herd preference — AppModel restores the saved
+    # presentation (Board default for missing/invalid) and owns the
+    # select/saved/openBoard presentation API; FleetViews dropped the
+    # principal top Board/Herd switch for the canonical Appearance-section
+    # picker and gained the #458 evidence sequence driver; FleetNotifierApp
+    # gained the Corral458Presentation launch scenarios + the accessibility
+    # size route + demo-notification suppression for the evidence sim —
+    # re-pinned over the #458 source set.
+    "cc9e02ffb5df7770e4620dc3fefd5f29ae33a67d14b570a977be3834fbe2b8f7"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -449,7 +457,12 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # #428: SheetTranslucencyWiringTests gained the layered glass-branch
     # pins + the themedRowSurface counts (Settings 5 / Add Host 3 /
     # Fingerprint 6 sections) — re-pinned over the #428 test source.
-    "aa9c3dc9ef6accadce1d35787b02d032191ed5606ac08dac57ec7997ce08ce5a"
+    # #458: PresentationPreferenceTests (restore/round-trip/override/
+    # stream-preservation/demo-isolation), the HerdTests openBoard routing
+    # assertion, and the SettingsAccessWiringTests DEBUG-gated opener count
+    # (12 with the #458 presentation driver) — re-pinned over the #458 test
+    # source.
+    "9ed5585f57cef172bc4035b77a6ddda20536ca32fab54a87e91525de2b320ccd"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

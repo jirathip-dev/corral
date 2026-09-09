@@ -76,10 +76,17 @@ AppIcon catalog:
 - `social-preview.png` is the 1280×640 repository preview asset. Committing
   it does not change GitHub's social-preview setting; that remains a manual
   repository-settings step.
-- `ios/FleetNotifier/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png`
-  is the opaque 1024px iOS AppIcon selected by the Xcode project.
+- The iOS app icon is no longer derived from this art (#463). The shipping
+  catalog carries exactly the four approved Treatment-A horse masters:
+  `AppIcon.appiconset/AppIcon-1024.png` (Bay, primary/default) plus the
+  `Palomino`, `Black` and `Grey` alternates. Immutable approved masters live
+  in `ios/tools/herd-art/appicon-masters/treatment-a/`; regenerate and verify
+  them with `python3 ios/tools/herd-art/app-icons.py --write` /
+  `--check`. The legacy `corral-icon-1024.png` bytes above remain historical
+  repository art and are forbidden shipping bytes.
 
-When the approved source PNG is available, regenerate the outputs with:
+When the approved source PNG is available, regenerate the historical
+repository outputs with:
 
 ```sh
 mise exec -- python tools/icon/from-user-png.py <approved-source.png>

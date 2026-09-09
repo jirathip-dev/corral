@@ -6,10 +6,16 @@ Process:
   1. Load the source (1254x1254 RGB, near-black bg).
   2. Auto-crop to content (threshold on near-black) + keep a ~9% safe
      margin so the subject fills the icon without touching the squircle.
-  3. Render to: iOS 1024 opaque, egui 256, macOS 1024 transparent squircle,
-     repo 1024, social preview.
+  3. Render to: egui 256, macOS 1024 transparent squircle, repo 1024, social
+     preview.
 
 Usage: python3 tools/icon/from-user-png.py <input.png>
+
+#463 removed the iOS AppIcon output from this generator: the shipping app
+icon is now the approved Treatment-A Bay master, owned by
+ios/tools/herd-art/app-icons.py and ios/tools/herd-art/appicon-masters/.
+Regenerating this historical repository art must never touch the shipping
+catalog again.
 
 The approved social preview uses Apple's SFNS.ttf. It is not bundled because
 the system font is not a repository asset; regeneration therefore requires
@@ -172,12 +178,9 @@ def main() -> None:
     assets_dir = Path("assets/icon")
     assets_dir.mkdir(parents=True, exist_ok=True)
 
-    # 2. iOS AppIcon 1024 opaque.
+    # 2. iOS AppIcon 1024 opaque: owned by ios/tools/herd-art/app-icons.py
+    # (#463). This generator only produces historical repository art.
     ios = square.resize((1024, 1024), Image.LANCZOS).convert("RGB")
-    appicon_dir = Path("ios/FleetNotifier/Assets.xcassets/AppIcon.appiconset")
-    appicon_dir.mkdir(parents=True, exist_ok=True)
-    ios.save(appicon_dir / "AppIcon-512@2x.png")
-    print("  ✓ iOS AppIcon (1024 opaque)")
 
     # 3. egui/Linux icon 256.
     egui = square.resize((256, 256), Image.LANCZOS).convert("RGB")

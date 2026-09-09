@@ -1,0 +1,166 @@
+{
+  "accessory": "none",
+  "backgrounds": {
+    "bay": {
+      "hex": "#ecdcb4",
+      "name": "hay"
+    },
+    "black": {
+      "hex": "#d9c39a",
+      "name": "sand"
+    },
+    "grey": {
+      "hex": "#22302a",
+      "name": "deep pine"
+    },
+    "palomino": {
+      "hex": "#1f2a38",
+      "name": "night pasture"
+    }
+  },
+  "breed": "light",
+  "canonical_sha256": "a9c172de9aa42080daf987ca6919f827895c363903c16e1ec3fbdf865b6041ec",
+  "canonical_source": "ios/tools/herd-art/horsesvg.py",
+  "contexts": [
+    "contexts/home-a-light-390x844.png",
+    "contexts/picker-a-light-390x844.png",
+    "contexts/home-a-dark-390x844.png",
+    "contexts/picker-a-dark-390x844.png",
+    "contexts/home-b-light-390x844.png",
+    "contexts/picker-b-light-390x844.png",
+    "contexts/home-b-dark-390x844.png",
+    "contexts/picker-b-dark-390x844.png"
+  ],
+  "contrast": {
+    "bay": {
+      "bg": "#ecdcb4",
+      "bg_vs_body": 4.31,
+      "bg_vs_hoof": 9.13,
+      "bg_vs_mane": 11.57,
+      "bg_vs_muzzle": 1.9,
+      "bg_vs_shade": 6.05
+    },
+    "black": {
+      "bg": "#d9c39a",
+      "bg_vs_body": 6.45,
+      "bg_vs_hoof": 7.22,
+      "bg_vs_mane": 10.48,
+      "bg_vs_muzzle": 1.5,
+      "bg_vs_shade": 8.29
+    },
+    "grey": {
+      "bg": "#22302a",
+      "bg_vs_body": 7.26,
+      "bg_vs_hoof": 1.11,
+      "bg_vs_mane": 3.49,
+      "bg_vs_muzzle": 5.35,
+      "bg_vs_shade": 5.03
+    },
+    "palomino": {
+      "bg": "#1f2a38",
+      "bg_vs_body": 5.68,
+      "bg_vs_hoof": 1.17,
+      "bg_vs_mane": 10.67,
+      "bg_vs_muzzle": 5.64,
+      "bg_vs_shade": 3.74
+    }
+  },
+  "counts": {
+    "coats": 5,
+    "contexts": 8,
+    "masters": 10,
+    "previews": 30,
+    "stage_html": 8,
+    "treatments": 2
+  },
+  "crops": {
+    "A": {
+      "neck_bbox": [
+        5.49158692763416,
+        3.029504561280074,
+        54.9795473770958,
+        52.59430215181556
+      ],
+      "rule": "side = neck-bbox max-dim * 1.30",
+      "window": [
+        30.23556715236498,
+        27.811903356547816,
+        64.43423686769614
+      ]
+    },
+    "B": {
+      "full_bbox": [
+        5.49158692763416,
+        3.029504561280074,
+        108.0,
+        101.0
+      ],
+      "rule": "side = full-bbox max-dim * 1.06",
+      "window": [
+        56.74579346381708,
+        52.01475228064004,
+        108.6589178567078
+      ]
+    }
+  },
+  "facing": -1,
+  "mane": "flowing",
+  "masters": [
+    "masters/treatment-a/bay-1024.png",
+    "masters/treatment-a/palomino-1024.png",
+    "masters/treatment-a/black-1024.png",
+    "masters/treatment-a/grey-1024.png",
+    "masters/treatment-a/original-1024.png",
+    "masters/treatment-b/bay-1024.png",
+    "masters/treatment-b/palomino-1024.png",
+    "masters/treatment-b/black-1024.png",
+    "masters/treatment-b/grey-1024.png",
+    "masters/treatment-b/original-1024.png"
+  ],
+  "original_sha256": "e2c754cf3dd7cbc8f10090597360eb56c56fb4672856d48407453dc8190e15e7",
+  "original_source": "ios/FleetNotifier/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png",
+  "pose": "stand",
+  "previews": [
+    "previews/mask180-treatment-a-original.png",
+    "previews/mask120-treatment-a-original.png",
+    "previews/plain60-treatment-a-original.png",
+    "previews/mask180-treatment-a-bay.png",
+    "previews/mask120-treatment-a-bay.png",
+    "previews/plain60-treatment-a-bay.png",
+    "previews/mask180-treatment-a-palomino.png",
+    "previews/mask120-treatment-a-palomino.png",
+    "previews/plain60-treatment-a-palomino.png",
+    "previews/mask180-treatment-a-black.png",
+    "previews/mask120-treatment-a-black.png",
+    "previews/plain60-treatment-a-black.png",
+    "previews/mask180-treatment-a-grey.png",
+    "previews/mask120-treatment-a-grey.png",
+    "previews/plain60-treatment-a-grey.png",
+    "previews/mask180-treatment-b-original.png",
+    "previews/mask120-treatment-b-original.png",
+    "previews/plain60-treatment-b-original.png",
+    "previews/mask180-treatment-b-bay.png",
+    "previews/mask120-treatment-b-bay.png",
+    "previews/plain60-treatment-b-bay.png",
+    "previews/mask180-treatment-b-palomino.png",
+    "previews/mask120-treatment-b-palomino.png",
+    "previews/plain60-treatment-b-palomino.png",
+    "previews/mask180-treatment-b-black.png",
+    "previews/mask120-treatment-b-black.png",
+    "previews/plain60-treatment-b-black.png",
+    "previews/mask180-treatment-b-grey.png",
+    "previews/mask120-treatment-b-grey.png",
+    "previews/plain60-treatment-b-grey.png"
+  ],
+  "stage_html": [
+    "html/stage/home-a-light.html",
+    "html/stage/picker-a-light.html",
+    "html/stage/home-a-dark.html",
+    "html/stage/picker-a-dark.html",
+    "html/stage/home-b-light.html",
+    "html/stage/picker-b-light.html",
+    "html/stage/home-b-dark.html",
+    "html/stage/picker-b-dark.html"
+  ],
+  "tack": "none"
+}

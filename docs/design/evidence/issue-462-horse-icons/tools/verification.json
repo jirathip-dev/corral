@@ -1,0 +1,139 @@
+{
+  "alpha": [
+    {
+      "file": "mask120-treatment-a-bay.png",
+      "opaque_px": 13744,
+      "total_px": 14400
+    },
+    {
+      "file": "mask120-treatment-a-black.png",
+      "opaque_px": 13744,
+      "total_px": 14400
+    },
+    {
+      "file": "mask120-treatment-a-grey.png",
+      "opaque_px": 13744,
+      "total_px": 14400
+    },
+    {
+      "file": "mask120-treatment-a-original.png",
+      "opaque_px": 13744,
+      "total_px": 14400
+    }
+  ],
+  "canonical_horsesvg_sha256": "a9c172de9aa42080daf987ca6919f827895c363903c16e1ec3fbdf865b6041ec",
+  "checks": [
+    {
+      "check": "counts",
+      "detail": "masters={'a': 5, 'b': 5} previews=30 contexts=8 stage=8",
+      "ok": true
+    },
+    {
+      "check": "dimensions",
+      "detail": "[]",
+      "ok": true
+    },
+    {
+      "check": "opacity",
+      "detail": "[]",
+      "ok": true
+    },
+    {
+      "check": "original_byte_exact",
+      "detail": "[]",
+      "ok": true
+    },
+    {
+      "check": "crop_windows",
+      "detail": "[]",
+      "ok": true
+    },
+    {
+      "check": "contrast",
+      "detail": "[]",
+      "ok": true
+    },
+    {
+      "check": "determinism",
+      "detail": "gen_rc=0 drifted=[]",
+      "ok": true
+    }
+  ],
+  "contrast": {
+    "bay": {
+      "bg": "#ecdcb4",
+      "bg_vs_body": 4.31,
+      "bg_vs_mane": 11.57,
+      "bg_vs_shade": 6.05
+    },
+    "black": {
+      "bg": "#d9c39a",
+      "bg_vs_body": 6.45,
+      "bg_vs_mane": 10.48,
+      "bg_vs_shade": 8.29
+    },
+    "grey": {
+      "bg": "#22302a",
+      "bg_vs_body": 7.26,
+      "bg_vs_mane": 3.49,
+      "bg_vs_shade": 5.03
+    },
+    "palomino": {
+      "bg": "#1f2a38",
+      "bg_vs_body": 5.68,
+      "bg_vs_mane": 10.67,
+      "bg_vs_shade": 3.74
+    }
+  },
+  "counts": {
+    "choices": 5,
+    "contexts": 8,
+    "masters": 10,
+    "previews": 30,
+    "stage_html": 8,
+    "treatments": 2
+  },
+  "crops": {
+    "A": {
+      "bounds": [
+        -1.9815512814830925,
+        -4.405215077300255,
+        62.45268558621305,
+        60.02902179039589
+      ],
+      "margins": [
+        7.473138209117252,
+        7.473138209117252,
+        7.434719638580329,
+        7.434719638580326
+      ],
+      "window": [
+        30.23556715236498,
+        27.811903356547816,
+        64.43423686769614
+      ]
+    },
+    "B": {
+      "bounds": [
+        2.4163345354631787,
+        -2.3147066477138623,
+        111.07525239217098,
+        106.34421120899394
+      ],
+      "margins": [
+        3.075252392170981,
+        3.075252392170981,
+        5.344211208993936,
+        5.34421120899394
+      ],
+      "window": [
+        56.74579346381708,
+        52.01475228064004,
+        108.6589178567078
+      ]
+    }
+  },
+  "fail_count": 0,
+  "failures": [],
+  "original_sha256": "e2c754cf3dd7cbc8f10090597360eb56c56fb4672856d48407453dc8190e15e7"
+}

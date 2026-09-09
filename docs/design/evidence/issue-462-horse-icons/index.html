@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Corral #462 — horse app icon prototype</title>
+<style>
+:root{--ink:#2f2a26;--paper:#f6f1e7;--card:#fff;--accent:#8a5a33;
+ --mut:#6f675e;--sep:#e2d9c8}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,'Helvetica Neue',Arial,sans-serif;background:
+ var(--paper);color:var(--ink);padding:20px 16px 60px}
+.wrap{max-width:720px;margin:0 auto}
+h1{font-size:22px;margin-bottom:4px}
+.badge{display:inline-block;background:#f3e2c8;color:#7a4f2c;border:1px solid
+ #d8b46a;border-radius:999px;padding:4px 12px;font-size:12px;font-weight:600;
+ margin:8px 0 4px}
+p.lead{color:var(--mut);font-size:14px;line-height:1.5;margin:8px 0 20px}
+.controls{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:22px}
+button{min-height:44px;min-width:44px;padding:10px 18px;border-radius:12px;
+ border:1.5px solid var(--sep);background:var(--card);font-size:15px;
+ font-weight:600;color:var(--ink);cursor:pointer}
+button[aria-pressed="true"]{background:var(--accent);color:#fff;
+ border-color:var(--accent)}
+button:focus-visible{outline:3px solid #b06a2f;outline-offset:2px}
+h2{font-size:17px;margin:26px 0 10px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));
+ gap:14px}
+.tile{background:var(--card);border:1.5px solid var(--sep);border-radius:16px;
+ padding:12px 8px 10px;text-align:center;cursor:pointer}
+.tile[aria-pressed="true"]{border-color:var(--accent);box-shadow:0 0 0 2px
+ var(--accent)}
+.tile img{width:72px;height:72px;border-radius:16px;display:block;margin:0
+ auto 6px}
+.tile .nm{font-size:13px;font-weight:600}
+.tile .sz{font-size:11px;color:var(--mut)}
+.shots{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));
+ gap:14px}
+.shot{background:var(--card);border:1.5px solid var(--sep);border-radius:16px;
+ padding:10px}
+.shot img{width:100%;border-radius:10px;display:block}
+.shot .cap{font-size:12px;color:var(--mut);margin-top:6px;text-align:center}
+.small{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
+.small figure{text-align:center}
+.small img{display:block;border-radius:14px}
+.small figcaption{font-size:11px;color:var(--mut);margin-top:4px}
+footer{margin-top:34px;font-size:12px;color:var(--mut);line-height:1.55;
+ border-top:1px solid var(--sep);padding-top:14px}
+@media (prefers-reduced-motion: reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>Corral #462 — selectable horse app icons</h1>
+<span class="badge">PROTOTYPE — awaiting Guy icon-art approval</span>
+<p class="lead">Design gate comparing <b>Treatment A</b> (large
+head-and-neck portrait, recommended) vs <b>Treatment B</b> (tightly framed
+full horse), each shown as the unchanged Original plus Bay, Palomino, Black
+and Grey alternatives rendered from the canonical herd-art generator.
+This prototype changes no real icon, asset, or app source.</p>
+
+<div class="controls" role="group" aria-label="Treatment">
+<button id="ta" aria-pressed="true">A · Portrait</button>
+<button id="tb" aria-pressed="false">B · Full horse</button>
+<button id="tz" aria-pressed="false" aria-label="Toggle dark preview
+ background">Dark bg</button>
+</div>
+
+<h2 id="choices-h">The five choices — treatment A</h2>
+<p class="lead" id="crop-note"></p>
+<div class="tiles" id="tiles" role="group" aria-label="Icon choices"></div>
+
+<h2>Small-size recognition</h2>
+<div class="small" id="small"></div>
+
+<h2>Home Screen contexts (390×844)</h2>
+<div class="shots" id="home"></div>
+
+<h2>Settings → Appearance → App Icon (mockup)</h2>
+<div class="shots" id="picker"></div>
+
+<footer>Prototype only: nothing here changes the shipping app icon or asset
+catalog — the Original icon bytes are preserved byte-exact and no app source
+is modified. All art is rendered from the canonical
+ios/tools/herd-art/horsesvg.py geometry and palettes. Return to Guy for a
+NEW explicit icon-art approval; issue #455 V1/A approval does not cover
+these compositions.</footer>
+</div>
+<script>
+'use strict';
+var COATS=[['original','Original'],['bay','Bay'],['palomino','Palomino'],
+ ['black','Black'],['grey','Grey']];
+var TREAT='a',DARK=false,PICK=null;
+function $(id){return document.getElementById(id)}
+function img(t,c){return 'masters/treatment-'+t+'/'+c+'-1024.png'}
+function prev(t,c,s){return 'previews/'+s+'-treatment-'+t+'-'+c+'.png'}
+function ctx(t,theme,kind){return 'contexts/'+kind+'-'+t+'-'+theme+
+ '-390x844.png'}
+function render(){
+ $('choices-h').textContent='The five choices — treatment '+TREAT.toUpperCase();
+ $('crop-note').textContent=TREAT==='a'
+  ?'A — square window centered on the canonical neck+head group, identical for every coat. See README for the exact rule.'
+  :'B — square window around the full canonical horse incl. ground shadow, identical for every coat. See README for the exact rule.';
+ var t=$('tiles');t.innerHTML='';
+ COATS.forEach(function(pair){
+  var c=pair[0],n=pair[1];
+  var d=document.createElement('button');
+  d.className='tile';d.setAttribute('aria-pressed',String(PICK===c));
+  d.setAttribute('aria-label',n+' icon, treatment '+TREAT.toUpperCase());
+  d.innerHTML='<img src="'+img(TREAT,c)+'" alt="">'+
+   '<div class="nm">'+n+'</div><div class="sz">'+(c==='original'
+   ?'unchanged bytes':'proposal')+'</div>';
+  d.onclick=function(){PICK=(PICK===c?null:c);render()};
+  t.appendChild(d)});
+ var s=$('small');s.innerHTML='';
+ [180,120,60].forEach(function(sz){
+  COATS.forEach(function(pair){
+   var f=document.createElement('figure');
+   f.innerHTML='<img src="'+prev(TREAT,pair[0],'mask'+sz)+'" width="'+
+    Math.round(sz/2.5)+'" height="'+Math.round(sz/2.5)+'" alt="'+pair[1]+
+    ' at '+sz+'px">'+
+    '<figcaption>'+pair[1]+' · '+sz+'px</figcaption>';
+   s.appendChild(f)})});
+ var h=$('home');h.innerHTML='';
+ ['light','dark'].forEach(function(th){
+  var f=document.createElement('div');f.className='shot';
+  f.innerHTML='<img src="'+ctx(TREAT,th,'home')+'" alt="Home Screen '+th+
+   ' context, treatment '+TREAT.toUpperCase()+'">'+
+   '<div class="cap">Home Screen · '+th+'</div>';h.appendChild(f)});
+ var p=$('picker');p.innerHTML='';
+ ['light','dark'].forEach(function(th){
+  var f=document.createElement('div');f.className='shot';
+  f.innerHTML='<img src="'+ctx(TREAT,th,'picker')+'" alt="Settings picker '+
+   th+' mockup, treatment '+TREAT.toUpperCase()+'">'+
+   '<div class="cap">Settings picker · '+th+'</div>';p.appendChild(f)});
+ $('ta').setAttribute('aria-pressed',String(TREAT==='a'));
+ $('tb').setAttribute('aria-pressed',String(TREAT==='b'));
+ $('tz').setAttribute('aria-pressed',String(DARK));
+ document.body.style.background=DARK?'#221d18':'';
+ document.body.style.color=DARK?'#f0e9dd':'';
+}
+$('ta').onclick=function(){TREAT='a';render()};
+$('tb').onclick=function(){TREAT='b';render()};
+$('tz').onclick=function(){DARK=!DARK;render()};
+window.addEventListener('hashchange',function(){
+ var m=location.hash.match(/t=([ab])/);if(m&&m[1]!==TREAT){TREAT=m[1];render()}});
+if(location.hash.indexOf('t=b')>=0){TREAT='b'}
+render();
+var hs = document.documentElement.scrollWidth>390?'overflow':'ok';
+document.body.setAttribute('data-hscroll',hs);
+console.log('HSCROLL:'+hs);
+</script>
+</body>
+</html>

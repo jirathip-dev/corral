@@ -8,8 +8,12 @@ compiled asset-catalog rendition names (assetutil) and the built CFBundleIcons
 declarations, not inferred from sources.
 
 #463 narrows the approved shipping inventory to the four Treatment-A horse
-app icons: Bay primary (AppIcon) and exactly Palomino, Black, Grey alternates.
+app icons: Bay primary (AppIcon) and exactly Palomino, Black and Grey alternates.
 The legacy Original and every Treatment B master are forbidden product bytes.
+
+#464 adds the Settings App Icon picker, which previews the SHIPPED catalog
+renditions: app source may contain bare literal `Image("Name")` loaders for
+exactly the approved four names, and nothing else.
 """
 import argparse
 import hashlib
@@ -65,6 +69,11 @@ def approval(root):
 def source(root):
     app = root/'ios/FleetNotifier'
     renderer = app/'UI/Herd'
+    # #464: the Settings App Icon picker previews the SHIPPED #463 catalog
+    # art, so the approved primary+alternate rendition names are the exact
+    # allowlist for non-symbol loaders. Everything else stays forbidden.
+    primary, alternates, _ = approval(root)
+    picker_renditions = {primary, *alternates}
     paths = files(renderer)
     for expected in EXPECTED: read(renderer/expected)
     for path in paths:
@@ -79,8 +88,18 @@ def source(root):
         if path.suffix == '.swift':
             text = read(path).decode('utf-8').replace('`','')
             for call in re.finditer(r'\bImage\s*(?:\.\s*init\s*)?\(',text):
-                if not re.match(r'\s*systemName\s*:',text[call.end():]):
-                    raise ValueError(f'non-symbol image loader in app source: {path}')
+                tail = text[call.end():]
+                if re.match(r'\s*systemName\s*:',tail): continue
+                # #464: the ONLY permitted non-symbol loader is a bare,
+                # unqualified literal `Image("Name")` naming an approved
+                # rendition; qualified/.init/aliased or unknown spellings RED.
+                literal = re.match(r'"([^"]*)"\)',tail)
+                if (call.group(0) == 'Image('
+                        and not (call.start() and text[call.start()-1] in '.:')
+                        and literal is not None
+                        and literal.group(1) in picker_renditions):
+                    continue
+                raise ValueError(f'non-symbol image loader in app source: {path}')
             if re.search(r'\b(?:UIImage|CGImageSource\w*|SKTexture\w*|WKWebView|UIWebView|WebKit)\b|=\s*(?:SwiftUI\s*\.\s*)?Image\b',text):
                 raise ValueError(f'bitmap/web helper outside renderer: {path}')
         if path.suffix.lower() in ART_EXTENSIONS:

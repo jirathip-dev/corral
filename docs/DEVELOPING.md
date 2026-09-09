@@ -84,6 +84,12 @@ AppIcon catalog:
   them with `python3 ios/tools/herd-art/app-icons.py --write` /
   `--check`. The legacy `corral-icon-1024.png` bytes above remain historical
   repository art and are forbidden shipping bytes.
+- #464 surfaces those four choices in Settings → Appearance → App Icon. The
+  picker reads the live `UIApplication.alternateIconName` (nil = Bay) and
+  `supportsAlternateIcons`; it keeps no preference of its own and never
+  switches automatically. The preview tiles name the shipped catalog
+  renditions (`AppIcon`, `Palomino`, `Black`, `Grey`) — the only non-symbol
+  image loaders `check-native-art.py` allows in app source.
 
 When the approved source PNG is available, regenerate the historical
 repository outputs with:

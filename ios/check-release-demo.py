@@ -311,7 +311,11 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # gained the Corral458Presentation launch scenarios + the accessibility
     # size route + demo-notification suppression for the evidence sim —
     # re-pinned over the #458 source set.
-    "cc9e02ffb5df7770e4620dc3fefd5f29ae33a67d14b570a977be3834fbe2b8f7"
+    # #464: the Settings App Icon picker — AppIconPicker (four #463 shipping
+    # choices, the UIApplication alternate-icon seam, the live-state model)
+    # added to the manifest, and FleetViews gained the App Icon section +
+    # scene-active re-read — re-pinned over the #464 source set.
+    "3337bad79c476238d88ced7ab87a1be482497ac91fc616606bbc210f0554e905"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -462,7 +466,10 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # assertion, and the SettingsAccessWiringTests DEBUG-gated opener count
     # (12 with the #458 presentation driver) — re-pinned over the #458 test
     # source.
-    "9ed5585f57cef172bc4035b77a6ddda20536ca32fab54a87e91525de2b320ccd"
+    # #464: the Settings themedRowSurface count moved 5 → 6 for the new App
+    # Icon section (AppIconPickerTests lives in its own file) — re-pinned
+    # over the #464 test source.
+    "7299c4e36ebe373350b79e34615f4fde3ff1cc86debae806fdbf0c870d64505f"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

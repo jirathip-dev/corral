@@ -51,6 +51,7 @@ targets:
           - "$(SRCROOT)/FleetNotifier/Profiles/HostProfileStore.swift"
           - "$(SRCROOT)/FleetNotifier/Profiles/HostStreamCoordinator.swift"
           - "$(SRCROOT)/FleetNotifier/Profiles/KeyContinuityGate.swift"
+          - "$(SRCROOT)/FleetNotifier/UI/AppIconPicker.swift"
           - "$(SRCROOT)/FleetNotifier/UI/AppTheme.swift"
           - "$(SRCROOT)/FleetNotifier/UI/BoardModel.swift"
           - "$(SRCROOT)/FleetNotifier/UI/FleetViews.swift"
@@ -161,12 +162,17 @@ targets:
              "$TARGET_BUILD_DIR/$WRAPPER_NAME/FleetViews.swift.txt"
           cp "$SRCROOT/FleetNotifier/UI/Herd/HerdView.swift" \
              "$TARGET_BUILD_DIR/$WRAPPER_NAME/HerdView.swift.txt"
+          # #464: the App Icon picker seam/wiring tests read the real source.
+          cp "$SRCROOT/FleetNotifier/UI/AppIconPicker.swift" \
+             "$TARGET_BUILD_DIR/$WRAPPER_NAME/AppIconPicker.swift.txt"
         inputFiles:
           - "$(SRCROOT)/FleetNotifier/UI/FleetViews.swift"
           - "$(SRCROOT)/FleetNotifier/UI/Herd/HerdView.swift"
+          - "$(SRCROOT)/FleetNotifier/UI/AppIconPicker.swift"
         outputFiles:
           - "$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/FleetViews.swift.txt"
           - "$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/HerdView.swift.txt"
+          - "$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/AppIconPicker.swift.txt"
         basedOnDependencyAnalysis: false
     dependencies:
       - target: FleetNotifier

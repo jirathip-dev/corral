@@ -64,6 +64,26 @@ def main():
         outside.write_text('let forbidden = Image("ranch-day")\n')
         check('outside-renderer-helper', root)
         outside.unlink()
+        # #464: the picker's four approved rendition names are the ONLY
+        # permitted non-symbol loaders, spelled as a bare literal call.
+        picker = root/'ios/FleetNotifier/UI/AppIconPicker.swift'
+        pristine_picker = picker.read_bytes()
+        picker.write_text('func preview() -> Image { return Image("Palomino") }\n')
+        check('picker-approved-rendition', root, expected=0)
+        for name, probe in {
+            'picker-unapproved-rendition': 'func preview() -> Image { return Image("Original") }\n',
+            'picker-qualified-rendition': 'func preview() -> Image { return SwiftUI.Image("Palomino") }\n',
+            'picker-init-rendition': 'func preview() -> Image { return Image.init("Palomino") }\n',
+            'picker-uiimage-rendition': 'func preview() -> Image { return Image(uiImage: UIImage(named: "Palomino")) }\n',
+        }.items():
+            picker.write_text(probe)
+            check(name, root)
+            picker.write_bytes(pristine_picker)
+        # The approved name must still be forbidden INSIDE the renderer.
+        victim.write_bytes(pristine+b'func preview() -> Image { return Image("Palomino") }\n')
+        check('renderer-approved-name-still-forbidden', root)
+        victim.write_bytes(pristine)
+        picker.write_bytes(pristine_picker)
         raster = root/'ios/FleetNotifier/ranch-day.png'
         raster.write_bytes(b'\x89PNG\r\n\x1a\n'+b'forbidden whole-scene test asset')
         check('source-scene-raster', root)

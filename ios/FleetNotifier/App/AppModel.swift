@@ -1024,7 +1024,7 @@ final class AppModel: ObservableObject {
         // single-host cursor while it is bound.
         fleet.restoreCursor()
         if let rev = fleet.lastEventId {
-            profileStore?.setCursor(rev, for: profile.id)
+            profileStore?.setCursor(rev, epoch: fleet.lastEventEpoch, for: profile.id)
         }
         if profile.connectionState == .awaitingFingerprintConfirmation {
             // Legacy migration pause (B6): fetch + confirm the host key
@@ -2178,7 +2178,7 @@ final class AppModel: ObservableObject {
         // and persist the allowlisted board metadata cache (background/
         // host-switch boundaries).
         if let profile = activeProfile, let rev = fleet.lastEventId {
-            profileStore?.setCursor(rev, for: profile.id)
+            profileStore?.setCursor(rev, epoch: fleet.lastEventEpoch, for: profile.id)
         }
         persistBoardMetadata()
         // #399 B4: a background/foreground cycle is a reconnect boundary —

@@ -4,20 +4,25 @@ import Observation
 
 /// Thread-safe cursor for the SSE reconnect closure (the stream task reads
 /// it off the main actor).
+struct SSECursor: Sendable {
+    let rev: UInt64
+    let epoch: String?
+}
+
 final class CursorBox: @unchecked Sendable {
     private let lock = NSLock()
-    private var value: UInt64?
+    private var value: SSECursor?
 
-    func read() -> UInt64? {
+    func read() -> SSECursor? {
         lock.lock()
         defer { lock.unlock() }
         return value
     }
 
-    func write(_ newValue: UInt64?) {
+    func write(rev: UInt64?, epoch: String?) {
         lock.lock()
         defer { lock.unlock() }
-        value = newValue
+        value = rev.map { SSECursor(rev: $0, epoch: epoch) }
     }
 }
 
@@ -48,6 +53,8 @@ final class FleetStore: ObservableObject {
     /// reads this pane, the legacy text surface reads `tails`.
     @Published private(set) var tailPanes: [String: TailPane] = [:]
     @Published private(set) var lastEventId: UInt64?
+    /// Daemon lifetime that owns `lastEventId`; nil is a legacy daemon.
+    private(set) var lastEventEpoch: String?
     @Published private(set) var connectionState: ConnectionState = .disconnected
     /// #166 review F2: client-side state-entered wall clock (epoch millis).
     /// Seeded from `agent.ts` at first sight; updated ONLY when `state`
@@ -137,14 +144,29 @@ final class FleetStore: ObservableObject {
 
     // MARK: - Application
 
-    private func accepts(_ event: FleetEvent) -> Bool {
+    private func accepts(_ event: FleetEvent, allowsEpochReset: Bool) -> Bool {
         let current = lastEventId ?? 0
         switch event {
         case .snapshot(let snapshot):
-            // Recovery snapshots may race a newer SSE delta. Equal revisions
-            // are safe replacements; older snapshots are stale responses.
-            return snapshot.rev >= current
+            guard let incomingEpoch = snapshot.epoch else {
+                // Pre-#450 daemon: retain revision-only compatibility.
+                return snapshot.rev >= current
+            }
+            guard let lastEventEpoch else {
+                // A stream snapshot establishes epoch authority even when an
+                // upgraded client retained a higher legacy revision. Pull
+                // snapshots stay monotonic until the stream anchors it.
+                return allowsEpochReset || snapshot.rev >= current
+            }
+            return incomingEpoch == lastEventEpoch
+                ? snapshot.rev >= current
+                : allowsEpochReset
         case .delta(let delta):
+            if let incomingEpoch = delta.epoch {
+                // A delta can never establish or cross an epoch: only a full
+                // stream snapshot is an authoritative replacement boundary.
+                guard incomingEpoch == lastEventEpoch else { return false }
+            }
             // A duplicate/late delta must not mutate records even if its
             // cursor is already behind the current state.
             return delta.rev > current
@@ -157,7 +179,7 @@ final class FleetStore: ObservableObject {
         // path (`ingest`) both converge here, so the client-side state clock
         // is seeded on first sight and re-stamped on state change regardless
         // of which entry point delivered the event.
-        apply(withoutDiff: event, marksConnected: true)
+        apply(withoutDiff: event, marksConnected: true, allowsEpochReset: true)
     }
 
     /// Issue #219: authoritative pull/toolbar refresh application.
@@ -174,10 +196,12 @@ final class FleetStore: ObservableObject {
     /// fired on every successful `/events` 200) may, so a snapshot-only
     /// success can never render a dead/offline host as live.
     func applyRefresh(_ snapshot: Snapshot) {
-        apply(withoutDiff: .snapshot(snapshot), marksConnected: false)
+        apply(withoutDiff: .snapshot(snapshot), marksConnected: false,
+              allowsEpochReset: false)
     }
 
-    private func apply(withoutDiff event: FleetEvent, marksConnected: Bool) {
+    private func apply(withoutDiff event: FleetEvent, marksConnected: Bool,
+                       allowsEpochReset: Bool) {
         // #399 B4/C1: fail closed when the frame carries records from a
         // DIFFERENT host identity than the one this store was pinned to.
         // The prior (stale) snapshot stays untouched — nothing is applied.
@@ -190,14 +214,15 @@ final class FleetStore: ObservableObject {
             onHostIntegrityMismatch?()
             return
         }
-        guard accepts(event) else { return }
+        guard accepts(event, allowsEpochReset: allowsEpochReset) else { return }
         switch event {
         case .snapshot(let snapshot):
             let old = agents
             agents = snapshot.agents
             tails = tails.filter { snapshot.agents[$0.key] != nil }
             lastEventId = snapshot.rev
-            cursorBox.write(snapshot.rev)
+            lastEventEpoch = snapshot.epoch
+            cursorBox.write(rev: snapshot.rev, epoch: snapshot.epoch)
             updateStateEnteredAt(old: old, new: snapshot.agents)
             trackTransitions(.snapshot(snapshot))
         case .delta(let delta):
@@ -210,7 +235,8 @@ final class FleetStore: ObservableObject {
             let old = agents
             agents = next
             lastEventId = delta.rev
-            cursorBox.write(delta.rev)
+            lastEventEpoch = delta.epoch
+            cursorBox.write(rev: delta.rev, epoch: delta.epoch)
             updateStateEnteredAt(old: old, new: next)
             trackTransitions(.delta(delta))
         }
@@ -434,8 +460,11 @@ final class FleetStore: ObservableObject {
         // a delta-base for — resetDevice() wipes the map but NOT the
         // persisted cursor, so an EMPTY store must not resume one (the
         // daemon would answer deltas-only and the board would stay empty).
-        if agents.isEmpty && lastEventId != nil { lastEventId = nil }
-        cursorBox.write(lastEventId)
+        if agents.isEmpty && lastEventId != nil {
+            lastEventId = nil
+            lastEventEpoch = nil
+        }
+        cursorBox.write(rev: lastEventId, epoch: lastEventEpoch)
         let generation = connectionGeneration
         // CorraldClient.stream() is a nonisolated async operation on a
         // Sendable value, so its URLSession transport, retry loop, and
@@ -605,10 +634,12 @@ final class FleetStore: ObservableObject {
         tails = [:]
         tailPanes = [:]
         lastEventId = nil
-        cursorBox.write(nil)
+        lastEventEpoch = nil
+        cursorBox.write(rev: nil, epoch: nil)
         // A reset abandons the delta base; retaining it would let a later
         // live connection resume from demo or otherwise unrelated state.
         cursorDefaults.removeObject(forKey: "fleetnotifier.lastEventId")
+        cursorDefaults.removeObject(forKey: "fleetnotifier.lastEventEpoch")
         previousStates = [:]
         activeAgents = []
         stateEnteredAt = [:]
@@ -622,7 +653,8 @@ final class FleetStore: ObservableObject {
         self.agents = agents
         tails = tails.filter { agents[$0.key] != nil }
         lastEventId = rev
-        cursorBox.write(rev)
+        lastEventEpoch = nil
+        cursorBox.write(rev: rev, epoch: nil)
         updateStateEnteredAt(old: old, new: agents)
         // Seed the transition shadows so demo seeding never fires hooks.
         for (id, agent) in agents {
@@ -645,6 +677,14 @@ final class FleetStore: ObservableObject {
     func persistCursor() {
         if let lastEventId {
             cursorDefaults.set(String(lastEventId), forKey: "fleetnotifier.lastEventId")
+            if let lastEventEpoch {
+                cursorDefaults.set(lastEventEpoch, forKey: "fleetnotifier.lastEventEpoch")
+            } else {
+                cursorDefaults.removeObject(forKey: "fleetnotifier.lastEventEpoch")
+            }
+        } else {
+            cursorDefaults.removeObject(forKey: "fleetnotifier.lastEventId")
+            cursorDefaults.removeObject(forKey: "fleetnotifier.lastEventEpoch")
         }
     }
 
@@ -652,7 +692,8 @@ final class FleetStore: ObservableObject {
         if let raw = cursorDefaults.string(forKey: "fleetnotifier.lastEventId"),
            let rev = UInt64(raw) {
             lastEventId = rev
-            cursorBox.write(rev)
+            lastEventEpoch = cursorDefaults.string(forKey: "fleetnotifier.lastEventEpoch")
+            cursorBox.write(rev: rev, epoch: lastEventEpoch)
         }
     }
 
@@ -660,9 +701,10 @@ final class FleetStore: ObservableObject {
     /// stream coordinator), never the legacy single-host default. The
     /// active single-host store keeps the legacy key for parity; every
     /// coordinator session store restores/advances its own profile cursor.
-    func restoreCursor(rev: UInt64?) {
+    func restoreCursor(rev: UInt64?, epoch: String? = nil) {
         lastEventId = rev
-        cursorBox.write(rev)
+        lastEventEpoch = rev == nil ? nil : epoch
+        cursorBox.write(rev: rev, epoch: lastEventEpoch)
     }
 
     /// #400 (E3): purge one host's in-memory read state — rows, tails,
@@ -679,7 +721,8 @@ final class FleetStore: ObservableObject {
         tails = [:]
         tailPanes = [:]
         lastEventId = nil
-        cursorBox.write(nil)
+        lastEventEpoch = nil
+        cursorBox.write(rev: nil, epoch: nil)
         previousStates = [:]
         activeAgents = []
         stateEnteredAt = [:]

@@ -303,7 +303,13 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # #428 source set.
     # #444 correction 1: native procedural Herd plus DEBUG-only evidence;
     # original V1 paths and scene/lifecycle sources are all digest-bound.
-    "b5e3a3b3a3bb1f06c914d78b41752e1f38f66adbaa94ccc59001041d22cbf656"
+    # #450: restart-aware SSE authority — Snapshot/Delta gained the opaque
+    # daemon `epoch` (Models), FleetStore accepts()/cursor persistence and
+    # the reconnect headers became epoch-scoped, CorraldClient sends
+    # Corral-Epoch, and the per-host cursor mirrors carry the epoch
+    # (HostProfile/Store/Coordinator/AppModel) — re-pinned over the #450
+    # source set.
+    "9087541d5a0ec9d933c5bce3327e1d25dd1050aba274b03922e78b71892abeba"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -449,7 +455,12 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # #428: SheetTranslucencyWiringTests gained the layered glass-branch
     # pins + the themedRowSurface counts (Settings 5 / Add Host 3 /
     # Fingerprint 6 sections) — re-pinned over the #428 test source.
-    "aa9c3dc9ef6accadce1d35787b02d032191ed5606ac08dac57ec7997ce08ce5a"
+    # #450: EpochRecoveryTests (lower/equal/higher cross-lifetime
+    # convergence, same-lifetime monotonicity, stale-epoch refresh
+    # rejection, connection-generation isolation) and StaleCursorTests
+    # (epoch persistence + legacy numeric-only resume) — re-pinned over
+    # the #450 test source.
+    "01f6e73e1ff3cd30847815bfd6bdf731e05d79753273fbcdfd5b9c440ba49867"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

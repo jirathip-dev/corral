@@ -495,6 +495,157 @@ final class DeltaApplyTests: XCTestCase {
     }
 }
 
+// MARK: - Issue #450: restart-aware SSE authority
+
+@MainActor
+final class EpochRecoveryTests: XCTestCase {
+    private let oldEpoch = String(repeating: "a", count: 32)
+    private let newEpoch = String(repeating: "b", count: 32)
+
+    private func agent(_ id: String, title: String) -> Agent {
+        Agent(agentId: id, state: .working, seq: 1, ts: 1, title: title)
+    }
+
+    private func addingEpoch(_ epoch: String, to data: Data) throws -> String {
+        var object = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        object["epoch"] = epoch
+        return String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)
+    }
+
+    private func snapshotFrame(epoch: String, rev: UInt64,
+                               agents: [String: Agent]) throws -> SSEFrame {
+        let snapshot = Snapshot(schemaVersion: 5, rev: rev, generatedAt: 1, agents: agents)
+        return SSEFrame(kind: .snapshot, id: rev,
+                        data: try addingEpoch(epoch, to: JSONEncoder().encode(snapshot)))
+    }
+
+    private func deltaFrame(epoch: String, rev: UInt64, upd: [Agent]) throws -> SSEFrame {
+        let delta = Delta(rev: rev, upd: upd, del: [])
+        return SSEFrame(kind: .delta, id: rev,
+                        data: try addingEpoch(epoch, to: JSONEncoder().encode(delta)))
+    }
+
+    private func assertRestartConverges(replacementRev: UInt64,
+                                        file: StaticString = #filePath,
+                                        line: UInt = #line) async throws {
+        let store = FleetStore()
+        await store.ingest(try snapshotFrame(
+            epoch: oldEpoch, rev: 10,
+            agents: ["old": agent("old", title: "old daemon")])).value
+        await store.ingest(try snapshotFrame(
+            epoch: newEpoch, rev: replacementRev,
+            agents: ["new": agent("new", title: "restarted daemon")])).value
+
+        let staleRev = max(10, replacementRev) + 1
+        await store.ingest(try deltaFrame(
+            epoch: oldEpoch, rev: staleRev,
+            upd: [agent("old", title: "late old daemon callback")])).value
+
+        XCTAssertEqual(Set(store.agents.keys), ["new"],
+                       "a previous daemon lifetime must not survive", file: file, line: line)
+        XCTAssertEqual(store.lastEventId, replacementRev,
+                       "a rejected old-epoch delta must not advance the cursor", file: file, line: line)
+
+        await store.ingest(try deltaFrame(
+            epoch: newEpoch, rev: replacementRev + 1,
+            upd: [agent("new", title: "current delta")])).value
+        XCTAssertEqual(store.agents["new"]?.title, "current delta", file: file, line: line)
+        XCTAssertEqual(store.lastEventId, replacementRev + 1, file: file, line: line)
+    }
+
+    func testLowerRevisionFromNewDaemonLifetimeConverges() async throws {
+        try await assertRestartConverges(replacementRev: 2)
+    }
+
+    func testEqualRevisionFromNewDaemonLifetimeConverges() async throws {
+        try await assertRestartConverges(replacementRev: 10)
+    }
+
+    func testHigherRevisionFromNewDaemonLifetimeConverges() async throws {
+        try await assertRestartConverges(replacementRev: 20)
+    }
+
+    func testSameLifetimeLateSnapshotAndDeltaStayMonotonic() async throws {
+        let store = FleetStore()
+        await store.ingest(try snapshotFrame(
+            epoch: newEpoch, rev: 10,
+            agents: ["new": agent("new", title: "initial")])).value
+        await store.ingest(try deltaFrame(
+            epoch: newEpoch, rev: 11,
+            upd: [agent("new", title: "newest")])).value
+        await store.ingest(try snapshotFrame(
+            epoch: newEpoch, rev: 10,
+            agents: ["new": agent("new", title: "late snapshot")])).value
+        await store.ingest(try deltaFrame(
+            epoch: newEpoch, rev: 11,
+            upd: [agent("new", title: "duplicate delta")])).value
+
+        XCTAssertEqual(store.agents["new"]?.title, "newest")
+        XCTAssertEqual(store.lastEventId, 11)
+    }
+
+    func testRacingPreviousEpochRefreshCannotOverwriteNewStream() async throws {
+        let store = FleetStore()
+        await store.ingest(try snapshotFrame(
+            epoch: newEpoch, rev: 2,
+            agents: ["new": agent("new", title: "current stream")])).value
+        let staleFrame = try snapshotFrame(
+            epoch: oldEpoch, rev: 100,
+            agents: ["old": agent("old", title: "late refresh")])
+        guard case .event(.snapshot(let stale)) = CorraldClient.decode(staleFrame) else {
+            return XCTFail("epoch-bearing snapshot must decode")
+        }
+
+        store.applyRefresh(stale)
+
+        XCTAssertEqual(Set(store.agents.keys), ["new"])
+        XCTAssertEqual(store.lastEventId, 2)
+    }
+
+    func testOldConnectionGenerationCannotOverwriteReplacementEpoch() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [LastEventIDCapturingURLProtocol.self]
+        let session = URLSession(configuration: config)
+        guard let hostURL = URL(string: "https://epoch-generation.test") else {
+            return XCTFail("fixed test host URL must parse")
+        }
+        let client = CorraldClient(host: hostURL, session: session)
+        let store = FleetStore()
+        store.connect(client: client)
+        let oldGeneration = store.connectionGeneration
+        // Let the first stream's request actually reach the transport before
+        // replacing it, so its late frames (were any to land) would race the
+        // replacement connection exactly like production.
+        let deadline = Date().addingTimeInterval(5)
+        while LastEventIDCapturingURLProtocol.requestCount < 1, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+        XCTAssertGreaterThanOrEqual(LastEventIDCapturingURLProtocol.requestCount, 1,
+                                    "the first stream must reach the wire")
+        let firstTask = store.disconnect()
+        if let firstTask { await firstTask.value }
+        store.connect(client: client)
+        let currentGeneration = store.connectionGeneration
+        XCTAssertGreaterThan(currentGeneration, oldGeneration)
+
+        await store.ingest(try snapshotFrame(
+            epoch: newEpoch, rev: 2,
+            agents: ["new": agent("new", title: "replacement")]),
+            generation: currentGeneration).value
+        await store.ingest(try snapshotFrame(
+            epoch: oldEpoch, rev: 100,
+            agents: ["old": agent("old", title: "late callback")]),
+            generation: oldGeneration).value
+
+        XCTAssertEqual(Set(store.agents.keys), ["new"])
+        XCTAssertEqual(store.lastEventId, 2)
+        let streamTask = store.disconnect()
+        session.invalidateAndCancel()
+        if let streamTask { await streamTask.value }
+    }
+}
+
 // MARK: - Demo seed integrity (#354 L2 read-only fixture)
 
 final class DemoSeedTests: XCTestCase {
@@ -1016,7 +1167,7 @@ final class SSEStreamRegressionTests: XCTestCase {
 
         let box = StreamFrameBox()
         let stream = Task {
-            await client.stream(lastEventId: { nil }, onEvent: { box.append($0) })
+            await client.stream(lastEventId: { nil as SSECursor? }, onEvent: { box.append($0) })
         }
 
         // Wait for both frames (snapshot + delta) under a hard deadline.
@@ -1089,7 +1240,7 @@ final class SSEStreamRegressionTests: XCTestCase {
 
         let box = StreamFrameBox()
         let stream = Task {
-            await client.stream(lastEventId: { nil }, onEvent: { box.append($0) })
+            await client.stream(lastEventId: { nil as SSECursor? }, onEvent: { box.append($0) })
         }
 
         // Clean EOF → reconnect: wait for the SECOND request, then cancel.
@@ -1508,12 +1659,19 @@ final class ConnectionFailureTests: XCTestCase {
 final class LastEventIDCapturingURLProtocol: URLProtocol {
     private static let captureLock = NSLock()
     private static var capturedHeaderStorage: String?
+    private static var capturedEpochStorage: String?
     private static var requestCountStorage = 0
 
     static var capturedHeader: String? {
         captureLock.lock()
         defer { captureLock.unlock() }
         return capturedHeaderStorage
+    }
+
+    static var capturedEpoch: String? {
+        captureLock.lock()
+        defer { captureLock.unlock() }
+        return capturedEpochStorage
     }
 
     static var requestCount: Int {
@@ -1525,6 +1683,7 @@ final class LastEventIDCapturingURLProtocol: URLProtocol {
     static func reset() {
         captureLock.lock()
         capturedHeaderStorage = nil
+        capturedEpochStorage = nil
         requestCountStorage = 0
         captureLock.unlock()
     }
@@ -1536,6 +1695,7 @@ final class LastEventIDCapturingURLProtocol: URLProtocol {
         Self.captureLock.lock()
         Self.requestCountStorage += 1
         Self.capturedHeaderStorage = request.value(forHTTPHeaderField: "Last-Event-ID")
+        Self.capturedEpochStorage = request.value(forHTTPHeaderField: "Corral-Epoch")
         Self.captureLock.unlock()
         guard let url = request.url else {
             client?.urlProtocol(self, didFailWithError: URLError(.badURL))
@@ -1593,6 +1753,8 @@ final class StaleCursorTests: XCTestCase {
         let defaults = UserDefaults(suiteName: suiteName)!
         defer { defaults.removePersistentDomain(forName: suiteName) }
         defaults.set("8089", forKey: "fleetnotifier.lastEventId")
+        defaults.set(String(repeating: "a", count: 32),
+                     forKey: "fleetnotifier.lastEventEpoch")
         LastEventIDCapturingURLProtocol.reset()
 
         let store = FleetStore(defaults: defaults)
@@ -1614,6 +1776,8 @@ final class StaleCursorTests: XCTestCase {
                 + "not sent as Last-Event-ID (the daemon would reply deltas-only and the board stays empty)")
         XCTAssertNil(defaults.string(forKey: "fleetnotifier.lastEventId"),
                      "reset must clear the injected cursor store")
+        XCTAssertNil(defaults.string(forKey: "fleetnotifier.lastEventEpoch"),
+                     "reset must clear the cursor's daemon epoch too")
     }
 
     /// Acceptance: a POPULATED store keeps its cursor — applying a snapshot
@@ -1627,12 +1791,16 @@ final class StaleCursorTests: XCTestCase {
         LastEventIDCapturingURLProtocol.reset()
 
         let store = FleetStore(defaults: defaults)
+        let epoch = String(repeating: "b", count: 32)
         let snapshotJSON = """
-        {"schema_version":5,"rev":8008,"generated_at":0,"agents":{"herdr:a":{"agent_id":"herdr:a","source":"herdr","tool":"claude","state":"idle","seq":1,"ts":1700000000000}}}
+        {"schema_version":5,"epoch":"\(epoch)","rev":8008,"generated_at":0,"agents":{"herdr:a":{"agent_id":"herdr:a","source":"herdr","tool":"claude","state":"idle","seq":1,"ts":1700000000000}}}
         """
         await store.ingest(SSEFrame(kind: .snapshot, id: 8008, data: snapshotJSON)).value
         XCTAssertFalse(store.agents.isEmpty, "precondition: the snapshot populated the store")
         XCTAssertEqual(store.lastEventId, 8008, "precondition: the snapshot rev is the delta-base")
+        store.persistCursor()
+        XCTAssertEqual(defaults.string(forKey: "fleetnotifier.lastEventEpoch"), epoch,
+                       "the numeric cursor and daemon epoch must persist together")
 
         let (session, client) = makeStreamingClient()
         store.connect(client: client)
@@ -1643,6 +1811,28 @@ final class StaleCursorTests: XCTestCase {
         XCTAssertEqual(
             LastEventIDCapturingURLProtocol.capturedHeader, "8008",
             "a populated store holds the delta-base — delta resume must survive reconnect")
+        XCTAssertEqual(LastEventIDCapturingURLProtocol.capturedEpoch, epoch,
+                       "resume must scope the numeric cursor to its daemon lifetime")
+    }
+
+    func testLegacyDaemonCursorKeepsNumericResumeAndAdvertisesUnknownEpoch() async throws {
+        LastEventIDCapturingURLProtocol.reset()
+        let store = FleetStore()
+        let snapshotJSON = """
+        {"schema_version":5,"rev":7,"generated_at":0,"agents":{"legacy":{"agent_id":"legacy","source":"herdr","tool":"claude","state":"idle","seq":1,"ts":1}}}
+        """
+        await store.ingest(SSEFrame(kind: .snapshot, id: 7, data: snapshotJSON)).value
+
+        let (session, client) = makeStreamingClient()
+        store.connect(client: client)
+        await waitForFirstRequest()
+        store.disconnect()
+        session.invalidateAndCancel()
+
+        XCTAssertEqual(LastEventIDCapturingURLProtocol.capturedHeader, "7",
+                       "old daemons still receive the numeric resume cursor")
+        XCTAssertEqual(LastEventIDCapturingURLProtocol.capturedEpoch, "unknown",
+                       "new daemons must force an epoch-establishing snapshot")
     }
 }
 

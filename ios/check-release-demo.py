@@ -311,7 +311,11 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # gained the Corral458Presentation launch scenarios + the accessibility
     # size route + demo-notification suppression for the evidence sim —
     # re-pinned over the #458 source set.
-    "cc9e02ffb5df7770e4620dc3fefd5f29ae33a67d14b570a977be3834fbe2b8f7"
+    # #456: full-screen Herd shell — FleetViews Herd branch (no opaque board
+    # header / duplicated toolbar) + HerdView full-screen ranch cover,
+    # floating scope/Settings/counts and floating paddock navigation with
+    # native glyphs — re-pinned over the #456 source set.
+    "b345451df5d02c543ec05423bd75d7e14e1362c91084556b86023bfe2c46bfad"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

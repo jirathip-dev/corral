@@ -786,23 +786,27 @@ struct FleetView: View {
             ScrollViewReader { proxy in
                 Group {
                     if model.fleetPresentation == .herd && model.mode != .needsSetup {
-                        VStack(spacing: 0) {
-                            filterHeaderControl(filterButtonLabel: filterButtonLabel,
-                                                filterSummaryText: filterSummaryText)
-                            HerdView(horses: multiHost
-                                ? HerdProjection.multiple(hostSections, names: Dictionary(uniqueKeysWithValues:
-                                    model.profiles.map { ($0.id, $0.displayName) }))
-                                : HerdProjection.single(sections, host: model.activeProfile?.id,
-                                    disconnected: herdDisconnected),
-                                obscured: showSettings || showFilters || showConnectHelp
-                                    || model.recentsRequest != nil || model.fingerprintConfirmation != nil,
-                                select: { horse in
-                                    model.requestRecents(for: horse.agent.agentId,
-                                                         hostProfileID: horse.hostProfileID, haptic: false)
-                                },
-                                openBoard: { model.openBoard() },
-                                retry: { await model.refreshFleet() })
-                        }
+                        // #456: no opaque board header strip and no board
+                        // toolbar in Herd — the floating scope + Settings
+                        // controls live in HerdView's own full-screen shell
+                        // and drive these SAME sheets/bindings.
+                        HerdView(horses: multiHost
+                            ? HerdProjection.multiple(hostSections, names: Dictionary(uniqueKeysWithValues:
+                                model.profiles.map { ($0.id, $0.displayName) }))
+                            : HerdProjection.single(sections, host: model.activeProfile?.id,
+                                disconnected: herdDisconnected),
+                            obscured: showSettings || showFilters || showConnectHelp
+                                || model.recentsRequest != nil || model.fingerprintConfirmation != nil,
+                            scopeLabel: filterButtonLabel,
+                            scopeSummary: filterSummaryText,
+                            showFilters: $showFilters,
+                            showSettings: $showSettings,
+                            select: { horse in
+                                model.requestRecents(for: horse.agent.agentId,
+                                                     hostProfileID: horse.hostProfileID, haptic: false)
+                            },
+                            openBoard: { model.openBoard() },
+                            retry: { await model.refreshFleet() })
                     } else {
                 List {
                     // Issue #219: the board chrome is the FIRST section of the same
@@ -948,6 +952,12 @@ struct FleetView: View {
                 .navigationTitle("")
                 .background(theme.base)
                 .navigationBarTitleDisplayMode(.inline)
+                // #456: Herd owns its floating scope + Settings chrome, so
+                // the navigation bar (and its gear) is hidden there — the
+                // mode never shows a duplicated toolbar over the ranch.
+                // Board keeps the bar exactly as #365/#387 pinned it.
+                .toolbar(model.fleetPresentation == .herd && model.mode != .needsSetup
+                            ? .hidden : .visible, for: .navigationBar)
                 // #365: Settings is an ALWAYS-VISIBLE top-bar control — a plain
                 // gear Button (system gear shape, >=44 pt target, VoiceOver
                 // label) opening the Settings sheet. The DEBUG demo toggle is

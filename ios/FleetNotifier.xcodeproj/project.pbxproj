@@ -387,6 +387,7 @@
 			inputPaths = (
 				"$(SRCROOT)/FleetNotifier/UI/FleetViews.swift",
 				"$(SRCROOT)/FleetNotifier/UI/Herd/HerdView.swift",
+				"$(SRCROOT)/FleetNotifier/UI/Herd/RanchEnvironment.swift",
 			);
 			name = "Bundle FleetViews source for the wiring test";
 			outputFileListPaths = (
@@ -394,10 +395,11 @@
 			outputPaths = (
 				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/FleetViews.swift.txt",
 				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/HerdView.swift.txt",
+				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/RanchEnvironment.swift.txt",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "mkdir -p \"$TARGET_BUILD_DIR/$WRAPPER_NAME\"\ncp \"$SRCROOT/FleetNotifier/UI/FleetViews.swift\" \\\n   \"$TARGET_BUILD_DIR/$WRAPPER_NAME/FleetViews.swift.txt\"\ncp \"$SRCROOT/FleetNotifier/UI/Herd/HerdView.swift\" \\\n   \"$TARGET_BUILD_DIR/$WRAPPER_NAME/HerdView.swift.txt\"\n";
+			shellScript = "mkdir -p \"$TARGET_BUILD_DIR/$WRAPPER_NAME\"\ncp \"$SRCROOT/FleetNotifier/UI/FleetViews.swift\" \\\n   \"$TARGET_BUILD_DIR/$WRAPPER_NAME/FleetViews.swift.txt\"\ncp \"$SRCROOT/FleetNotifier/UI/Herd/HerdView.swift\" \\\n   \"$TARGET_BUILD_DIR/$WRAPPER_NAME/HerdView.swift.txt\"\ncp \"$SRCROOT/FleetNotifier/UI/Herd/RanchEnvironment.swift\" \\\n   \"$TARGET_BUILD_DIR/$WRAPPER_NAME/RanchEnvironment.swift.txt\"\n";
 		};
 		F6207AF155842583C8143257 /* Embed Release source digest */ = {
 			isa = PBXShellScriptBuildPhase;

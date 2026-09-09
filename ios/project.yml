@@ -161,12 +161,16 @@ targets:
              "$TARGET_BUILD_DIR/$WRAPPER_NAME/FleetViews.swift.txt"
           cp "$SRCROOT/FleetNotifier/UI/Herd/HerdView.swift" \
              "$TARGET_BUILD_DIR/$WRAPPER_NAME/HerdView.swift.txt"
+          cp "$SRCROOT/FleetNotifier/UI/Herd/RanchEnvironment.swift" \
+             "$TARGET_BUILD_DIR/$WRAPPER_NAME/RanchEnvironment.swift.txt"
         inputFiles:
           - "$(SRCROOT)/FleetNotifier/UI/FleetViews.swift"
           - "$(SRCROOT)/FleetNotifier/UI/Herd/HerdView.swift"
+          - "$(SRCROOT)/FleetNotifier/UI/Herd/RanchEnvironment.swift"
         outputFiles:
           - "$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/FleetViews.swift.txt"
           - "$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/HerdView.swift.txt"
+          - "$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/RanchEnvironment.swift.txt"
         basedOnDependencyAnalysis: false
     dependencies:
       - target: FleetNotifier

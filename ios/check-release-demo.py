@@ -303,7 +303,9 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # #428 source set.
     # #444 correction 1: native procedural Herd plus DEBUG-only evidence;
     # original V1 paths and scene/lifecycle sources are all digest-bound.
-    "b5e3a3b3a3bb1f06c914d78b41752e1f38f66adbaa94ccc59001041d22cbf656"
+    # #449: Herd paddocks prioritize connected working repositories while
+    # preserving identity selection; DEBUG evidence records the live reorder.
+    "61319e9cd148da9096c07135e359a4e26b99d2a81b6304e5ca85c200505b3ee1"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

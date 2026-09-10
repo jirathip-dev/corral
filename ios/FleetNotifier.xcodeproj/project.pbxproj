@@ -22,6 +22,7 @@
 		63EE02B9EB9EDE2CF1A7D086 /* HostProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49B690693FFABE1900E59374 /* HostProfile.swift */; };
 		695F86362C9F62AA692D3671 /* FleetNotifierApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B51578ED349E70B121FA432 /* FleetNotifierApp.swift */; };
 		6B4EFEE1A903FB1D0587883D /* HerdView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB5C19509398D4E45B76831E /* HerdView.swift */; };
+		732AD2E20EBA2919797BB81A /* StreamRetryBackoffTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F977DD3F71E92A3EFB9D7EC1 /* StreamRetryBackoffTests.swift */; };
 		7602F4F40C74322A247CC565 /* AppIconPickerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF5ABAA21F576FDDE8CD6060 /* AppIconPickerTests.swift */; };
 		77837D3786BB6FB16AE849AD /* HerdEvidence.swift in Sources */ = {isa = PBXBuildFile; fileRef = D373587F14C8226A6B41DE77 /* HerdEvidence.swift */; };
 		8467D1631080359CEDBE7E22 /* AppIconPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = B939A1BC80A600F3B697DB3B /* AppIconPicker.swift */; };
@@ -109,6 +110,7 @@
 		EA8DA0D8FF70742D57C6ABE0 /* AddHostCommitEvidenceURLProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddHostCommitEvidenceURLProtocol.swift; sourceTree = "<group>"; };
 		F6CE363C959DE49C12B69596 /* LocalNotifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalNotifier.swift; sourceTree = "<group>"; };
 		F933E32D259974E2C207BA96 /* RecentOutputModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecentOutputModel.swift; sourceTree = "<group>"; };
+		F977DD3F71E92A3EFB9D7EC1 /* StreamRetryBackoffTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamRetryBackoffTests.swift; sourceTree = "<group>"; };
 		FB5C19509398D4E45B76831E /* HerdView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdView.swift; sourceTree = "<group>"; };
 		FF5ABAA21F576FDDE8CD6060 /* AppIconPickerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIconPickerTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -146,6 +148,7 @@
 				DD76760F92DA9C8F78AD6996 /* HerdEnvironmentTests.swift */,
 				BA6724B7E29BAE37678BF8A8 /* HerdTests.swift */,
 				D48969B39CAC1EDAC289B97C /* StateStyleTests.swift */,
+				F977DD3F71E92A3EFB9D7EC1 /* StreamRetryBackoffTests.swift */,
 				B79F7EC88E38AB98DD73849D /* ThemeTests.swift */,
 			);
 			path = FleetNotifierTests;
@@ -525,6 +528,7 @@
 				4DABD08F3D7A07518E68F371 /* HerdEnvironmentTests.swift in Sources */,
 				F2CF3ACD1811505E1FCAE1BC /* HerdTests.swift in Sources */,
 				C0DE384BE4B4265BEB4C1808 /* StateStyleTests.swift in Sources */,
+				732AD2E20EBA2919797BB81A /* StreamRetryBackoffTests.swift in Sources */,
 				ABD378861F032E17454B664B /* ThemeTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

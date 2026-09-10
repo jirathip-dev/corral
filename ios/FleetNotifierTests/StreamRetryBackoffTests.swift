@@ -75,12 +75,18 @@ final class StreamRetryBackoffTests: XCTestCase {
                             random: Double = 0,
                             randomSource: ScriptedValues? = nil,
                             clock: ScriptedValues? = nil,
+                            productionDefaults: Bool = false,
                             sleepImpl: (@Sendable (TimeInterval) async throws -> Void)? = nil) -> CorraldClient {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 60
         config.protocolClasses = [StreamRetryLoopURLProtocol.self]
         let session = URLSession(configuration: config)
         sessions.append(session)
+        if productionDefaults {
+            // The stock `CorraldClient(host:session:)`: default policy, real
+            // Task.sleep conversion, real random/clock — no test seams.
+            return CorraldClient(host: host, session: session)
+        }
         let sleep: @Sendable (TimeInterval) async throws -> Void =
             sleepImpl ?? { wait in waits.append(wait) }
         return CorraldClient(
@@ -500,6 +506,76 @@ final class StreamRetryBackoffTests: XCTestCase {
         XCTAssertEqual(fourth.lastEventID, "43")
         XCTAssertEqual(fourth.epoch, "E2")
     }
+
+    // MARK: - Runtime boundaries: no cutoff, production conversion, clamp
+
+    /// No finite retry-attempt window: the ladder keeps retrying past the
+    /// rung cap (12+ attempts observed here) — unlike a bounded preflight
+    /// ladder, nothing exhausts it. Waits stay capped at 30 s and keep coming.
+    func testLadderHasNoFiniteAttemptCutoff() async {
+        StreamRetryLoopURLProtocol.script(
+            Array(repeating: Step.headersOnlyEOF, count: 15), forHost: Self.hostAKey)
+        let waits = WaitRecorder()
+        let log = CallbackLog()
+        let run = startStream(makeClient(host: hostA, waits: waits),
+                              cursor: CursorHolder(), log: log)
+
+        let saw = await waitFor({ waits.count >= 12 }, timeout: 20)
+        run.task.cancel()
+        _ = await waitFor({ run.returned.isDone }, timeout: 5)
+        XCTAssertTrue(saw)
+        assertWaits(waits, prefix: [1, 2, 4, 8, 16, 30, 30, 30, 30, 30, 30, 30])
+        XCTAssertGreaterThanOrEqual(
+            StreamRetryLoopURLProtocol.requests(forHost: Self.hostAKey).count, 12,
+            "a dozen attempts must not exhaust any attempt budget")
+        XCTAssertGreaterThanOrEqual(log.endedCount, 12)
+    }
+
+    /// The FULL production default seam path — stock `CorraldClient(host:
+    /// session:)`: real `Task.sleep` conversion, real jitter and clock — runs
+    /// without trapping and retries within bounded time (the first rung,
+    /// jitter-clamped to at least half a second).
+    func testProductionDefaultSeamsRunBounded() async {
+        StreamRetryLoopURLProtocol.script(
+            Array(repeating: Step.headersOnlyEOF, count: 3), forHost: Self.hostAKey)
+        let waits = WaitRecorder()
+        let run = startStream(makeClient(host: hostA, waits: waits, productionDefaults: true),
+                              cursor: CursorHolder(), log: CallbackLog())
+
+        let saw = await waitFor({
+            StreamRetryLoopURLProtocol.requests(forHost: Self.hostAKey).count >= 2
+        }, timeout: 6)
+        run.task.cancel()
+        _ = await waitFor({ run.returned.isDone }, timeout: 5)
+        XCTAssertTrue(saw, "the production default sleep path must convert its wait and retry")
+        XCTAssertTrue(waits.waits.isEmpty, "the default path must not touch the test recorder")
+        let records = StreamRetryLoopURLProtocol.requests(forHost: Self.hostAKey)
+        if records.count >= 2 {
+            let gap = records[1].startedAt.timeIntervalSince(records[0].startedAt)
+            XCTAssertGreaterThanOrEqual(gap, 0.3,
+                "the converted first rung (≥ 0.5 s nominal floor) must separate the attempts")
+            XCTAssertLessThanOrEqual(gap, 3.0, "the converted wait stays finite and bounded")
+        }
+    }
+
+    /// A hostile/out-of-range jitter source cannot escape the documented
+    /// bounds: values above 1 clamp to the floor rung, below 0 to nominal —
+    /// the conversion stays finite and the wait never exceeds [nominal/2,
+    /// nominal].
+    func testOutOfRangeJitterSourceIsClamped() async {
+        StreamRetryLoopURLProtocol.script(
+            Array(repeating: Step.headersOnlyEOF, count: 3), forHost: Self.hostAKey)
+        let waits = WaitRecorder()
+        let run = startStream(makeClient(host: hostA, waits: waits,
+                                         randomSource: ScriptedValues([7.5, -3, 0.5])),
+                              cursor: CursorHolder(), log: CallbackLog())
+
+        let saw = await waitFor({ waits.count >= 3 })
+        run.task.cancel()
+        _ = await waitFor({ run.returned.isDone }, timeout: 5)
+        XCTAssertTrue(saw)
+        assertWaits(waits, prefix: [0.5, 2, 3])
+    }
 }
 
 // MARK: - Test doubles
@@ -695,6 +771,7 @@ private final class StreamRetryLoopURLProtocol: URLProtocol {
         let host: String
         let lastEventID: String?
         let epoch: String?
+        let startedAt: Date
     }
 
     private static let frameText = "event: delta\ndata: {\"rev\":1}\n\n"
@@ -751,7 +828,8 @@ private final class StreamRetryLoopURLProtocol: URLProtocol {
         recordsStorage[host, default: []].append(
             RequestRecord(host: host,
                           lastEventID: request.value(forHTTPHeaderField: "Last-Event-ID"),
-                          epoch: request.value(forHTTPHeaderField: "Corral-Epoch")))
+                          epoch: request.value(forHTTPHeaderField: "Corral-Epoch"),
+                          startedAt: Date()))
     }
 
     private static func enterActive() {

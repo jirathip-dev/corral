@@ -363,7 +363,15 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # (521e7cd9 → ba15563, PR474) — union of ALL source sets; the pin below
     # is recomputed from THIS merged checkout; neither parent pin (1827b419…,
     # a898ad7a…) applies.
-    "8bccaf68a84fe1b598fa48c8e05546c62719b1f36fd6380bfbe28ae2521e73e8"
+    # #452: CorraldClient reconnect-loop retry contract — the /events ladder
+    # collapses only after a SUSTAINED healthy session (first-to-last
+    # received-line span ≥ StreamRetryPolicy.stableSessionThreshold; headers
+    # alone, single-line and silent-tail attempts keep escalating) with
+    # bounded equal-jitter waits and injectable clock/random/sleep seams,
+    # merged with origin/integration ee732625 (#457 contextual controls +
+    # #471 art/icon gate coverage) — the pin below is recomputed from THIS
+    # merged checkout; neither parent pin (8bccaf68…, b1994319…) applies.
+    "76443b888b6bb2bac663016265c214c03fc85c9fd2cfdb3c71f59cbe71ac4e41"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

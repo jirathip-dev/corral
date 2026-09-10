@@ -1527,9 +1527,12 @@ private final class Non200StreamURLProtocol: URLProtocol {
 }
 
 /// Durable F2 probe mock: FAILS request #1 (connection refused, no response
-/// bytes) then serves 200 `text/event-stream` with clean EOF and ZERO body
-/// bytes on requests #2+ — an idle fleet serves 0 frames. Lock-guarded
-/// request counter, the same NSLock pattern as `SSEStreamMockURLProtocol`
+/// bytes) then serves 200 `text/event-stream` on requests #2+ and HOLDS the
+/// connection open with zero body bytes — an idle fleet serves 0 frames but
+/// keeps its stream. (#425: the retry must model an idle daemon, not a
+/// closed one — a clean server EOF now explicitly leaves the live posture,
+/// which is covered by `HeartbeatRecoveryTests`.) Lock-guarded request
+/// counter, the same NSLock pattern as `SSEStreamMockURLProtocol`
 /// (review N1: bare static vars raced under TSan).
 private final class ReconnectStreamURLProtocol: URLProtocol {
     private static let startProbe = URLProtocolStartProbe()
@@ -1576,7 +1579,8 @@ private final class ReconnectStreamURLProtocol: URLProtocol {
             url: url, statusCode: 200, httpVersion: "HTTP/1.1",
             headerFields: ["Content-Type": "text/event-stream"])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocolDidFinishLoading(self)
+        // An idle daemon holds the stream open (it never closes a live SSE
+        // connection); no frames arrive because the fleet is idle.
     }
 
     override func stopLoading() {}
@@ -10575,6 +10579,524 @@ final class RefreshRecoversStaleStreamTests: XCTestCase {
         XCTAssertEqual(fixture.model.fleet.connectionState, .connected)
         XCTAssertEqual(fixture.model.fleet.agents["a"]?.title, "fresh")
         XCTAssertFalse(fixture.model.isRefreshingFleet)
+    }
+}
+
+// MARK: - #425 addendum: heartbeat / half-open / clean-EOF recovery
+
+/// #425 addendum transport harness. Drives the REAL `CorraldClient.stream()`
+/// byte path through a per-attempt scripted `URLProtocol`. Attempts are
+/// scripted per HOST (so a two-host fixture can prove per-host isolation);
+/// the LAST scripted behaviour repeats for any further attempt.
+///
+/// - `.wedged`   — NO response at all: the attempt hangs (dead/half-open
+///                 socket before a single byte). `releaseWedged()` later
+///                 delivers the withheld 200 + keep-alives.
+/// - `.comments` — 200 `text/event-stream` + SSE comment keep-alives
+///                 (`: keep-alive\n`) every `interval`, held open: an
+///                 idle-but-HEALTHY daemon (corrald emits one every 15s —
+///                 `src/api/mod.rs` KEEPALIVE).
+/// - `.commentsThenSilence` — the same, but the keep-alives STOP after
+///                 `lines` comments while the connection stays open:
+///                 a silently dropped (half-open) socket.
+/// - `.cleanEnd` — 200 + one comment + a clean server EOF (finish).
+/// - `.liveIdle` — 200 + ZERO bytes, held open (the #436 ack-only fixture).
+private final class HeartbeatURLProtocol: URLProtocol {
+    enum Behaviour {
+        case wedged
+        case liveIdle
+        case comments(interval: TimeInterval)
+        case commentsThenSilence(interval: TimeInterval, lines: Int)
+        case cleanEnd
+    }
+
+    private static let lock = NSLock()
+    private static var scriptsStorage: [String: [Behaviour]] = [:]
+    private static var eventsCountsStorage: [String: Int] = [:]
+    private static var eventsRequestsStorage: [String: [URLRequest]] = [:]
+    private static var commentWritesStorage = 0
+    private static var wedgedStorage: [HeartbeatURLProtocol] = []
+    private static let snapshotBodyStorage = Data(#"{"ok":true}"#.utf8)
+
+    private let queue = DispatchQueue(label: "corral.g425.heartbeat.protocol")
+    /// Timer state is touched only on `queue` (serial).
+    private var timer: DispatchSourceTimer?
+    private var remainingComments: Int?
+    private var released = false
+    private var stopped = false
+
+    static func reset() {
+        lock.lock()
+        scriptsStorage = [:]
+        eventsCountsStorage = [:]
+        eventsRequestsStorage = [:]
+        commentWritesStorage = 0
+        wedgedStorage = []
+        lock.unlock()
+    }
+
+    static func script(_ behaviours: [Behaviour], forHost host: String) {
+        lock.lock()
+        scriptsStorage[host] = behaviours
+        lock.unlock()
+    }
+
+    /// Deliver the 200 a wedged attempt withheld, leaving it acked + live.
+    static func releaseWedged() {
+        lock.lock()
+        let pending = wedgedStorage
+        wedgedStorage = []
+        lock.unlock()
+        for instance in pending { instance.release() }
+    }
+
+    static var commentWrites: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return commentWritesStorage
+    }
+
+    static func eventRequestCount(forHost host: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return eventsCountsStorage[host] ?? 0
+    }
+
+    static func lastEventsRequest(forHost host: String) -> URLRequest? {
+        lock.lock()
+        defer { lock.unlock() }
+        return eventsRequestsStorage[host]?.last
+    }
+
+    private static func nextBehaviour(forHost host: String) -> Behaviour {
+        lock.lock()
+        defer { lock.unlock() }
+        let index = eventsCountsStorage[host] ?? 0
+        eventsCountsStorage[host] = index + 1
+        guard let script = scriptsStorage[host], !script.isEmpty else { return .liveIdle }
+        return script[min(index, script.count - 1)]
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        // SAFETY: the request always carries the fixture URL.
+        guard let url = request.url, let host = url.host else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        if url.path == "/events" {
+            let behaviour = Self.nextBehaviour(forHost: host)
+            Self.record(request, forHost: host)
+            switch behaviour {
+            case .wedged:
+                // Hold with NO response; `releaseWedged()` can deliver it.
+                Self.lock.lock()
+                Self.wedgedStorage.append(self)
+                Self.lock.unlock()
+                return
+            case .liveIdle:
+                deliverHeaders(url: url)
+            case .comments(let interval):
+                deliverHeaders(url: url)
+                startComments(interval: interval, limit: nil)
+            case .commentsThenSilence(let interval, let lines):
+                deliverHeaders(url: url)
+                startComments(interval: interval, limit: lines)
+            case .cleanEnd:
+                deliverHeaders(url: url)
+                writeComment()
+                client?.urlProtocolDidFinishLoading(self)
+            }
+            return
+        }
+        // SAFETY: fixed HTTPURLResponse construction from the request's own URL.
+        let response = HTTPURLResponse(
+            url: url, statusCode: 200, httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Self.snapshotBody())
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {
+        // Teardown must cancel the fixture's own timer too — a keep-alive
+        // timer that outlived its request would keep writing to a dead
+        // client.
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.stopped = true
+            self.timer?.cancel()
+            self.timer = nil
+        }
+    }
+
+    private static func record(_ request: URLRequest, forHost host: String) {
+        lock.lock()
+        eventsRequestsStorage[host, default: []].append(request)
+        lock.unlock()
+    }
+
+    private static func snapshotBody() -> Data { snapshotBodyStorage }
+
+    private func deliverHeaders(url: URL) {
+        // SAFETY: fixed HTTPURLResponse construction from the request's own URL.
+        let response = HTTPURLResponse(
+            url: url, statusCode: 200, httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "text/event-stream"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+    }
+
+    private func startComments(interval: TimeInterval, limit: Int?) {
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        queue.async { [weak self] in
+            guard let self, self.timer == nil else { return }
+            self.remainingComments = limit
+            self.timer = timer
+            timer.schedule(deadline: .now() + interval, repeating: interval)
+            timer.setEventHandler { [weak self] in
+                guard let self else { return }
+                if let remaining = self.remainingComments {
+                    guard remaining > 0 else { return } // silent, still open
+                    self.remainingComments = remaining - 1
+                }
+                self.writeComment()
+            }
+            timer.resume()
+        }
+    }
+
+    private func writeComment() {
+        Self.lock.lock()
+        Self.commentWritesStorage += 1
+        Self.lock.unlock()
+        guard !stopped else { return }
+        client?.urlProtocol(self, didLoad: Data(": keep-alive\n".utf8))
+    }
+
+    private func release() {
+        queue.async { [weak self] in
+            guard let self, !self.released, !self.stopped else { return }
+            self.released = true
+            guard let url = self.request.url else { return }
+            Self.lock.lock()
+            Self.wedgedStorage.removeAll { $0 === self }
+            Self.lock.unlock()
+            self.deliverHeaders(url: url)
+            self.startComments(interval: 0.2, limit: nil)
+        }
+    }
+}
+
+/// #425 addendum regression: the client must track transport heartbeat
+/// FRESHNESS (bytes — comment keep-alives included — a 200 ack, an attempt
+/// dispatch) against an explicit documented inactivity budget, must not
+/// treat an idle-but-healthy keep-alive stream as dead, must leave the live
+/// posture immediately on a clean EOF, and must replace a silently wedged
+/// (half-open) stream EXACTLY once, whether the recovery is a pull-refresh
+/// or the watchdog. Every test drives the REAL `CorraldClient.stream()`
+/// byte path over a real `URLSession`; the budget is derived from the
+/// session's configured request-inactivity timeout, so the fixtures shrink
+/// it (4s → 2s budget, 0.67s tick) instead of waiting out production's 30s.
+@MainActor
+final class HeartbeatRecoveryTests: XCTestCase {
+
+    private static let hostAKey = "g425-heartbeat-a.example"
+    private static let hostBKey = "g425-heartbeat-b.example"
+
+    // SAFETY: fixed valid URL literal for the fixture host.
+    private let hostA = URL(string: "http://g425-heartbeat-a.example")!
+    // SAFETY: fixed valid URL literal for the second fixture host.
+    private let hostB = URL(string: "http://g425-heartbeat-b.example")!
+
+    private var suiteNames: [String] = []
+    private var cleanupDefaults: [UserDefaults] = []
+    private var sessions: [URLSession] = []
+
+    private func makeSession(transportTimeout: TimeInterval = 4) -> URLSession {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = transportTimeout
+        config.protocolClasses = [HeartbeatURLProtocol.self]
+        let session = URLSession(configuration: config)
+        sessions.append(session)
+        return session
+    }
+
+    private func makeStore() -> FleetStore {
+        let suiteName = "corral.g425.heartbeat.\(UUID().uuidString)"
+        // SAFETY: a fresh UUID-based suite name is always a valid suite.
+        let defaults = UserDefaults(suiteName: suiteName)!
+        suiteNames.append(suiteName)
+        cleanupDefaults.append(defaults)
+        return FleetStore(defaults: defaults)
+    }
+
+    private func cleanUp(store: FleetStore?) {
+        store?.disconnect()
+        for session in sessions { session.invalidateAndCancel() }
+        sessions = []
+        for (suiteName, defaults) in zip(suiteNames, cleanupDefaults) {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+        suiteNames = []
+        cleanupDefaults = []
+        HeartbeatURLProtocol.reset()
+    }
+
+    private func waitFor(_ condition: () -> Bool,
+                         timeout: TimeInterval = 10) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+        return condition()
+    }
+
+    /// AC1 (healthy half) + AC3 (healthy-stream refresh): 200 + COMMENT-ONLY
+    /// keep-alives is a live stream. Comment lines are never framed, so only
+    /// byte-level heartbeat freshness can keep this host honestly live — a
+    /// naive "no frames for a budget = dead" watchdog would replace a healthy
+    /// idle daemon here, and a pull must stay snapshot-only (no duplicate
+    /// stream task).
+    func testCommentOnlyKeepAlivesRemainHealthyAndRefreshCreatesNoReplacement() async {
+        let store = makeStore()
+        let session = makeSession() // budget 2s, tick 0.67s
+        defer { cleanUp(store: store) }
+        HeartbeatURLProtocol.script([.comments(interval: 0.25)], forHost: Self.hostAKey)
+
+        store.connect(client: CorraldClient(host: hostA, session: session))
+        let acked = await waitFor({ store.connectionState == .connected })
+        XCTAssertTrue(acked, "the keep-alive stream must ack live")
+        XCTAssertEqual(HeartbeatURLProtocol.eventRequestCount(forHost: Self.hostAKey), 1)
+
+        // Hold past two full budgets: the keep-alives are the ONLY bytes.
+        try? await Task.sleep(nanoseconds: 5_000_000_000)
+
+        XCTAssertEqual(store.connectionState, .connected,
+                       "comment-only keep-alives must keep the stream live — an idle fleet is not a dead fleet (#425)")
+        XCTAssertTrue(store.isStreaming, "the stream task must still be owned")
+        XCTAssertEqual(HeartbeatURLProtocol.eventRequestCount(forHost: Self.hostAKey), 1,
+                       "comment keep-alives are liveness: no replacement may be created (#425)")
+        XCTAssertGreaterThanOrEqual(HeartbeatURLProtocol.commentWrites, 4,
+                                    "the fixture must have delivered real comment keep-alives on the byte path")
+
+        store.reconnectIfNeeded(client: CorraldClient(host: hostA, session: session))
+        XCTAssertEqual(HeartbeatURLProtocol.eventRequestCount(forHost: Self.hostAKey), 1,
+                       "a pull on a healthy live stream must create no replacement (#425)")
+    }
+
+    /// AC1 (stale half): a stream that ACKED live and then stopped delivering
+    /// bytes (half-open: no EOF, no error, nothing) must be declared stale and
+    /// replaced within the documented inactivity budget, leaving a truthful
+    /// non-live posture — not `.connected` until the transport's own 60s
+    /// timeout fires. Exactly ONE replacement per stale episode.
+    func testSilentlyDroppedTrafficGoesStaleAndIsReplacedWithinTheBudget() async {
+        let store = makeStore()
+        let session = makeSession() // budget 2s, tick 0.67s
+        defer { cleanUp(store: store) }
+        // Attempt 1: acked live, 3 keep-alives, then SILENCE. Attempt 2:
+        // wedged (no response) so the post-replacement posture stays stable.
+        HeartbeatURLProtocol.script([
+            .commentsThenSilence(interval: 0.2, lines: 3),
+            .wedged,
+        ], forHost: Self.hostAKey)
+
+        store.connect(client: CorraldClient(host: hostA, session: session))
+        let acked = await waitFor({ store.connectionState == .connected })
+        XCTAssertTrue(acked, "attempt 1 must ack live")
+        XCTAssertEqual(HeartbeatURLProtocol.eventRequestCount(forHost: Self.hostAKey), 1)
+
+        // Silence begins ~0.6s in; budget 2s + at most one 0.67s tick.
+        let replaced = await waitFor(
+            { HeartbeatURLProtocol.eventRequestCount(forHost: Self.hostAKey) == 2 },
+            timeout: 10)
+        XCTAssertTrue(replaced,
+                      "a silently dropped live stream must be replaced within the documented inactivity budget (2s + one tick) — not left claiming live until the transport's own 60s timeout (#425)")
+        XCTAssertEqual(store.connectionState, .connecting,
+                       "a stale stream must leave the live posture while the replacement retries (#425)")
+        XCTAssertTrue(store.isStreaming, "the replacement must be owned by the store")
+
+        // Exactly one replacement for this stale episode: hold well past
+        // another full budget and re-check (no replacement storm).
+        try? await Task.sleep(nanoseconds: 4_000_000_000)
+        XCTAssertEqual(HeartbeatURLProtocol.eventRequestCount(forHost: Self.hostAKey), 2,
+                       "exactly one replacement per stale episode (#425)")
+        XCTAssertEqual(store.connectionState, .connecting)
+    }
+
+    /// AC2: a CLEAN server EOF must leave the continuously-live posture
+    /// IMMEDIATELY (the backoff wait before the retry is not a live
+    /// connection) and a later 200 on the waiting attempt must clear the
+    /// retry posture safely, without creating another stream.
+    func testCleanEndOfStreamLeavesLiveStateWhileTheRetryWaits() async {
+        let store = makeStore()
+        let session = makeSession()
+        defer { cleanUp(store: store) }
+        // Attempt 1: acked live + one keep-alive + CLEAN server EOF.
+        // Attempt 2: wedged until the test releases it, so the non-live
+        // posture is stable and observable; its late 200 must clear it.
+        HeartbeatURLProtocol.script([.cleanEnd, .wedged], forHost: Self.hostAKey)
+
+        store.connect(client: CorraldClient(host: hostA, session: session))
+        // The retry is dispatched after the transport's 1s backoff.
+        let retried = await waitFor(
+            { HeartbeatURLProtocol.eventRequestCount(forHost: Self.hostAKey) == 2 },
+            timeout: 10)
+        XCTAssertTrue(retried, "a clean server EOF must be followed by a retry attempt")
+
+        XCTAssertEqual(store.connectionState, .connecting,
+                       "a clean EOF must leave the live posture immediately while the retry waits (#425)")
+        XCTAssertTrue(store.isStreaming, "the retry must be owned by the store")
+
+        HeartbeatURLProtocol.releaseWedged()
+        let recovered = await waitFor({ store.connectionState == .connected })
+        XCTAssertTrue(recovered,
+                      "a later live acknowledgement must clear the retry posture safely (#425)")
+        XCTAssertEqual(HeartbeatURLProtocol.eventRequestCount(forHost: Self.hostAKey), 2,
+                       "clearing the retry posture must not create another stream")
+    }
+
+    /// AC3 (composite, no policy pinning): a stream that went silent past the
+    /// documented budget must end up with EXACTLY ONE replacement and never
+    /// keep claiming live — whether the recovery comes from the pull or from
+    /// the watchdog that fires first. At base this is fully RED: the host
+    /// keeps claiming `.connected` and the pull is refused because it "is
+    /// connected", so nothing is ever replaced.
+    func testPullAfterASilentStreamEndsWithExactlyOneReplacement() async {
+        let store = makeStore()
+        let session = makeSession() // budget 2s, tick 0.67s
+        defer { cleanUp(store: store) }
+        HeartbeatURLProtocol.script([
+            .commentsThenSilence(interval: 0.2, lines: 3),
+            .wedged,
+        ], forHost: Self.hostAKey)
+
+        store.connect(client: CorraldClient(host: hostA, session: session))
+        let acked = await waitFor({ store.connectionState == .connected })
+        XCTAssertTrue(acked, "attempt 1 must ack live")
+
+        // Keep-alives stop ~0.6s in; hold past the documented budget (2s) +
+        // one watchdog tick before the pull.
+        try? await Task.sleep(nanoseconds: 4_000_000_000)
+
+        store.reconnectIfNeeded(client: CorraldClient(host: hostA, session: session))
+        let replaced = await waitFor(
+            { HeartbeatURLProtocol.eventRequestCount(forHost: Self.hostAKey) == 2 }, timeout: 5)
+        XCTAssertTrue(replaced,
+                      "a stream that went silent past the documented budget must end up replaced (#425)")
+
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        XCTAssertEqual(HeartbeatURLProtocol.eventRequestCount(forHost: Self.hostAKey), 2,
+                       "exactly one replacement — the pull must never stack duplicates on a settling recovery (#425)")
+        XCTAssertNotEqual(store.connectionState, .connected,
+                          "the replaying attempt has not acked yet: the host must not claim live")
+    }
+
+    /// AC3 (stale half) + AC1 (budget): a half-open stream that STILL CLAIMS
+    /// `.connected` (its last handshake succeeded, then the bytes stopped)
+    /// must be recoverable by ONE pull-to-refresh — exactly one replacement,
+    /// nothing stacked — instead of being refused because it "is connected".
+    ///
+    /// The watchdog is pinned out of the way here (large poll interval) so
+    /// this test attributes the replacement to the PULL path; the watchdog's
+    /// own path is covered by `testSilentlyDroppedTrafficGoesStale...`.
+    func testPullRefreshReplacesAStaleButConnectedStreamExactlyOnce() async {
+        let store = makeStore()
+        let session = makeSession()
+        defer { cleanUp(store: store) }
+        HeartbeatURLProtocol.script([
+            .commentsThenSilence(interval: 0.1, lines: 3),
+            .wedged,
+        ], forHost: Self.hostAKey)
+
+        store.connect(client: CorraldClient(host: hostA, session: session))
+        let acked = await waitFor({ store.connectionState == .connected })
+        XCTAssertTrue(acked, "the stream must ack live first")
+        // Keep the documented budget short but push the watchdog's poll far
+        // out, so ONLY the pull can act in this test.
+        store.streamLiveness = StreamLiveness(inactivityBudget: 0.4, tickInterval: 3_600)
+        try? await Task.sleep(nanoseconds: 1_000_000_000) // > budget: stale now
+
+        XCTAssertEqual(store.connectionState, .connected,
+                       "the defect state the addendum names: a half-open stream still claims connected")
+
+        store.reconnectIfNeeded(client: CorraldClient(host: hostA, session: session))
+        let replaced = await waitFor(
+            { HeartbeatURLProtocol.eventRequestCount(forHost: Self.hostAKey) == 2 }, timeout: 5)
+        XCTAssertTrue(replaced,
+                      "one pull on a stale-but-connected stream must create exactly one replacement (#425)")
+        XCTAssertEqual(store.connectionState, .connecting,
+                       "the replacement is retrying — never left claiming live")
+
+        // A second pull must not stack another replacement on the one in
+        // flight ("replace a stale stream exactly once").
+        store.reconnectIfNeeded(client: CorraldClient(host: hostA, session: session))
+        try? await Task.sleep(nanoseconds: 300_000_000) // let a stacked attempt reach the wire
+        XCTAssertEqual(HeartbeatURLProtocol.eventRequestCount(forHost: Self.hostAKey), 2,
+                       "a replacement already in flight must not be duplicated by another pull (#425)")
+
+        // The replacement's own 200 settles it back to live.
+        HeartbeatURLProtocol.releaseWedged()
+        let settled = await waitFor({ store.connectionState == .connected }, timeout: 10)
+        XCTAssertTrue(settled, "the replacement's 200 must clear the non-live posture")
+        XCTAssertEqual(HeartbeatURLProtocol.eventRequestCount(forHost: Self.hostAKey), 2)
+    }
+
+    /// AC4: the heartbeat watchdog is PER HOST, bounded and cancelled by
+    /// teardown (disconnect / background stop / host removal) — a timer that
+    /// outlived its stream would fire a replacement with no owner. Host A
+    /// goes silent with the watchdog armed while host B keeps a healthy
+    /// keep-alive stream; tearing A down must leave it disconnected with NO
+    /// replacement, B untouched, and a fresh connect on A must still work
+    /// (no obsolete callback revives the old state).
+    func testWatchdogIsPerHostAndCancelledByTeardown() async {
+        let storeA = makeStore()
+        let sessionA = makeSession(transportTimeout: 8) // budget 4s, tick 1.33s
+        let storeB = makeStore()
+        let sessionB = makeSession()
+        defer {
+            cleanUp(store: storeA)
+            cleanUp(store: storeB)
+        }
+        HeartbeatURLProtocol.script([
+            .commentsThenSilence(interval: 0.2, lines: 3),
+            .wedged,
+        ], forHost: Self.hostAKey)
+        HeartbeatURLProtocol.script([.comments(interval: 0.2)], forHost: Self.hostBKey)
+
+        storeA.connect(client: CorraldClient(host: hostA, session: sessionA))
+        storeB.connect(client: CorraldClient(host: hostB, session: sessionB))
+        let bothLive = await waitFor({
+            storeA.connectionState == .connected && storeB.connectionState == .connected
+        })
+        XCTAssertTrue(bothLive, "both hosts must ack live")
+
+        // Tear host A down well inside its budget (keep-alives stop ~0.6s
+        // in; budget 4s).
+        try? await Task.sleep(nanoseconds: 1_500_000_000)
+        storeA.disconnect()
+
+        // Hold past A's budget + tick: a cancelled watchdog must not fire.
+        try? await Task.sleep(nanoseconds: 5_000_000_000)
+        XCTAssertEqual(storeA.connectionState, .disconnected,
+                       "a torn-down host must stay disconnected")
+        XCTAssertFalse(storeA.isStreaming, "teardown must clear the stream ownership")
+        XCTAssertEqual(HeartbeatURLProtocol.eventRequestCount(forHost: Self.hostAKey), 1,
+                       "a timer that outlived its stream must not replace it (#425)")
+        XCTAssertEqual(storeB.connectionState, .connected,
+                       "a sibling host's healthy stream must be unaffected (per-host watchdog #425)")
+        XCTAssertEqual(HeartbeatURLProtocol.eventRequestCount(forHost: Self.hostBKey), 1,
+                       "the sibling host must not be replaced either")
+
+        // A fresh connect after the teardown still works: the old
+        // generation's watchdog/heartbeat cannot revive obsolete state.
+        storeA.connect(client: CorraldClient(host: hostA, session: sessionA))
+        let redialed = await waitFor(
+            { HeartbeatURLProtocol.eventRequestCount(forHost: Self.hostAKey) == 2 }, timeout: 5)
+        XCTAssertTrue(redialed, "a fresh connect after teardown must be able to open a stream")
+        XCTAssertNotEqual(storeA.connectionState, .disconnected,
+                          "the reopened stream must own a live attempt")
     }
 }
 

@@ -352,15 +352,18 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # the 8671cfc integration — the pin below is recomputed from THIS merged
     # checkout; no parent pin (4740de69…, 184c7a64…, 0cb9dc0c…, c17cfe9a…)
     # applies.
-    # #457 refresh: #457 (contextual Herd controls: the ONE shared filter
+    # #457 refresh2: #457 (contextual Herd controls: the ONE shared filter
     # sheet with an explicit Board/Herd presentation context, the sealed
     # ranch control palette + lighting report in HerdView, and the ranch
     # chrome surface with the Reduce Transparency/high-contrast opaque
-    # fallback) merged onto the #450/#449/#458/#456/#464 integration source
-    # set (521e7cd9, #450 epoch recovery) — union of ALL source sets; the
-    # pin below is recomputed from THIS merged checkout; neither parent pin
-    # (406f4e42…, 8520aa20…) applies.
-    "1827b419d4400404fa63eea26f27cb907af548f42d0e488149677530430e7022"
+    # fallback) merged together with #425 (FleetStore transport-liveness
+    # policy/heartbeat/watchdog — clean-EOF posture, stale-aware pull
+    # recovery — and CorraldClient onActivity/onStreamEnded byte-path
+    # signals) onto the #450/#449/#458/#456/#464 integration source set
+    # (521e7cd9 → ba15563, PR474) — union of ALL source sets; the pin below
+    # is recomputed from THIS merged checkout; neither parent pin (1827b419…,
+    # a898ad7a…) applies.
+    "8bccaf68a84fe1b598fa48c8e05546c62719b1f36fd6380bfbe28ae2521e73e8"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -524,10 +527,13 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # #464 integration refresh: recomputed on the merged checkout — the merged
     # pinned test file is byte-identical to the #464 lane's (#449's test change
     # landed in HerdTests.swift, outside this pin).
-    # #457 refresh: #457's FleetNotifierTests theme-token needle merged onto
-    # the #450-refresh test source — digest recomputed over the merged
-    # checkout; neither parent pin (7bca1ce9…, 4c99abf0…) applies.
-    "dd9d395245bd9ff88ca1d368a162d350edf0a39c490b2746712272ce9b0ef12f"
+    # #457 refresh2: #457's FleetNotifierTests theme-token needle and #425's
+    # HeartbeatRecoveryTests (real client byte-path regression for
+    # comment-only keep-alives, silent half-open drops, clean EOF,
+    # exactly-once stale replacement and per-host watchdog teardown) merged
+    # onto the #450-refresh test source — digest recomputed over the merged
+    # checkout; neither parent pin (dd9d3952…, 5200562a…) applies.
+    "92631629765f5f67b6efba46aa13e84a6793cc460883d31c7f45623a4820d395"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

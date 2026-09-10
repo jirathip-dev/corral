@@ -179,6 +179,35 @@ def main():
     probe('master-missing',
           lambda root: (root / 'ios/tools/herd-art/appicon-masters/treatment-a/black-1024.png').unlink())
     probe('master-structure-alpha', alpha_master)
+    # #464: the four loadable preview imagesets must stay generated,
+    # byte-identical to the approved masters and contract-pinned.
+    probe('preview-missing-imageset',
+          lambda root: shutil.rmtree(catalog(root) / 'BayPreview.imageset'))
+    probe('preview-misnamed-imageset',
+          lambda root: (catalog(root) / 'GreyPreview.imageset').rename(
+              catalog(root) / 'GreyPreviewIcon.imageset'))
+    probe('preview-wrong-bytes',
+          lambda root: (catalog(root) / 'PalominoPreview.imageset/PalominoPreview-1024.png').write_bytes(legacy))
+    probe('preview-swapped-master',
+          lambda root: (catalog(root) / 'BlackPreview.imageset/BlackPreview-1024.png').write_bytes(
+              (root / 'ios/tools/herd-art/appicon-masters/treatment-a/grey-1024.png').read_bytes()))
+    probe('preview-stale-contents',
+          lambda root: (catalog(root) / 'BayPreview.imageset/Contents.json').write_text(
+              (catalog(root) / 'BayPreview.imageset/Contents.json').read_text().replace(
+                  'BayPreview-1024.png', 'BayPreview-512.png')))
+    probe('preview-stray-file',
+          lambda root: (catalog(root) / 'GreyPreview.imageset/stray.dat').write_bytes(b'not-approved-artwork'))
+    probe('preview-approval-extra-set',
+          lambda root: rewrite_approval(
+              root, lambda c: c['catalog'].update(
+                  preview_sets=[*c['catalog']['preview_sets'], 'BayPreview2'])))
+    probe('preview-approval-mapping',
+          lambda root: rewrite_approval(
+              root, lambda c: c['masters']['grey'].update(preview_set='BayPreview')))
+    probe('preview-approval-reuses-appiconset',
+          lambda root: rewrite_approval(
+              root, lambda c: c['catalog'].update(
+                  preview_sets=['AppIcon', 'PalominoPreview', 'BlackPreview', 'GreyPreview'])))
     probe('canonical-source-drift',
           lambda root: (root / 'ios/tools/herd-art/horsesvg.py').write_bytes(
               (root / 'ios/tools/herd-art/horsesvg.py').read_bytes() + b'\n'))

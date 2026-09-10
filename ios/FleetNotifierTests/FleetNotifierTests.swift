@@ -5416,11 +5416,12 @@ final class SheetTranslucencyWiringTests: XCTestCase {
         let helperBody = String(source[decl.upperBound..<sectionMark])
         XCTAssertTrue(helperBody.contains("listRowBackground(theme.base)"),
                       "the helper must paint the active flavor's BASE token")
-        // Settings: Connection, Device, Notifications, Appearance, Hosts.
+        // Settings: Connection, Device, Notifications, Appearance, App Icon,
+        // Hosts (#464 added the App Icon section).
         let settings = try slice(from: source,
                                  startMarker: "struct SettingsView: View {",
                                  endMarker: "\nprivate struct FlavorSwatchStrip")
-        XCTAssertEqual(settings.components(separatedBy: ".themedRowSurface(theme)").count - 1, 5,
+        XCTAssertEqual(settings.components(separatedBy: ".themedRowSurface(theme)").count - 1, 6,
                        "every Settings section must theme its rows (#428)")
         // Add Host: entry + identity-confirmation + token/pair sections.
         let addHost = try slice(from: source,

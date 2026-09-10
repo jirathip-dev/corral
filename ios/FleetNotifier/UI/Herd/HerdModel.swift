@@ -5,6 +5,25 @@ import SwiftUI
 enum FleetPresentation: String, CaseIterable { case board = "Board", herd = "Herd" }
 enum HorsePose: String { case stand, working, blocked, done, unknown, graze, alertStatic }
 
+/// #448: deterministic gait phase for the native procedural renderer.
+///
+/// Derived only from the shared presentation clock's `elapsed` plus the
+/// name-derived identity offset — no per-horse timer, task, or mutable
+/// animation state. `phase` is normalized into [0,1) so sampling a full
+/// cycle later renders identically; `swing` is the peak leg rotation in
+/// degrees around the pose's approved rest angles, and 0 means standstill
+/// (the approved static pose then renders byte-identical).
+struct HorseGait: Equatable {
+    let phase: Double
+    let swing: Double
+    init(phase: Double, swing: Double) {
+        self.phase = phase - phase.rounded(.down)
+        self.swing = swing
+    }
+    static let standstill = HorseGait(phase: 0, swing: 0)
+    var isStepping: Bool { swing > 0 }
+}
+
 struct HorseIdentity: Equatable {
     let coat: Int
     let breed: Int
@@ -48,6 +67,24 @@ struct HerdHorse: Identifiable, Equatable {
             let phase = (elapsed + identity.phase).truncatingRemainder(dividingBy: 30)
             return !reduceMotion && phase >= 24 && phase < 28 ? .graze : .stand
         }
+    }
+    /// #448 cadence and amplitude per state: a working horse cycles through
+    /// a coordinated diagonal trot; an idle horse outside its deliberate
+    /// grazing window steps in small slow strides (its 12 s cycle stays
+    /// cadence-aligned with the 24 s roam sway); every stationary pose —
+    /// blocked, done, unknown, grazing, alert static, disconnected and
+    /// reduce-motion — is standstill.
+    static let workingGait = (cycle: 2.4, swing: 22.0)
+    static let idleGait = (cycle: 12.0, swing: 8.0)
+    func gait(elapsed: Double, reduceMotion: Bool) -> HorseGait {
+        guard !reduceMotion, elapsed.isFinite else { return .standstill }
+        let tuning: (cycle: Double, swing: Double)
+        switch pose(elapsed: elapsed, reduceMotion: false) {
+        case .working: tuning = Self.workingGait
+        case .stand: tuning = Self.idleGait
+        default: return .standstill
+        }
+        return HorseGait(phase: elapsed / tuning.cycle + identity.phase / 30, swing: tuning.swing)
     }
     func roam(elapsed: Double, enabled: Bool) -> CGFloat {
         guard enabled, !disconnected, state == .idle || state == .working else { return 0 }

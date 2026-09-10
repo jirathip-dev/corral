@@ -371,7 +371,17 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # merged with origin/integration ee732625 (#457 contextual controls +
     # #471 art/icon gate coverage) — the pin below is recomputed from THIS
     # merged checkout; neither parent pin (8bccaf68…, b1994319…) applies.
-    "76443b888b6bb2bac663016265c214c03fc85c9fd2cfdb3c71f59cbe71ac4e41"
+    # #448 refresh: #448 (native coordinated gait phase in HerdModel/HerdArt
+    # plus the horseButton runtime call site) merged onto the #457-refresh2
+    # integration (ee73262, PR476) — union of ALL source sets; the pin below
+    # is recomputed from THIS merged checkout; neither parent pin (8bccaf68…,
+    # 6c90bc77…) applies.
+    # #452 refresh: bounded refresh after #448's PR475 (82f9b8d) delivered —
+    # the union now carries BOTH #452 (CorraldClient loop + StreamRetry-
+    # BackoffTests) and #448 (gait runtime + HerdGaitTests); the pin below is
+    # recomputed from THIS merged checkout by the canonical algorithm; neither
+    # parent pin (76443b88…, 8fc75d5e…) applies.
+    "e60a274d83c692e54c73b8cf0372befa229d7c73b7db294fa17e6f6d7150bce4"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -541,6 +551,9 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # exactly-once stale replacement and per-host watchdog teardown) merged
     # onto the #450-refresh test source — digest recomputed over the merged
     # checkout; neither parent pin (dd9d3952…, 5200562a…) applies.
+    # #448 refresh: HerdGaitTests.swift is a SEPARATE file outside this pin,
+    # so the #448 refresh leaves the pinned FleetNotifierTests.swift
+    # byte-unchanged — digest recomputed over the merged checkout (same value).
     "92631629765f5f67b6efba46aa13e84a6793cc460883d31c7f45623a4820d395"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)

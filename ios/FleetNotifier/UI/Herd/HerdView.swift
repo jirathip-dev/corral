@@ -381,7 +381,8 @@ struct HerdView: View {
                 ZStack(alignment:.bottom) {
                     Canvas { context,_ in
                         HerdArt().paint(&context,identity:horse.identity,
-                                        pose:horse.pose(elapsed:elapsed,reduceMotion:reduced || !motionEnabled))
+                                        pose:horse.pose(elapsed:elapsed,reduceMotion:reduced || !motionEnabled),
+                                        gait:horse.gait(elapsed:elapsed,reduceMotion:reduced || !motionEnabled))
                     }
                     .frame(width:132,height:100)
                     .offset(x:horse.roam(elapsed:elapsed,enabled:motionEnabled && !dragging && !rail),

@@ -361,7 +361,13 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # (+ clean-EOF posture, stale-aware pull recovery) and CorraldClient
     # onActivity/onStreamEnded byte-path signals — re-pinned over the #468
     # merged source set.
-    "a898ad7afd2ea2b1cd7fe001cdd3fe2e6c7afec9fc5bf58b1f45efd39ec37ecb"
+    # #451 (g451-preflight-retry): transient host-key preflight retry ladders
+    # — the shared bounded HostPreflightRetryPolicy, the coordinator's
+    # one-owner/cancellable per-host ladder (terminal mismatch, truthful
+    # retry reason, pull re-drive of a never-SSE host) and AppModel's
+    # active-host parity ladder (single owner, background/boundary
+    # cancellation, pull re-arm) — re-pinned over the #425-merged source set.
+    "b130e1c225da13f5ab18810ef3dbf1232ca65002af28eaa78d3cb1987dee21e2"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

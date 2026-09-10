@@ -357,7 +357,10 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # shell) — union of ALL source sets; the pin below is recomputed from
     # THIS merged checkout; neither parent pin (30e6fe4e…, 00cdc240…)
     # applies.
-    "8520aa200c26a9636bbab56380b0a47e8b997e8d6d105958d089efa9793645e0"
+    # #448: native coordinated gait phase (HerdModel/HerdArt) + the
+    # horseButton runtime call site — re-pinned over the #448 source set;
+    # recomputed from THIS checkout.
+    "6c90bc77a787d8369d248648c96c60384e6f77076c20c024e2368c5d4dc042fc"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

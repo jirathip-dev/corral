@@ -110,7 +110,13 @@ DEBUG fixture types/flags must be absent from Release. The bundle gate checks
 Mach-O identity, the real file inventory, bitmap signatures and compiled
 Assets.car rendition names. Source checks reject missing/unreadable roots,
 non-Swift renderer inputs, symbol aliases and module-qualified/multiline image
-loader calls. Guard probes mutate disposable copies only.
+loader calls; the single #464 exception is a bare literal `Image("Name")`
+loader naming one of the four generated loadable preview imagesets
+(`BayPreview`, `PalominoPreview`, `BlackPreview`, `GreyPreview`), which is the
+exact allowlist derived from the approval contract. `app-icons.py` materializes
+those imagesets from the same approved master bytes, and the bundle gate pins
+the compiled catalog names to the four appiconsets plus the four preview
+imagesets. Guard probes mutate disposable copies only.
 
 Native XCTest classes: `HerdTests` and `HerdEnvironmentTests`. The native probe
 requires assertion failures, not compile failures: old grazing, removed real-view

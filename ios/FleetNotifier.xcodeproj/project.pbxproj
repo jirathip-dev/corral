@@ -22,7 +22,9 @@
 		63EE02B9EB9EDE2CF1A7D086 /* HostProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49B690693FFABE1900E59374 /* HostProfile.swift */; };
 		695F86362C9F62AA692D3671 /* FleetNotifierApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B51578ED349E70B121FA432 /* FleetNotifierApp.swift */; };
 		6B4EFEE1A903FB1D0587883D /* HerdView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB5C19509398D4E45B76831E /* HerdView.swift */; };
+		7602F4F40C74322A247CC565 /* AppIconPickerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF5ABAA21F576FDDE8CD6060 /* AppIconPickerTests.swift */; };
 		77837D3786BB6FB16AE849AD /* HerdEvidence.swift in Sources */ = {isa = PBXBuildFile; fileRef = D373587F14C8226A6B41DE77 /* HerdEvidence.swift */; };
+		8467D1631080359CEDBE7E22 /* AppIconPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = B939A1BC80A600F3B697DB3B /* AppIconPicker.swift */; };
 		854FAF877CEE7F17E21AFBE7 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0C20FA082A4EB189EDC30F9 /* AppDelegate.swift */; };
 		8A383B00475214943A25B4B7 /* HostKeyTrust.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50F26DAD993D41DCB89F3342 /* HostKeyTrust.swift */; };
 		8A8D27B992E86AA6BF6A2D61 /* RecentOutputModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F933E32D259974E2C207BA96 /* RecentOutputModel.swift */; };
@@ -90,6 +92,7 @@
 		ABB1CB88EB0D99E040AD1E73 /* FleetNotifier.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FleetNotifier.entitlements; sourceTree = "<group>"; };
 		B79F7EC88E38AB98DD73849D /* ThemeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeTests.swift; sourceTree = "<group>"; };
 		B8277522F2489E093BC28309 /* BoardModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardModel.swift; sourceTree = "<group>"; };
+		B939A1BC80A600F3B697DB3B /* AppIconPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIconPicker.swift; sourceTree = "<group>"; };
 		B95E9B064296CFE296E3717E /* HerdModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdModel.swift; sourceTree = "<group>"; };
 		BA6724B7E29BAE37678BF8A8 /* HerdTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdTests.swift; sourceTree = "<group>"; };
 		C07EBB7872D62A8E042D4DB1 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
@@ -107,6 +110,7 @@
 		F6CE363C959DE49C12B69596 /* LocalNotifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalNotifier.swift; sourceTree = "<group>"; };
 		F933E32D259974E2C207BA96 /* RecentOutputModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecentOutputModel.swift; sourceTree = "<group>"; };
 		FB5C19509398D4E45B76831E /* HerdView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdView.swift; sourceTree = "<group>"; };
+		FF5ABAA21F576FDDE8CD6060 /* AppIconPickerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIconPickerTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -137,6 +141,7 @@
 		19046018A86CD11555F070AF /* FleetNotifierTests */ = {
 			isa = PBXGroup;
 			children = (
+				FF5ABAA21F576FDDE8CD6060 /* AppIconPickerTests.swift */,
 				28FFFBB41044D976415E89BF /* FleetNotifierTests.swift */,
 				DD76760F92DA9C8F78AD6996 /* HerdEnvironmentTests.swift */,
 				BA6724B7E29BAE37678BF8A8 /* HerdTests.swift */,
@@ -169,6 +174,7 @@
 			isa = PBXGroup;
 			children = (
 				74E1EC77F4C4AB8A71290CEA /* Herd */,
+				B939A1BC80A600F3B697DB3B /* AppIconPicker.swift */,
 				618453091ACB944DC94CC9DD /* AppTheme.swift */,
 				B8277522F2489E093BC28309 /* BoardModel.swift */,
 				8439EED775F825EE1DE8EAC3 /* FleetViews.swift */,
@@ -388,6 +394,11 @@
 				"$(SRCROOT)/FleetNotifier/UI/FleetViews.swift",
 				"$(SRCROOT)/FleetNotifier/UI/Herd/HerdView.swift",
 				"$(SRCROOT)/FleetNotifier/UI/Herd/RanchEnvironment.swift",
+				"$(SRCROOT)/FleetNotifier/UI/AppIconPicker.swift",
+				"$(SRCROOT)/tools/herd-art/appicon-masters/treatment-a/bay-1024.png",
+				"$(SRCROOT)/tools/herd-art/appicon-masters/treatment-a/palomino-1024.png",
+				"$(SRCROOT)/tools/herd-art/appicon-masters/treatment-a/black-1024.png",
+				"$(SRCROOT)/tools/herd-art/appicon-masters/treatment-a/grey-1024.png",
 			);
 			name = "Bundle FleetViews source for the wiring test";
 			outputFileListPaths = (
@@ -396,10 +407,15 @@
 				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/FleetViews.swift.txt",
 				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/HerdView.swift.txt",
 				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/RanchEnvironment.swift.txt",
+				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/AppIconPicker.swift.txt",
+				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/master-bay.base64",
+				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/master-palomino.base64",
+				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/master-black.base64",
+				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/master-grey.base64",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "mkdir -p \"$TARGET_BUILD_DIR/$WRAPPER_NAME\"\ncp \"$SRCROOT/FleetNotifier/UI/FleetViews.swift\" \\\n   \"$TARGET_BUILD_DIR/$WRAPPER_NAME/FleetViews.swift.txt\"\ncp \"$SRCROOT/FleetNotifier/UI/Herd/HerdView.swift\" \\\n   \"$TARGET_BUILD_DIR/$WRAPPER_NAME/HerdView.swift.txt\"\ncp \"$SRCROOT/FleetNotifier/UI/Herd/RanchEnvironment.swift\" \\\n   \"$TARGET_BUILD_DIR/$WRAPPER_NAME/RanchEnvironment.swift.txt\"\n";
+			shellScript = "mkdir -p \"$TARGET_BUILD_DIR/$WRAPPER_NAME\"\ncp \"$SRCROOT/FleetNotifier/UI/FleetViews.swift\" \\\n   \"$TARGET_BUILD_DIR/$WRAPPER_NAME/FleetViews.swift.txt\"\ncp \"$SRCROOT/FleetNotifier/UI/Herd/HerdView.swift\" \\\n   \"$TARGET_BUILD_DIR/$WRAPPER_NAME/HerdView.swift.txt\"\ncp \"$SRCROOT/FleetNotifier/UI/Herd/RanchEnvironment.swift\" \\\n   \"$TARGET_BUILD_DIR/$WRAPPER_NAME/RanchEnvironment.swift.txt\"\n# #464: the App Icon picker seam/wiring tests read the real source.\ncp \"$SRCROOT/FleetNotifier/UI/AppIconPicker.swift\" \\\n   \"$TARGET_BUILD_DIR/$WRAPPER_NAME/AppIconPicker.swift.txt\"\n# #464 review r1: the approved Treatment-A masters as base64 test\n# fixtures (the app-product art scan must never see extra loose\n# artwork, so the bytes ride encoded, exactly like the .swift.txt\n# source fixtures above).\nfor coat in bay palomino black grey; do\n  python3 -c \"import base64,sys;print(base64.b64encode(open(sys.argv[1],'rb').read()).decode())\" \\\n    \"$SRCROOT/tools/herd-art/appicon-masters/treatment-a/$coat-1024.png\" \\\n    > \"$TARGET_BUILD_DIR/$WRAPPER_NAME/master-$coat.base64\"\ndone\n";
 		};
 		F6207AF155842583C8143257 /* Embed Release source digest */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -429,6 +445,7 @@
 				"$(SRCROOT)/FleetNotifier/Profiles/HostProfileStore.swift",
 				"$(SRCROOT)/FleetNotifier/Profiles/HostStreamCoordinator.swift",
 				"$(SRCROOT)/FleetNotifier/Profiles/KeyContinuityGate.swift",
+				"$(SRCROOT)/FleetNotifier/UI/AppIconPicker.swift",
 				"$(SRCROOT)/FleetNotifier/UI/AppTheme.swift",
 				"$(SRCROOT)/FleetNotifier/UI/BoardModel.swift",
 				"$(SRCROOT)/FleetNotifier/UI/FleetViews.swift",
@@ -464,6 +481,7 @@
 			files = (
 				D2912B39BEEAE10FC78B61AB /* AddHostCommitEvidenceURLProtocol.swift in Sources */,
 				854FAF877CEE7F17E21AFBE7 /* AppDelegate.swift in Sources */,
+				8467D1631080359CEDBE7E22 /* AppIconPicker.swift in Sources */,
 				2DD53F53A68D569106692E27 /* AppModel.swift in Sources */,
 				D255BE88E7E632EB7D66A128 /* AppTheme.swift in Sources */,
 				489D3885D8C117DE5B4CEFFF /* BoardCache.swift in Sources */,
@@ -502,6 +520,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				7602F4F40C74322A247CC565 /* AppIconPickerTests.swift in Sources */,
 				2C40A2E48CCDFE13F28A3E84 /* FleetNotifierTests.swift in Sources */,
 				4DABD08F3D7A07518E68F371 /* HerdEnvironmentTests.swift in Sources */,
 				F2CF3ACD1811505E1FCAE1BC /* HerdTests.swift in Sources */,

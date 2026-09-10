@@ -8,8 +8,13 @@ compiled asset-catalog rendition names (assetutil) and the built CFBundleIcons
 declarations, not inferred from sources.
 
 #463 narrows the approved shipping inventory to the four Treatment-A horse
-app icons: Bay primary (AppIcon) and exactly Palomino, Black, Grey alternates.
+app icons: Bay primary (AppIcon) and exactly Palomino, Black and Grey alternates.
 The legacy Original and every Treatment B master are forbidden product bytes.
+
+#464 adds the Settings App Icon picker, which previews the SHIPPED catalog
+art through four generated loadable imagesets (BayPreview, PalominoPreview,
+BlackPreview, GreyPreview): app source may contain bare literal `Image("Name")`
+loaders for exactly those four preview names, and nothing else.
 """
 import argparse
 import hashlib
@@ -56,15 +61,33 @@ def approval(root):
         raise ValueError('approval metadata no longer matches the approved four-icon contract')
     if 'Bay' in alternates or primary in alternates:
         raise ValueError('Bay must be the primary only, never an alternate')
+    # #464: the Settings picker previews the four approved masters through
+    # regular imagesets (appiconset renditions are not loadable in-app on
+    # iOS 18+); the app-source loader allowlist is exactly these names.
+    previews = contract['catalog'].get('preview_sets')
+    if previews != ['BayPreview', 'PalominoPreview', 'BlackPreview', 'GreyPreview']:
+        raise ValueError('#464 loadable preview imagesets must be exactly the four approved names')
+    if set(previews) & {primary, *alternates}:
+        raise ValueError('preview imagesets must not reuse an appiconset name')
+    master_previews = [contract['masters'][coat].get('preview_set')
+                       for coat in ('bay', 'palomino', 'black', 'grey')]
+    if master_previews != previews:
+        raise ValueError('master preview_set mapping must be one loadable imageset per approved coat')
     forbidden = {contract['forbidden']['legacy_original'], *contract['forbidden']['treatment_b']}
     if len(forbidden) != 5:
         raise ValueError('legacy Original and all four Treatment B hashes must stay forbidden')
-    return primary, alternates, forbidden
+    return primary, alternates, previews, forbidden
 
 
 def source(root):
     app = root/'ios/FleetNotifier'
     renderer = app/'UI/Herd'
+    # #464: the Settings App Icon picker previews the SHIPPED #463 catalog
+    # art through the four generated imagesets, so those rendition names are
+    # the exact allowlist for non-symbol loaders. Everything else stays
+    # forbidden.
+    primary, alternates, previews, _ = approval(root)
+    picker_renditions = set(previews)
     paths = files(renderer)
     for expected in EXPECTED: read(renderer/expected)
     for path in paths:
@@ -79,8 +102,18 @@ def source(root):
         if path.suffix == '.swift':
             text = read(path).decode('utf-8').replace('`','')
             for call in re.finditer(r'\bImage\s*(?:\.\s*init\s*)?\(',text):
-                if not re.match(r'\s*systemName\s*:',text[call.end():]):
-                    raise ValueError(f'non-symbol image loader in app source: {path}')
+                tail = text[call.end():]
+                if re.match(r'\s*systemName\s*:',tail): continue
+                # #464: the ONLY permitted non-symbol loader is a bare,
+                # unqualified literal `Image("Name")` naming an approved
+                # rendition; qualified/.init/aliased or unknown spellings RED.
+                literal = re.match(r'"([^"]*)"\)',tail)
+                if (call.group(0) == 'Image('
+                        and not (call.start() and text[call.start()-1] in '.:')
+                        and literal is not None
+                        and literal.group(1) in picker_renditions):
+                    continue
+                raise ValueError(f'non-symbol image loader in app source: {path}')
             if re.search(r'\b(?:UIImage|CGImageSource\w*|SKTexture\w*|WKWebView|UIWebView|WebKit)\b|=\s*(?:SwiftUI\s*\.\s*)?Image\b',text):
                 raise ValueError(f'bitmap/web helper outside renderer: {path}')
         if path.suffix.lower() in ART_EXTENSIONS:
@@ -92,7 +125,7 @@ def source(root):
     return allowed
 
 
-def bundle(app, allowed, primary, alternates, forbidden):
+def bundle(app, allowed, primary, alternates, previews, forbidden):
     names = {primary, *alternates}
     icon_png = re.compile(rf'(?:{"|".join(re.escape(name) for name in sorted(names))})\d+x\d+(?:@\dx)?(?:~ipad)?\.png')
     paths = files(app)
@@ -126,11 +159,15 @@ def bundle(app, allowed, primary, alternates, forbidden):
         if not isinstance(alternates_declared, dict) or set(alternates_declared) != set(alternates):
             raise ValueError(f'{key} alternate icons must be exactly {sorted(alternates)}, found {sorted(alternates_declared or {})}')
     catalog = app/'Assets.car'; read(catalog)
+    preview_names = set(allowed.get('preview_catalog_names', []))
+    if preview_names != set(previews):
+        raise ValueError('#464 preview rendition allowlist must match the approval contract')
+    expected_compiled = set(allowed['catalog_names']) | preview_names
     output = subprocess.check_output(['xcrun','assetutil','--info',str(catalog)],text=True,timeout=30)
     items = json.loads(output)
     compiled = {item['Name'] for item in items if 'Name' in item}
-    if compiled != set(allowed['catalog_names']):
-        raise ValueError(f'compiled catalog names must be exactly {sorted(allowed["catalog_names"])}, found {sorted(compiled)}')
+    if compiled != expected_compiled:
+        raise ValueError(f'compiled catalog names must be exactly {sorted(expected_compiled)}, found {sorted(compiled)}')
     print(f'bundle PASS: Mach-O {executable}; {len(paths)} product files; catalog names {sorted(compiled)}')
 
 

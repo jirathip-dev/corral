@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""#463 — approved Treatment-A horse app-icon packaging (source-pinned).
+"""#463/#464 — approved Treatment-A horse app-icon packaging (source-pinned).
 
 Materializes the byte-exact approved #462 Treatment-A masters into the
 shipping asset catalog and fails closed when the catalog, the XcodeGen
@@ -7,6 +7,12 @@ source of truth, or the approval metadata drift from the pinned contract:
 
     primary   AppIcon    <- Bay   (nil alternateIconName restores Bay)
     alternate Palomino, Black, Grey   (exactly three; no Bay alternate)
+
+#464 adds four LOADABLE preview imagesets (BayPreview, PalominoPreview,
+BlackPreview, GreyPreview) carrying the SAME approved master bytes verbatim:
+iOS 18+ does not vend appiconset renditions to UIImage, so the Settings picker
+previews must be regular imagesets. They are generated here — never redrawn —
+and pinned byte-for-byte to the masters.
 
 No horse art is authored or re-rendered here. The masters are the approved
 design-gate outputs (060220c32c4b5de638f4950dd8bd71fa71814816) and are copied
@@ -99,8 +105,43 @@ def contents_bytes(filename: str) -> bytes:
     ).encode('utf-8')
 
 
+def imageset_contents_bytes(filename: str) -> bytes:
+    """Canonical single-scale iOS imageset Contents.json (Xcode's own style).
+
+    #464: the picker previews are regular imagesets so UIImage can vend them;
+    the 1024 master bytes ride the 1x slot (the tiles scale them down).
+    """
+    return (
+        '{\n'
+        '  "images" : [\n'
+        '    {\n'
+        f'      "filename" : "{filename}",\n'
+        '      "idiom" : "universal",\n'
+        '      "scale" : "1x"\n'
+        '    },\n'
+        '    {\n'
+        '      "idiom" : "universal",\n'
+        '      "scale" : "2x"\n'
+        '    },\n'
+        '    {\n'
+        '      "idiom" : "universal",\n'
+        '      "scale" : "3x"\n'
+        '    }\n'
+        '  ],\n'
+        '  "info" : {\n'
+        '    "author" : "xcode",\n'
+        '    "version" : 1\n'
+        '  }\n'
+        '}\n'
+    ).encode('utf-8')
+
+
 def image_name(catalog: dict, name: str) -> str:
     return catalog['image_name'].replace('{set}', name)
+
+
+def preview_image_name(catalog: dict, name: str) -> str:
+    return catalog['preview_image_name'].replace('{set}', name)
 
 
 def load_approval(root: Path) -> dict:
@@ -128,6 +169,17 @@ def load_approval(root: Path) -> dict:
     sets = [masters[coat].get('set') for coat in ('bay', 'palomino', 'black', 'grey')]
     if sets != ['AppIcon', 'Palomino', 'Black', 'Grey']:
         fail('master set mapping must be bay->AppIcon and one set per alternate')
+    previews = catalog.get('preview_sets')
+    expected_previews = ['BayPreview', 'PalominoPreview', 'BlackPreview', 'GreyPreview']
+    if previews != expected_previews:
+        fail(f'#464 loadable preview imagesets must be exactly {expected_previews}')
+    if catalog.get('preview_image_name') != '{set}-1024.png':
+        fail('preview image name must be {set}-1024.png')
+    preview_sets = [masters[coat].get('preview_set') for coat in ('bay', 'palomino', 'black', 'grey')]
+    if preview_sets != previews:
+        fail('master preview_set mapping must be one loadable imageset per approved coat')
+    if set(previews) & {'AppIcon', 'Palomino', 'Black', 'Grey'}:
+        fail('preview imagesets must not reuse an appiconset name')
     for coat, meta in masters.items():
         if not re.fullmatch(r'[0-9a-f]{64}', str(meta.get('sha256', ''))):
             fail(f'master {coat} has no pinned SHA-256')
@@ -197,11 +249,17 @@ def check_catalog(root: Path, approval: dict, payloads: dict[str, bytes]) -> Non
                     fail(f'forbidden {label} artwork in the shipping catalog: '
                          f'{path.relative_to(root)}')
     expected_sets = [approval['catalog']['primary_set'], *approval['catalog']['alternate_sets']]
+    expected_previews = list(approval['catalog']['preview_sets'])
     found_sets = sorted(path.name for path in catalog.iterdir()
                         if path.is_dir() and path.name.endswith('.appiconset'))
     if found_sets != sorted(f'{name}.appiconset' for name in expected_sets):
         fail(f'shipping catalog appiconsets must be exactly {sorted(expected_sets)}, '
              f'found {[name[:-len(".appiconset")] for name in found_sets]}')
+    found_previews = sorted(path.name for path in catalog.iterdir()
+                            if path.is_dir() and path.name.endswith('.imageset'))
+    if found_previews != sorted(f'{name}.imageset' for name in expected_previews):
+        fail(f'#464 preview imagesets must be exactly {sorted(expected_previews)}, '
+             f'found {[name[:-len(".imageset")] for name in found_previews]}')
     stray = [path.name for path in catalog.iterdir() if path.is_file() and path.name != 'Contents.json']
     if stray:
         fail(f'unexpected files at the catalog root: {sorted(stray)}')
@@ -218,6 +276,19 @@ def check_catalog(root: Path, approval: dict, payloads: dict[str, bytes]) -> Non
         expected_contents = contents_bytes(image)
         if read(directory / 'Contents.json') != expected_contents:
             fail(f'{name}.appiconset/Contents.json does not match the generated contract')
+    coat_for_preview = {meta['preview_set']: coat for coat, meta in approval['masters'].items()}
+    for name in expected_previews:
+        directory = catalog / f'{name}.imageset'
+        coat = coat_for_preview[name]
+        image = preview_image_name(approval['catalog'], name)
+        found = sorted(path.name for path in directory.iterdir() if path.is_file())
+        if found != sorted(['Contents.json', image]):
+            fail(f'{name}.imageset must contain exactly Contents.json and {image}, found {found}')
+        if read(directory / image) != payloads[coat]:
+            fail(f'#464 {name}.imageset/{image} is not the approved master bytes')
+        expected_contents = imageset_contents_bytes(image)
+        if read(directory / 'Contents.json') != expected_contents:
+            fail(f'{name}.imageset/Contents.json does not match the generated contract')
 
 
 def check_project(root: Path, approval: dict) -> None:
@@ -244,8 +315,11 @@ def write_catalog(root: Path, approval: dict, payloads: dict[str, bytes]) -> Non
     catalog.mkdir(parents=True, exist_ok=True)
     allowed = {f'{approval["catalog"]["primary_set"]}.appiconset',
                *[f'{name}.appiconset' for name in approval['catalog']['alternate_sets']]}
+    allowed_previews = {f'{name}.imageset' for name in approval['catalog']['preview_sets']}
     for path in list(catalog.iterdir()):
         if path.is_dir() and path.name.endswith('.appiconset') and path.name not in allowed:
+            shutil.rmtree(path)
+        if path.is_dir() and path.name.endswith('.imageset') and path.name not in allowed_previews:
             shutil.rmtree(path)
     written = []
     for coat, meta in approval['masters'].items():
@@ -258,8 +332,21 @@ def write_catalog(root: Path, approval: dict, payloads: dict[str, bytes]) -> Non
         (directory / image).write_bytes(payloads[coat])
         (directory / 'Contents.json').write_bytes(contents_bytes(image))
         written.append(name)
+    previews = []
+    for coat, meta in approval['masters'].items():
+        name = meta['preview_set']
+        directory = catalog / f'{name}.imageset'
+        if directory.exists():
+            shutil.rmtree(directory)
+        directory.mkdir()
+        image = preview_image_name(approval['catalog'], name)
+        (directory / image).write_bytes(payloads[coat])
+        (directory / 'Contents.json').write_bytes(imageset_contents_bytes(image))
+        previews.append(name)
     print(f'app-icons WRITE: {len(written)} appiconsets materialized '
           f'({", ".join(sorted(written))}); Bay is the primary, nil restores AppIcon')
+    print(f'app-icons WRITE: {len(previews)} #464 loadable preview imagesets materialized '
+          f'({", ".join(sorted(previews))}) from the same approved master bytes')
 
 
 def verify_source(root: Path, approval: dict) -> None:
@@ -277,8 +364,11 @@ def check(root: Path) -> None:
     check_catalog(root, approval, payloads)
     check_project(root, approval)
     alternates = approval['catalog']['alternate_sets']
+    previews = approval['catalog']['preview_sets']
     print(f'app-icons PASS: primary AppIcon=bay; alternates exactly {alternates}; '
           f'4 opaque RGB 1024x1024 masters pinned; no legacy Original/Treatment-B bytes')
+    print(f'app-icons PASS: {len(previews)} loadable preview imagesets '
+          f'{sorted(previews)} are byte-identical to the approved masters')
 
 
 def main() -> int:

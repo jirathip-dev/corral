@@ -16,31 +16,47 @@
   "catalog": {
     "root": "ios/FleetNotifier/Assets.xcassets",
     "primary_set": "AppIcon",
-    "alternate_sets": ["Palomino", "Black", "Grey"],
+    "alternate_sets": [
+      "Palomino",
+      "Black",
+      "Grey"
+    ],
     "master_dir": "ios/tools/herd-art/appicon-masters/treatment-a",
     "image_name": "{set}-1024.png",
     "pixel_size": 1024,
     "bit_depth": 8,
     "color_type": 2,
     "interlace": 0,
-    "nil_restores": "AppIcon"
+    "nil_restores": "AppIcon",
+    "preview_sets": [
+      "BayPreview",
+      "PalominoPreview",
+      "BlackPreview",
+      "GreyPreview"
+    ],
+    "preview_image_name": "{set}-1024.png",
+    "preview_note": "#464: byte-identical copies of the same approved Treatment-A masters, materialized as regular imagesets so the Settings App Icon picker can render them (iOS 18+ does not vend appiconset renditions to UIImage). No new art."
   },
   "masters": {
     "bay": {
       "set": "AppIcon",
-      "sha256": "e9e8e7ebb922660dd76d511dd039562dbb333edc59080d8ffdb9efe19c1590c9"
+      "sha256": "e9e8e7ebb922660dd76d511dd039562dbb333edc59080d8ffdb9efe19c1590c9",
+      "preview_set": "BayPreview"
     },
     "palomino": {
       "set": "Palomino",
-      "sha256": "7e04da3407296c11f94f929124d4b6c82d83bce70e3a2700c6af906774d863ec"
+      "sha256": "7e04da3407296c11f94f929124d4b6c82d83bce70e3a2700c6af906774d863ec",
+      "preview_set": "PalominoPreview"
     },
     "black": {
       "set": "Black",
-      "sha256": "3ff9ccc5d592a3f43c59f8fbdf09d95a75d8200666e6fc04a836babdee77e32c"
+      "sha256": "3ff9ccc5d592a3f43c59f8fbdf09d95a75d8200666e6fc04a836babdee77e32c",
+      "preview_set": "BlackPreview"
     },
     "grey": {
       "set": "Grey",
-      "sha256": "2d43e4c3a360ddc8d8fade528f227b8808b2bb2baaef0bb816a0373cb738402e"
+      "sha256": "2d43e4c3a360ddc8d8fade528f227b8808b2bb2baaef0bb816a0373cb738402e",
+      "preview_set": "GreyPreview"
     }
   },
   "forbidden": {

@@ -363,7 +363,12 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # (521e7cd9 → ba15563, PR474) — union of ALL source sets; the pin below
     # is recomputed from THIS merged checkout; neither parent pin (1827b419…,
     # a898ad7a…) applies.
-    "8bccaf68a84fe1b598fa48c8e05546c62719b1f36fd6380bfbe28ae2521e73e8"
+    # #448 refresh: #448 (native coordinated gait phase in HerdModel/HerdArt
+    # plus the horseButton runtime call site) merged onto the #457-refresh2
+    # integration (ee73262, PR476) — union of ALL source sets; the pin below
+    # is recomputed from THIS merged checkout; neither parent pin (8bccaf68…,
+    # 6c90bc77…) applies.
+    "8fc75d5e4a202154bcc00bb7529ba9aa2cb9f7ea7fbcd6ac2bc08c36dd95c064"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -533,6 +538,9 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # exactly-once stale replacement and per-host watchdog teardown) merged
     # onto the #450-refresh test source — digest recomputed over the merged
     # checkout; neither parent pin (dd9d3952…, 5200562a…) applies.
+    # #448 refresh: HerdGaitTests.swift is a SEPARATE file outside this pin,
+    # so the #448 refresh leaves the pinned FleetNotifierTests.swift
+    # byte-unchanged — digest recomputed over the merged checkout (same value).
     "92631629765f5f67b6efba46aa13e84a6793cc460883d31c7f45623a4820d395"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)

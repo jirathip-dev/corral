@@ -1,0 +1,86 @@
+{
+  "caveats": [
+    "simulator host-process CPU, not device energy; the live dense window lasts ~2.2 s by driver design (3-4 samples)",
+    "wind cost measured in the steady active demo window is ~+0.5 pp of one app process (~3%)",
+    "physical smoothness/battery acceptance remains a human gate"
+  ],
+  "device": {
+    "builds": {
+      "base": "Debug at 8671cfc094653f4779706963bb7cb33d7a29e88b",
+      "candidate": "Debug at 45441e6 (app sources identical at b9dda9e)"
+    },
+    "os": "iOS 26.5",
+    "simulator": "iPhone 16",
+    "udid": "59DDC0C5-891E-4EC0-91AF-4F50DF68D793"
+  },
+  "method": "host `ps -o %cpu=,rss= -p <app pid>` sampled every 0.5 s; windows derived from the app's own herd-evidence phase markers; `top` instant windows in the dense phase.",
+  "phase_markers": {
+    "cadence_live_hz": [
+      9.68,
+      9.68,
+      9.56,
+      10.05
+    ],
+    "dismissal": {
+      "clockRunning_after_dismissal": false,
+      "ticks_at_dismissed": 382
+    },
+    "note": "phases 04-06 run with evidenceReduceMotion=true (clock deliberately stopped); phase 07 runs the one scene clock on the dense fleet"
+  },
+  "source_logs": [
+    "/tmp/g459-cpu-c5-cand-trace.log",
+    "/tmp/g459-cpu-c5-base-trace.log",
+    "/tmp/g459-cpu-c5-cand-steady-trace.log",
+    "/tmp/g459-cpu-c5-base-steady-trace.log",
+    "/tmp/g459-cpu-c5-cand-window.log",
+    "/tmp/g459-cpu-c5-base-window.log",
+    "/tmp/g459-marker-poll-c5-cand.log",
+    "/tmp/g459-marker-poll-c5-base.log"
+  ],
+  "windows": {
+    "base": {
+      "frozen_dense_06": {
+        "max": 20.1,
+        "mean": 9.7,
+        "n": 6
+      },
+      "live_01_03": {
+        "max": 16.1,
+        "mean": 10.31,
+        "n": 18
+      },
+      "live_dense_07": {
+        "max": 45.0,
+        "mean": 27.05,
+        "n": 4
+      },
+      "steady_demo_active": {
+        "max": 20.8,
+        "mean": 16.16,
+        "n": 33
+      }
+    },
+    "cand": {
+      "frozen_dense_06": {
+        "max": 21.7,
+        "mean": 9.37,
+        "n": 6
+      },
+      "live_01_03": {
+        "max": 15.6,
+        "mean": 10.64,
+        "n": 21
+      },
+      "live_dense_07": {
+        "max": 26.4,
+        "mean": 19.27,
+        "n": 3
+      },
+      "steady_demo_active": {
+        "max": 24.3,
+        "mean": 16.7,
+        "n": 34
+      }
+    }
+  }
+}

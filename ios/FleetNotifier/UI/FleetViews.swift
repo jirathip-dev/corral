@@ -3070,6 +3070,12 @@ struct SettingsView: View {
     /// #389: the blocked-permission escape hatch — opens THIS app's
     /// notification permission in the system Settings app.
     @Environment(\.openURL) private var openURL
+    /// #464: re-read the system icon state whenever Settings returns to the
+    /// foreground — the system Settings app can change it while we're away,
+    /// and the system is the only source of truth.
+    @Environment(\.scenePhase) private var scenePhase
+    /// #464: the App Icon picker's live state (system read + in-flight guard).
+    @StateObject private var appIcon = AppIconPickerModel()
 
     @State private var host: String
     @State private var token = ""
@@ -3125,6 +3131,9 @@ struct SettingsView: View {
             ScrollViewReader { proxy in
                 Form {
                     appearanceSection
+                    // #464: the App Icon picker sits directly below the
+                    // Appearance section's Board/Herd picker.
+                    appIconSection
                     HerdEnvironmentSettings()
                     // #423: the legacy single-host Connection section — host
                     // endpoint, registration status, Re-register — serves the
@@ -3283,6 +3292,13 @@ struct SettingsView: View {
                     .task { await model.refreshNotificationPermission() }
                 }
                 .navigationTitle("Settings")
+                // #464: the system owns the icon state — re-read it when the
+                // sheet appears and on every return to the active scene (the
+                // system Settings app can change it while Corral is away).
+                .onAppear { appIcon.refresh() }
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .active { appIcon.refresh() }
+                }
                 .toolbar {
                     // #379: Settings-header '?' Help entry — opens the same
                     // shared HowToConnectSheet the unpaired first launch
@@ -3537,6 +3553,91 @@ struct SettingsView: View {
         // surface the board rows use), so no system-default grouped
         // surface leaks through the translucent backdrop.
         .themedRowSurface(theme)
+    }
+
+    /// #464: Settings → Appearance → App Icon. Exactly the four shipping
+    /// choices from the #463 packaging contract, previewed with the SHIPPED
+    /// catalog art. The selected tile is the LIVE system state (nil
+    /// `alternateIconName` = Bay); an unsupported device renders disabled
+    /// with truthful copy instead of a fake success.
+    private var appIconSection: some View {
+        Section {
+            if appIcon.supportsAlternateIcons {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10),
+                                         count: 4),
+                          spacing: 10) {
+                    ForEach(FleetAppIcon.shipping) { icon in
+                        appIconTile(icon)
+                    }
+                }
+                .padding(.vertical, 4)
+                if let message = appIcon.errorMessage {
+                    Label(message, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(theme.peach)
+                        .id("settings.app-icon.error")
+                }
+            } else {
+                Label("Alternate app icons aren't available on this device.",
+                      systemImage: "slash.circle")
+                    .font(.caption)
+                    .foregroundStyle(theme.subtext1)
+            }
+        } header: {
+            Text("App Icon")
+        } footer: {
+            Text(appIcon.supportsAlternateIcons
+                 ? "Sets the Home Screen icon for Corral. iOS asks you to confirm the change; Bay is the default."
+                 : "This device can't change the Home Screen icon — the Bay icon stays in place.")
+                .foregroundStyle(theme.subtext1)
+        }
+        // #428: themed row surface (see themedRowSurface).
+        .themedRowSurface(theme)
+    }
+
+    /// One #464 icon tile: shipped catalog preview, accessible name, and a
+    /// selected state derived from the live system state (checkmark only when
+    /// the system reports that choice).
+    private func appIconTile(_ icon: FleetAppIcon) -> some View {
+        let selected = appIcon.selection == icon
+        return Button {
+            appIcon.select(icon)
+        } label: {
+            VStack(spacing: 6) {
+                icon.preview
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 52, height: 52)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(selected ? theme.accent : theme.surface2,
+                                          lineWidth: selected ? 2 : 1)
+                    }
+                    .overlay(alignment: .bottomTrailing) {
+                        if selected {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.caption)
+                                .foregroundStyle(theme.accent)
+                                .background(Circle().fill(theme.base))
+                                .accessibilityHidden(true)
+                        }
+                    }
+                Text(icon.displayName)
+                    .font(.caption2)
+                    .foregroundStyle(selected ? theme.accent : theme.subtext1)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!appIcon.supportsAlternateIcons || appIcon.isApplying)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(icon.displayName)
+        .accessibilityHint("Sets the \(icon.displayName) Home Screen icon")
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
+        .accessibilityIdentifier("settings.app-icon.\(icon.rawValue)")
     }
 
     /// #401 D2/D7: the Hosts section — one row per configured host in the

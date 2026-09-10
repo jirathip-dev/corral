@@ -315,7 +315,16 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # gained the Corral458Presentation launch scenarios + the accessibility
     # size route + demo-notification suppression for the evidence sim —
     # re-pinned over the #458 source set.
-    "0cb9dc0ca3a6e44527685e81603420fe18b92bcce3d77c3c69a415d4fc71db7e"
+    # #464: the Settings App Icon picker — AppIconPicker (four #463 shipping
+    # choices, the UIApplication alternate-icon seam, the live-state model)
+    # added to the manifest, and FleetViews gained the App Icon section +
+    # scene-active re-read — re-pinned over the #464 source set.
+    # #464 r1 (owner-authorized preview repair): FleetAppIcon.preview now maps
+    # to the four generated loadable preview imagesets — re-pinned.
+    # #464 integration refresh: #464 merged onto the #449/#458 integration
+    # source set — the digest is regenerated from the merged checkout (union
+    # of #449/#458 and #464 sources); neither parent pin applies.
+    "c17cfe9a211581bb17538b9b351451074fa70cbce68c70f8b5f32deae451e61f"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -466,7 +475,13 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # assertion, and the SettingsAccessWiringTests DEBUG-gated opener count
     # (12 with the #458 presentation driver) — re-pinned over the #458 test
     # source.
-    "9ed5585f57cef172bc4035b77a6ddda20536ca32fab54a87e91525de2b320ccd"
+    # #464: the Settings themedRowSurface count moved 5 → 6 for the new App
+    # Icon section (AppIconPickerTests lives in its own file) — re-pinned
+    # over the #464 test source.
+    # #464 integration refresh: recomputed on the merged checkout — the merged
+    # pinned test file is byte-identical to the #464 lane's (#449's test change
+    # landed in HerdTests.swift, outside this pin).
+    "7299c4e36ebe373350b79e34615f4fde3ff1cc86debae806fdbf0c870d64505f"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

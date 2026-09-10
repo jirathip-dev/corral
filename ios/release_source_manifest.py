@@ -36,6 +36,10 @@ RELEASE_SOURCE_FILES = (
     # Release app source — added to the manifest.
     "ios/FleetNotifier/Profiles/HostStreamCoordinator.swift",
     "ios/FleetNotifier/Profiles/KeyContinuityGate.swift",
+    # #464: the Settings App Icon picker (four #463 shipping choices, the
+    # UIApplication alternate-icon seam, and the live-state model) is Release
+    # app source — added to the manifest.
+    "ios/FleetNotifier/UI/AppIconPicker.swift",
     "ios/FleetNotifier/UI/AppTheme.swift",
     "ios/FleetNotifier/UI/BoardModel.swift",
     "ios/FleetNotifier/UI/FleetViews.swift",

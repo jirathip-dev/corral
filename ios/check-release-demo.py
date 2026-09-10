@@ -315,6 +315,18 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # gained the Corral458Presentation launch scenarios + the accessibility
     # size route + demo-notification suppression for the evidence sim —
     # re-pinned over the #458 source set.
+    # #456: full-screen Herd shell — FleetViews Herd branch (no opaque board
+    # header / duplicated toolbar) + HerdView full-screen ranch cover,
+    # floating scope/Settings/counts and floating paddock navigation with
+    # native glyphs — re-pinned over the #456 source set.
+    # #456 r1: accessibility Dynamic Type repair — the floating top chrome
+    # keeps its scaled ideal (layoutPriority), the rail + paddock column
+    # scrolls under it at accessibility sizes, and the bottom navigation keeps
+    # its >= 44 pt targets — re-pinned over the #456-r1 source set.
+    # #456 refresh: union of #449 (HerdProjection working-repo ordering +
+    # reconciledPaddockID, HerdEvidence paddock order/position markers) and
+    # #456/#456-r1 (full-screen shell + accessibility repair). The pin below
+    # is recomputed from THIS merged checkout — neither parent pin applies.
     # #464: the Settings App Icon picker — AppIconPicker (four #463 shipping
     # choices, the UIApplication alternate-icon seam, the live-state model)
     # added to the manifest, and FleetViews gained the App Icon section +
@@ -324,7 +336,11 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # #464 integration refresh: #464 merged onto the #449/#458 integration
     # source set — the digest is regenerated from the merged checkout (union
     # of #449/#458 and #464 sources); neither parent pin applies.
-    "c17cfe9a211581bb17538b9b351451074fa70cbce68c70f8b5f32deae451e61f"
+    # #456 refresh2: union of #449/#458, #456/#456-r1 and #464/#464-r1 over
+    # the 8671cfc integration — the pin below is recomputed from THIS merged
+    # checkout; no parent pin (4740de69…, 184c7a64…, 0cb9dc0c…, c17cfe9a…)
+    # applies.
+    "00cdc240dcb4489cacb3e6f7b5fe5cc92b0cd73d6dd9528778cd85fbfc016944"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

@@ -166,6 +166,8 @@ targets:
              "$TARGET_BUILD_DIR/$WRAPPER_NAME/FleetViews.swift.txt"
           cp "$SRCROOT/FleetNotifier/UI/Herd/HerdView.swift" \
              "$TARGET_BUILD_DIR/$WRAPPER_NAME/HerdView.swift.txt"
+          cp "$SRCROOT/FleetNotifier/UI/Herd/RanchEnvironment.swift" \
+             "$TARGET_BUILD_DIR/$WRAPPER_NAME/RanchEnvironment.swift.txt"
           # #464: the App Icon picker seam/wiring tests read the real source.
           cp "$SRCROOT/FleetNotifier/UI/AppIconPicker.swift" \
              "$TARGET_BUILD_DIR/$WRAPPER_NAME/AppIconPicker.swift.txt"
@@ -181,6 +183,7 @@ targets:
         inputFiles:
           - "$(SRCROOT)/FleetNotifier/UI/FleetViews.swift"
           - "$(SRCROOT)/FleetNotifier/UI/Herd/HerdView.swift"
+          - "$(SRCROOT)/FleetNotifier/UI/Herd/RanchEnvironment.swift"
           - "$(SRCROOT)/FleetNotifier/UI/AppIconPicker.swift"
           - "$(SRCROOT)/tools/herd-art/appicon-masters/treatment-a/bay-1024.png"
           - "$(SRCROOT)/tools/herd-art/appicon-masters/treatment-a/palomino-1024.png"
@@ -189,6 +192,7 @@ targets:
         outputFiles:
           - "$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/FleetViews.swift.txt"
           - "$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/HerdView.swift.txt"
+          - "$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/RanchEnvironment.swift.txt"
           - "$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/AppIconPicker.swift.txt"
           - "$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/master-bay.base64"
           - "$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/master-palomino.base64"

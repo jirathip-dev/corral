@@ -251,6 +251,242 @@ final class HerdTests: XCTestCase {
     }
 }
 
+// MARK: - #456 full-screen Herd shell (ranch behind safe areas, floating chrome)
+
+/// Source-wiring pins over the bundled FleetViews/HerdView/RanchEnvironment
+/// sources for the #456 layout contract: the procedural ranch is the
+/// full-screen root behind the safe areas, the top scope + Settings float
+/// over it (no board header strip, no duplicated navigation toolbar), the
+/// bottom paddock navigation floats above the home indicator with >= 44 pt
+/// targets, and the outage/counts/empty-scope surfaces survive.
+final class FullScreenHerdShellWiringTests: XCTestCase {
+
+    private func source(_ name: String) throws -> String {
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: name + ".swift",
+                                                            withExtension: "txt"))
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    /// Whitespace-stripped form — pins survive re-indentation.
+    private func compact(_ text: String) -> String {
+        text.filter { !$0.isWhitespace }
+    }
+
+    /// 1-based line numbers of every line whose `#if DEBUG` nesting makes it
+    /// DEBUG-active (flat, non-nested pairs — same scan the #365 wiring
+    /// tests use).
+    private func debugActiveLines(_ source: String) -> Set<Int> {
+        var active: Set<Int> = []
+        var depth = 0
+        for (index, line) in source.split(separator: "\n",
+                                          omittingEmptySubsequences: false).enumerated() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("#if DEBUG") {
+                depth += 1
+            } else if trimmed.hasPrefix("#endif") {
+                depth = max(0, depth - 1)
+            }
+            if depth > 0 { active.insert(index + 1) }
+        }
+        return active
+    }
+
+    func testFullScreenRanchSitsBehindTheHerdSurfaceAndSafeAreas() throws {
+        let herd = try compact(source("HerdView"))
+        // The ranch is the FIRST child of the body's root ZStack (behind the
+        // content) and ignores the safe area, so Day/Night paint behind the
+        // top scope/Settings row, the rail and the bottom navigation.
+        let bodyStart = try XCTUnwrap(herd.range(of: "var body: some View {".filter { !$0.isWhitespace }))
+        let ranch = try XCTUnwrap(herd.range(of: "RanchEnvironment(", range: bodyStart.upperBound..<herd.endIndex),
+                                  "the full-screen ranch must render from HerdView's root")
+        let zstack = try XCTUnwrap(herd.range(of: "ZStack{", range: bodyStart.upperBound..<ranch.lowerBound),
+                                   "the ranch must sit inside the root ZStack")
+        XCTAssertLessThan(zstack.lowerBound, ranch.lowerBound,
+                          "the ranch is the background layer, not an overlay")
+        let content = try XCTUnwrap(herd.range(of: "VStack(spacing:0){topChrome", range: ranch.upperBound..<herd.endIndex),
+                                    "the floating chrome + content must render ABOVE the ranch")
+        XCTAssertLessThan(ranch.lowerBound, content.lowerBound,
+                          "content must be layered over the ranch")
+        let safeArea = try XCTUnwrap(herd.range(of: ".ignoresSafeArea()", range: ranch.upperBound..<content.lowerBound),
+                                     "the ranch must extend behind the top/bottom safe areas")
+        XCTAssertLessThan(ranch.upperBound, safeArea.lowerBound,
+                          "ignoresSafeArea must apply to the ranch, not the content")
+        XCTAssertTrue(herd.contains("maxScroll:CGFloat(max(0,paddocks.count-1))*screen.size.width"),
+                      "the full-screen ranch keeps the shared pager coverage input")
+    }
+
+    func testFloatingTopScopeAndSettingsReplaceTheBoardHeaderAndToolbar() throws {
+        let board = try source("FleetViews")
+        let herdStart = try XCTUnwrap(board.range(of: "if model.fleetPresentation == .herd"))
+        let herdCall = try XCTUnwrap(board.range(of: "HerdView(horses:",
+                                                 range: herdStart.upperBound..<board.endIndex))
+        let branch = String(board[herdStart.lowerBound..<herdCall.lowerBound])
+        XCTAssertFalse(branch.contains("filterHeaderControl"),
+                       "the opaque board header strip must not render above the Herd surface")
+        XCTAssertFalse(branch.contains("PinnedHeader"),
+                       "no board pinned chrome belongs to the Herd branch")
+        let route = compact(String(board[herdCall.lowerBound...]))
+        for needle in ["scopeLabel:filterButtonLabel",
+                       "scopeSummary:filterSummaryText",
+                       "showFilters:$showFilters",
+                       "showSettings:$showSettings"] {
+            XCTAssertTrue(route.contains(needle),
+                          "the floating scope/Settings controls must bind the board's reconciled scope (\(needle))")
+        }
+        XCTAssertTrue(compact(board).contains("?.hidden:.visible,for:.navigationBar"),
+                      "Herd must hide the navigation toolbar (no duplicated gear/title chrome)")
+        let herd = try compact(source("HerdView"))
+        XCTAssertTrue(herd.contains("Button{showFilters=true}label:"),
+                      "the floating scope control opens the real filter sheet")
+        XCTAssertTrue(herd.contains("Button{showSettings=true}label:"),
+                      "the floating Settings control opens the real Settings sheet")
+        XCTAssertTrue(herd.contains("HerdGearGlyph(color:theme.text)"),
+                      "the floating Settings control draws its gear natively")
+        XCTAssertFalse(herd.contains("Image("),
+                       "the Herd renderer stays procedural (fail-closed native-art gate)")
+        XCTAssertTrue(herd.contains("privatevartopChrome:someView"),
+                      "the floating top chrome is a single owned surface")
+    }
+
+    func testFloatingBottomPaddockNavigationKeeps44ptTargetsAndSafeAreaInset() throws {
+        let herd = try compact(source("HerdView"))
+        let navStart = try XCTUnwrap(herd.range(of: "privatevarnavigation:someView"))
+        let navEnd = try XCTUnwrap(herd.range(of: "funcmovePage(", range: navStart.upperBound..<herd.endIndex))
+        let nav = String(herd[navStart.lowerBound..<navEnd.lowerBound])
+        XCTAssertTrue(nav.contains("Button(\"Previous\"){movePage(-1)}.disabled(index==0).frame(minWidth:44,minHeight:44)"),
+                      "Previous keeps its >= 44 pt target")
+        XCTAssertTrue(nav.contains("Button(\"Next\"){movePage(1)}.disabled(index+1>=paddocks.count).frame(minWidth:44,minHeight:44)"),
+                      "Next keeps its >= 44 pt target")
+        XCTAssertTrue(nav.contains("Text(\"\\(index+1)/\\(paddocks.count)\")"),
+                      "the paddock position readout is preserved")
+        XCTAssertTrue(nav.contains(".background(.regularMaterial,in:RoundedRectangle(cornerRadius:15))"),
+                      "the bottom navigation floats as a rounded material pill, not an opaque full-width bar")
+        XCTAssertTrue(nav.contains(".padding(.horizontal,12)") && nav.contains(".padding(.bottom,6)"),
+                      "the floating navigation keeps a safe-area margin on both axes")
+    }
+
+    func testHerdPreservesOutageRecoveryCountsLongNamesAndEmptyScope() throws {
+        let herd = try compact(source("HerdView"))
+        XCTAssertTrue(herd.contains("ForEach([AgentState.blocked,.working,.idle,.done,.unknown],id:\\.self)"),
+                      "all five truthful scoped counts stay rendered")
+        XCTAssertTrue(herd.contains("Button(\"OpenBoard\",action:openBoard).frame(minWidth:44,minHeight:44)"),
+                      "the outage keeps the Open Board recovery action")
+        XCTAssertTrue(herd.contains("Button(\"Retry\"){Task{awaitretry()}}.frame(minWidth:44,minHeight:44)"),
+                      "the outage keeps the Retry action")
+        XCTAssertTrue(herd.contains("ContentUnavailableView(\"Noagentsinthisscope\""),
+                      "an empty scope keeps its explicit empty state")
+        XCTAssertTrue(herd.contains("Text(scopeSummary).font(.caption2).foregroundStyle(theme.subtext1).lineLimit(1).truncationMode(.tail)"),
+                      "long repository scope summaries stay single-line and truncate")
+        XCTAssertTrue(herd.contains("Text(paddock.title).font(.headline).lineLimit(1)"),
+                      "long paddock titles stay single-line")
+        XCTAssertTrue(herd.contains("Text(lighting.explanation).font(.caption2)"),
+                      "the truthful environment explanation stays visible")
+    }
+
+    func testRanchBackgroundCannotStealTapsAndIsCoveredWithoutStretch() throws {
+        let ranch = try compact(source("RanchEnvironment"))
+        // Scoped per Canvas host: the whole-file search alone would false-green
+        // on the sibling rail-art occurrence (the #316 decoy lesson).
+        let environmentStart = try XCTUnwrap(ranch.range(of: "structRanchEnvironment:View{"))
+        let environmentEnd = try XCTUnwrap(ranch.range(of: "structRanchPainter{",
+                                                       range: environmentStart.upperBound..<ranch.endIndex))
+        let environment = String(ranch[environmentStart.lowerBound..<environmentEnd.lowerBound])
+        XCTAssertTrue(environment.contains(".allowsHitTesting(false)"),
+                      "the ranch background must never intercept taps")
+        XCTAssertTrue(environment.contains(".clipped()"),
+                      "the ranch background must clip to its cover frame")
+        let railStart = try XCTUnwrap(ranch.range(of: "structRanchFrontRail:View{"))
+        let rail = String(ranch[railStart.lowerBound...])
+        XCTAssertTrue(rail.contains(".allowsHitTesting(false)"),
+                      "the rail art must never intercept taps")
+        let herd = try compact(source("HerdView"))
+        XCTAssertTrue(herd.contains("HerdRanchCover{RanchEnvironment("),
+                      "the ranch must ride the uniform cover container")
+        XCTAssertTrue(herd.contains("HerdRanchViewport.scale(for:geometry.size)"),
+                      "the cover derives ONE uniform scale for both axes")
+        XCTAssertTrue(herd.contains(".frame(width:HerdRanchViewport.world.width*scale,height:HerdRanchViewport.world.height*scale)"),
+                      "the ranch content receives the world-aspect frame (never a per-axis stretch)")
+        XCTAssertFalse(herd.contains("scaleBy(x:"),
+                       "the shell must never apply a per-axis canvas stretch")
+    }
+
+    func testFullScreenEvidenceHooksAreDebugOnly() throws {
+        let herdSource = try source("HerdView")
+        let debug = debugActiveLines(herdSource)
+        for needle in ["-corral456FullScreenEvidence", "runFullScreenEvidence", "evidenceFullScreenRan"] {
+            let lines = herdSource.split(separator: "\n", omittingEmptySubsequences: false)
+                .enumerated()
+                .filter { $0.element.contains(needle) }
+                .map { $0.offset + 1 }
+            XCTAssertFalse(lines.isEmpty, "\(needle) must exist for the #456 evidence driver")
+            for line in lines {
+                XCTAssertTrue(debug.contains(line),
+                              "\(needle) must stay inside #if DEBUG (Release-inert)")
+            }
+        }
+    }
+
+    /// Runtime geometry: one uniform scale for both axes (never a per-axis
+    /// stretch), cover semantics, centered crop.
+    func testHerdRanchViewportScaleIsUniformCover() {
+        XCTAssertEqual(HerdRanchViewport.world, CGSize(width: 390, height: 640),
+                       "the cover preserves the approved native world size")
+        for size in [CGSize(width: 393, height: 852),   // iPhone 16 (this lane's sim)
+                     CGSize(width: 375, height: 667),   // iPhone SE 3rd gen
+                     CGSize(width: 430, height: 932),   // iPhone 16 Pro Max
+                     CGSize(width: 390, height: 844)] { // #455 reference phone
+            let scale = HerdRanchViewport.scale(for: size)
+            XCTAssertEqual(scale, max(size.width / 390, size.height / 640), accuracy: 0.0001,
+                           "the cover scale is the single cover factor at \(size)")
+            XCTAssertGreaterThanOrEqual(390 * scale, size.width - 0.001,
+                                        "scaled world must cover the width at \(size)")
+            XCTAssertGreaterThanOrEqual(640 * scale, size.height - 0.001,
+                                        "scaled world must cover the height at \(size)")
+        }
+        XCTAssertEqual(HerdRanchViewport.scale(for: .zero), 1,
+                       "a zero container must not produce a non-finite scale")
+    }
+
+    /// Runtime composition witness: the cover hands the ranch content a
+    /// frame with the world's exact aspect ratio at ONE uniform scale — the
+    /// mechanism that keeps the canvas from stretching. A per-axis frame
+    /// (the base defect) makes the probe report the container's own aspect.
+    @MainActor
+    func testHerdRanchCoverGivesTheRanchOneUniformWorldAspect() async throws {
+        final class ProbeBox { var size: CGSize? }
+        for container in [CGSize(width: 393, height: 852),
+                          CGSize(width: 375, height: 667),
+                          CGSize(width: 430, height: 932),
+                          CGSize(width: 390, height: 844)] {
+            let box = ProbeBox()
+            let probe = GeometryReader { proxy in
+                Color.clear
+                    .onAppear { box.size = proxy.size }
+                    .onChange(of: proxy.size) { _, size in box.size = size }
+            }
+            let controller = UIHostingController(rootView: AnyView(
+                HerdRanchCover { probe }
+                    .frame(width: container.width, height: container.height)))
+            let window = UIWindow(frame: CGRect(origin: .zero, size: container))
+            window.rootViewController = controller
+            window.makeKeyAndVisible()
+            try await Task.sleep(for: .milliseconds(250))
+            let reported = try XCTUnwrap(box.size,
+                                         "the ranch content must receive a frame at \(container)")
+            let scale = HerdRanchViewport.scale(for: container)
+            XCTAssertEqual(reported.width, 390 * scale, accuracy: 0.5)
+            XCTAssertEqual(reported.height, 640 * scale, accuracy: 0.5)
+            XCTAssertEqual(reported.width / reported.height, 390.0 / 640.0, accuracy: 0.0005,
+                           "the ranch frame must keep the world aspect (no per-axis stretch) at \(container)")
+            XCTAssertGreaterThanOrEqual(reported.width, container.width - 0.5,
+                                        "the scaled ranch must cover the container width")
+            XCTAssertGreaterThanOrEqual(reported.height, container.height - 0.5,
+                                        "the scaled ranch must cover the container height")
+            window.isHidden = true
+        }
+    }
+}
+
 /// #458 stream-preservation probe: serves 200 text/event-stream and never
 /// finishes — an idle fleet delivers zero frames. Lock-guarded request
 /// counter (same pattern as the file-scope URLProtocol mocks in
@@ -465,5 +701,239 @@ final class PresentationPreferenceTests: XCTestCase {
                       "the saved-choice explanation is exposed to VoiceOver")
         XCTAssertTrue(section.contains(".pickerStyle(.segmented)"),
                       "the Board/Herd choice renders as a visible segmented control")
+    }
+}
+
+// MARK: - #456-r1: runtime accessibility layout over the REAL HerdView
+
+/// The #456 floating top chrome must survive Dynamic Type. At AX-XXXL the
+/// pre-fix layout squeezed the scope pill: the label rendered OUTSIDE its own
+/// material pill (into the status-bar/Dynamic Island band) and the counts
+/// card covered the `All repositories` summary. These tests render the real
+/// `HerdView` in a hosted window at the supported phone sizes and Dynamic
+/// Type sizes and measure the pixels of the actual SwiftUI layout — a source
+/// pin cannot show where a glyph landed. Re-introducing the squeeze (a
+/// fixed-height chrome / dropped layout priority) turns the accessibility
+/// cases RED while the default-size case stays GREEN as the positive control.
+@MainActor
+final class FullScreenHerdShellAccessibilityLayoutTests: XCTestCase {
+
+    /// 12 synthetic agents over 4 repositories — the #456 fixture shape
+    /// (2 blocked at the rail, mixed states). Fictional data only.
+    private func fleet() -> [HerdHorse] {
+        let names = ["birch-clearing", "oak-before-dark", "spruce-hollow", "willow-bend",
+                     "cedar-ridge", "aspen-grove", "juniper-south", "maple-stand",
+                     "elder-flats", "hazel-hollow", "hawthorn-fork", "sumac-row"]
+        let states: [AgentState] = [.blocked, .blocked, .done, .idle, .working, .unknown,
+                                    .idle, .working, .done, .working, .idle, .working]
+        let repos = ["atlas-vector", "cedar-tools", "maple-client", "willow-core"]
+        return (0..<names.count).map { index in
+            let agent = Agent(agentId: "herdr:r1-fixture-\(index)", state: states[index],
+                              seq: UInt64(index + 1), ts: 1_800_000_000_000,
+                              capabilities: ["read_tail"],
+                              workspace: Workspace(repo: repos[(index / 3) % repos.count]),
+                              attachment: Attachment(kind: "herdr", reference: "fixture:r1:\(index)"),
+                              displayName: names[index])
+            return HerdHorse(agent: agent, hostProfileID: nil, hostName: nil, disconnected: false)
+        }
+    }
+
+    // MARK: pixel canvas (1 px == 1 pt)
+
+    private struct Canvas {
+        let width: Int
+        let height: Int
+        let pixels: [UInt8]
+
+        init?(_ image: UIImage) {
+            guard let cg = image.cgImage else { return nil }
+            width = cg.width
+            height = cg.height
+            var data = [UInt8](repeating: 0, count: cg.width * cg.height * 4)
+            let drawn = data.withUnsafeMutableBytes { buffer -> Bool in
+                guard let context = CGContext(data: buffer.baseAddress, width: cg.width, height: cg.height,
+                                              bitsPerComponent: 8, bytesPerRow: cg.width * 4,
+                                              space: CGColorSpaceCreateDeviceRGB(),
+                                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+                else { return false }
+                context.draw(cg, in: CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
+                return true
+            }
+            guard drawn else { return nil }
+            pixels = data
+        }
+
+        func rgb(_ x: Int, _ y: Int) -> (red: Double, green: Double, blue: Double) {
+            let offset = (y * width + x) * 4
+            return (Double(pixels[offset]), Double(pixels[offset + 1]), Double(pixels[offset + 2]))
+        }
+
+        func luminance(_ x: Int, _ y: Int) -> Double {
+            let colour = rgb(x, y)
+            return 0.299 * colour.red + 0.587 * colour.green + 0.114 * colour.blue
+        }
+
+        /// Chrome glyphs are the near-white label colour (the Day ranch's sky
+        /// and hills are saturated and stay below the luminance gate).
+        func isLabelGlyph(_ x: Int, _ y: Int) -> Bool {
+            guard x >= 0, x < width, y >= 0, y < height else { return false }
+            let colour = rgb(x, y)
+            let saturation = max(colour.red, colour.green, colour.blue)
+                - min(colour.red, colour.green, colour.blue)
+            return luminance(x, y) > 200 && saturation < 45
+        }
+
+        func labelGlyphs(rows: Range<Int>, columns: Range<Int>) -> Int {
+            var count = 0
+            for y in rows where y >= 0 && y < height {
+                for x in columns where x >= 0 && x < width && isLabelGlyph(x, y) { count += 1 }
+            }
+            return count
+        }
+
+        /// First dark material band (the floating pills/cards) at a column.
+        func materialBand(x: Int, from: Int, to: Int) -> (top: Int, bottom: Int)? {
+            guard let top = (max(0, from)..<min(height, to)).first(where: { luminance(x, $0) < 90 }),
+                  let bottom = (top + 4..<height).first(where: { luminance(x, $0) >= 90 })
+            else { return nil }
+            return (top, bottom)
+        }
+
+        /// The bottom-most contiguous glyph band inside `rows` — the floating
+        /// bottom navigation sits after the scrollable column, so it is the
+        /// last text band above the safe-area edge.
+        func bottomTextBand(rows: Range<Int>, columns: Range<Int>) -> (top: Int, bottom: Int)? {
+            var bottom: Int?
+            var y = min(rows.upperBound, height) - 1
+            while y >= rows.lowerBound {
+                if labelGlyphs(rows: y..<(y + 1), columns: columns) > 0 { bottom = y; break }
+                y -= 1
+            }
+            guard let bottom else { return nil }
+            var top = bottom
+            var gap = 0
+            y = bottom - 1
+            while y >= rows.lowerBound {
+                if labelGlyphs(rows: y..<(y + 1), columns: columns) > 0 {
+                    top = y
+                    gap = 0
+                } else {
+                    gap += 1
+                    if gap > 3 { break }
+                }
+                y -= 1
+            }
+            return (top, bottom)
+        }
+    }
+
+    private struct Snapshot {
+        let canvas: Canvas
+        let safeTop: CGFloat
+        let safeBottom: CGFloat
+    }
+
+    /// Renders the REAL HerdView in a hosted window at `size` with the
+    /// deterministic Day lighting and returns the measured screen pixels.
+    /// The window must belong to the app's window scene: a scene-less window
+    /// reports zero safe-area insets and never rasterizes its SwiftUI layers.
+    private func render(_ size: CGSize, dynamicType: DynamicTypeSize) async throws -> Snapshot {
+        UserDefaults.standard.set(HerdEnvironmentChoice.day.rawValue, forKey: "herdEnvironment")
+        let scene = HerdView(horses: fleet(), obscured: false, select: { _ in },
+                             openBoard: {}, retry: {})
+            .environmentObject(ThemeStore())
+            .environment(\.dynamicTypeSize, dynamicType)
+        let controller = UIHostingController(rootView: AnyView(scene))
+        let windowScene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }.first
+        let window = windowScene.map { UIWindow(windowScene: $0) } ?? UIWindow()
+        window.frame = CGRect(origin: .zero, size: size)
+        window.rootViewController = controller
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        try await Task.sleep(for: .milliseconds(700))
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(bounds: window.bounds, format: format).image { _ in
+            window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+        }
+        let canvas = try XCTUnwrap(Canvas(image), "the hosted HerdView must render a bitmap")
+        return Snapshot(canvas: canvas, safeTop: window.safeAreaInsets.top,
+                        safeBottom: window.safeAreaInsets.bottom)
+    }
+
+    /// The floating scope-chrome contract at any Dynamic Type size: the pill
+    /// sits inside the top safe area, the scope label renders INSIDE the
+    /// pill's own material (never above it in the status-bar band) and the
+    /// counts card below it never covers the scope summary.
+    private func assertScopeChromeHoldsItsLabel(_ snapshot: Snapshot, label: String) throws {
+        let canvas = snapshot.canvas
+        let pill = try XCTUnwrap(canvas.materialBand(x: 44, from: 0, to: 400),
+                                 "\(label): the floating scope pill must render")
+        XCTAssertGreaterThanOrEqual(Double(pill.top), Double(snapshot.safeTop) - 2,
+            "\(label): the floating chrome starts inside the top safe area "
+            + "(pill top \(pill.top) pt, safe top \(snapshot.safeTop) pt)")
+        XCTAssertGreaterThanOrEqual(pill.bottom - pill.top, 44,
+            "\(label): the scope control keeps a >= 44 pt target")
+        let above = canvas.labelGlyphs(rows: 0..<pill.top, columns: 48..<200)
+        XCTAssertEqual(above, 0,
+            "\(label): \(above) px of scope text render ABOVE the pill "
+            + "(status-bar / Dynamic Island band)")
+        let inside = canvas.labelGlyphs(rows: pill.top..<pill.bottom, columns: 48..<200)
+        XCTAssertGreaterThanOrEqual(inside, 40,
+            "\(label): the scope label must render inside the pill's own material (found \(inside) px)")
+        let card = try XCTUnwrap(canvas.materialBand(x: 44, from: pill.bottom + 2, to: canvas.height),
+                                 "\(label): the counts card must render below the floating scope pill")
+        let gap = canvas.labelGlyphs(rows: (pill.bottom + 1)..<card.top, columns: 48..<200)
+        XCTAssertEqual(gap, 0,
+            "\(label): \(gap) px of scope text render between the pill and the counts card — "
+            + "the counts card must never cover the scope summary")
+    }
+
+    /// #456 AC2 on the tall phones: the scope label stays inside its pill and
+    /// the counts card clear of it at accessibility sizes.
+    func testFloatingScopeChromeHoldsItsLabelAtAccessibilitySizes() async throws {
+        for (name, dynamicType) in [("AX1", DynamicTypeSize.accessibility1),
+                                    ("AX3", DynamicTypeSize.accessibility3),
+                                    ("AX5", DynamicTypeSize.accessibility5)] {
+            let snapshot = try await render(CGSize(width: 393, height: 852), dynamicType: dynamicType)
+            try assertScopeChromeHoldsItsLabel(snapshot, label: "iPhone 16 393x852 \(name)")
+        }
+        let large = try await render(CGSize(width: 430, height: 932), dynamicType: .accessibility5)
+        try assertScopeChromeHoldsItsLabel(large, label: "iPhone Pro Max 430x932 AX5")
+    }
+
+    /// Small phone: the default size is the positive control (the approved
+    /// composition) and AX-XXXL must still hold the chrome inside its pill.
+    func testSmallPhoneKeepsTheFloatingChromeContained() async throws {
+        let control = try await render(CGSize(width: 375, height: 667), dynamicType: .large)
+        try assertScopeChromeHoldsItsLabel(control, label: "iPhone SE 375x667 default (control)")
+        let accessible = try await render(CGSize(width: 375, height: 667), dynamicType: .accessibility5)
+        try assertScopeChromeHoldsItsLabel(accessible, label: "iPhone SE 375x667 AX-XXXL")
+    }
+
+    /// Runtime reachability: the floating controls keep >= 44 pt usable
+    /// targets at AX-XXXL and the floating bottom navigation's target band
+    /// stays fully inside the safe area.
+    func testFloatingControlsKeepReachableTargetsAtAccessibilitySizes() async throws {
+        for size in [CGSize(width: 393, height: 852), CGSize(width: 375, height: 667)] {
+            let snapshot = try await render(size, dynamicType: .accessibility5)
+            let canvas = snapshot.canvas
+            let label = "AX-XXXL \(Int(size.width))x\(Int(size.height))"
+            let pill = try XCTUnwrap(canvas.materialBand(x: 44, from: 0, to: 400),
+                                     "\(label): the floating scope pill must render")
+            XCTAssertGreaterThanOrEqual(pill.bottom - pill.top, 44,
+                "\(label): the floating scope control keeps a >= 44 pt target")
+            let nav = try XCTUnwrap(canvas.bottomTextBand(rows: max(0, canvas.height - 240)..<canvas.height,
+                                                          columns: 24..<(canvas.width - 24)),
+                                    "\(label): the floating bottom navigation labels must render")
+            XCTAssertGreaterThanOrEqual(nav.bottom - nav.top, 8,
+                "\(label): the bottom navigation keeps its label glyph band")
+            XCTAssertGreaterThanOrEqual(Double(nav.top) - 22, 0,
+                "\(label): the 44 pt Previous/position/Next target band stays on screen")
+            XCTAssertLessThanOrEqual(Double(nav.bottom) + 22,
+                                     Double(size.height) - Double(snapshot.safeBottom) + 2,
+                "\(label): the floating bottom navigation stays inside the safe area")
+        }
     }
 }

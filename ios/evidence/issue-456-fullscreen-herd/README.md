@@ -2,24 +2,31 @@
 
 Runtime frames for the #456 layout slice (ranch behind every safe area,
 floating top scope + Settings, floating bottom paddock navigation, no opaque
-Board header or duplicated toolbar), **re-captured after the #449 integration
-refresh** (union of `origin/integration` 16daaca and the #456/#456-r1 work).
+Board header or duplicated toolbar), re-captured after each integration
+refresh: the #449 union (16daaca) and then the **#464 union** (`origin/integration`
+8671cfc — the Settings sheet now carries the #464 App Icon picker; the Herd
+rendering itself is unchanged by #464).
 
 Every frame is the REAL app on owned simulators with the deterministic DEBUG
 `-corral456FullScreenEvidence` driver (fictional demo fixtures only — no live
 daemon, no real hosts, no private rows, no physical-device or TestFlight
-claim). Captured 2026-09-10 from the merged tree
-`25739631969b42b5d0473b190ec7be3da44a989a` (parents `1ab8a811…` and
-`16daaca4…`). Earlier frame sets remain in git history: the pre-repair r0 set
-at `8274019`, the r1 repaired set at `1ab8a811`.
+claim). Captured 2026-09-10 from the union tree
+`c2373857f81140069661dbe043b1e73d02b9ba0c` (+ re-pin `a21a220`; the app
+sources are identical to the c2373857 merge). Earlier frame sets remain in git
+history: the pre-repair r0 set at `8274019`, the r1 repaired set at `1ab8a811`,
+the r2 repaired set at `32db940`.
 
 ## Why the frames were re-captured
 
-#449 changes the rendered composition: `HerdProjection.paddocks` now sorts
+**#449** changes the rendered composition: `HerdProjection.paddocks` now sorts
 repositories that contain a connected working agent first, so the first
 paddock of the demo fixture is a working repository. The axes and totals are
 unchanged; the paddock identity, the page order and the outage fallback are
-not. `measurement.log` re-runs the discriminating probe on this set and still
+not. **#464** (second refresh) changes the Settings sheet: the App Icon picker
+sits directly below Appearance, so `phase-5` had to be re-shot; the Herd
+surface, the Board list and the AX layout are untouched by #464, and the whole
+set was re-shot at the union head to keep one consistent manifest.
+`measurement.log` re-runs the discriminating probe on this set and still
 validates it against the historical r0 frames.
 
 - Default day: first paddock is now `cedar-tools` (working) — was
@@ -46,7 +53,7 @@ validates it against the historical r0 frames.
 | phase-2-herd-night-390x844.png | Same single scene, Night lighting, same controls. |
 | phase-3-next-paddock-390x844.png | Bottom navigation moved to paddock 2 via the same `movePage` action the Next button invokes: `maple-client — 4 here · 0 at rail`, position `2 / 3`. |
 | phase-4-scope-sheet-390x844.png | The floating scope control opens the REAL filter sheet (`REPOSITORY SCOPE`, counts, `Clear repository`, `Reset all filters`) over the ranch. |
-| phase-5-settings-sheet-390x844.png | The floating gear opens the REAL Settings sheet (Appearance Board/Herd picker from #458, themes, Herd environment). |
+| phase-5-settings-sheet-390x844.png | The floating gear opens the REAL Settings sheet (Appearance Board/Herd picker from #458, themes, **App Icon picker from #464 directly below Appearance — Bay/Palomino/Black/Grey tiles with the live system state and Bay checked**, Herd environment). |
 | phase-6-long-names-390x844.png | 8 synthetic agents in 8 ~45-char repositories: repo title and horse names truncate with `…`, counters (2/3/1/1/1) stay legible, `1 / 8` paddocks, floating chrome intact. |
 | phase-7-empty-scope-390x844.png | Empty fleet: all five counts `0`, rail `0 BLOCKED`, `No agents in this scope`, floating controls still present. |
 | phase-8-offline-outage-390x844.png | `-corralHerdOffline`: outage banner `Source disconnected · last-known agents` with `Open Board` + `Retry`, muted horses with `last known` status, counts `12 unknown`, rail `2 LAST KNOWN`, paddock `atlas-vector — 2 here · 2 at rail` (disconnected agents are never promoted by the #449 ordering). |
@@ -67,10 +74,11 @@ On `phase-10-ax-day-390x844.png` the pill is materially present and contains
 the label — it is a large translucent card over a bright ranch, so a
 downscaled view can make it look like free-standing text:
 
-- pill material at x=44 spans rows **65..189** (navy `(46,71,84)`), i.e. from
-  the top safe-area margin (59 pt + 6 pt chrome padding) downwards;
+- pill material at x=44 spans rows **65..190** (navy `(46,71,84)`, the last row
+  the antialiased bottom edge at lum 90), i.e. from the top safe-area margin
+  (59 pt + 6 pt chrome padding) downwards;
 - the label glyph rows measured over x 48..200 are **80..181** — strictly
-  inside the pill, 15 rows below its top edge and 8 above its bottom edge;
+  inside the pill, 15 rows below its top edge and 9 above its bottom edge;
 - rows **191..196** are ranch pixels (`(99,165,197)`) — the 6 pt gap between
   the scope pill and the counts card, which starts at row 197;
 - `measurement.log` counts **0** chrome-text pixels above the pill

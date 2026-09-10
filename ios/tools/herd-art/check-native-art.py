@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""#444 correction 1: fail-closed native-art source and actual app gate.
+"""#444 correction 1 / #463: fail-closed native-art source and product gate.
 
 Existing icon inputs are pinned to the dispatch base; no new artwork asset is
 allowed anywhere in the app target. The Herd renderer cannot load bitmap/file/
 network artwork at all. Built products are inspected independently, including
-compiled asset-catalog rendition names (assetutil), not inferred from sources.
+compiled asset-catalog rendition names (assetutil) and the built CFBundleIcons
+declarations, not inferred from sources.
+
+#463 narrows the approved shipping inventory to the four Treatment-A horse
+app icons: Bay primary (AppIcon) and exactly Palomino, Black, Grey alternates.
+The legacy Original and every Treatment B master are forbidden product bytes.
 """
 import argparse
 import hashlib
@@ -21,6 +26,7 @@ ROOT = Path(__file__).resolve().parents[3]
 EXPECTED = ('HerdArt.swift','HerdModel.swift','HerdView.swift','RanchEnvironment.swift','HerdEnvironmentChoice.swift')
 ART_EXTENSIONS = {'.png','.jpg','.jpeg','.webp','.svg','.pdf','.gif','.heic','.tiff','.bmp','.ktx','.atlas','.scn','.sks'}
 FORBIDDEN = re.compile(r'\b(?:Image|UIImage|CGImage\w*|CIImage|NSImage|SKTexture\w*|MTKTextureLoader|TextureResource|WKWebView|UIWebView|WebView|Bundle|FileManager|URLSession)\b|\b(?:typealias\s+\w+\s*=\s*)?(?:SwiftUI\s*\.\s*)?Image\b|\b(?:ComfyUI|Comfy|WebKit|base64Encoded|base64|contentsOfFile|contentsOfURL)\b|r2-v1-premium|issue-442/|<\s*(?:html|svg|img)\b', re.I)
+APPROVAL = 'ios/tools/herd-art/appicon-approval.json'
 
 
 def read(path):
@@ -30,7 +36,7 @@ def read(path):
 
 
 def files(root):
-    if not root.is_dir() or root.is_symlink() or not root.stat().st_mode & stat.S_IRUSR:
+    if not root.is_dir() or root.is_symlink() or not root.stat().st_mode & (stat.S_IRUSR):
         raise ValueError(f'missing/unreadable expected root: {root}')
     result = []
     def fail(error): raise error
@@ -40,6 +46,20 @@ def files(root):
         result += [Path(parent)/name for name in names]
     if not result: raise ValueError(f'empty expected root: {root}')
     return result
+
+
+def approval(root):
+    contract = json.loads(read(root/APPROVAL))
+    primary = contract['catalog']['primary_set']
+    alternates = contract['catalog']['alternate_sets']
+    if primary != 'AppIcon' or alternates != ['Palomino', 'Black', 'Grey']:
+        raise ValueError('approval metadata no longer matches the approved four-icon contract')
+    if 'Bay' in alternates or primary in alternates:
+        raise ValueError('Bay must be the primary only, never an alternate')
+    forbidden = {contract['forbidden']['legacy_original'], *contract['forbidden']['treatment_b']}
+    if len(forbidden) != 5:
+        raise ValueError('legacy Original and all four Treatment B hashes must stay forbidden')
+    return primary, alternates, forbidden
 
 
 def source(root):
@@ -72,7 +92,9 @@ def source(root):
     return allowed
 
 
-def bundle(app, allowed):
+def bundle(app, allowed, primary, alternates, forbidden):
+    names = {primary, *alternates}
+    icon_png = re.compile(rf'(?:{"|".join(re.escape(name) for name in sorted(names))})\d+x\d+(?:@\dx)?(?:~ipad)?\.png')
     paths = files(app)
     info = plistlib.loads(read(app/'Info.plist'))
     if info.get('CFBundleIdentifier') != 'com.corral.fleetnotifier': raise ValueError('not the actual Corral app product')
@@ -80,23 +102,36 @@ def bundle(app, allowed):
     binary = read(executable)
     if binary[:4] not in (b'\xcf\xfa\xed\xfe',b'\xca\xfe\xba\xbe',b'\xfe\xed\xfa\xcf'):
         raise ValueError('app executable is not Mach-O')
+    loose_primary = 0
     for path in paths:
         relative = str(path.relative_to(app))
         data = read(path)
+        if hashlib.sha256(data).hexdigest() in forbidden:
+            raise ValueError(f'forbidden legacy Original/Treatment-B artwork in product: {relative}')
         suffix = path.suffix.lower()
         raster = data.startswith((b'\x89PNG',b'\xff\xd8\xff',b'GIF8')) or data[:4] == b'RIFF'
         if suffix in ART_EXTENSIONS or raster:
-            if not re.fullmatch(r'AppIcon\d+x\d+(?:@\dx)?(?:~ipad)?\.png',relative):
+            if not icon_png.fullmatch(relative):
                 raise ValueError(f'forbidden built artwork: {relative}')
-        if any(token in relative.lower() for token in ('issue-442','r2-v1-premium','horse-sheet','ranch-day','ranch-night')):
+            if relative.startswith(primary): loose_primary += 1
+        if any(token in relative.lower() for token in ('issue-442','r2-v1-premium','horse-sheet','ranch-day','ranch-night','treatment-b')):
             raise ValueError(f'forbidden export in product: {relative}')
+    if not loose_primary: raise ValueError('product has no compiled primary app-icon PNG')
+    for key in ('CFBundleIcons','CFBundleIcons~ipad'):
+        declared = info.get(key)
+        if not isinstance(declared, dict): raise ValueError(f'built Info.plist has no {key}')
+        if declared.get('CFBundlePrimaryIcon',{}).get('CFBundleIconName') != primary:
+            raise ValueError(f'{key} primary icon must be {primary}')
+        alternates_declared = declared.get('CFBundleAlternateIcons')
+        if not isinstance(alternates_declared, dict) or set(alternates_declared) != set(alternates):
+            raise ValueError(f'{key} alternate icons must be exactly {sorted(alternates)}, found {sorted(alternates_declared or {})}')
     catalog = app/'Assets.car'; read(catalog)
     output = subprocess.check_output(['xcrun','assetutil','--info',str(catalog)],text=True,timeout=30)
     items = json.loads(output)
-    names = {item['Name'] for item in items if 'Name' in item}
-    if not names or not names <= set(allowed['catalog_names']):
-        raise ValueError(f'non-approved compiled artwork names: {sorted(names-set(allowed["catalog_names"]))}')
-    print(f'bundle PASS: Mach-O {executable}; {len(paths)} product files; catalog names {sorted(names)}')
+    compiled = {item['Name'] for item in items if 'Name' in item}
+    if compiled != set(allowed['catalog_names']):
+        raise ValueError(f'compiled catalog names must be exactly {sorted(allowed["catalog_names"])}, found {sorted(compiled)}')
+    print(f'bundle PASS: Mach-O {executable}; {len(paths)} product files; catalog names {sorted(compiled)}')
 
 
 def main():
@@ -105,8 +140,8 @@ def main():
     args = parser.parse_args()
     try:
         allowed = source(args.root)
-        if args.bundle: bundle(args.bundle,allowed)
-    except (ValueError,OSError,UnicodeError,KeyError,subprocess.SubprocessError) as error:
+        if args.bundle: bundle(args.bundle,allowed,*approval(args.root))
+    except (ValueError,OSError,UnicodeError,KeyError,json.JSONDecodeError,subprocess.SubprocessError) as error:
         print(f'native-art FAIL: {error}',file=sys.stderr); return 1
     return 0
 

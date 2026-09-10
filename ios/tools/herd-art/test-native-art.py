@@ -3,6 +3,7 @@
 import argparse
 import json
 from pathlib import Path
+import plistlib
 import shutil
 import subprocess
 import sys
@@ -10,6 +11,12 @@ import tempfile
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
+DESIGN_COMMIT = '060220c32c4b5de638f4950dd8bd71fa71814816'
+
+
+def read_real(path):
+    assert path.is_file(), f'missing real repository fixture: {path}'
+    return path.read_bytes()
 
 
 def main():
@@ -87,8 +94,77 @@ def main():
         check('unreadable-catalog', root, app)
         assets.write_bytes(saved)
         executable = app/'FleetNotifier'
+        executable_data = executable.read_bytes()
         executable.unlink()
         check('missing-executable', root, app)
+        executable.write_bytes(executable_data)
+
+        # #463: the built product must declare and carry exactly the approved
+        # four Treatment-A horse icons.
+        info_path = app/'Info.plist'
+        pristine_info = info_path.read_bytes()
+
+        def mutate_info(change):
+            info = plistlib.loads(pristine_info)
+            change(info)
+            info_path.write_bytes(plistlib.dumps(info))
+
+        def restore_info():
+            info_path.write_bytes(pristine_info)
+
+        mutate_info(lambda info: info['CFBundleIcons']['CFBundleAlternateIcons'].pop('Palomino'))
+        check('bundle-missing-alternate-declaration', root, app)
+        restore_info()
+        mutate_info(lambda info: info['CFBundleIcons']['CFBundleAlternateIcons'].update(
+            {'Bay': {'CFBundleIconName': 'Bay'}}))
+        check('bundle-duplicate-bay-declaration', root, app)
+        restore_info()
+        mutate_info(lambda info: info['CFBundleIcons']['CFBundlePrimaryIcon'].update(
+            CFBundleIconName='Bay'))
+        check('bundle-primary-misnamed', root, app)
+        restore_info()
+        mutate_info(lambda info: info.pop('CFBundleIcons~ipad'))
+        check('bundle-missing-ipad-declaration', root, app)
+        restore_info()
+        loose = sorted(app.glob('AppIcon*.png'))
+        assert loose, 'built product has no loose primary app-icon PNG'
+        saved_loose = [(png, png.read_bytes()) for png in loose]
+        for png, _ in saved_loose:
+            png.unlink()
+        check('bundle-missing-loose-primary', root, app)
+        for png, data in saved_loose:
+            png.write_bytes(data)
+        legacy = read_real(ROOT/'assets/icon/corral-icon-1024.png')
+        injected = app/'AppIcon-512@2x.png'
+        injected.write_bytes(legacy)
+        check('bundle-legacy-original-png', root, app)
+        injected.unlink()
+        treatment_b = subprocess.run(
+            ['git', '-C', str(ROOT), 'show',
+             f'{DESIGN_COMMIT}:docs/design/evidence/issue-462-horse-icons/masters/treatment-b/bay-1024.png'],
+            capture_output=True, timeout=60)
+        if treatment_b.returncode == 0:
+            injected = app/'Palomino60x60@2x.png'
+            injected.write_bytes(treatment_b.stdout)
+            check('bundle-treatment-b-png', root, app)
+            injected.unlink()
+        reduced = Path(temp)/'reduced-catalog'
+        shutil.copytree(ROOT/'ios/FleetNotifier/Assets.xcassets', reduced)
+        shutil.rmtree(reduced/'Palomino.appiconset')
+        compiled = Path(temp)/'reduced-car'
+        compiled.mkdir()
+        actool = subprocess.run(
+            ['xcrun', 'actool', str(reduced), '--compile', str(compiled),
+             '--platform', 'iphonesimulator', '--minimum-deployment-target', '17.0',
+             '--app-icon', 'AppIcon',
+             '--alternate-app-icon', 'Black', '--alternate-app-icon', 'Grey',
+             '--target-device', 'iphone', '--target-device', 'ipad',
+             '--output-partial-info-plist', str(compiled/'partial.plist'),
+             '--errors', '--warnings'], capture_output=True, text=True, timeout=180)
+        assert actool.returncode == 0, f'reduced catalog did not compile: {actool.stdout}{actool.stderr}'
+        assets.write_bytes((compiled/'Assets.car').read_bytes())
+        check('bundle-missing-alternate-rendition', root, app)
+        assets.write_bytes(saved)
     check('restored-real-green', ROOT, args.app, 0)
     print(f'PASS: {len(results)} real CLI checks, disposable mutations only')
 

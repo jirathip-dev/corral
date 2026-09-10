@@ -35,19 +35,19 @@
 		C0DE384BE4B4265BEB4C1808 /* StateStyleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D48969B39CAC1EDAC289B97C /* StateStyleTests.swift */; };
 		D255BE88E7E632EB7D66A128 /* AppTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 618453091ACB944DC94CC9DD /* AppTheme.swift */; };
 		D2912B39BEEAE10FC78B61AB /* AddHostCommitEvidenceURLProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA8DA0D8FF70742D57C6ABE0 /* AddHostCommitEvidenceURLProtocol.swift */; };
-		DCD41E9F059A95EB83BB3EF7 /* live_session_exchange_golden.json in Resources */ = {isa = PBXBuildFile; fileRef = F053253FC8F5BCC5570D5D85 /* live_session_exchange_golden.json */; };
 		E0F3758F2A7AE656DACBC57A /* StateStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5544FDC9B954FE32A7275A43 /* StateStyle.swift */; };
 		E8666FA8221C7D1DFBC5A192 /* LocalNotifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6CE363C959DE49C12B69596 /* LocalNotifier.swift */; };
 		E879ADEFC9C8FAA51656B117 /* KeyContinuityGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA140E666807BDE06A8CFAB6 /* KeyContinuityGate.swift */; };
 		E8914363F8A3C1658F96CA3F /* PushPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1B824D203FC54632815108 /* PushPayload.swift */; };
 		EE1946637720786C9E6E45A5 /* BoardModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8277522F2489E093BC28309 /* BoardModel.swift */; };
 		EF3EC8BE7904D4B3B6E47091 /* TimeInState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49D01A23F02B422A1C580729 /* TimeInState.swift */; };
+		F00A95820EC32AD67C24B5D5 /* live_session_exchange_golden.json in Resources */ = {isa = PBXBuildFile; fileRef = 3A93FB1435D5ABF159C4E740 /* live_session_exchange_golden.json */; };
 		F1F96712EA848F5A79DC0AE7 /* HerdArt.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57CF73196010B8A07065E85F /* HerdArt.swift */; };
 		F29B7576B01D8F83FCF49CE4 /* CanonicalJSON.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3F69E69DEE5BCC3A5CBDC5E /* CanonicalJSON.swift */; };
 		F2CF3ACD1811505E1FCAE1BC /* HerdTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA6724B7E29BAE37678BF8A8 /* HerdTests.swift */; };
 		F633BB49ACEC0A2CB69B3B35 /* FleetStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0642A04325429AB1072D2ADB /* FleetStore.swift */; };
-		F7485A90D775DE1F1925DD11 /* canonical_stream_golden.json in Resources */ = {isa = PBXBuildFile; fileRef = 4F2E83FFB80E707489A845E7 /* canonical_stream_golden.json */; };
 		F794410330A6BA02430E5AC9 /* HerdModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B95E9B064296CFE296E3717E /* HerdModel.swift */; };
+		FFD1D4493ED1D25A71AC8B00 /* canonical_stream_golden.json in Resources */ = {isa = PBXBuildFile; fileRef = 7211537F92270E1B261F0255 /* canonical_stream_golden.json */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -68,17 +68,18 @@
 		26A964F18A76BB557547C558 /* HerdEnvironmentChoice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdEnvironmentChoice.swift; sourceTree = "<group>"; };
 		28FFFBB41044D976415E89BF /* FleetNotifierTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FleetNotifierTests.swift; sourceTree = "<group>"; };
 		2C9ED72A6994B72236953BF4 /* NotificationPermission.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationPermission.swift; sourceTree = "<group>"; };
+		3A93FB1435D5ABF159C4E740 /* live_session_exchange_golden.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; name = live_session_exchange_golden.json; path = ../tests/fixtures/live_session_exchange_golden.json; sourceTree = "<group>"; };
 		44FA86DC0C83D2F4FF8AE707 /* CorraldClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CorraldClient.swift; sourceTree = "<group>"; };
 		49B690693FFABE1900E59374 /* HostProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostProfile.swift; sourceTree = "<group>"; };
 		49D01A23F02B422A1C580729 /* TimeInState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimeInState.swift; sourceTree = "<group>"; };
 		4B067A4097474D65BC031C32 /* DeviceKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceKeyStore.swift; sourceTree = "<group>"; };
-		4F2E83FFB80E707489A845E7 /* canonical_stream_golden.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = canonical_stream_golden.json; sourceTree = "<group>"; };
 		50F26DAD993D41DCB89F3342 /* HostKeyTrust.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostKeyTrust.swift; sourceTree = "<group>"; };
 		5544FDC9B954FE32A7275A43 /* StateStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StateStyle.swift; sourceTree = "<group>"; };
 		57CF73196010B8A07065E85F /* HerdArt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdArt.swift; sourceTree = "<group>"; };
 		5BE93BE3E43A856F09154FE7 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		618453091ACB944DC94CC9DD /* AppTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppTheme.swift; sourceTree = "<group>"; };
 		6B21EE35CCFE7F224BFA95B8 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		7211537F92270E1B261F0255 /* canonical_stream_golden.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; name = canonical_stream_golden.json; path = ../tests/fixtures/canonical_stream_golden.json; sourceTree = "<group>"; };
 		77E397B25B007445181A67AA /* DriveClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveClient.swift; sourceTree = "<group>"; };
 		8439EED775F825EE1DE8EAC3 /* FleetViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FleetViews.swift; sourceTree = "<group>"; };
 		8D352A1E84318BD30D5AF512 /* SSEParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSEParser.swift; sourceTree = "<group>"; };
@@ -103,7 +104,6 @@
 		DD76760F92DA9C8F78AD6996 /* HerdEnvironmentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdEnvironmentTests.swift; sourceTree = "<group>"; };
 		DED1E1C5A83268A2D7B17071 /* FleetNotifier-Release.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "FleetNotifier-Release.entitlements"; sourceTree = "<group>"; };
 		EA8DA0D8FF70742D57C6ABE0 /* AddHostCommitEvidenceURLProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddHostCommitEvidenceURLProtocol.swift; sourceTree = "<group>"; };
-		F053253FC8F5BCC5570D5D85 /* live_session_exchange_golden.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = live_session_exchange_golden.json; sourceTree = "<group>"; };
 		F6CE363C959DE49C12B69596 /* LocalNotifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalNotifier.swift; sourceTree = "<group>"; };
 		F933E32D259974E2C207BA96 /* RecentOutputModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecentOutputModel.swift; sourceTree = "<group>"; };
 		FB5C19509398D4E45B76831E /* HerdView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdView.swift; sourceTree = "<group>"; };
@@ -121,15 +121,6 @@
 				AA140E666807BDE06A8CFAB6 /* KeyContinuityGate.swift */,
 			);
 			path = Profiles;
-			sourceTree = "<group>";
-		};
-		088B9CCD9223C87782CB4F45 /* fixtures */ = {
-			isa = PBXGroup;
-			children = (
-				4F2E83FFB80E707489A845E7 /* canonical_stream_golden.json */,
-				F053253FC8F5BCC5570D5D85 /* live_session_exchange_golden.json */,
-			);
-			path = fixtures;
 			sourceTree = "<group>";
 		};
 		115A5618C4FB65C2FD1CAEDE /* Notifications */ = {
@@ -158,11 +149,20 @@
 		1E992DB4A3E79C63FDC07779 = {
 			isa = PBXGroup;
 			children = (
+				2B5070218CAB8DAB992B6B00 /* Fixtures */,
 				7D8334B18E7321E5C5F850E4 /* FleetNotifier */,
 				19046018A86CD11555F070AF /* FleetNotifierTests */,
-				9A2F3D1BD39343142F8D5E98 /* issue-444-herd-native */,
 				ACC02147A1A8360BA16C8448 /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		2B5070218CAB8DAB992B6B00 /* Fixtures */ = {
+			isa = PBXGroup;
+			children = (
+				7211537F92270E1B261F0255 /* canonical_stream_golden.json */,
+				3A93FB1435D5ABF159C4E740 /* live_session_exchange_golden.json */,
+			);
+			name = Fixtures;
 			sourceTree = "<group>";
 		};
 		344952870B29AC48E1D31AA7 /* UI */ = {
@@ -236,23 +236,6 @@
 				5BE93BE3E43A856F09154FE7 /* Info.plist */,
 			);
 			path = FleetNotifier;
-			sourceTree = "<group>";
-		};
-		9A2F3D1BD39343142F8D5E98 /* issue-444-herd-native */ = {
-			isa = PBXGroup;
-			children = (
-				A47C05EC1660F41AD374AD4E /* tests */,
-			);
-			name = "issue-444-herd-native";
-			path = ..;
-			sourceTree = "<group>";
-		};
-		A47C05EC1660F41AD374AD4E /* tests */ = {
-			isa = PBXGroup;
-			children = (
-				088B9CCD9223C87782CB4F45 /* fixtures */,
-			);
-			path = tests;
 			sourceTree = "<group>";
 		};
 		ACC02147A1A8360BA16C8448 /* Products */ = {
@@ -385,8 +368,8 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				F7485A90D775DE1F1925DD11 /* canonical_stream_golden.json in Resources */,
-				DCD41E9F059A95EB83BB3EF7 /* live_session_exchange_golden.json in Resources */,
+				FFD1D4493ED1D25A71AC8B00 /* canonical_stream_golden.json in Resources */,
+				F00A95820EC32AD67C24B5D5 /* live_session_exchange_golden.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -556,6 +539,7 @@
 		38A5E46A8C2B5C9A145F271E /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "Palomino Black Grey";
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS = YES;
 				CODE_SIGN_ENTITLEMENTS = FleetNotifier/FleetNotifier.entitlements;
@@ -575,6 +559,7 @@
 		7F3AD32ECE65F2E00367288E /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "Palomino Black Grey";
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS = YES;
 				CODE_SIGN_ENTITLEMENTS = "FleetNotifier/FleetNotifier-Release.entitlements";

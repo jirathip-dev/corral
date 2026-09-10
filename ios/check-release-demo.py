@@ -309,7 +309,21 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # Corral-Epoch, and the per-host cursor mirrors carry the epoch
     # (HostProfile/Store/Coordinator/AppModel) — re-pinned over the #450
     # source set.
-    "9087541d5a0ec9d933c5bce3327e1d25dd1050aba274b03922e78b71892abeba"
+    # #449: Herd paddocks prioritize connected working repositories while
+    # preserving identity selection; DEBUG evidence records the live reorder.
+    # r2 integration refresh: #449 + #458 merged source set — the digest
+    # is regenerated from the merged checkout; neither parent pin applies.
+    # #458: persisted Board/Herd preference — AppModel restores the saved
+    # presentation (Board default for missing/invalid) and owns the
+    # select/saved/openBoard presentation API; FleetViews dropped the
+    # principal top Board/Herd switch for the canonical Appearance-section
+    # picker and gained the #458 evidence sequence driver; FleetNotifierApp
+    # gained the Corral458Presentation launch scenarios + the accessibility
+    # size route + demo-notification suppression for the evidence sim —
+    # re-pinned over the #458 source set.
+    # #450 fix r1: F1 repair (stream-only epoch-reset authority) — this
+    # constant is re-pinned at the repaired merged head.
+    "0cb9dc0ca3a6e44527685e81603420fe18b92bcce3d77c3c69a415d4fc71db7e"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -460,7 +474,14 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # rejection, connection-generation isolation) and StaleCursorTests
     # (epoch persistence + legacy numeric-only resume) — re-pinned over
     # the #450 test source.
-    "01f6e73e1ff3cd30847815bfd6bdf731e05d79753273fbcdfd5b9c440ba49867"
+    # #458: PresentationPreferenceTests (restore/round-trip/override/
+    # stream-preservation/demo-isolation), the HerdTests openBoard routing
+    # assertion, and the SettingsAccessWiringTests DEBUG-gated opener count
+    # (12 with the #458 presentation driver) — re-pinned over the #458 test
+    # source.
+    # #450 fix r1: escaped-pull regression (handleStaleAgent) — this
+    # constant is re-pinned at the repaired merged head.
+    "9ed5585f57cef172bc4035b77a6ddda20536ca32fab54a87e91525de2b320ccd"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

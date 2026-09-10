@@ -177,7 +177,7 @@ private struct PendingNotificationTap: Sendable, Equatable {
 /// that opens an agent's recents from a notification tap.
 @MainActor
 final class AppModel: ObservableObject {
-    @Published var fleetPresentation: FleetPresentation = .board
+    @Published var fleetPresentation: FleetPresentation
     enum Mode: Equatable, Sendable {
         case needsSetup
         case live
@@ -419,6 +419,7 @@ final class AppModel: ObservableObject {
     private let profileStore: HostProfileStore?
 
     private static let activeProfileKey = "fleetnotifier.activeHostProfileID"
+    static let fleetPresentationKey = "fleetnotifier.fleetPresentation"
 
     /// #93: `fleet` is a NESTED `ObservableObject`. `@Published` fires only
     /// when the REFERENCE is reassigned — it does not forward the child's
@@ -431,6 +432,39 @@ final class AppModel: ObservableObject {
 
     static let notificationsKey = "fleetnotifier.notificationsEnabled"
     private static let log = Logger(subsystem: "com.corral.fleetnotifier", category: "host-profiles")
+
+    /// #458: the persisted Board/Herd preference (the value a cold relaunch
+    /// restores). `fleetPresentation` may temporarily diverge from it while
+    /// an Open Board recovery override is active.
+    var savedFleetPresentation: FleetPresentation {
+        FleetPresentation(rawValue: defaults.string(forKey: Self.fleetPresentationKey) ?? "")
+            ?? .board
+    }
+
+    /// #458: Settings → Appearance selection. Applies immediately and
+    /// persists as the cold-relaunch default (Board for missing/invalid).
+    func selectFleetPresentation(_ presentation: FleetPresentation) {
+        defaults.set(presentation.rawValue, forKey: Self.fleetPresentationKey)
+        fleetPresentation = presentation
+    }
+
+    /// #458: Open Board recovery — a TEMPORARY override of the current
+    /// presentation. It never touches the saved preference, so a cold
+    /// relaunch still restores the Settings selection.
+    func openBoard() {
+        fleetPresentation = .board
+    }
+
+#if DEBUG
+    /// #458 evidence: demo launches on a simulator whose notification
+    /// authorization was never answered cannot tap the OS alert away
+    /// (simctl has no notification service). Demo mode has no live
+    /// notification surface, so the one-shot OS prompt is suppressed —
+    /// the same carve-out the #415 commit-evidence driver uses.
+    func suppressOSNotificationPromptForDemoEvidence() {
+        notificationsConfigured = true
+    }
+#endif
 
     /// The device's current read grant set, decoded from the daemon's
     /// register/grants-read responses. Demo mode (Debug only) treats the
@@ -515,6 +549,9 @@ final class AppModel: ObservableObject {
          profileStore: HostProfileStore? = nil,
          haptics: @escaping () -> Void = Haptics.selection,
          notificationPermissionProvider: NotificationPermissionProviding = SystemNotificationPermissionProvider()) {
+        self.fleetPresentation = FleetPresentation(
+            rawValue: defaults.string(forKey: Self.fleetPresentationKey) ?? ""
+        ) ?? .board
         self.session = session
         self.identityLifecycle = identityLifecycle
         self.defaults = defaults

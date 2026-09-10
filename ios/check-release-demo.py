@@ -303,6 +303,10 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # #428 source set.
     # #444 correction 1: native procedural Herd plus DEBUG-only evidence;
     # original V1 paths and scene/lifecycle sources are all digest-bound.
+    # #449: Herd paddocks prioritize connected working repositories while
+    # preserving identity selection; DEBUG evidence records the live reorder.
+    # r2 integration refresh: #449 + #458 merged source set — the digest
+    # is regenerated from the merged checkout; neither parent pin applies.
     # #458: persisted Board/Herd preference — AppModel restores the saved
     # presentation (Board default for missing/invalid) and owns the
     # select/saved/openBoard presentation API; FleetViews dropped the
@@ -311,7 +315,7 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # gained the Corral458Presentation launch scenarios + the accessibility
     # size route + demo-notification suppression for the evidence sim —
     # re-pinned over the #458 source set.
-    "cc9e02ffb5df7770e4620dc3fefd5f29ae33a67d14b570a977be3834fbe2b8f7"
+    "0cb9dc0ca3a6e44527685e81603420fe18b92bcce3d77c3c69a415d4fc71db7e"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

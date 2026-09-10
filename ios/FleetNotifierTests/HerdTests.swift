@@ -15,6 +15,7 @@ final class HerdTests: XCTestCase {
         XCTAssertTrue(button.contains(".frame(minWidth:156,minHeight:44).contentShape(Rectangle())"))
         XCTAssertTrue(button.contains(".accessibilityLabel("))
         XCTAssertTrue(herd.contains("minimum:dynamicType.isAccessibilitySize?width-32:156"))
+        XCTAssertTrue(herd.contains("paddockID=HerdProjection.reconciledPaddockID(paddockID,in:ids)"))
         let board = try source("FleetViews")
         let start = try XCTUnwrap(board.range(of:"HerdView(horses:"))
         let end = try XCTUnwrap(board.range(of:"retry:",range:start.upperBound..<board.endIndex))
@@ -115,6 +116,62 @@ final class HerdTests: XCTestCase {
         XCTAssertEqual(all.filter(\.disconnected).count, 1)
     }
 
+    func testPaddocksPrioritizeWorkingRepositoriesThenAlphabetizeEachTier() {
+        let horses = [
+            herdHorse("inactive-alpha", repo: "alpha", state: .idle),
+            herdHorse("active-zulu", repo: "zulu", state: .working),
+            herdHorse("active-beta", repo: "beta", state: .working),
+            herdHorse("active-other", repo: nil, state: .working),
+            herdHorse("inactive-gamma", repo: "gamma", state: .done),
+        ]
+        let expected: [String?] = ["beta", "zulu", nil, "alpha", "gamma"]
+        XCTAssertEqual(HerdProjection.paddocks(horses).map(\.repo), expected)
+    }
+
+    func testPaddocksDoNotPromoteDisconnectedWorkingOrBlockedAgents() {
+        let horses = [
+            herdHorse("stale-alpha", repo: "alpha", state: .working, disconnected: true),
+            herdHorse("blocked-beta", repo: "beta", state: .blocked),
+            herdHorse("active-zulu", repo: "zulu", state: .working),
+        ]
+        let expected: [String?] = ["zulu", "alpha", "beta"]
+        XCTAssertEqual(HerdProjection.paddocks(horses).map(\.repo), expected)
+    }
+
+    func testPaddockOrderingTracksWorkingIdleDoneAndReconnectTransitions() {
+        let alpha = herdHorse("inactive-alpha", repo: "alpha", state: .idle)
+        func repos(_ state: AgentState, disconnected: Bool = false) -> [String?] {
+            HerdProjection.paddocks([
+                alpha,
+                herdHorse("changing-zulu", repo: "zulu", state: state, disconnected: disconnected),
+            ]).map(\.repo)
+        }
+        XCTAssertEqual(repos(.working), ["zulu", "alpha"])
+        XCTAssertEqual(repos(.idle), ["alpha", "zulu"])
+        XCTAssertEqual(repos(.done), ["alpha", "zulu"])
+        XCTAssertEqual(repos(.working, disconnected: true), ["alpha", "zulu"])
+        XCTAssertEqual(repos(.working, disconnected: false), ["zulu", "alpha"])
+    }
+
+    func testPaddockSelectionPreservesIdentityAcrossReorderAndFallsBackAfterRemoval() {
+        let selected = "repo:zulu"
+        let activeFirst = HerdProjection.paddocks([
+            herdHorse("inactive-alpha", repo: "alpha", state: .idle),
+            herdHorse("active-zulu", repo: "zulu", state: .working),
+        ]).map(\.id)
+        XCTAssertEqual(activeFirst, [selected, "repo:alpha"])
+        XCTAssertEqual(HerdProjection.reconciledPaddockID(nil, in: activeFirst), selected)
+
+        let reordered = HerdProjection.paddocks([
+            herdHorse("active-alpha", repo: "alpha", state: .working),
+            herdHorse("inactive-zulu", repo: "zulu", state: .idle),
+        ]).map(\.id)
+        XCTAssertEqual(reordered, ["repo:alpha", selected])
+        XCTAssertEqual(HerdProjection.reconciledPaddockID(selected, in: reordered), selected)
+        XCTAssertEqual(HerdProjection.reconciledPaddockID(selected, in: ["repo:alpha"]), "repo:alpha")
+        XCTAssertNil(HerdProjection.reconciledPaddockID(selected, in: []))
+    }
+
     func testNativePlaneRatiosDirectionCoverageAndOneSceneLighting() {
         XCTAssertEqual(RanchEnvironment.planes, [.sky,.hills,.ground,.barnTrees,.rearFences,.foreground])
         XCTAssertEqual(RanchPlane.allCases.map(\.ratio), [0.05,0.12,0.22,0.4,0.4,0.65,1,0])
@@ -185,6 +242,12 @@ final class HerdTests: XCTestCase {
         let ears = art.drawing(identity, pose: .graze).filter { $0.part == "grazing-ear" }
         XCTAssertEqual(ears.count, 2, "two separated ears at the poll")
         XCTAssertTrue(ears.allSatisfy { $0.path.boundingRect.height >= 6 })
+    }
+
+    private func herdHorse(_ id: String, repo: String?, state: AgentState,
+                           disconnected: Bool = false) -> HerdHorse {
+        HerdHorse(agent: Agent(agentId: id, state: state, workspace: Workspace(repo: repo)),
+                  hostProfileID: nil, hostName: nil, disconnected: disconnected)
     }
 }
 

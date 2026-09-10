@@ -68,8 +68,15 @@ struct HerdPaddock: Identifiable {
 enum HerdProjection {
     static func paddocks(_ horses: [HerdHorse]) -> [HerdPaddock] {
         let grouped = Dictionary(grouping: horses) { BoardModel.repoKey(of: $0.agent) }
-        return grouped.keys.sorted { ($0 ?? "\u{10ffff}") < ($1 ?? "\u{10ffff}") }
-            .map { HerdPaddock(repo: $0, horses: grouped[$0] ?? []) }
+        return grouped.keys.sorted { left, right in
+            let leftWorking = grouped[left]?.contains { $0.state == .working } == true
+            let rightWorking = grouped[right]?.contains { $0.state == .working } == true
+            if leftWorking != rightWorking { return leftWorking }
+            return (left ?? "\u{10ffff}") < (right ?? "\u{10ffff}")
+        }.map { HerdPaddock(repo: $0, horses: grouped[$0] ?? []) }
+    }
+    static func reconciledPaddockID(_ selected: String?, in ids: [String]) -> String? {
+        ids.contains(selected ?? "") ? selected : ids.first
     }
     static func single(_ sections: BoardModel.Sections, host: UUID?, disconnected: Bool) -> [HerdHorse] {
         sections.statuses.flatMap(\.subgroups).flatMap(\.agents).map {

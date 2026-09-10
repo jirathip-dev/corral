@@ -65,12 +65,21 @@ def main():
     assert first['paddock']==f'repo:{selected}', 'phase 1 did not select the active-first repository'
     assert first['paddockPosition']==1, 'phase 1 selected repository is not first'
     assert second['paddock']==first['paddock'], 'selected repository identity changed during reorder'
-    assert second['paddockOrder']!=first_order, 'phase 2 did not reorder paddocks'
+    if args.offline:
+        assert second['paddockOrder']==first_order, 'disconnected fixture reordered paddocks'
+    else:
+        assert second['paddockOrder']!=first_order, 'phase 2 did not reorder paddocks'
     assert selected in second['paddockOrder'], 'selected repository disappeared during reorder'
-    assert second['paddockPosition']==second['paddockOrder'].index(selected)+1==3, 'phase 2 selected repository position is not its new fixture index'
+    if args.offline:
+        assert second['paddockPosition']==second['paddockOrder'].index(selected)+1, 'phase 2 selected repository position is not its order index'
+    else:
+        assert second['paddockPosition']==second['paddockOrder'].index(selected)+1==3, 'phase 2 selected repository position is not its new fixture index'
     for phase in [first,second]:
         working=phase['workingPaddocks']
-        assert working and phase['paddockOrder'][:len(working)]==working, f"{phase['phase']} working paddocks are not the active prefix"
+        if args.offline:
+            assert not working, f"{phase['phase']} disconnected fixture reported working paddocks"
+        else:
+            assert working and phase['paddockOrder'][:len(working)]==working, f"{phase['phase']} working paddocks are not the active prefix"
     day=captured['01-day-grazing']['marker']; night=captured['02-night-same-scene']['marker']
     assert day['sceneID']==night['sceneID'] and day['horseIDs']==night['horseIDs'] and day['paddock']==night['paddock']
     assert not day['night'] and night['night']

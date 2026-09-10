@@ -357,7 +357,11 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # shell) — union of ALL source sets; the pin below is recomputed from
     # THIS merged checkout; neither parent pin (30e6fe4e…, 00cdc240…)
     # applies.
-    "8520aa200c26a9636bbab56380b0a47e8b997e8d6d105958d089efa9793645e0"
+    # #425 addendum: FleetStore transport-liveness policy/heartbeat/watchdog
+    # (+ clean-EOF posture, stale-aware pull recovery) and CorraldClient
+    # onActivity/onStreamEnded byte-path signals — re-pinned over the #468
+    # merged source set.
+    "a898ad7afd2ea2b1cd7fe001cdd3fe2e6c7afec9fc5bf58b1f45efd39ec37ecb"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -528,7 +532,11 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # (HerdTests.swift, outside this pin); the pinned FleetNotifierTests.swift
     # is byte-unchanged by the refresh — digest recomputed over the merged
     # checkout (same value).
-    "4c99abf0756a5b6c4d49abd91a244d2c032e5fadd0b024a116ece1d54bd0f2bf"
+    # #425 addendum: HeartbeatRecoveryTests — real client byte-path regression
+    # for comment-only keep-alives, silent (half-open) drops, clean EOF,
+    # exactly-once stale replacement and per-host watchdog teardown —
+    # re-pinned over the #468 merged test source.
+    "5200562a6f3b9610153f02f962dace4e8f16c323da56b66df4885a030add2e35"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

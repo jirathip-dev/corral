@@ -317,7 +317,9 @@ final class FullScreenHerdShellWiringTests: XCTestCase {
 
     func testFloatingTopScopeAndSettingsReplaceTheBoardHeaderAndToolbar() throws {
         let board = try source("FleetViews")
-        let herdStart = try XCTUnwrap(board.range(of: "if model.fleetPresentation == .herd"))
+        // #457: the herd branch gate moved into `showsHerdSurface` (shared
+        // by the body branch and the filter sheet's presentation context).
+        let herdStart = try XCTUnwrap(board.range(of: "if showsHerdSurface {"))
         let herdCall = try XCTUnwrap(board.range(of: "HerdView(horses:",
                                                  range: herdStart.upperBound..<board.endIndex))
         let branch = String(board[herdStart.lowerBound..<herdCall.lowerBound])
@@ -340,8 +342,8 @@ final class FullScreenHerdShellWiringTests: XCTestCase {
                       "the floating scope control opens the real filter sheet")
         XCTAssertTrue(herd.contains("Button{showSettings=true}label:"),
                       "the floating Settings control opens the real Settings sheet")
-        XCTAssertTrue(herd.contains("HerdGearGlyph(color:theme.text)"),
-                      "the floating Settings control draws its gear natively")
+        XCTAssertTrue(herd.contains("HerdGearGlyph(color:ranchTokens.inkColor)"),
+                      "the floating Settings control draws its gear natively, in the ranch chrome ink (#457)")
         XCTAssertFalse(herd.contains("Image("),
                        "the Herd renderer stays procedural (fail-closed native-art gate)")
         XCTAssertTrue(herd.contains("privatevartopChrome:someView"),
@@ -375,8 +377,8 @@ final class FullScreenHerdShellWiringTests: XCTestCase {
                       "the outage keeps the Retry action")
         XCTAssertTrue(herd.contains("ContentUnavailableView(\"Noagentsinthisscope\""),
                       "an empty scope keeps its explicit empty state")
-        XCTAssertTrue(herd.contains("Text(scopeSummary).font(.caption2).foregroundStyle(theme.subtext1).lineLimit(1).truncationMode(.tail)"),
-                      "long repository scope summaries stay single-line and truncate")
+        XCTAssertTrue(herd.contains("Text(scopeSummary).font(.caption2).foregroundStyle(ranchTokens.mutedColor).lineLimit(1).truncationMode(.tail)"),
+                      "long repository scope summaries stay single-line and truncate (ranch ink, #457)")
         XCTAssertTrue(herd.contains("Text(paddock.title).font(.headline).lineLimit(1)"),
                       "long paddock titles stay single-line")
         XCTAssertTrue(herd.contains("Text(lighting.explanation).font(.caption2)"),
@@ -715,6 +717,9 @@ final class PresentationPreferenceTests: XCTestCase {
 /// pin cannot show where a glyph landed. Re-introducing the squeeze (a
 /// fixed-height chrome / dropped layout priority) turns the accessibility
 /// cases RED while the default-size case stays GREEN as the positive control.
+/// #457: the floating chrome renders the approved cream ranch Day glass with
+/// dark ranch ink — the pixel detectors are anchored to that treatment (a
+/// bright, low-saturation chrome band + dark ink glyphs).
 @MainActor
 final class FullScreenHerdShellAccessibilityLayoutTests: XCTestCase {
 
@@ -791,12 +796,51 @@ final class FullScreenHerdShellAccessibilityLayoutTests: XCTestCase {
             return count
         }
 
-        /// First dark material band (the floating pills/cards) at a column.
-        func materialBand(x: Int, from: Int, to: Int) -> (top: Int, bottom: Int)? {
-            guard let top = (max(0, from)..<min(height, to)).first(where: { luminance(x, $0) < 90 }),
-                  let bottom = (top + 4..<height).first(where: { luminance(x, $0) >= 90 })
+        /// #457: the Day ranch chrome is the cream ranch glass. Pixel
+        /// classes on this surface: the cream interior is near-neutral
+        /// (green ≈ red); the anti-aliased edges blend toward the cool sky
+        /// (slightly blue-dominant); the bright khaki hills and pale
+        /// horizon sky are GREEN-dominant and must never read as chrome
+        /// (the measured SE-AX frame shows the hills directly between the
+        /// pill and the counts card). (The #456 detectors keyed on the old
+        /// flavor material; the approved Day chrome inverts that luminance
+        /// model.)
+        func isChromeSurface(_ x: Int, _ y: Int) -> Bool {
+            guard x >= 0, x < width, y >= 0, y < height else { return false }
+            let colour = rgb(x, y)
+            let saturation = max(colour.red, colour.green, colour.blue)
+                - min(colour.red, colour.green, colour.blue)
+            guard luminance(x, y) > 150, saturation < 80 else { return false }
+            let redGreen = colour.green - colour.red
+            if redGreen <= 12 { return true }
+            let blueGreen = colour.blue - colour.green
+            return blueGreen > 0 && blueGreen <= 8 && colour.red >= colour.blue - 45
+        }
+
+        /// First cream-chrome band (the floating pills/cards) at a column.
+        func chromeBand(x: Int, from: Int, to: Int) -> (top: Int, bottom: Int)? {
+            guard let top = (max(0, from)..<min(height, to)).first(where: { isChromeSurface(x, $0) }),
+                  let bottom = (top + 4..<height).first(where: { !isChromeSurface(x, $0) })
             else { return nil }
             return (top, bottom)
+        }
+
+        /// Ranch-ink glyph pixels (#457 Day chrome labels — dark ink on the
+        /// cream surface; the sky/field stay above the ink threshold).
+        func isInkGlyph(_ x: Int, _ y: Int) -> Bool {
+            guard x >= 0, x < width, y >= 0, y < height else { return false }
+            let colour = rgb(x, y)
+            let saturation = max(colour.red, colour.green, colour.blue)
+                - min(colour.red, colour.green, colour.blue)
+            return luminance(x, y) < 115 && saturation < 90
+        }
+
+        func inkGlyphs(rows: Range<Int>, columns: Range<Int>) -> Int {
+            var count = 0
+            for y in rows where y >= 0 && y < height {
+                for x in columns where x >= 0 && x < width && isInkGlyph(x, y) { count += 1 }
+            }
+            return count
         }
 
         /// The bottom-most contiguous glyph band inside `rows` — the floating
@@ -864,27 +908,28 @@ final class FullScreenHerdShellAccessibilityLayoutTests: XCTestCase {
 
     /// The floating scope-chrome contract at any Dynamic Type size: the pill
     /// sits inside the top safe area, the scope label renders INSIDE the
-    /// pill's own material (never above it in the status-bar band) and the
-    /// counts card below it never covers the scope summary.
+    /// pill's own ranch surface (never above it in the status-bar band) and
+    /// the counts card below it never covers the scope summary.
     private func assertScopeChromeHoldsItsLabel(_ snapshot: Snapshot, label: String) throws {
         let canvas = snapshot.canvas
-        let pill = try XCTUnwrap(canvas.materialBand(x: 44, from: 0, to: 400),
+        let pill = try XCTUnwrap(canvas.chromeBand(x: 44, from: 0, to: 400),
                                  "\(label): the floating scope pill must render")
         XCTAssertGreaterThanOrEqual(Double(pill.top), Double(snapshot.safeTop) - 2,
             "\(label): the floating chrome starts inside the top safe area "
             + "(pill top \(pill.top) pt, safe top \(snapshot.safeTop) pt)")
         XCTAssertGreaterThanOrEqual(pill.bottom - pill.top, 44,
-            "\(label): the scope control keeps a >= 44 pt target")
-        let above = canvas.labelGlyphs(rows: 0..<pill.top, columns: 48..<200)
+            "\(label): the scope control keeps a >= 44 pt target "
+            + "(measured chrome band \(pill.bottom - pill.top) pt)")
+        let above = canvas.inkGlyphs(rows: 0..<pill.top, columns: 48..<200)
         XCTAssertEqual(above, 0,
             "\(label): \(above) px of scope text render ABOVE the pill "
             + "(status-bar / Dynamic Island band)")
-        let inside = canvas.labelGlyphs(rows: pill.top..<pill.bottom, columns: 48..<200)
+        let inside = canvas.inkGlyphs(rows: pill.top..<pill.bottom, columns: 48..<200)
         XCTAssertGreaterThanOrEqual(inside, 40,
             "\(label): the scope label must render inside the pill's own material (found \(inside) px)")
-        let card = try XCTUnwrap(canvas.materialBand(x: 44, from: pill.bottom + 2, to: canvas.height),
+        let card = try XCTUnwrap(canvas.chromeBand(x: 44, from: pill.bottom + 2, to: canvas.height),
                                  "\(label): the counts card must render below the floating scope pill")
-        let gap = canvas.labelGlyphs(rows: (pill.bottom + 1)..<card.top, columns: 48..<200)
+        let gap = canvas.inkGlyphs(rows: (pill.bottom + 1)..<card.top, columns: 48..<200)
         XCTAssertEqual(gap, 0,
             "\(label): \(gap) px of scope text render between the pill and the counts card — "
             + "the counts card must never cover the scope summary")
@@ -920,10 +965,11 @@ final class FullScreenHerdShellAccessibilityLayoutTests: XCTestCase {
             let snapshot = try await render(size, dynamicType: .accessibility5)
             let canvas = snapshot.canvas
             let label = "AX-XXXL \(Int(size.width))x\(Int(size.height))"
-            let pill = try XCTUnwrap(canvas.materialBand(x: 44, from: 0, to: 400),
+            let pill = try XCTUnwrap(canvas.chromeBand(x: 44, from: 0, to: 400),
                                      "\(label): the floating scope pill must render")
             XCTAssertGreaterThanOrEqual(pill.bottom - pill.top, 44,
-                "\(label): the floating scope control keeps a >= 44 pt target")
+                "\(label): the floating scope control keeps a >= 44 pt target "
+                + "(measured chrome band \(pill.bottom - pill.top) pt)")
             let nav = try XCTUnwrap(canvas.bottomTextBand(rows: max(0, canvas.height - 240)..<canvas.height,
                                                           columns: 24..<(canvas.width - 24)),
                                     "\(label): the floating bottom navigation labels must render")
@@ -934,6 +980,436 @@ final class FullScreenHerdShellAccessibilityLayoutTests: XCTestCase {
             XCTAssertLessThanOrEqual(Double(nav.bottom) + 22,
                                      Double(size.height) - Double(snapshot.safeBottom) + 2,
                 "\(label): the floating bottom navigation stays inside the safe area")
+        }
+    }
+}
+
+// MARK: - #457 ranch-context controls + shared filter sheet
+
+/// #457: the shared filter sheet's explicit Board/Herd presentation
+/// context, the sealed ranch Day/Night token palette, the dual-fallback
+/// chrome recipe and the environment/theme independence.
+///
+/// The runtime cases render the REAL `RanchChromeSurface` recipe in a
+/// hosted window: the sealed tokens must composite into the ranch
+/// Day/Night surfaces (bright warm cream / near-black blue-green —
+/// independent of ambient flavor), and the Reduce Transparency /
+/// Increase Contrast branch must paint the OPAQUE ranch solid (a source
+/// pin alone cannot show a composite, and the Day/Night frames prove the
+/// environment axis actually reaches the rendered pixels). The wiring
+/// cases slice the bundled sources: exactly ONE shared sheet with the
+/// explicit context, herd tokens ONLY in the herd chrome, and the board
+/// path byte-unchanged. The interaction case proves the lighting the
+/// chrome resolves is REPORTED to the sheet-context owner (FleetView).
+@MainActor
+final class ContextualFilterSheetTests: XCTestCase {
+
+    // MARK: bundled-source helpers
+
+    private func source(_ name: String) throws -> String {
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: name + ".swift",
+                                                            withExtension: "txt"))
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    /// Whitespace-stripped form — pins survive re-indentation.
+    private func compact(_ text: String) -> String {
+        text.filter { !$0.isWhitespace }
+    }
+
+    private func slice(_ source: String, from: String, to: String) throws -> String {
+        let start = try XCTUnwrap(source.range(of: from),
+                                  "start marker missing: \(from)")
+        let end = try XCTUnwrap(source.range(of: to, range: start.upperBound..<source.endIndex),
+                                "end marker missing after \(from): \(to)")
+        return String(source[start.lowerBound..<end.lowerBound])
+    }
+
+    /// 1-based line numbers of every line whose `#if DEBUG` nesting makes
+    /// it DEBUG-active (same flat depth scan the #456 wiring tests use).
+    private func debugActiveLines(_ source: String) -> Set<Int> {
+        var active: Set<Int> = []
+        var depth = 0
+        for (index, line) in source.split(separator: "\n",
+                                          omittingEmptySubsequences: false).enumerated() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("#if DEBUG") {
+                depth += 1
+            } else if trimmed.hasPrefix("#endif") {
+                depth = max(0, depth - 1)
+            }
+            if depth > 0 { active.insert(index + 1) }
+        }
+        return active
+    }
+
+    // MARK: pixel canvas (1 px == 1 pt)
+
+    private struct Canvas {
+        let width: Int
+        let height: Int
+        let pixels: [UInt8]
+
+        init?(_ image: UIImage) {
+            guard let cg = image.cgImage else { return nil }
+            width = cg.width
+            height = cg.height
+            var data = [UInt8](repeating: 0, count: cg.width * cg.height * 4)
+            let drawn = data.withUnsafeMutableBytes { buffer -> Bool in
+                guard let context = CGContext(data: buffer.baseAddress, width: cg.width,
+                                              height: cg.height, bitsPerComponent: 8,
+                                              bytesPerRow: cg.width * 4,
+                                              space: CGColorSpaceCreateDeviceRGB(),
+                                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+                else { return false }
+                context.draw(cg, in: CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
+                return true
+            }
+            guard drawn else { return nil }
+            pixels = data
+        }
+
+        func rgb(_ x: Int, _ y: Int) -> (red: Double, green: Double, blue: Double) {
+            let offset = (y * width + x) * 4
+            return (Double(pixels[offset]), Double(pixels[offset + 1]), Double(pixels[offset + 2]))
+        }
+
+        func luminance(_ x: Int, _ y: Int) -> Double {
+            let colour = rgb(x, y)
+            return 0.299 * colour.red + 0.587 * colour.green + 0.114 * colour.blue
+        }
+    }
+
+    /// Renders `RanchChromeSurface` over `background` in a hosted window at
+    /// 1 px == 1 pt and returns the rasterized canvas. The window must
+    /// belong to the app's window scene (a scene-less window never
+    /// rasterizes its SwiftUI layers). `fallback` drives the explicit
+    /// opaque override — the system Reduce Transparency / Increase
+    /// Contrast environment keys are read-only in hosted windows.
+    private func renderChrome(tokens: RanchControlTokens, over background: Color,
+                              fallback: Bool = false) async throws -> Canvas {
+        let scene = ZStack {
+            background
+            RanchChromeSurface(tokens: tokens, cornerRadius: 15,
+                               forcesOpaque: fallback ? true : nil)
+                .frame(width: 220, height: 80)
+        }
+        let controller = UIHostingController(rootView: AnyView(scene))
+        let windowScene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }.first
+        let window = windowScene.map { UIWindow(windowScene: $0) } ?? UIWindow()
+        window.frame = CGRect(origin: .zero, size: CGSize(width: 320, height: 120))
+        window.rootViewController = controller
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        try await Task.sleep(for: .milliseconds(700))
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(bounds: window.bounds, format: format).image { _ in
+            window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+        }
+        return try XCTUnwrap(Canvas(image), "the hosted chrome surface must render a bitmap")
+    }
+
+    // MARK: sealed palette + WCAG floor
+
+    func testSealedRanchDayNightPaletteMatchesTheApprovedPrototype() {
+        // The #455 V1/A prototype's sealed custom properties (variant-a.html
+        // SHA-256 ca0a1a09…bf61). Drift in any value fails here.
+        XCTAssertEqual(RanchControlTokens.day,
+                       RanchControlTokens(ink: "#23362f", muted: "#3e5147",
+                                          accent: "#304e41", line: "#8c9a89",
+                                          solid: "#f6f5e1"))
+        XCTAssertEqual(RanchControlTokens.night,
+                       RanchControlTokens(ink: "#edf1e8", muted: "#c2cec9",
+                                          accent: "#d4e4db", line: "#647b80",
+                                          solid: "#1d2b33"))
+        XCTAssertEqual(RanchControlTokens.resolve(night: false), .day)
+        XCTAssertEqual(RanchControlTokens.resolve(night: true), .night)
+        // The sheet context is explicit and equatable — .board can never
+        // masquerade as a herd context.
+        XCTAssertNotEqual(FilterSheetContext.herd(night: false), .board)
+        XCTAssertNotEqual(FilterSheetContext.herd(night: true), FilterSheetContext.herd(night: false))
+        XCTAssertEqual(FilterSheetContext.herd(night: true), FilterSheetContext.herd(night: true))
+    }
+
+    func testRanchChromeTextClearsAAOverBrightSkyAndDarkField() {
+        // The RanchPainter field colors: day sky/field and night sky/ground.
+        let painters = ["#388fc4", "#8e9c58", "#121a32", "#273f3e"]
+        for (label, tokens) in [("day", RanchControlTokens.day),
+                                ("night", RanchControlTokens.night)] {
+            for (tier, hex) in [("ink", tokens.ink), ("muted", tokens.muted)] {
+                let worst = SheetBackdrop.worstContrast(ink: hex, tint: tokens.solid,
+                                                        over: painters)
+                XCTAssertGreaterThanOrEqual(worst, SheetBackdrop.minimumContrast,
+                    "\(label) \(tier) must clear the 4.5:1 floor over every ranch "
+                    + "field candidate (worst \(worst))")
+            }
+        }
+    }
+
+    // MARK: runtime composite (the real recipe)
+
+    func testChromeRecipeRendersRanchDayAndNightSurfacesOverAnyField() async throws {
+        // Day over a saturated blue sky: the locked ranch tint dominates —
+        // a warm, bright surface. Night over a bright field: near-black
+        // with the blue-green cast. A theme/flavor material (the base
+        // behavior) can never produce BOTH at once.
+        let day = try await renderChrome(tokens: .day, over: Color(red: 0, green: 0, blue: 1))
+        let dayCentre = day.rgb(160, 60)
+        XCTAssertGreaterThan(dayCentre.red, 185, "day chrome must render bright")
+        XCTAssertGreaterThan(dayCentre.green, 185, "day chrome must render bright")
+        XCTAssertGreaterThan(dayCentre.blue, 150, "day chrome must render bright")
+        XCTAssertGreaterThan(dayCentre.red, dayCentre.blue - 25,
+                             "day chrome keeps the warm cream cast")
+
+        let night = try await renderChrome(tokens: .night, over: Color(red: 1, green: 0.6, blue: 0))
+        let nightCentre = night.rgb(160, 60)
+        XCTAssertLessThan(nightCentre.red, 95, "night chrome must render dark over a bright field")
+        XCTAssertLessThan(nightCentre.green, 105, "night chrome must render dark over a bright field")
+        XCTAssertLessThan(night.luminance(160, 60), 120,
+                          "night chrome luminance must stay in the dark field range")
+
+        XCTAssertGreaterThan(day.luminance(160, 60) - night.luminance(160, 60), 60,
+                             "Day and Night chrome must be visibly different surfaces")
+    }
+
+    func testReduceTransparencyAndHighContrastPaintTheOpaqueRanchSolid() async throws {
+        // Exact-solid assertions: the opaque branch adds NOTHING of the
+        // background — a blur branch leaks the underlying color and fails.
+        let dayFallback = try await renderChrome(tokens: .day, over: Color(red: 0, green: 0, blue: 1),
+                                                 fallback: true)
+        let dayCentre = dayFallback.rgb(160, 60)
+        XCTAssertEqual(dayCentre.red, 246, accuracy: 3, "day Reduce Transparency = opaque #f6f5e1")
+        XCTAssertEqual(dayCentre.green, 245, accuracy: 3, "day Reduce Transparency = opaque #f6f5e1")
+        XCTAssertEqual(dayCentre.blue, 225, accuracy: 3, "day Reduce Transparency = opaque #f6f5e1")
+
+        let nightFallback = try await renderChrome(tokens: .night, over: Color(red: 1, green: 0.6, blue: 0),
+                                                   fallback: true)
+        let nightCentre = nightFallback.rgb(160, 60)
+        XCTAssertEqual(nightCentre.red, 29, accuracy: 3, "night high contrast = opaque #1d2b33")
+        XCTAssertEqual(nightCentre.green, 43, accuracy: 3, "night high contrast = opaque #1d2b33")
+        XCTAssertEqual(nightCentre.blue, 51, accuracy: 3, "night high contrast = opaque #1d2b33")
+    }
+
+    // MARK: explicit context wiring (ONE sheet)
+
+    func testTheOneSharedSheetTakesTheExplicitPresentationContext() throws {
+        let board = try source("FleetViews")
+        XCTAssertEqual(board.components(separatedBy: ".sheet(isPresented: $showFilters)").count - 1, 1,
+                       "exactly ONE sheet presentation may serve the filter surface")
+        XCTAssertTrue(board.contains("FilterScopeSheet(model: model, context: filterSheetContext)"),
+                      "the shared sheet must receive the explicit presentation context")
+        let context = try slice(board,
+                                from: "private var filterSheetContext: FilterSheetContext {",
+                                to: "/// #456/#458: the Herd surface renders")
+        XCTAssertTrue(compact(context).contains("showsHerdSurface?.herd(night:herdChromeNight):.board"),
+                      "the context must resolve from the surface the control lives on and the "
+                      + "reported ranch lighting — never from ambient styles")
+        let gate = try slice(board,
+                             from: "private var showsHerdSurface: Bool {",
+                             to: "private var herdDisconnected: Bool {")
+        XCTAssertTrue(compact(gate).contains("model.fleetPresentation==.herd&&model.mode!=.needsSetup"),
+                      "the herd gate stays the saved-presentation + setup gate")
+
+        let sheet = try slice(board,
+                              from: "struct FilterScopeSheet: View {",
+                              to: "/// #457: the sheet surface follows the explicit presentation context")
+        XCTAssertTrue(sheet.contains("let context: FilterSheetContext"),
+                      "the sheet must OWN the context (one shared implementation)")
+        XCTAssertTrue(sheet.contains("if case .herd(let night) = context { return .resolve(night: night) }"),
+                      "only .herd resolves ranch tokens")
+        for needle in ["tokens?.inkColor ?? theme.text",
+                       "tokens?.mutedColor ?? theme.subtext1",
+                       "tokens?.accentColor ?? theme.accent",
+                       "tokens?.lineColor.opacity(0.35) ?? theme.surface1.opacity(0.35)",
+                       "tokens?.lineColor.opacity(0.4) ?? theme.surface1.opacity(0.4)",
+                       "tokens?.solidColor.opacity(0.92) ?? theme.base.opacity(0.92)",
+                       "tokens?.solidColor.opacity(0.55) ?? theme.base.opacity(0.55)"] {
+            XCTAssertTrue(sheet.contains(needle),
+                          "every sheet color must fall back to its existing Catppuccin token: \(needle)")
+        }
+        XCTAssertTrue(sheet.contains(".modifier(FilterSheetBackdrop(tokens: tokens, boardTint: theme.base))"),
+                      "the sheet surface must follow the SAME explicit context")
+        XCTAssertTrue(board.contains("TranslucentSheetBackdrop(tint: boardTint)"),
+                      "the board-launched sheet keeps the #385/#416 translucent backdrop")
+        XCTAssertTrue(board.contains("RanchChromeSurface(tokens: tokens, cornerRadius: 0)"),
+                      "the herd-launched sheet takes the ranch chrome surface")
+    }
+
+    func testBoardLaunchedFiltersAndOtherSheetsKeepTheirCatppuccinTreatment() throws {
+        let board = try source("FleetViews")
+        let header = try slice(board,
+                               from: "private func filterHeaderControl(",
+                               to: "/// Connection indicator line")
+        XCTAssertFalse(header.contains("RanchControl"),
+                       "the board Filters control must not consume ranch tokens")
+        XCTAssertFalse(header.contains("ranchChromeSurface"),
+                       "the board Filters control keeps its board chrome")
+        for (label, from, to) in [
+            ("SettingsView", "\nstruct SettingsView: View {", "\n// MARK: - How to connect"),
+            ("RecentOutputSheet", "struct RecentOutputSheet: View {", "\n// MARK: - Recents block renderer")] {
+            let slice = try slice(board, from: from, to: to)
+            XCTAssertFalse(slice.contains("RanchControl"),
+                           "\(label) must not inherit herd styling (#457: no whole-app recolor)")
+            XCTAssertFalse(slice.contains("ranchChromeSurface"),
+                           "\(label) keeps its own sheet treatment")
+        }
+        XCTAssertEqual(board.components(separatedBy: "ranchChromeSurface(").count - 1, 1,
+                       "the ranch chrome surface extension is the ONLY definition (no herd "
+                       + "styling call sites inside FleetViews)")
+    }
+
+    func testHerdTriggerCountsAndGearTakeTheRanchChromeNotTheAppFlavorText() throws {
+        let herd = try compact(source("HerdView"))
+        XCTAssertTrue(herd.contains("ranchTokens:RanchControlTokens{.resolve(night:lighting.night)}"),
+                      "the chrome palette resolves from the SAME lighting the ranch renders")
+        // The trigger/count cluster only (the outage banner below it is a
+        // separate #456 surface and keeps its treatment).
+        let chrome = try slice(herd, from: "privatevartopChrome", to: "privatevaroutage")
+        for needle in ["HerdFilterGlyph(color:ranchTokens.accentColor)",
+                       "foregroundStyle(ranchTokens.inkColor).lineLimit(1)",
+                       "foregroundStyle(ranchTokens.mutedColor)",
+                       "HerdGearGlyph(color:ranchTokens.inkColor)"] {
+            XCTAssertTrue(chrome.contains(needle),
+                          "the trigger/count chrome must take the ranch tokens: \(needle)")
+        }
+        XCTAssertEqual(chrome.components(separatedBy: ".ranchChromeSurface(ranchTokens)").count - 1, 3,
+                       "scope pill, Settings control and counts card ride the ranch chrome surface")
+        XCTAssertFalse(chrome.contains(".regularMaterial"),
+                       "no trigger/count surface may keep the flavor material (#457 AC1)")
+        XCTAssertFalse(chrome.contains("theme.text") || chrome.contains("theme.subtext1"),
+                       "no trigger/count text may inherit the app flavor's light/dark text")
+        // Out-of-scope herd surfaces stay exactly as #456 shipped them.
+        let nav = try slice(herd, from: "privatevarnavigation", to: "funcmovePage(")
+        XCTAssertTrue(nav.contains(".background(.regularMaterial,in:RoundedRectangle(cornerRadius:15))"),
+                      "the bottom paddock navigation keeps its #456 material pill")
+        // The environment axis never writes the app theme.
+        XCTAssertFalse(herd.contains("setFlavor"),
+                       "the herd surface must never rewrite the global theme preference")
+        XCTAssertFalse(herd.contains("flavorKey"),
+                       "the herd surface must never touch the theme preference key")
+    }
+
+    func testEnvironmentSelectionStaysIndependentOfTheSavedThemePreference() throws {
+        XCTAssertNotEqual("herdEnvironment", ThemeStore.flavorKey,
+                          "the ranch environment lives in its own preference, not the theme's")
+        let suiteName = "corral457-theme-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        let theme = ThemeStore(defaults: defaults)
+        theme.setFlavor(.macchiato)
+        let savedFlavor = defaults.string(forKey: ThemeStore.flavorKey)
+        XCTAssertEqual(savedFlavor, CatppuccinFlavor.macchiato.rawValue)
+
+        // Drive the herd environment exactly like the Settings picker does
+        // and evaluate every explicit sheet context for both lights.
+        let previous = UserDefaults.standard.string(forKey: "herdEnvironment")
+        defer {
+            if let previous {
+                UserDefaults.standard.set(previous, forKey: "herdEnvironment")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "herdEnvironment")
+            }
+        }
+        for choice in [HerdEnvironmentChoice.night, .day, .auto] {
+            UserDefaults.standard.set(choice.rawValue, forKey: "herdEnvironment")
+            for context in [FilterSheetContext.board,
+                            .herd(night: HerdSun.resolve(choice, now: Date()).night)] {
+                _ = context
+            }
+        }
+        XCTAssertEqual(theme.flavor, .macchiato,
+                       "an environment change must never flip the live flavor")
+        XCTAssertEqual(defaults.string(forKey: ThemeStore.flavorKey), savedFlavor,
+                       "an environment change must never rewrite the saved preference")
+        XCTAssertEqual(UserDefaults.standard.string(forKey: "herdEnvironment"),
+                       HerdEnvironmentChoice.auto.rawValue,
+                       "the environment preference itself round-trips")
+    }
+
+    // MARK: interaction (lighting report)
+
+    func testHerdChromeReportsItsResolvedLightingForTheSheetContext() async throws {
+        let previous = UserDefaults.standard.string(forKey: "herdEnvironment")
+        defer {
+            if let previous {
+                UserDefaults.standard.set(previous, forKey: "herdEnvironment")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "herdEnvironment")
+            }
+        }
+        UserDefaults.standard.set(HerdEnvironmentChoice.day.rawValue, forKey: "herdEnvironment")
+        final class Box { var values: [Bool] = [] }
+        let box = Box()
+        let scene = HerdView(horses: [], obscured: false,
+                             showFilters: .constant(false), showSettings: .constant(false),
+                             onLightingNight: { box.values.append($0) },
+                             select: { _ in }, openBoard: {}, retry: {})
+            .environmentObject(ThemeStore())
+        let controller = UIHostingController(rootView: AnyView(scene))
+        let windowScene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }.first
+        let window = windowScene.map { UIWindow(windowScene: $0) } ?? UIWindow()
+        window.frame = CGRect(origin: .zero, size: CGSize(width: 393, height: 852))
+        window.rootViewController = controller
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+
+        var attempts = 0
+        while box.values.last != false && attempts < 30 {
+            try await Task.sleep(for: .milliseconds(100))
+            attempts += 1
+        }
+        XCTAssertEqual(box.values.first, false,
+                       "the Day environment must be reported up (the sheet's Herd context "
+                       + "is styled from this exact value)")
+
+        UserDefaults.standard.set(HerdEnvironmentChoice.night.rawValue, forKey: "herdEnvironment")
+        attempts = 0
+        while box.values.last != true && attempts < 30 {
+            try await Task.sleep(for: .milliseconds(100))
+            attempts += 1
+        }
+        XCTAssertEqual(box.values.last, true,
+                       "flipping the herd environment must report Night up — without touching "
+                       + "the theme preference")
+    }
+
+    // MARK: evidence driver hygiene
+
+    func testContextEvidenceDriverStaysDebugOnly() throws {
+        let board = try source("FleetViews")
+        let debug = debugActiveLines(board)
+        for needle in ["runContextFilterSheetSequence", "contextFilterEvidenceRan",
+                       "runContextBoardShot", "contextBoardShotRan"] {
+            let lines = board.split(separator: "\n", omittingEmptySubsequences: false)
+                .enumerated()
+                .filter { $0.element.contains(needle) }
+                .map { $0.offset + 1 }
+            XCTAssertFalse(lines.isEmpty, "\(needle) must exist for the #457 evidence driver")
+            for line in lines {
+                XCTAssertTrue(debug.contains(line),
+                              "\(needle) must stay inside #if DEBUG (Release-inert); line \(line)")
+            }
+        }
+        XCTAssertTrue(board.contains("static let contextArgument = \"-corral457ContextEvidence\""))
+        XCTAssertTrue(board.contains("static let opaqueChromeArgument = \"-corral457ForceOpaqueChrome\""))
+        XCTAssertTrue(board.contains("Corral457Evidence.forcesOpaqueChrome"),
+                      "the DEBUG evidence force must take the SAME opaque branch")
+        XCTAssertTrue(board.contains("reduceTransparency || contrast == .increased"),
+                      "the chrome fallback must take the system accessibility signals")
+        XCTAssertTrue(board.contains("if let forcesOpaque { return forcesOpaque }"),
+                      "the explicit override must resolve first (the deterministic seam)")
+        // The scroll hook rides the DEBUG block in the sheet.
+        let scrollLines = board.split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+            .filter { $0.element.contains("Corral457Evidence.scrollNotification") }
+            .map { $0.offset + 1 }
+        XCTAssertFalse(scrollLines.isEmpty)
+        for line in scrollLines {
+            XCTAssertTrue(debug.contains(line),
+                          "the sheet scroll hook must stay inside #if DEBUG; line \(line)")
         }
     }
 }

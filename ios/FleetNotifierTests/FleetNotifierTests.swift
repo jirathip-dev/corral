@@ -5133,10 +5133,16 @@ final class ThemeWiringTests: XCTestCase {
         // variant-A look, so the deterministic hue dots live on board rows).
         XCTAssertTrue(source.contains("theme.repoHueColor(for: repo ?? \"\", among: repos)"),
                       "repo rows must carry the deterministic palette hue dot")
-        XCTAssertTrue(source.contains("selected ? theme.accent.opacity(0.12) : Color.clear"),
+        XCTAssertTrue(source.contains("selected ? accent.opacity(0.12) : Color.clear"),
                       "a selected filter scope row tints with the palette accent (mauve, never teal)")
-        XCTAssertTrue(source.contains("selected ? theme.accent : theme.text"),
+        XCTAssertTrue(source.contains("var accent: Color { tokens?.accentColor ?? theme.accent }"),
+                      "the board path keeps the palette accent token (#457: the explicit context "
+                      + "falls back to theme.accent when no herd context is passed)")
+        XCTAssertTrue(source.contains("selected ? accent : ink"),
                       "selected scope row ink follows the accent/text tokens")
+        XCTAssertTrue(source.contains("var ink: Color { tokens?.inkColor ?? theme.text }"),
+                      "the board path keeps the palette text token (#457: the explicit context "
+                      + "falls back to theme.text when no herd context is passed)")
         XCTAssertTrue(slice.contains(".scrollContentBackground(.hidden)"),
                       "the board surface must be token-backed")
         XCTAssertTrue(slice.contains(".background(theme.base)"),

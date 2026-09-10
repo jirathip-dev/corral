@@ -104,6 +104,12 @@ drift. `test-app-icons.py` mutates disposable copies (missing/misnamed
 alternate, legacy Original/Treatment-B swap, duplicate Bay alternate, wrong
 hash/dimension/alpha, stale output/project config) and requires each to RED.
 
+The source-mode subset of these checks runs per push and pull request in
+`.github/workflows/ios-art.yml` (`.github/workflows/` at the repository root):
+`check-release-demo.py`, `app-icons.py --check` and `test-app-icons.py`. The
+bundle and simulator commands above stay local or on the dispatch-only
+`ios.yml` job — they need a prior build or a booted simulator.
+
 `check-release-demo.py` also invokes the native source guard and, with `--binary`,
 the actual app-product guard. The manifest digest covers all Herd app sources;
 DEBUG fixture types/flags must be absent from Release. The bundle gate checks

@@ -399,13 +399,19 @@ final class StreamRetryBackoffTests: XCTestCase {
                               cursor: CursorHolder(), log: log)
 
         let waiting = await waitFor({ waits.count >= 1 })
+        XCTAssertTrue(waiting, "the first wait must be in flight before cancelling")
+        // The attempt itself cleanly EOF'd BEFORE the wait — that report is
+        // legitimate. The cancellation must not ADD a further report.
+        let endedBeforeCancel = log.endedCount
+        XCTAssertEqual(endedBeforeCancel, 1,
+                       "the pre-wait attempt reports its clean EOF exactly once")
         run.task.cancel()
         let returned = await waitFor({ run.returned.isDone }, timeout: 5)
-        XCTAssertTrue(waiting, "the first wait must be in flight before cancelling")
         XCTAssertTrue(returned, "cancellation during the wait must end stream() promptly")
         XCTAssertEqual(waits.count, 1, "no wait may be scheduled after cancellation")
         XCTAssertTrue(log.errors.isEmpty, "cancellation is not an error")
-        XCTAssertEqual(log.endedCount, 0, "cancellation is not a clean EOF")
+        XCTAssertEqual(log.endedCount, endedBeforeCancel,
+                       "cancellation must not add a stream-ended report")
         XCTAssertEqual(StreamRetryLoopURLProtocol.requests(forHost: Self.hostAKey).count, 1,
                        "no retry may be dispatched after cancellation")
         try? await Task.sleep(nanoseconds: 300_000_000)

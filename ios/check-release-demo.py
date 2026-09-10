@@ -361,15 +361,27 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # (+ clean-EOF posture, stale-aware pull recovery) and CorraldClient
     # onActivity/onStreamEnded byte-path signals — re-pinned over the #468
     # merged source set.
+    # #457 refresh2: #457 (contextual Herd controls: the ONE shared filter
+    # sheet with an explicit Board/Herd presentation context, the sealed
+    # ranch control palette + lighting report in HerdView, and the ranch
+    # chrome surface with the Reduce Transparency/high-contrast opaque
+    # fallback) merged together with #425 (FleetStore transport-liveness
+    # policy/heartbeat/watchdog — clean-EOF posture, stale-aware pull
+    # recovery — and CorraldClient onActivity/onStreamEnded byte-path
+    # signals) onto the #450/#449/#458/#456/#464 integration source set
+    # (521e7cd9 → ba15563, PR474) — union of ALL source sets; the pin below
+    # is recomputed from THIS merged checkout; neither parent pin (1827b419…,
+    # a898ad7a…) applies.
     # #451 (g451-preflight-retry): transient host-key preflight retry ladders
     # — the shared bounded-RATE HostPreflightRetryPolicy (3s→30s steady
     # cadence, no finite availability window), the coordinator's
     # one-owner/cancellable per-host ladder (terminal mismatch, truthful
     # retry reason, immediate pull preflight of a never-SSE host) and
     # AppModel's active-host parity ladder (single owner, background/
-    # boundary cancellation, immediate pull preflight) — re-pinned over the
-    # #425-merged source set (late-recovery correction round).
-    "a5dee3e407f152520cf997998534f349932c715f5c83226b05a3f3b1ebe2f6fa"
+    # boundary cancellation, immediate pull preflight) — MERGED WITH #457;
+    # the pin is the union of ALL source sets recomputed from THIS merged
+    # checkout; neither parent pin (a5dee3e4…, 8bccaf68…) applies.
+    "4416bbc1d1c5f8400184249e7de16d0ace6c7847bfafb2fd115cb8ebd1d94ae7"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -533,18 +545,13 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # #464 integration refresh: recomputed on the merged checkout — the merged
     # pinned test file is byte-identical to the #464 lane's (#449's test change
     # landed in HerdTests.swift, outside this pin).
-    # #450 integration refresh: test source carries the #450 F1 regression on
-    # top of the #449/#458/#464 merged test sources — recomputed on the merged
-    # checkout; neither parent pin applies.
-    # #450 refresh2: the #456 import changed a different test file
-    # (HerdTests.swift, outside this pin); the pinned FleetNotifierTests.swift
-    # is byte-unchanged by the refresh — digest recomputed over the merged
-    # checkout (same value).
-    # #425 addendum: HeartbeatRecoveryTests — real client byte-path regression
-    # for comment-only keep-alives, silent (half-open) drops, clean EOF,
-    # exactly-once stale replacement and per-host watchdog teardown —
-    # re-pinned over the #468 merged test source.
-    "5200562a6f3b9610153f02f962dace4e8f16c323da56b66df4885a030add2e35"
+    # #457 refresh2: #457's FleetNotifierTests theme-token needle and #425's
+    # HeartbeatRecoveryTests (real client byte-path regression for
+    # comment-only keep-alives, silent half-open drops, clean EOF,
+    # exactly-once stale replacement and per-host watchdog teardown) merged
+    # onto the #450-refresh test source — digest recomputed over the merged
+    # checkout; neither parent pin (dd9d3952…, 5200562a…) applies.
+    "92631629765f5f67b6efba46aa13e84a6793cc460883d31c7f45623a4820d395"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

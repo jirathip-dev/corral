@@ -1,66 +1,79 @@
-# 456 capture log — 2026-09-10 ~05:24-05:31 +0700 (final #456 tree)
+# 456 r1 capture log — 2026-09-10 ~08:48-08:55 +0700 (tree 6150ab1)
 
-Owned simulators (created fresh for this lane; nothing else touched):
-  $ xcrun simctl create Corral456B "iPhone 16" com.apple.CoreSimulator.SimRuntime.iOS-26-5
-  AFFA96A7-155F-479C-9EC3-C1637D2BB474
-  $ xcrun simctl create Corral456SE "iPhone SE (3rd generation)" com.apple.CoreSimulator.SimRuntime.iOS-26-5
-  89DB3CDE-EBCA-40F5-9C78-AF529B856CE3
-  (Corral456 = 10165557-06BB-4A1D-B8E7-8DB4A17694EF was used for gates only; its
-  capture set was discarded because running the XCTest suite on it queued the
-  unanswered OS notification prompt over later frames — simulator state, see
-  README. The shared `iPhone 16` 59DDC0C5-... and other lanes' simulators were
-  never booted/touched by this lane.)
+Owned simulators (this lane; the pre-existing Corral456R1 was created for #456
+and reused, Corral456R1SE was created for this capture):
 
-Build (Debug app used for every frame; the same tree's Release build is the
-separate gate in /tmp/corral-456-build-release.log):
+  $ xcrun simctl create Corral456R1SE "iPhone SE (3rd generation)" \
+      com.apple.CoreSimulator.SimRuntime.iOS-26-5
+  96D99D2E-43FD-4673-813F-217922778863
+  (Corral456R1 = FFF9CE18-6082-48A5-8CE0-169299000C35, iPhone 16, iOS 26.5)
+
+Build for the frames (Debug app; the same tree's Release build is the separate
+gate in /tmp/corral-456-r1-build-release.log):
+
   $ cd /Users/jirathip/.herdr/worktrees/corral/g456-fullscreen-shell
   $ HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 \
       /Users/jirathip/.local/bin/flock /tmp/corral-heavy-gate.lock \
       xcodebuild build -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier \
-      -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/corral-456-dd \
+      -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/corral-456-r1-dd \
       CODE_SIGNING_ALLOWED=NO
-  ** BUILD SUCCEEDED **   (log: /tmp/corral-456-build.log, BUILD_EXIT=0)
-  App: /tmp/corral-456-dd/Build/Products/Debug-iphonesimulator/FleetNotifier.app
+  ** BUILD SUCCEEDED **        (R1_CAPTURE_BUILD_EXIT=0)
+  App: /tmp/corral-456-r1-dd/Build/Products/Debug-iphonesimulator/FleetNotifier.app
   Bundle id: com.corral.fleetnotifier (lowercase; simctl launch id)
 
-Install + capture (one chain per scenario; the host script terminates the app,
-removes the container's ux-evidence dir, launches, polls for each new marker,
-shoots 1.5 s after it appears, and stops at the sentinel):
-  $ xcrun simctl boot AFFA96A7-... && xcrun simctl bootstatus AFFA96A7-... -b
-  $ xcrun simctl install AFFA96A7-... /tmp/corral-456-dd/Build/Products/Debug-iphonesimulator/FleetNotifier.app
-  $ bash /tmp/corral-456-capture.sh AFFA96A7-... 456-iphone16 456-7-empty-scope \
+Raw status of the whole capture chain (/tmp/corral-456-r1-capture-status.txt):
+
+  R1_CAPTURE_BUILD_EXIT=0   R1_BOOT_EXIT=0    R1_BOOTSTATUS_EXIT=0
+  R1_INSTALL_EXIT=0         R1_NORMAL_CAP_EXIT=0
+  R1_OFFLINE_CAP_EXIT=0     R1_BOARD_SHOT_EXIT=0
+  R1_AX_CAP_EXIT=0          R1_SHUTDOWN_EXIT=0
+  SE_BOOT_EXIT=0            SE_BOOTSTATUS_EXIT=0   SE_INSTALL_EXIT=0
+  SE_NORMAL_CAP_EXIT=0      SE_AX_CAP_EXIT=0       SE_SHUTDOWN_EXIT=0
+
+Capture chains (one per scenario; the host script terminates the app, removes
+the container's ux-evidence dir, launches, polls for each new marker, shoots
+1.5 s after the marker appears and stops at the sentinel):
+
+  # iPhone 16, default content size
+  $ xcrun simctl ui $R1 content_size large
+  $ bash /tmp/corral-456-capture.sh $R1 r1-16-normal 456-7-empty-scope \
       -corralHerdEvidence -corral456FullScreenEvidence
-      captured 456-iphone16-456-1-day-fullscreen.png
-      captured 456-iphone16-456-2-night-fullscreen.png
-      captured 456-iphone16-456-3-next-paddock.png
-      captured 456-iphone16-456-4-scope-sheet.png
-      captured 456-iphone16-456-5-settings-sheet.png
-      captured 456-iphone16-456-6-long-names.png
-      captured 456-iphone16-456-7-empty-scope.png
-  $ bash /tmp/corral-456-capture.sh AFFA96A7-... 456-offline 456-offline-fullscreen \
+      7 frames r1-16-normal-456-1..7
+  $ bash /tmp/corral-456-capture.sh $R1 r1-16-offline 456-offline-fullscreen \
       -corralHerdEvidence -corral456FullScreenEvidence -corralHerdOffline
-      captured 456-offline-456-offline-fullscreen.png
-  $ xcrun simctl terminate AFFA96A7-... com.corral.fleetnotifier
-  $ xcrun simctl launch AFFA96A7-... com.corral.fleetnotifier -demoMode; sleep 8
-  $ xcrun simctl io AFFA96A7-... screenshot .../456-iphone16-board-no-regression.png
-  $ xcrun simctl ui AFFA96A7-... content_size accessibility-extra-extra-extra-large
-  $ bash /tmp/corral-456-capture.sh AFFA96A7-... 456-ax 456-7-empty-scope \
+      r1-16-offline-456-offline-fullscreen.png
+  $ xcrun simctl launch $R1 com.corral.fleetnotifier -demoMode; sleep 8
+  $ xcrun simctl io $R1 screenshot .../r1-16-board-no-regression.png
+
+  # iPhone 16, AX-XXXL
+  $ xcrun simctl ui $R1 content_size accessibility-extra-extra-extra-large
+  $ bash /tmp/corral-456-capture.sh $R1 r1-16-ax 456-7-empty-scope \
       -corralHerdEvidence -corral456FullScreenEvidence
-      captured 456-ax-456-1-day-fullscreen.png ... 456-ax-456-7-empty-scope.png
-  $ xcrun simctl ui AFFA96A7-... content_size large        # restored
-  $ xcrun simctl shutdown AFFA96A7-...                     # data preserved
-  $ xcrun simctl boot 89DB3CDE-... && xcrun simctl bootstatus 89DB3CDE-... -b
-  $ xcrun simctl install 89DB3CDE-... /tmp/corral-456-dd/Build/Products/Debug-iphonesimulator/FleetNotifier.app
-  $ bash /tmp/corral-456-capture.sh 89DB3CDE-... 456-se 456-7-empty-scope \
+      7 frames r1-16-ax-456-1..7
+  $ xcrun simctl ui $R1 content_size large
+  $ xcrun simctl shutdown $R1                     # data preserved
+
+  # iPhone SE 3rd gen, default content size
+  $ xcrun simctl ui $SE content_size large
+  $ bash /tmp/corral-456-capture.sh $SE r1-se-normal 456-7-empty-scope \
       -corralHerdEvidence -corral456FullScreenEvidence
-      captured 456-se-456-1-day-fullscreen.png ... 456-se-456-7-empty-scope.png
-  $ xcrun simctl shutdown 89DB3CDE-...                     # data preserved
+      7 frames r1-se-normal-456-1..7
+
+  # iPhone SE 3rd gen, AX-XXXL
+  $ xcrun simctl ui $SE content_size accessibility-extra-extra-extra-large
+  $ bash /tmp/corral-456-capture.sh $SE r1-se-ax 456-7-empty-scope \
+      -corralHerdEvidence -corral456FullScreenEvidence
+      7 frames r1-se-ax-456-1..7
+  $ xcrun simctl ui $SE content_size large
+  $ xcrun simctl shutdown $SE                     # data preserved
 
 Downscale to the repo's evidence sizes (no other image processing):
-  $ sips -z 844 390 <raw>.png --out phase-*-390x844.png     # 1179x2556 -> 390x844
-  $ sips -z 667 375 <raw>.png --out phase-*-375x667.png     # 750x1334  -> 375x667
+
+  $ sips -z 844 390 <raw>.png --out phase-*-390x844.png    # 1179x2556 -> 390x844
+  $ sips -z 667 375 <raw>.png --out phase-*-375x667.png    # 750x1334  -> 375x667
 
 Marker phases written by the DEBUG driver (Documents/ux-evidence/<name>.marker):
+
   456-1-day-fullscreen, 456-2-night-fullscreen, 456-3-next-paddock,
   456-4-scope-sheet, 456-5-settings-sheet, 456-6-long-names,
   456-7-empty-scope, 456-offline-fullscreen
@@ -68,7 +81,12 @@ Marker phases written by the DEBUG driver (Documents/ux-evidence/<name>.marker):
 Visual audit (vision model, per frame, before commit): every committed frame
 was inspected — full-screen ranch behind the status bar and bottom edge,
 floating scope + native gear + five truthful counts, floating
-Previous/position/Next, no opaque header/duplicate toolbar, no OS alert, no
-clipping or safe-area overlap in the AX/SE frames, and the Board frame
-unchanged. Raw capture hashes are distinct per phase (no stale framebuffer
-re-capture); the committed hashes are in SHA256SUMS.txt.
+Previous/position/Next; at AX-XXXL the scope label is INSIDE its own pill,
+`All repositories` is uncovered and nothing renders in the status-bar/Dynamic
+Island band; the outage frame carries `Open Board` + `Retry`; the Board frame
+is the unchanged list; no OS alert or permission dialog appears in any frame
+(the capture simulators had their `ux-evidence` directories cleared and the
+app relaunched per scenario).
+
+Raw capture hashes are distinct per phase (no stale-framebuffer re-capture);
+the committed hashes are in SHA256SUMS.txt.

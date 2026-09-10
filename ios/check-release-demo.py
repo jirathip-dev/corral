@@ -362,12 +362,14 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # onActivity/onStreamEnded byte-path signals — re-pinned over the #468
     # merged source set.
     # #451 (g451-preflight-retry): transient host-key preflight retry ladders
-    # — the shared bounded HostPreflightRetryPolicy, the coordinator's
+    # — the shared bounded-RATE HostPreflightRetryPolicy (3s→30s steady
+    # cadence, no finite availability window), the coordinator's
     # one-owner/cancellable per-host ladder (terminal mismatch, truthful
-    # retry reason, pull re-drive of a never-SSE host) and AppModel's
-    # active-host parity ladder (single owner, background/boundary
-    # cancellation, pull re-arm) — re-pinned over the #425-merged source set.
-    "b130e1c225da13f5ab18810ef3dbf1232ca65002af28eaa78d3cb1987dee21e2"
+    # retry reason, immediate pull preflight of a never-SSE host) and
+    # AppModel's active-host parity ladder (single owner, background/
+    # boundary cancellation, immediate pull preflight) — re-pinned over the
+    # #425-merged source set (late-recovery correction round).
+    "a5dee3e407f152520cf997998534f349932c715f5c83226b05a3f3b1ebe2f6fa"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

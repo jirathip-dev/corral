@@ -216,7 +216,7 @@ final class PreflightRetryCoordinatorTests: XCTestCase {
         suiteName = "corral.h451.recover.\(UUID().uuidString)"
         defer { cleanup() }
         let (store, profiles, urls, keys) = makeThreeHostStore()
-        let policy = HostPreflightRetryPolicy(maxAttempts: 5, baseInterval: 0.05, maxInterval: 0.05)
+        let policy = HostPreflightRetryPolicy(baseInterval: 0.05, maxInterval: 0.05)
         var script: [URL: [PreflightRetryURLProtocol.Outcome]] = [:]
         for (index, url) in urls.enumerated() {
             script[url.appendingPathComponent("/events")] = [.holdOpen]
@@ -251,7 +251,7 @@ final class PreflightRetryCoordinatorTests: XCTestCase {
         suiteName = "corral.h451.mismatch.\(UUID().uuidString)"
         defer { cleanup() }
         let (store, profiles, urls, keys) = makeThreeHostStore()
-        let policy = HostPreflightRetryPolicy(maxAttempts: 3, baseInterval: 0.05, maxInterval: 0.05)
+        let policy = HostPreflightRetryPolicy(baseInterval: 0.05, maxInterval: 0.05)
         let replacement = Self.hostKey(9)
         let snapshot = try snapshotData(rev: 5)
         var script: [URL: [PreflightRetryURLProtocol.Outcome]] = [:]
@@ -283,15 +283,16 @@ final class PreflightRetryCoordinatorTests: XCTestCase {
         XCTAssertFalse(bStore.isStreaming)
     }
 
-    /// AC2: transient failures retry with BOUNDED pacing — at least one
-    /// retry happens, the ladder stops exactly at its cap, and no attempt
-    /// follows (never a tight loop). The host also publishes a truthful
-    /// unavailable reason while it cannot verify.
-    func testTransientFailuresRetryWithBoundedPacingAndTruthfulReason() async throws {
-        suiteName = "corral.h451.bounded.\(UUID().uuidString)"
+    /// AC1/AC2: transient failures retry at a BOUNDED RATE with no finite
+    /// availability window — the ladder keeps going past any fixed attempt
+    /// count (the old 12-attempt cap left a host returning later stuck) and
+    /// never bursts. The host publishes a truthful unavailable reason and
+    /// stays fail-closed while it cannot verify.
+    func testTransientFailuresRetryAtABoundedRateWithoutACutoff() async throws {
+        suiteName = "corral.h451.rate.\(UUID().uuidString)"
         defer { cleanup() }
         let (store, profiles, urls, keys) = makeThreeHostStore()
-        let policy = HostPreflightRetryPolicy(maxAttempts: 4, baseInterval: 0.15, maxInterval: 0.15)
+        let policy = HostPreflightRetryPolicy(baseInterval: 0.05, maxInterval: 0.05)
         var script: [URL: [PreflightRetryURLProtocol.Outcome]] = [:]
         for (index, url) in urls.enumerated() {
             script[url.appendingPathComponent("/events")] = [.holdOpen]
@@ -301,18 +302,26 @@ final class PreflightRetryCoordinatorTests: XCTestCase {
         let session = scriptedSession(script)
         let coordinator = makeCoordinator(store: store, session: session, policy: policy)
         coordinator.update(profiles: profiles, startStreams: true)
-        await waitUntil(requests(urls[1].appendingPathComponent("/host-key")) >= 2, timeout: 2.5)
-        await waitUntil(requests(urls[1].appendingPathComponent("/host-key")) >= policy.maxAttempts,
-                        timeout: 2.5)
-        XCTAssertEqual(requests(urls[1].appendingPathComponent("/host-key")), policy.maxAttempts,
-                       "the ladder stops exactly at its attempt cap")
-        await settle(0.6)
-        XCTAssertEqual(requests(urls[1].appendingPathComponent("/host-key")), policy.maxAttempts,
-                       "no attempt follows the cap — bounded pacing, not a tight loop")
+        // The ladder must cross any fixed attempt window (the old cap was
+        // 12) and still be retrying.
+        await waitUntil(requests(urls[1].appendingPathComponent("/host-key")) >= 14, timeout: 4)
+        XCTAssertGreaterThanOrEqual(requests(urls[1].appendingPathComponent("/host-key")), 14,
+                                    "an unreachable host must keep retrying past any fixed attempt window")
+        // Bounded RATE: over a measured window the attempt count grows by
+        // at most window/baseInterval (+ scheduling slack) — never a burst
+        // and never a stacked multiple.
+        let before = requests(urls[1].appendingPathComponent("/host-key"))
+        let started = Date()
+        await settle(0.5)
+        let elapsed = Date().timeIntervalSince(started)
+        let growth = requests(urls[1].appendingPathComponent("/host-key")) - before
+        XCTAssertGreaterThanOrEqual(growth, 2, "the ladder must still be retrying (not stopped)")
+        XCTAssertLessThanOrEqual(growth, Int(elapsed / policy.baseInterval) + 3,
+                                 "bounded rate — no burst, no stacked ladders")
         XCTAssertEqual(requests(urls[1].appendingPathComponent("/events")), 0,
                        "an unverified host never opens a stream")
         XCTAssertEqual(coordinator.posture(profileID: profiles[1].id), .verifying,
-                       "an exhausted ladder stays fail-closed")
+                       "a still-unreachable host stays fail-closed")
         let bStore = try XCTUnwrap(coordinator.store(profileID: profiles[1].id))
         guard case .error = bStore.connectionState else {
             return XCTFail("the retry failure must publish a truthful store reason")
@@ -320,14 +329,14 @@ final class PreflightRetryCoordinatorTests: XCTestCase {
         XCTAssertFalse(coordinator.allowsLiveWork(profileID: profiles[1].id))
     }
 
-    /// AC3: repeated start calls while the ladder is failing must never
-    /// stack a second verification owner — the attempt count never exceeds
-    /// one ladder's bound.
+    /// AC3: repeated start calls while the ladder is running must never
+    /// stack a second verification owner — the attempt rate stays ONE
+    /// ladder's bounded cadence.
     func testRepeatedStartCallsNeverStackASecondRetryOwner() async throws {
         suiteName = "corral.h451.owner.\(UUID().uuidString)"
         defer { cleanup() }
         let (store, profiles, urls, keys) = makeThreeHostStore()
-        let policy = HostPreflightRetryPolicy(maxAttempts: 5, baseInterval: 0.1, maxInterval: 0.1)
+        let policy = HostPreflightRetryPolicy(baseInterval: 0.05, maxInterval: 0.05)
         var script: [URL: [PreflightRetryURLProtocol.Outcome]] = [:]
         for (index, url) in urls.enumerated() {
             script[url.appendingPathComponent("/events")] = [.holdOpen]
@@ -341,10 +350,15 @@ final class PreflightRetryCoordinatorTests: XCTestCase {
         for _ in 0..<3 {
             coordinator.startSessionIfNeeded(profiles[1])
         }
-        await waitUntil(requests(urls[1].appendingPathComponent("/host-key")) >= policy.maxAttempts,
-                        timeout: 4)
-        XCTAssertEqual(requests(urls[1].appendingPathComponent("/host-key")), policy.maxAttempts,
-                       "one owner: extra starts must not stack ladders (would be a multiple of the cap)")
+        await waitUntil(requests(urls[1].appendingPathComponent("/host-key")) >= 3, timeout: 2)
+        let before = requests(urls[1].appendingPathComponent("/host-key"))
+        let started = Date()
+        await settle(0.5)
+        let elapsed = Date().timeIntervalSince(started)
+        let growth = requests(urls[1].appendingPathComponent("/host-key")) - before
+        XCTAssertGreaterThanOrEqual(growth, 2, "the single ladder must keep retrying")
+        XCTAssertLessThanOrEqual(growth, Int(elapsed / policy.baseInterval) + 3,
+                                 "one owner: extra starts must not stack ladders (would multiply the rate)")
         XCTAssertEqual(requests(urls[1].appendingPathComponent("/events")), 0)
     }
 
@@ -354,7 +368,7 @@ final class PreflightRetryCoordinatorTests: XCTestCase {
         suiteName = "corral.h451.background.\(UUID().uuidString)"
         defer { cleanup() }
         let (store, profiles, urls, keys) = makeThreeHostStore()
-        let policy = HostPreflightRetryPolicy(maxAttempts: 10, baseInterval: 0.25, maxInterval: 0.25)
+        let policy = HostPreflightRetryPolicy(baseInterval: 0.25, maxInterval: 0.25)
         var script: [URL: [PreflightRetryURLProtocol.Outcome]] = [:]
         for (index, url) in urls.enumerated() {
             script[url.appendingPathComponent("/events")] = [.holdOpen]
@@ -379,7 +393,7 @@ final class PreflightRetryCoordinatorTests: XCTestCase {
         suiteName = "corral.h451.removal.\(UUID().uuidString)"
         defer { cleanup() }
         let (store, profiles, urls, keys) = makeThreeHostStore()
-        let policy = HostPreflightRetryPolicy(maxAttempts: 10, baseInterval: 0.25, maxInterval: 0.25)
+        let policy = HostPreflightRetryPolicy(baseInterval: 0.25, maxInterval: 0.25)
         var script: [URL: [PreflightRetryURLProtocol.Outcome]] = [:]
         for (index, url) in urls.enumerated() {
             script[url.appendingPathComponent("/events")] = [.holdOpen]
@@ -409,7 +423,7 @@ final class PreflightRetryCoordinatorTests: XCTestCase {
         suiteName = "corral.h451.isolation.\(UUID().uuidString)"
         defer { cleanup() }
         let (store, profiles, urls, keys) = makeThreeHostStore()
-        let policy = HostPreflightRetryPolicy(maxAttempts: 6, baseInterval: 0.05, maxInterval: 0.05)
+        let policy = HostPreflightRetryPolicy(baseInterval: 0.05, maxInterval: 0.05)
         var script: [URL: [PreflightRetryURLProtocol.Outcome]] = [:]
         for (index, url) in urls.enumerated() {
             script[url.appendingPathComponent("/events")] = [.holdOpen]
@@ -457,14 +471,60 @@ final class PreflightRetryCoordinatorTests: XCTestCase {
         ], "each host's equal raw id must stay under its OWN composite identity")
     }
 
-    /// AC5: a pull-refresh of a pinned host that NEVER reached SSE (its
-    /// ladder already exhausted) re-arms exactly one preflight and opens
-    /// exactly one stream; a healthy host's pull adds nothing.
-    func testPullRefreshRearmsANeverVerifiedHostPreflight() async throws {
+    /// AC1 (late recovery): a pinned secondary host that stays unreachable
+    /// well past any fixed attempt window (15 failures — the old cap was
+    /// 12), then becomes reachable, verifies and opens exactly one stream
+    /// automatically — no second start, no manual retry, no pull. Healthy
+    /// siblings keep streaming untouched.
+    func testLateReachabilityRecoversAutomaticallyPastAnyFixedWindow() async throws {
+        suiteName = "corral.h451.late.\(UUID().uuidString)"
+        defer { cleanup() }
+        let (store, profiles, urls, keys) = makeThreeHostStore()
+        let policy = HostPreflightRetryPolicy(baseInterval: 0.03, maxInterval: 0.03)
+        var script: [URL: [PreflightRetryURLProtocol.Outcome]] = [:]
+        for (index, url) in urls.enumerated() {
+            script[url.appendingPathComponent("/events")] = [.holdOpen]
+            script[url.appendingPathComponent("/host-key")] = [.ok(keys[index])]
+        }
+        // B: unreachable for 15 attempts, then reachable.
+        var bQueue: [PreflightRetryURLProtocol.Outcome] =
+            Array(repeating: .fail(.cannotConnectToHost), count: 15)
+        bQueue.append(.ok(keys[1]))
+        script[urls[1].appendingPathComponent("/host-key")] = bQueue
+        let session = scriptedSession(script)
+        let coordinator = makeCoordinator(store: store, session: session, policy: policy)
+        coordinator.update(profiles: profiles, startStreams: true)
+        await waitUntil(requests(urls[1].appendingPathComponent("/host-key")) >= 13, timeout: 4)
+        XCTAssertGreaterThanOrEqual(requests(urls[1].appendingPathComponent("/host-key")), 13,
+                                    "the ladder must keep retrying past the old fixed window")
+        await waitUntil(coordinator.posture(profileID: profiles[1].id) == .verified, timeout: 4)
+        XCTAssertEqual(coordinator.posture(profileID: profiles[1].id), .verified,
+                       "a host that becomes reachable LATE must verify automatically")
+        await waitUntil(requests(urls[1].appendingPathComponent("/events")) >= 1, timeout: 2)
+        await settle(0.15)
+        XCTAssertEqual(requests(urls[1].appendingPathComponent("/events")), 1,
+                       "exactly one stream, opened once")
+        XCTAssertEqual(requests(urls[1].appendingPathComponent("/host-key")), 16,
+                       "one owner: the queue advanced one attempt at a time")
+        XCTAssertTrue(try XCTUnwrap(coordinator.store(profileID: profiles[0].id)).isStreaming)
+        XCTAssertTrue(try XCTUnwrap(coordinator.store(profileID: profiles[2].id)).isStreaming)
+        XCTAssertEqual(requests(urls[0].appendingPathComponent("/host-key")), 1,
+                       "a healthy sibling must not be re-verified by B's retry episode")
+        XCTAssertEqual(requests(urls[2].appendingPathComponent("/host-key")), 1)
+    }
+
+    /// AC5: a pull-refresh of a pinned host that NEVER reached SSE proves
+    /// reachability NOW — the single preflight owner restarts immediately
+    /// (instead of waiting for the next capped tick) and the host goes live
+    /// with exactly one stream once reachable; a healthy host's pull stays
+    /// snapshot-only and a second pull is a no-op.
+    func testPullRefreshGivesANeverVerifiedHostAnImmediatePreflight() async throws {
         suiteName = "corral.h451.pull.\(UUID().uuidString)"
         defer { cleanup() }
         let (store, profiles, urls, keys) = makeThreeHostStore()
-        let policy = HostPreflightRetryPolicy(maxAttempts: 2, baseInterval: 0.02, maxInterval: 0.02)
+        // Slow cadence: no natural tick inside the test window, so the
+        // immediate post-pull attempt is observable.
+        let policy = HostPreflightRetryPolicy(baseInterval: 2, maxInterval: 2)
         let snapshot = try snapshotData(rev: 5)
         var script: [URL: [PreflightRetryURLProtocol.Outcome]] = [:]
         for (index, url) in urls.enumerated() {
@@ -472,27 +532,37 @@ final class PreflightRetryCoordinatorTests: XCTestCase {
             script[url.appendingPathComponent("/host-key")] = [.ok(keys[index])]
             script[url.appendingPathComponent("/snapshot")] = [.json(snapshot)]
         }
-        // B: the initial ladder exhausts (2 failures); the pull's re-armed
-        // ladder sees the host reachable.
+        // B: the launch attempt fails; the pull's immediate attempt fails
+        // too; the running ladder's next tick sees the host reachable.
         script[urls[1].appendingPathComponent("/host-key")] = [
             .fail(.cannotConnectToHost), .fail(.cannotConnectToHost), .ok(keys[1]),
         ]
         let session = scriptedSession(script)
         let coordinator = makeCoordinator(store: store, session: session, policy: policy)
         coordinator.update(profiles: profiles, startStreams: true)
-        await waitUntil(requests(urls[1].appendingPathComponent("/host-key")) >= 2, timeout: 2.5)
+        await waitUntil(requests(urls[1].appendingPathComponent("/host-key")) >= 1, timeout: 2)
         await settle(0.3)
-        XCTAssertEqual(requests(urls[1].appendingPathComponent("/host-key")), 2,
-                       "B's launch ladder exhausted at its bound")
+        XCTAssertEqual(requests(urls[1].appendingPathComponent("/host-key")), 1,
+                       "the slow ladder has not ticked again yet")
         XCTAssertEqual(requests(urls[1].appendingPathComponent("/events")), 0,
                        "B never reached SSE before the pull")
         let eventsA = requests(urls[0].appendingPathComponent("/events"))
         XCTAssertEqual(eventsA, 1, "host A streams before the pull")
         _ = await coordinator.refreshAll(profiles: profiles)
-        await waitUntil(requests(urls[1].appendingPathComponent("/events")) == 1, timeout: 3)
-        XCTAssertEqual(coordinator.posture(profileID: profiles[1].id), .verified)
-        XCTAssertEqual(requests(urls[1].appendingPathComponent("/host-key")), 3,
-                       "the pull re-armed exactly ONE fresh verification attempt")
+        // The pull restarted the single owner: the next attempt lands
+        // immediately, not after the 2 s cadence.
+        await waitUntil(requests(urls[1].appendingPathComponent("/host-key")) >= 2, timeout: 0.8)
+        XCTAssertEqual(requests(urls[1].appendingPathComponent("/host-key")), 2,
+                       "the pull must give the never-verified host an immediate attempt")
+        // The pull's attempt failed; the still-running ladder recovers on
+        // its own — automatically, with no further user action.
+        await waitUntil(coordinator.posture(profileID: profiles[1].id) == .verified, timeout: 4)
+        XCTAssertEqual(coordinator.posture(profileID: profiles[1].id), .verified,
+                       "the never-SSE host must recover automatically once reachable")
+        await waitUntil(requests(urls[1].appendingPathComponent("/events")) >= 1, timeout: 2)
+        await settle(0.15)
+        XCTAssertEqual(requests(urls[1].appendingPathComponent("/events")), 1,
+                       "exactly one stream")
         // A second pull on an already-streaming host is a no-op.
         _ = await coordinator.refreshAll(profiles: profiles)
         await settle(0.2)
@@ -599,7 +669,7 @@ final class PreflightRetryActiveHostTests: XCTestCase {
             .fail(.cannotConnectToHost), .fail(.timedOut), .ok(Self.pinnedKey),
         ]
         let session = scriptedSession(script)
-        let policy = HostPreflightRetryPolicy(maxAttempts: 5, baseInterval: 0.05, maxInterval: 0.05)
+        let policy = HostPreflightRetryPolicy(baseInterval: 0.05, maxInterval: 0.05)
         let model = makeModel(session: session, policy: policy)
         model.startLive()
         await waitUntil(model.keyContinuityState == .verified)
@@ -614,22 +684,28 @@ final class PreflightRetryActiveHostTests: XCTestCase {
         XCTAssertTrue(model.fleet.isStreaming)
     }
 
-    /// AC3 parity: repeated startLive() calls while the ladder is failing
-    /// never stack a second owner.
+    /// AC3 parity: repeated startLive() calls while the ladder is running
+    /// never stack a second owner — the attempt rate stays ONE ladder's
+    /// bounded cadence.
     func testActiveHostRepeatedStartLiveNeverStacksASecondLadder() async {
         var script: [URL: [PreflightRetryURLProtocol.Outcome]] = [:]
         script[Self.hostURL.appendingPathComponent("/host-key")] = [.fail(.cannotConnectToHost)]
         let session = scriptedSession(script)
-        let policy = HostPreflightRetryPolicy(maxAttempts: 5, baseInterval: 0.1, maxInterval: 0.1)
+        let policy = HostPreflightRetryPolicy(baseInterval: 0.05, maxInterval: 0.05)
         let model = makeModel(session: session, policy: policy)
         model.startLive()
         model.startLive()
         model.startLive()
         model.startLive()
-        await waitUntil(requests(Self.hostURL.appendingPathComponent("/host-key")) >= policy.maxAttempts,
-                        timeout: 3)
-        XCTAssertEqual(requests(Self.hostURL.appendingPathComponent("/host-key")), policy.maxAttempts,
-                       "one owner: extra startLive calls must not stack ladders")
+        await waitUntil(requests(Self.hostURL.appendingPathComponent("/host-key")) >= 3, timeout: 2)
+        let before = requests(Self.hostURL.appendingPathComponent("/host-key"))
+        let started = Date()
+        await settle(0.5)
+        let elapsed = Date().timeIntervalSince(started)
+        let growth = requests(Self.hostURL.appendingPathComponent("/host-key")) - before
+        XCTAssertGreaterThanOrEqual(growth, 2, "the single ladder must keep retrying")
+        XCTAssertLessThanOrEqual(growth, Int(elapsed / policy.baseInterval) + 3,
+                                 "one owner: extra startLive calls must not stack ladders")
         XCTAssertEqual(model.keyContinuityState, .pending, "fail-closed while unverified")
         XCTAssertEqual(requests(Self.hostURL.appendingPathComponent("/events")), 0)
     }
@@ -642,7 +718,7 @@ final class PreflightRetryActiveHostTests: XCTestCase {
         script[Self.hostURL.appendingPathComponent("/events")] = [.holdOpen]
         script[Self.hostURL.appendingPathComponent("/host-key")] = [.ok(Self.replacementKey)]
         let session = scriptedSession(script)
-        let policy = HostPreflightRetryPolicy(maxAttempts: 3, baseInterval: 0.05, maxInterval: 0.05)
+        let policy = HostPreflightRetryPolicy(baseInterval: 0.05, maxInterval: 0.05)
         let model = makeModel(session: session, policy: policy)
         model.startLive()
         await waitUntil(model.keyContinuityState == .mismatch)
@@ -660,9 +736,11 @@ final class PreflightRetryActiveHostTests: XCTestCase {
         XCTAssertEqual(requests(Self.hostURL.appendingPathComponent("/events")), 0)
     }
 
-    /// AC5 parity: an ordinary pull re-arms the ACTIVE host's exhausted
-    /// ladder and the host goes live — no foreground/restart/manual retry.
-    func testActiveHostPullRefreshRearmsAnExhaustedLadder() async throws {
+    /// AC5 parity: an ordinary pull gives the never-verified ACTIVE host an
+    /// immediate fresh preflight (not waiting for the ladder's next capped
+    /// tick) and the host goes live with exactly one stream — no
+    /// foreground/restart/manual retry.
+    func testActiveHostPullRefreshGivesAnImmediatePreflight() async throws {
         let snapshot = try snapshotData(rev: 5)
         var script: [URL: [PreflightRetryURLProtocol.Outcome]] = [:]
         script[Self.hostURL.appendingPathComponent("/events")] = [.holdOpen]
@@ -671,24 +749,61 @@ final class PreflightRetryActiveHostTests: XCTestCase {
             .fail(.cannotConnectToHost), .fail(.cannotConnectToHost), .ok(Self.pinnedKey),
         ]
         let session = scriptedSession(script)
-        let policy = HostPreflightRetryPolicy(maxAttempts: 2, baseInterval: 0.02, maxInterval: 0.02)
+        // Slow cadence: no natural tick inside the test window.
+        let policy = HostPreflightRetryPolicy(baseInterval: 2, maxInterval: 2)
         let model = makeModel(session: session, policy: policy)
         model.startLive()
-        await waitUntil(requests(Self.hostURL.appendingPathComponent("/host-key")) >= 2,
-                        timeout: 2.5)
+        await waitUntil(requests(Self.hostURL.appendingPathComponent("/host-key")) >= 1,
+                        timeout: 2)
         await settle(0.3)
-        XCTAssertEqual(requests(Self.hostURL.appendingPathComponent("/host-key")), 2,
-                       "the launch ladder exhausted at its bound")
+        XCTAssertEqual(requests(Self.hostURL.appendingPathComponent("/host-key")), 1,
+                       "the slow ladder has not ticked again yet")
         XCTAssertEqual(model.keyContinuityState, .pending)
         XCTAssertEqual(requests(Self.hostURL.appendingPathComponent("/events")), 0)
         await model.refreshFleet()
-        await waitUntil(model.keyContinuityState == .verified)
+        await waitUntil(requests(Self.hostURL.appendingPathComponent("/host-key")) >= 2,
+                        timeout: 0.8)
+        XCTAssertEqual(requests(Self.hostURL.appendingPathComponent("/host-key")), 2,
+                       "the pull must give the never-verified active host an immediate attempt")
+        // The pull's attempt failed; the ladder recovers on its own.
+        await waitUntil(model.keyContinuityState == .verified, timeout: 4)
         XCTAssertEqual(model.keyContinuityState, .verified,
-                       "a pull must re-arm the never-verified active host")
+                       "the active host must recover automatically once reachable")
         await waitUntil(requests(Self.hostURL.appendingPathComponent("/events")) >= 1)
-        XCTAssertEqual(requests(Self.hostURL.appendingPathComponent("/host-key")), 3,
-                       "the pull re-armed exactly one fresh verification attempt")
+        XCTAssertEqual(requests(Self.hostURL.appendingPathComponent("/events")), 1,
+                       "exactly one stream")
         XCTAssertNil(model.banner)
+    }
+
+    /// AC1/AC5 parity (late recovery): the ACTIVE host that stays
+    /// unreachable well past any fixed attempt window, then becomes
+    /// reachable, verifies and opens exactly one stream automatically — no
+    /// further startLive, no pull, no restart.
+    func testActiveHostLateReachabilityRecoversWithoutAnotherForeground() async {
+        var script: [URL: [PreflightRetryURLProtocol.Outcome]] = [:]
+        script[Self.hostURL.appendingPathComponent("/events")] = [.holdOpen]
+        var queue: [PreflightRetryURLProtocol.Outcome] =
+            Array(repeating: .fail(.cannotConnectToHost), count: 15)
+        queue.append(.ok(Self.pinnedKey))
+        script[Self.hostURL.appendingPathComponent("/host-key")] = queue
+        let session = scriptedSession(script)
+        let policy = HostPreflightRetryPolicy(baseInterval: 0.03, maxInterval: 0.03)
+        let model = makeModel(session: session, policy: policy)
+        model.startLive()
+        await waitUntil(requests(Self.hostURL.appendingPathComponent("/host-key")) >= 13,
+                        timeout: 4)
+        XCTAssertGreaterThanOrEqual(requests(Self.hostURL.appendingPathComponent("/host-key")), 13,
+                                    "the ACTIVE ladder must keep retrying past the old fixed window")
+        await waitUntil(model.keyContinuityState == .verified, timeout: 4)
+        XCTAssertEqual(model.keyContinuityState, .verified,
+                       "a late-reachable ACTIVE host must verify automatically")
+        await waitUntil(requests(Self.hostURL.appendingPathComponent("/events")) >= 1)
+        await settle(0.15)
+        XCTAssertEqual(requests(Self.hostURL.appendingPathComponent("/host-key")), 16,
+                       "one owner: the queue advanced one attempt at a time")
+        XCTAssertEqual(requests(Self.hostURL.appendingPathComponent("/events")), 1,
+                       "exactly one stream")
+        XCTAssertNil(model.banner, "the retry notice clears once the host verifies")
     }
 
     /// AC3 parity: background (stopLive) ends an in-flight active-host
@@ -697,7 +812,7 @@ final class PreflightRetryActiveHostTests: XCTestCase {
         var script: [URL: [PreflightRetryURLProtocol.Outcome]] = [:]
         script[Self.hostURL.appendingPathComponent("/host-key")] = [.fail(.cannotConnectToHost)]
         let session = scriptedSession(script)
-        let policy = HostPreflightRetryPolicy(maxAttempts: 10, baseInterval: 0.25, maxInterval: 0.25)
+        let policy = HostPreflightRetryPolicy(baseInterval: 0.25, maxInterval: 0.25)
         let model = makeModel(session: session, policy: policy)
         model.startLive()
         await waitUntil(requests(Self.hostURL.appendingPathComponent("/host-key")) >= 2, timeout: 3)

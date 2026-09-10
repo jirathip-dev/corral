@@ -1122,11 +1122,14 @@ final class AppModel: ObservableObject {
     /// no stream/fetch/push-register/Recent Output reaches the
     /// replacement identity and the last safe snapshot stays stale.
     /// #451: a transient failure (unreachable/timeout/server error) retries
-    /// on ONE bounded, cancellable ladder — the same `HostPreflightRetryPolicy`
-    /// the coordinator hosts use (parity), with at most one owner per host
-    /// and cancellation at every background/mode/identity boundary. A key
-    /// mismatch stays terminal (`failKeyContinuity`; only a fresh pairing
-    /// recovers) and is never retried or repaired.
+    /// at a bounded RATE on ONE cancellable ladder — the same
+    /// `HostPreflightRetryPolicy` the coordinator hosts use (parity), with at
+    /// most one owner per host, and cancellation at every background/mode/
+    /// identity boundary. The ladder keeps retrying for as long as this
+    /// owner lives, so a host that becomes reachable at any later point in
+    /// the foreground session still recovers automatically. A key mismatch
+    /// stays terminal (`failKeyContinuity`; only a fresh pairing recovers)
+    /// and is never retried or repaired.
     private func beginKeyContinuityCheck(for profile: HostProfile) {
         guard keyContinuityState != .mismatch else { return }
         // #451: one owner — a ladder already running (or paused between its
@@ -1171,19 +1174,17 @@ final class AppModel: ObservableObject {
                     guard !Task.isCancelled, self.isCurrent(context) else { return }
                     // Could not reach the host to verify identity: the
                     // stream stays closed (never unverified-open) and the
-                    // banner states the truth (unavailable + retrying).
-                    guard attempt < policy.maxAttempts else {
-                        self.banner = .error(
-                            "host_key_unverified",
-                            "Could not verify \(profile.displayName)'s host key — the host is unreachable. The board stays paused; retry from Settings or pull to refresh.")
-                        return
-                    }
+                    // banner states the truth. The ladder keeps its bounded
+                    // RATE for as long as this owner lives — a host that
+                    // becomes reachable later in the foreground session
+                    // still recovers automatically; background/mode
+                    // cancellation ends the retries, never a fixed window.
                     attempt += 1
                     self.banner = .error(
                         "host_key_unverified",
-                        "Could not verify \(profile.displayName)'s host key — retrying automatically (\(attempt) of \(policy.maxAttempts)); the board stays paused until the host is reachable.")
+                        "Could not verify \(profile.displayName)'s host key — retrying automatically (attempt \(attempt)); the board stays paused until the host is reachable.")
                     do {
-                        try await Task.sleep(nanoseconds: UInt64(policy.delay(beforeAttempt: attempt) * 1_000_000_000))
+                        try await Task.sleep(nanoseconds: policy.delayNanoseconds(beforeAttempt: attempt))
                     } catch {
                         return  // cancelled (background/boundary): retries end
                     }
@@ -2307,13 +2308,17 @@ final class AppModel: ObservableObject {
         guard keyContinuityAllowsLiveWork else {
             _ = keyContinuityDeniedBanner()
             // #451 (AC5 parity): a pull on a pinned ACTIVE host that never
-            // verified (its ladder is still between attempts, or exhausted)
-            // re-arms that one ladder — the active-host mirror of the
-            // coordinator's never-SSE re-drive. A mid-ladder pull is a
-            // no-op (single owner); a mismatch was already denied above
-            // and stays terminal.
+            // verified is an explicit "try again now" — restart the single
+            // preflight owner so it re-checks immediately instead of
+            // waiting for the running ladder's next capped tick (the
+            // active-host mirror of the coordinator's never-SSE re-drive).
+            // Still one owner; a mismatch was already denied above and
+            // stays terminal.
             if keyContinuityState == .pending, let profile = activeProfile,
                profile.hostKeyB64 != nil {
+                keyContinuityTask?.cancel()
+                keyContinuityTask = nil
+                keyContinuityTaskId = nil
                 beginKeyContinuityCheck(for: profile)
             }
             return

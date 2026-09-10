@@ -101,16 +101,24 @@ struct HerdView: View {
             .ignoresSafeArea()
             VStack(spacing:0) {
                 topChrome
+                    // #456-r1: at accessibility sizes the chrome's ideal height
+                    // grows with the type. It is the surface that must never be
+                    // squeezed (the pre-fix squeeze drew the scope label outside
+                    // its own pill and under the counts card), so it keeps its
+                    // Dynamic-Type ideal and the pager region below absorbs the
+                    // difference instead.
+                    .layoutPriority(1)
                 if horses.contains(where: \.disconnected) { outage }
                 GeometryReader { geometry in
                     VStack(spacing:0) {
-                        Spacer(minLength:12).frame(maxHeight:88)
-                        frontRail
                         if paddocks.isEmpty {
                             ContentUnavailableView("No agents in this scope",systemImage:"line.3.horizontal.decrease")
                         } else {
-                            pager(width:geometry.size.width)
+                            herdColumn(width:geometry.size.width)
                             navigation
+                                // #456-r1: Previous/Next/position keep their
+                                // >= 44 pt targets at accessibility sizes too.
+                                .layoutPriority(1)
                         }
                     }
                 }
@@ -264,6 +272,28 @@ struct HerdView: View {
             }
         }
         .accessibilityElement(children:.contain).accessibilityLabel("Global blocked front rail")
+    }
+    /// #456-r1: the rail + paddock column. At accessibility sizes a small
+    /// phone cannot show the rail, the paddock header and the field at once,
+    /// so the column scrolls under the pinned chrome and above the pinned
+    /// navigation instead of being squeezed (the squeeze previously drew the
+    /// rail outside its pills and pushed the navigation out of place). At the
+    /// approved normal sizes the composition is unchanged.
+    @ViewBuilder private func herdColumn(width:CGFloat) -> some View {
+        if dynamicType.isAccessibilitySize {
+            ScrollView(.vertical) {
+                VStack(spacing:0) {
+                    frontRail
+                    pager(width:width)
+                }
+            }
+        } else {
+            VStack(spacing:0) {
+                Spacer(minLength:12).frame(maxHeight:88)
+                frontRail
+                pager(width:width)
+            }
+        }
     }
     private func pager(width:CGFloat) -> some View {
         ScrollView(.horizontal) {

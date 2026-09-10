@@ -640,3 +640,237 @@ final class PresentationPreferenceTests: XCTestCase {
                       "the Board/Herd choice renders as a visible segmented control")
     }
 }
+
+// MARK: - #456-r1: runtime accessibility layout over the REAL HerdView
+
+/// The #456 floating top chrome must survive Dynamic Type. At AX-XXXL the
+/// pre-fix layout squeezed the scope pill: the label rendered OUTSIDE its own
+/// material pill (into the status-bar/Dynamic Island band) and the counts
+/// card covered the `All repositories` summary. These tests render the real
+/// `HerdView` in a hosted window at the supported phone sizes and Dynamic
+/// Type sizes and measure the pixels of the actual SwiftUI layout — a source
+/// pin cannot show where a glyph landed. Re-introducing the squeeze (a
+/// fixed-height chrome / dropped layout priority) turns the accessibility
+/// cases RED while the default-size case stays GREEN as the positive control.
+@MainActor
+final class FullScreenHerdShellAccessibilityLayoutTests: XCTestCase {
+
+    /// 12 synthetic agents over 4 repositories — the #456 fixture shape
+    /// (2 blocked at the rail, mixed states). Fictional data only.
+    private func fleet() -> [HerdHorse] {
+        let names = ["birch-clearing", "oak-before-dark", "spruce-hollow", "willow-bend",
+                     "cedar-ridge", "aspen-grove", "juniper-south", "maple-stand",
+                     "elder-flats", "hazel-hollow", "hawthorn-fork", "sumac-row"]
+        let states: [AgentState] = [.blocked, .blocked, .done, .idle, .working, .unknown,
+                                    .idle, .working, .done, .working, .idle, .working]
+        let repos = ["atlas-vector", "cedar-tools", "maple-client", "willow-core"]
+        return (0..<names.count).map { index in
+            let agent = Agent(agentId: "herdr:r1-fixture-\(index)", state: states[index],
+                              seq: UInt64(index + 1), ts: 1_800_000_000_000,
+                              capabilities: ["read_tail"],
+                              workspace: Workspace(repo: repos[(index / 3) % repos.count]),
+                              attachment: Attachment(kind: "herdr", reference: "fixture:r1:\(index)"),
+                              displayName: names[index])
+            return HerdHorse(agent: agent, hostProfileID: nil, hostName: nil, disconnected: false)
+        }
+    }
+
+    // MARK: pixel canvas (1 px == 1 pt)
+
+    private struct Canvas {
+        let width: Int
+        let height: Int
+        let pixels: [UInt8]
+
+        init?(_ image: UIImage) {
+            guard let cg = image.cgImage else { return nil }
+            width = cg.width
+            height = cg.height
+            var data = [UInt8](repeating: 0, count: cg.width * cg.height * 4)
+            let drawn = data.withUnsafeMutableBytes { buffer -> Bool in
+                guard let context = CGContext(data: buffer.baseAddress, width: cg.width, height: cg.height,
+                                              bitsPerComponent: 8, bytesPerRow: cg.width * 4,
+                                              space: CGColorSpaceCreateDeviceRGB(),
+                                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+                else { return false }
+                context.draw(cg, in: CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
+                return true
+            }
+            guard drawn else { return nil }
+            pixels = data
+        }
+
+        func rgb(_ x: Int, _ y: Int) -> (red: Double, green: Double, blue: Double) {
+            let offset = (y * width + x) * 4
+            return (Double(pixels[offset]), Double(pixels[offset + 1]), Double(pixels[offset + 2]))
+        }
+
+        func luminance(_ x: Int, _ y: Int) -> Double {
+            let colour = rgb(x, y)
+            return 0.299 * colour.red + 0.587 * colour.green + 0.114 * colour.blue
+        }
+
+        /// Chrome glyphs are the near-white label colour (the Day ranch's sky
+        /// and hills are saturated and stay below the luminance gate).
+        func isLabelGlyph(_ x: Int, _ y: Int) -> Bool {
+            guard x >= 0, x < width, y >= 0, y < height else { return false }
+            let colour = rgb(x, y)
+            let saturation = max(colour.red, colour.green, colour.blue)
+                - min(colour.red, colour.green, colour.blue)
+            return luminance(x, y) > 200 && saturation < 45
+        }
+
+        func labelGlyphs(rows: Range<Int>, columns: Range<Int>) -> Int {
+            var count = 0
+            for y in rows where y >= 0 && y < height {
+                for x in columns where x >= 0 && x < width && isLabelGlyph(x, y) { count += 1 }
+            }
+            return count
+        }
+
+        /// First dark material band (the floating pills/cards) at a column.
+        func materialBand(x: Int, from: Int, to: Int) -> (top: Int, bottom: Int)? {
+            guard let top = (max(0, from)..<min(height, to)).first(where: { luminance(x, $0) < 90 }),
+                  let bottom = (top + 4..<height).first(where: { luminance(x, $0) >= 90 })
+            else { return nil }
+            return (top, bottom)
+        }
+
+        /// The bottom-most contiguous glyph band inside `rows` — the floating
+        /// bottom navigation sits after the scrollable column, so it is the
+        /// last text band above the safe-area edge.
+        func bottomTextBand(rows: Range<Int>, columns: Range<Int>) -> (top: Int, bottom: Int)? {
+            var bottom: Int?
+            var y = min(rows.upperBound, height) - 1
+            while y >= rows.lowerBound {
+                if labelGlyphs(rows: y..<(y + 1), columns: columns) > 0 { bottom = y; break }
+                y -= 1
+            }
+            guard let bottom else { return nil }
+            var top = bottom
+            var gap = 0
+            y = bottom - 1
+            while y >= rows.lowerBound {
+                if labelGlyphs(rows: y..<(y + 1), columns: columns) > 0 {
+                    top = y
+                    gap = 0
+                } else {
+                    gap += 1
+                    if gap > 3 { break }
+                }
+                y -= 1
+            }
+            return (top, bottom)
+        }
+    }
+
+    private struct Snapshot {
+        let canvas: Canvas
+        let safeTop: CGFloat
+        let safeBottom: CGFloat
+    }
+
+    /// Renders the REAL HerdView in a hosted window at `size` with the
+    /// deterministic Day lighting and returns the measured screen pixels.
+    /// The window must belong to the app's window scene: a scene-less window
+    /// reports zero safe-area insets and never rasterizes its SwiftUI layers.
+    private func render(_ size: CGSize, dynamicType: DynamicTypeSize) async throws -> Snapshot {
+        UserDefaults.standard.set(HerdEnvironmentChoice.day.rawValue, forKey: "herdEnvironment")
+        let scene = HerdView(horses: fleet(), obscured: false, select: { _ in },
+                             openBoard: {}, retry: {})
+            .environmentObject(ThemeStore())
+            .environment(\.dynamicTypeSize, dynamicType)
+        let controller = UIHostingController(rootView: AnyView(scene))
+        let windowScene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }.first
+        let window = windowScene.map { UIWindow(windowScene: $0) } ?? UIWindow()
+        window.frame = CGRect(origin: .zero, size: size)
+        window.rootViewController = controller
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        try await Task.sleep(for: .milliseconds(700))
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(bounds: window.bounds, format: format).image { _ in
+            window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+        }
+        let canvas = try XCTUnwrap(Canvas(image), "the hosted HerdView must render a bitmap")
+        return Snapshot(canvas: canvas, safeTop: window.safeAreaInsets.top,
+                        safeBottom: window.safeAreaInsets.bottom)
+    }
+
+    /// The floating scope-chrome contract at any Dynamic Type size: the pill
+    /// sits inside the top safe area, the scope label renders INSIDE the
+    /// pill's own material (never above it in the status-bar band) and the
+    /// counts card below it never covers the scope summary.
+    private func assertScopeChromeHoldsItsLabel(_ snapshot: Snapshot, label: String) throws {
+        let canvas = snapshot.canvas
+        let pill = try XCTUnwrap(canvas.materialBand(x: 44, from: 0, to: 400),
+                                 "\(label): the floating scope pill must render")
+        XCTAssertGreaterThanOrEqual(Double(pill.top), Double(snapshot.safeTop) - 2,
+            "\(label): the floating chrome starts inside the top safe area "
+            + "(pill top \(pill.top) pt, safe top \(snapshot.safeTop) pt)")
+        XCTAssertGreaterThanOrEqual(pill.bottom - pill.top, 44,
+            "\(label): the scope control keeps a >= 44 pt target")
+        let above = canvas.labelGlyphs(rows: 0..<pill.top, columns: 48..<200)
+        XCTAssertEqual(above, 0,
+            "\(label): \(above) px of scope text render ABOVE the pill "
+            + "(status-bar / Dynamic Island band)")
+        let inside = canvas.labelGlyphs(rows: pill.top..<pill.bottom, columns: 48..<200)
+        XCTAssertGreaterThanOrEqual(inside, 40,
+            "\(label): the scope label must render inside the pill's own material (found \(inside) px)")
+        let card = try XCTUnwrap(canvas.materialBand(x: 44, from: pill.bottom + 2, to: canvas.height),
+                                 "\(label): the counts card must render below the floating scope pill")
+        let gap = canvas.labelGlyphs(rows: (pill.bottom + 1)..<card.top, columns: 48..<200)
+        XCTAssertEqual(gap, 0,
+            "\(label): \(gap) px of scope text render between the pill and the counts card — "
+            + "the counts card must never cover the scope summary")
+    }
+
+    /// #456 AC2 on the tall phones: the scope label stays inside its pill and
+    /// the counts card clear of it at accessibility sizes.
+    func testFloatingScopeChromeHoldsItsLabelAtAccessibilitySizes() async throws {
+        for (name, dynamicType) in [("AX1", DynamicTypeSize.accessibility1),
+                                    ("AX3", DynamicTypeSize.accessibility3),
+                                    ("AX5", DynamicTypeSize.accessibility5)] {
+            let snapshot = try await render(CGSize(width: 393, height: 852), dynamicType: dynamicType)
+            try assertScopeChromeHoldsItsLabel(snapshot, label: "iPhone 16 393x852 \(name)")
+        }
+        let large = try await render(CGSize(width: 430, height: 932), dynamicType: .accessibility5)
+        try assertScopeChromeHoldsItsLabel(large, label: "iPhone Pro Max 430x932 AX5")
+    }
+
+    /// Small phone: the default size is the positive control (the approved
+    /// composition) and AX-XXXL must still hold the chrome inside its pill.
+    func testSmallPhoneKeepsTheFloatingChromeContained() async throws {
+        let control = try await render(CGSize(width: 375, height: 667), dynamicType: .large)
+        try assertScopeChromeHoldsItsLabel(control, label: "iPhone SE 375x667 default (control)")
+        let accessible = try await render(CGSize(width: 375, height: 667), dynamicType: .accessibility5)
+        try assertScopeChromeHoldsItsLabel(accessible, label: "iPhone SE 375x667 AX-XXXL")
+    }
+
+    /// Runtime reachability: the floating controls keep >= 44 pt usable
+    /// targets at AX-XXXL and the floating bottom navigation's target band
+    /// stays fully inside the safe area.
+    func testFloatingControlsKeepReachableTargetsAtAccessibilitySizes() async throws {
+        for size in [CGSize(width: 393, height: 852), CGSize(width: 375, height: 667)] {
+            let snapshot = try await render(size, dynamicType: .accessibility5)
+            let canvas = snapshot.canvas
+            let label = "AX-XXXL \(Int(size.width))x\(Int(size.height))"
+            let pill = try XCTUnwrap(canvas.materialBand(x: 44, from: 0, to: 400),
+                                     "\(label): the floating scope pill must render")
+            XCTAssertGreaterThanOrEqual(pill.bottom - pill.top, 44,
+                "\(label): the floating scope control keeps a >= 44 pt target")
+            let nav = try XCTUnwrap(canvas.bottomTextBand(rows: max(0, canvas.height - 240)..<canvas.height,
+                                                          columns: 24..<(canvas.width - 24)),
+                                    "\(label): the floating bottom navigation labels must render")
+            XCTAssertGreaterThanOrEqual(nav.bottom - nav.top, 8,
+                "\(label): the bottom navigation keeps its label glyph band")
+            XCTAssertGreaterThanOrEqual(Double(nav.top) - 22, 0,
+                "\(label): the 44 pt Previous/position/Next target band stays on screen")
+            XCTAssertLessThanOrEqual(Double(nav.bottom) + 22,
+                                     Double(size.height) - Double(snapshot.safeBottom) + 2,
+                "\(label): the floating bottom navigation stays inside the safe area")
+        }
+    }
+}

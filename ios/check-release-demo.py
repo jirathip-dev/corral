@@ -315,7 +315,11 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # header / duplicated toolbar) + HerdView full-screen ranch cover,
     # floating scope/Settings/counts and floating paddock navigation with
     # native glyphs — re-pinned over the #456 source set.
-    "b345451df5d02c543ec05423bd75d7e14e1362c91084556b86023bfe2c46bfad"
+    # #456 r1: accessibility Dynamic Type repair — the floating top chrome
+    # keeps its scaled ideal (layoutPriority), the rail + paddock column
+    # scrolls under it at accessibility sizes, and the bottom navigation keeps
+    # its >= 44 pt targets — re-pinned over the #456-r1 source set.
+    "4740de69b380f849194c67ce6c6a637127fdf32f75694270489f5d92553cdf58"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

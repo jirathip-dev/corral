@@ -303,6 +303,10 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # #428 source set.
     # #444 correction 1: native procedural Herd plus DEBUG-only evidence;
     # original V1 paths and scene/lifecycle sources are all digest-bound.
+    # #449: Herd paddocks prioritize connected working repositories while
+    # preserving identity selection; DEBUG evidence records the live reorder.
+    # r2 integration refresh: #449 + #458 merged source set — the digest
+    # is regenerated from the merged checkout; neither parent pin applies.
     # #458: persisted Board/Herd preference — AppModel restores the saved
     # presentation (Board default for missing/invalid) and owns the
     # select/saved/openBoard presentation API; FleetViews dropped the
@@ -317,7 +321,10 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # scene-active re-read — re-pinned over the #464 source set.
     # #464 r1 (owner-authorized preview repair): FleetAppIcon.preview now maps
     # to the four generated loadable preview imagesets — re-pinned.
-    "6995828605b43f2d9e78877445e158b1466e794ca01d6e174fc0f050b3080efe"
+    # #464 integration refresh: #464 merged onto the #449/#458 integration
+    # source set — the digest is regenerated from the merged checkout (union
+    # of #449/#458 and #464 sources); neither parent pin applies.
+    "c17cfe9a211581bb17538b9b351451074fa70cbce68c70f8b5f32deae451e61f"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -471,6 +478,9 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # #464: the Settings themedRowSurface count moved 5 → 6 for the new App
     # Icon section (AppIconPickerTests lives in its own file) — re-pinned
     # over the #464 test source.
+    # #464 integration refresh: recomputed on the merged checkout — the merged
+    # pinned test file is byte-identical to the #464 lane's (#449's test change
+    # landed in HerdTests.swift, outside this pin).
     "7299c4e36ebe373350b79e34615f4fde3ff1cc86debae806fdbf0c870d64505f"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)

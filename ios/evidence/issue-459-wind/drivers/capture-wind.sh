@@ -24,7 +24,11 @@ sleep 1
 xcrun simctl launch "$UDID" com.corral.fleetnotifier \
     -demoMode -fleetnotifier.fleetPresentation Herd -herdEnvironment Day "$@"
 sleep "$SECONDS_TO_RECORD"
-kill -INT "$RECORDER"
+kill -INT "$RECORDER" 2>/dev/null || true
 wait "$RECORDER" || true
 xcrun simctl terminate "$UDID" com.corral.fleetnotifier >/dev/null 2>&1 || true
+if [ ! -s "$OUT" ]; then
+    echo "capture-wind: recording produced no bytes: $OUT" >&2
+    exit 1
+fi
 echo "captured $OUT ($(stat -f%z "$OUT") bytes)"

@@ -109,10 +109,12 @@ final class HerdWindTests: XCTestCase {
     }
 
     /// The single fully visible tree of the barnTrees plane authored at
-    /// (238, 258, scale 0.5): canopy travel, trunk strip, window.
+    /// (238, 258, scale 0.5): canopy travel, trunk strip, window. The window
+    /// starts at x=218 so the barn (right edge x=216) can never pin the
+    /// measured left edge.
     private let canopyWindow = 212.0...264.0
     private let canopyBand = 238.0...280.0
-    private let isolatedCanopyWindow = 200.0...280.0
+    private let isolatedCanopyWindow = 218.0...280.0
     private let isolatedCanopyBand = 244.0...272.0
     private let groundedTrunkStrip = 236.0...240.0
     private let groundedTrunkRows = 274.0...277.0
@@ -164,7 +166,7 @@ final class HerdWindTests: XCTestCase {
             rightMax = max(rightMax, extent.maxX)
         }
         let swing = (leftMax - leftMin) + (rightMax - rightMin)
-        XCTAssertGreaterThanOrEqual(swing, 2.0,
+        XCTAssertGreaterThanOrEqual(swing, 3.0,
             "canopy silhouette must travel across the gust cycle (measured \(swing) points)")
         let first = try plane(.barnTrees, elapsed: 0)
         let second = try plane(.barnTrees, elapsed: 2.6)

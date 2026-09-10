@@ -34,6 +34,8 @@ def raw_frames(source: Path, width: int, height: int, *, fps: float | None = Non
         cmd += ["-vf", ",".join(filters)]
     cmd += ["-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
     raw = subprocess.run(cmd, check=True, capture_output=True).stdout
+    if not width or not height:
+        return [raw] if raw else []
     frame_size = width * height * 3
     if len(raw) % frame_size:
         raise SystemExit(f"raw stream is not frame aligned ({len(raw)} bytes)")
@@ -103,12 +105,14 @@ def main() -> int:
     clip.add_argument("--height", type=int, default=639)
     clip.add_argument("--cycle-step", type=float, default=2.6,
                       help="seconds between the pair used as one wind half-cycle")
+    clip.add_argument("--label", default="clip")
+    clip.add_argument("--outdir", type=Path, required=True)
     pair = sub.add_parser("pair")
     pair.add_argument("one", type=Path)
     pair.add_argument("two", type=Path)
     pair.add_argument("--band", type=int, default=60)
-    parser.add_argument("--label", default="clip")
-    parser.add_argument("--outdir", type=Path, required=True)
+    pair.add_argument("--label", default="pair")
+    pair.add_argument("--outdir", type=Path, required=True)
     args = parser.parse_args()
     args.outdir.mkdir(parents=True, exist_ok=True)
 

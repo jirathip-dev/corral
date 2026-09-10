@@ -340,7 +340,15 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # the 8671cfc integration — the pin below is recomputed from THIS merged
     # checkout; no parent pin (4740de69…, 184c7a64…, 0cb9dc0c…, c17cfe9a…)
     # applies.
-    "00cdc240dcb4489cacb3e6f7b5fe5cc92b0cd73d6dd9528778cd85fbfc016944"
+    # #457: contextual Herd controls + the ONE shared filter sheet — the
+    # sheet takes an explicit Board/Herd presentation context (ranch
+    # Day/Night tokens for the Herd case, board tokens unchanged), HerdView
+    # gained the sealed ranch control palette + lighting report, and the
+    # ranch chrome surface (glass + Reduce Transparency/high-contrast
+    # opaque fallback) joined FleetViews — re-pinned over the #457 source
+    # set (recomputed from this checkout; the #456-refresh pin does not
+    # apply).
+    "406f4e4236053919773fc2edd3e39903edcc5ae2399becaaba534eeed3cb2994"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -497,7 +505,11 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # #464 integration refresh: recomputed on the merged checkout — the merged
     # pinned test file is byte-identical to the #464 lane's (#449's test change
     # landed in HerdTests.swift, outside this pin).
-    "7299c4e36ebe373350b79e34615f4fde3ff1cc86debae806fdbf0c870d64505f"
+    # #457: ThemeWiringTests.testBoardChromeConsumesThemeTokens now pins the
+    # sheet's contextual accent/ink fallbacks (board path keeps theme.accent /
+    # theme.text through the explicit context) — re-pinned over the #457
+    # test source.
+    "7bca1ce9afd60e189020acec974a489bdf812f981f1a0e231ca1bb9102deec4f"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

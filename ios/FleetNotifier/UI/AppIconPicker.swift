@@ -9,10 +9,11 @@ import UIKit
 // state is the ONLY source of truth — there is no saved preference, no
 // inference from theme/mode, and no automatic switching.
 //
-// Previews are the SHIPPED asset-catalog renditions: the four literal
-// image-loader call sites in `preview` below are the only non-symbol loaders
-// the app is allowed to have, and the fail-closed #444/#463 source guard
-// allowlists exactly those four names.
+// Previews are the SHIPPED art: the four generated loadable imagesets
+// (byte-identical to the approved masters) named by the literal image-loader
+// call sites in `preview` below — the only non-symbol loaders the app is
+// allowed to have, and the fail-closed #444/#463 source guard allowlists
+// exactly those four names.
 
 /// The four approved shipping choices, in picker order.
 enum FleetAppIcon: String, CaseIterable, Identifiable, Sendable {
@@ -48,14 +49,17 @@ enum FleetAppIcon: String, CaseIterable, Identifiable, Sendable {
         self == .bay ? nil : assetName
     }
 
-    /// The shipped catalog art for the picker preview. Literal call sites so
-    /// the source guard can allowlist exactly these four rendition names.
+    /// The shipped catalog art for the picker preview. #464: the appiconset
+    /// renditions are not vendable to the app on iOS 18+, so the previews are
+    /// the four generated loadable imagesets (byte-identical to the approved
+    /// masters). Literal call sites so the source guard can allowlist exactly
+    /// these four names.
     var preview: Image {
         switch self {
-        case .bay: return Image("AppIcon")
-        case .palomino: return Image("Palomino")
-        case .black: return Image("Black")
-        case .grey: return Image("Grey")
+        case .bay: return Image("BayPreview")
+        case .palomino: return Image("PalominoPreview")
+        case .black: return Image("BlackPreview")
+        case .grey: return Image("GreyPreview")
         }
     }
 

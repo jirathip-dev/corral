@@ -148,6 +148,10 @@ targets:
       - path: ../tests/fixtures/live_session_exchange_golden.json
         buildPhase: resources
         group: Fixtures
+      # #464: the approved Treatment-A masters ride in the TEST bundle ONLY,
+      # base64-encoded (the app-product art scan must never see extra loose
+      # artwork), so AppIconPickerTests can assert the rendered picker
+      # previews are pixel-identical to the approved art.
     preBuildScripts:
       # #316 R5: the production Recent-output view source rides in the test
       # bundle (as .txt — Xcode refuses to Copy Bundle Resources a .swift
@@ -165,14 +169,31 @@ targets:
           # #464: the App Icon picker seam/wiring tests read the real source.
           cp "$SRCROOT/FleetNotifier/UI/AppIconPicker.swift" \
              "$TARGET_BUILD_DIR/$WRAPPER_NAME/AppIconPicker.swift.txt"
+          # #464 review r1: the approved Treatment-A masters as base64 test
+          # fixtures (the app-product art scan must never see extra loose
+          # artwork, so the bytes ride encoded, exactly like the .swift.txt
+          # source fixtures above).
+          for coat in bay palomino black grey; do
+            python3 -c "import base64,sys;print(base64.b64encode(open(sys.argv[1],'rb').read()).decode())" \
+              "$SRCROOT/tools/herd-art/appicon-masters/treatment-a/$coat-1024.png" \
+              > "$TARGET_BUILD_DIR/$WRAPPER_NAME/master-$coat.base64"
+          done
         inputFiles:
           - "$(SRCROOT)/FleetNotifier/UI/FleetViews.swift"
           - "$(SRCROOT)/FleetNotifier/UI/Herd/HerdView.swift"
           - "$(SRCROOT)/FleetNotifier/UI/AppIconPicker.swift"
+          - "$(SRCROOT)/tools/herd-art/appicon-masters/treatment-a/bay-1024.png"
+          - "$(SRCROOT)/tools/herd-art/appicon-masters/treatment-a/palomino-1024.png"
+          - "$(SRCROOT)/tools/herd-art/appicon-masters/treatment-a/black-1024.png"
+          - "$(SRCROOT)/tools/herd-art/appicon-masters/treatment-a/grey-1024.png"
         outputFiles:
           - "$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/FleetViews.swift.txt"
           - "$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/HerdView.swift.txt"
           - "$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/AppIconPicker.swift.txt"
+          - "$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/master-bay.base64"
+          - "$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/master-palomino.base64"
+          - "$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/master-black.base64"
+          - "$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/master-grey.base64"
         basedOnDependencyAnalysis: false
     dependencies:
       - target: FleetNotifier

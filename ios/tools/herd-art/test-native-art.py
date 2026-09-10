@@ -64,25 +64,43 @@ def main():
         outside.write_text('let forbidden = Image("ranch-day")\n')
         check('outside-renderer-helper', root)
         outside.unlink()
-        # #464: the picker's four approved rendition names are the ONLY
+        # #464: the four generated preview imageset names are the ONLY
         # permitted non-symbol loaders, spelled as a bare literal call.
         picker = root/'ios/FleetNotifier/UI/AppIconPicker.swift'
         pristine_picker = picker.read_bytes()
-        picker.write_text('func preview() -> Image { return Image("Palomino") }\n')
-        check('picker-approved-rendition', root, expected=0)
+        picker.write_text('func preview() -> Image { return Image("PalominoPreview") }\n')
+        check('picker-approved-preview-rendition', root, expected=0)
         for name, probe in {
+            'picker-appiconset-rendition': 'func preview() -> Image { return Image("Palomino") }\n',
             'picker-unapproved-rendition': 'func preview() -> Image { return Image("Original") }\n',
-            'picker-qualified-rendition': 'func preview() -> Image { return SwiftUI.Image("Palomino") }\n',
-            'picker-init-rendition': 'func preview() -> Image { return Image.init("Palomino") }\n',
-            'picker-uiimage-rendition': 'func preview() -> Image { return Image(uiImage: UIImage(named: "Palomino")) }\n',
+            'picker-qualified-rendition': 'func preview() -> Image { return SwiftUI.Image("PalominoPreview") }\n',
+            'picker-init-rendition': 'func preview() -> Image { return Image.init("PalominoPreview") }\n',
+            'picker-uiimage-rendition': 'func preview() -> Image { return Image(uiImage: UIImage(named: "PalominoPreview")) }\n',
         }.items():
             picker.write_text(probe)
             check(name, root)
             picker.write_bytes(pristine_picker)
-        # The approved name must still be forbidden INSIDE the renderer.
-        victim.write_bytes(pristine+b'func preview() -> Image { return Image("Palomino") }\n')
+        # The approved preview name must still be forbidden INSIDE the renderer.
+        victim.write_bytes(pristine+b'func preview() -> Image { return Image("PalominoPreview") }\n')
         check('renderer-approved-name-still-forbidden', root)
         victim.write_bytes(pristine)
+        # #464: the allowlist is derived from the approval contract, so
+        # tampering with the preview metadata must fail closed.
+        approval_path = root/'ios/tools/herd-art/appicon-approval.json'
+        pristine_approval = approval_path.read_bytes()
+
+        def rewrite_approval(change):
+            contract = json.loads(pristine_approval)
+            change(contract)
+            approval_path.write_text(json.dumps(contract, indent=2) + '\n')
+
+        rewrite_approval(lambda c: c['catalog'].update(
+            preview_sets=[*c['catalog']['preview_sets'], 'BayPreview2']))
+        check('picker-extra-preview-set', root)
+        approval_path.write_bytes(pristine_approval)
+        rewrite_approval(lambda c: c['masters']['grey'].update(preview_set='BayPreview'))
+        check('picker-preview-set-mismatch', root)
+        approval_path.write_bytes(pristine_approval)
         picker.write_bytes(pristine_picker)
         raster = root/'ios/FleetNotifier/ranch-day.png'
         raster.write_bytes(b'\x89PNG\r\n\x1a\n'+b'forbidden whole-scene test asset')

@@ -315,7 +315,9 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # choices, the UIApplication alternate-icon seam, the live-state model)
     # added to the manifest, and FleetViews gained the App Icon section +
     # scene-active re-read — re-pinned over the #464 source set.
-    "3337bad79c476238d88ced7ab87a1be482497ac91fc616606bbc210f0554e905"
+    # #464 r1 (owner-authorized preview repair): FleetAppIcon.preview now maps
+    # to the four generated loadable preview imagesets — re-pinned.
+    "6995828605b43f2d9e78877445e158b1466e794ca01d6e174fc0f050b3080efe"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

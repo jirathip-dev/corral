@@ -4,7 +4,22 @@
     "ios/FleetNotifier/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png": "e9e8e7ebb922660dd76d511dd039562dbb333edc59080d8ffdb9efe19c1590c9",
     "ios/FleetNotifier/Assets.xcassets/Palomino.appiconset/Palomino-1024.png": "7e04da3407296c11f94f929124d4b6c82d83bce70e3a2700c6af906774d863ec",
     "ios/FleetNotifier/Assets.xcassets/Black.appiconset/Black-1024.png": "3ff9ccc5d592a3f43c59f8fbdf09d95a75d8200666e6fc04a836babdee77e32c",
-    "ios/FleetNotifier/Assets.xcassets/Grey.appiconset/Grey-1024.png": "2d43e4c3a360ddc8d8fade528f227b8808b2bb2baaef0bb816a0373cb738402e"
+    "ios/FleetNotifier/Assets.xcassets/Grey.appiconset/Grey-1024.png": "2d43e4c3a360ddc8d8fade528f227b8808b2bb2baaef0bb816a0373cb738402e",
+    "ios/FleetNotifier/Assets.xcassets/BayPreview.imageset/BayPreview-1024.png": "e9e8e7ebb922660dd76d511dd039562dbb333edc59080d8ffdb9efe19c1590c9",
+    "ios/FleetNotifier/Assets.xcassets/PalominoPreview.imageset/PalominoPreview-1024.png": "7e04da3407296c11f94f929124d4b6c82d83bce70e3a2700c6af906774d863ec",
+    "ios/FleetNotifier/Assets.xcassets/BlackPreview.imageset/BlackPreview-1024.png": "3ff9ccc5d592a3f43c59f8fbdf09d95a75d8200666e6fc04a836babdee77e32c",
+    "ios/FleetNotifier/Assets.xcassets/GreyPreview.imageset/GreyPreview-1024.png": "2d43e4c3a360ddc8d8fade528f227b8808b2bb2baaef0bb816a0373cb738402e"
   },
-  "catalog_names": ["AppIcon", "Black", "Grey", "Palomino"]
+  "catalog_names": [
+    "AppIcon",
+    "Black",
+    "Grey",
+    "Palomino"
+  ],
+  "preview_catalog_names": [
+    "BayPreview",
+    "BlackPreview",
+    "GreyPreview",
+    "PalominoPreview"
+  ]
 }

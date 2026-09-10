@@ -1,0 +1,61 @@
+# 457 capture.log — runtime evidence record
+# Lane: g457-context-controls · base 3c7203d2d92c1a84fdac02bbc34018fcdee727eb
+# Simulators (lane-owned): Corral457R1 (iPhone 16, C5B4EA29-…-C6E3DBE208CB),
+#                          Corral457R1SE (iPhone SE 3rd gen, 3A0B36C6-…-5CC4E6FA8C66)
+# App: /tmp/g457-dd/Build/Products/Debug-iphonesimulator/FleetNotifier.app
+#      (built from the pinned release sources; digest 406f4e42…
+
+PRECONDITION — simulator reboot (why the sims were shut down and booted first):
+  The unit suite contains startLive() tests that fire the REAL notification
+  authorization request on the simulator. On a fresh sim the first such run
+  leaves a pending SpringBoard "Would Like to Send You Notifications" alert
+  that then appears in every app screenshot. Both lane sims were shut down
+  and booted once to clear the pending alert before any frame was captured
+  (a first capture pass that showed the alert was discarded, not committed;
+  all committed frames come from the post-reboot pass below).
+
+Post-reboot pass — r1-herd chain: driver -corral457ContextEvidence
+  xcrun simctl ui R1 appearance light; content_size large
+  marker phases shot at 3x (1179x2556), sentinel 457-12-herd-done:
+    457-1 herd-day-trigger-mocha        (closed chrome · Day · Mocha)
+    457-2 sheet-day-all-mocha           (open sheet · Day · default scope)
+    457-3 sheet-day-selected-mocha      (Host A · demo-atlas selected)
+    457-4 sheet-day-scrolled-mocha      (scrolled: REPOSITORY SCOPE row visible)
+    457-5 sheet-day-selected-latte      (flavor switched to Latte · Day)
+    457-6 sheet-night-selected-latte    (Night · Latte)
+    457-7 sheet-night-selected-frappe   (Night · Frappé)
+    457-8 sheet-night-selected-macchiato(Night · Macchiato)
+    457-9 sheet-night-selected-mocha    (Night · Mocha)
+    457-10 sheet-night-scrolled-mocha   (Night · scrolled)
+    457-11 herd-night-trigger-mocha     (closed chrome · Night)
+    457-12 herd-done                    (post-sheet, counts/settings visible)
+
+Chains (each with its own capture.sh run; every launch uses the ux-evidence
+marker pipeline; app terminated between chains):
+  R1_BOOT_EXIT=0 · R1_INSTALL_EXIT=0 · SE_BOOT_EXIT=0 · SE_INSTALL_EXIT=0
+  R1_HERD_CAP_EXIT=0     (12 frames)
+  R1_BOARD_CAP_EXIT=0    (2 frames: board-sheet-no-regression, board-done)
+  R1_OPAQUE_CAP_EXIT=0   (-corral457ForceOpaqueChrome, 12 frames)
+  R1_HC_CAP_EXIT=0       (simctl ui R1 increase_contrast enabled, 12 frames;
+                          setting disabled right after the chain)
+  R1_AX_CAP_EXIT=0       (content_size accessibility-extra-extra-extra-large,
+                          12 frames; restored to large right after)
+  SE_HERD_CAP_EXIT=0     (12 frames)
+  SE_AX_CAP_EXIT=0       (AX-XXXL on iPhone SE, 12 frames)
+  R1_SHUTDOWN_EXIT=0 · SE_SHUTDOWN_EXIT=0   (sims shut down after capture;
+                                             neither was erased or deleted)
+  FRAMES per set: r1-herd=12 r1-board=2 r1-opaque=12 r1-hc=12 r1-ax=12
+                  se-herd=12 se-ax=12   (74 raw frames, /tmp/g457-raw-*)
+
+Committed set: 27 frames downscaled 1x (390x844 / 375x667) + SHA256SUMS.txt.
+Raw 3x frames stay in /tmp (regenerable via capture-all.sh).
+
+Measured discriminants (PIL, raw 3x frames):
+  glass day pill 213,216,202  · opaque day pill 246,245,225  (r1-hc + r1-opaque)
+  herd day sheet 221,224,205  · herd night sheet 29,43,51 (same at Frappé, Mocha)
+  board (Catppuccin) sheet 44,44,61  (unchanged treatment)
+  night glass vs night opaque composite within ~1/255 on this runtime; the
+  branch difference is asserted by the render-composite test + MUT2 probe.
+
+Frame-set note: only the 27 committed frames above are the evidence set; the
+74-frame raw matrix is regenerable and intentionally not committed.

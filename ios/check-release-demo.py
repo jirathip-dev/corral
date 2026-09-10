@@ -352,15 +352,23 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # the 8671cfc integration — the pin below is recomputed from THIS merged
     # checkout; no parent pin (4740de69…, 184c7a64…, 0cb9dc0c…, c17cfe9a…)
     # applies.
-    # #450 refresh2: #450 (epoch authority + fix r1) merged onto the
-    # #449/#458/#456/#464 integration source set (3c7203d, #456 full-screen
-    # shell) — union of ALL source sets; the pin below is recomputed from
-    # THIS merged checkout; neither parent pin (30e6fe4e…, 00cdc240…)
-    # applies.
-    # #448: native coordinated gait phase (HerdModel/HerdArt) + the
-    # horseButton runtime call site — re-pinned over the #448 source set;
-    # recomputed from THIS checkout.
-    "6c90bc77a787d8369d248648c96c60384e6f77076c20c024e2368c5d4dc042fc"
+    # #457 refresh2: #457 (contextual Herd controls: the ONE shared filter
+    # sheet with an explicit Board/Herd presentation context, the sealed
+    # ranch control palette + lighting report in HerdView, and the ranch
+    # chrome surface with the Reduce Transparency/high-contrast opaque
+    # fallback) merged together with #425 (FleetStore transport-liveness
+    # policy/heartbeat/watchdog — clean-EOF posture, stale-aware pull
+    # recovery — and CorraldClient onActivity/onStreamEnded byte-path
+    # signals) onto the #450/#449/#458/#456/#464 integration source set
+    # (521e7cd9 → ba15563, PR474) — union of ALL source sets; the pin below
+    # is recomputed from THIS merged checkout; neither parent pin (1827b419…,
+    # a898ad7a…) applies.
+    # #448 refresh: #448 (native coordinated gait phase in HerdModel/HerdArt
+    # plus the horseButton runtime call site) merged onto the #457-refresh2
+    # integration (ee73262, PR476) — union of ALL source sets; the pin below
+    # is recomputed from THIS merged checkout; neither parent pin (8bccaf68…,
+    # 6c90bc77…) applies.
+    "8fc75d5e4a202154bcc00bb7529ba9aa2cb9f7ea7fbcd6ac2bc08c36dd95c064"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -524,14 +532,16 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # #464 integration refresh: recomputed on the merged checkout — the merged
     # pinned test file is byte-identical to the #464 lane's (#449's test change
     # landed in HerdTests.swift, outside this pin).
-    # #450 integration refresh: test source carries the #450 F1 regression on
-    # top of the #449/#458/#464 merged test sources — recomputed on the merged
-    # checkout; neither parent pin applies.
-    # #450 refresh2: the #456 import changed a different test file
-    # (HerdTests.swift, outside this pin); the pinned FleetNotifierTests.swift
-    # is byte-unchanged by the refresh — digest recomputed over the merged
-    # checkout (same value).
-    "4c99abf0756a5b6c4d49abd91a244d2c032e5fadd0b024a116ece1d54bd0f2bf"
+    # #457 refresh2: #457's FleetNotifierTests theme-token needle and #425's
+    # HeartbeatRecoveryTests (real client byte-path regression for
+    # comment-only keep-alives, silent half-open drops, clean EOF,
+    # exactly-once stale replacement and per-host watchdog teardown) merged
+    # onto the #450-refresh test source — digest recomputed over the merged
+    # checkout; neither parent pin (dd9d3952…, 5200562a…) applies.
+    # #448 refresh: HerdGaitTests.swift is a SEPARATE file outside this pin,
+    # so the #448 refresh leaves the pinned FleetNotifierTests.swift
+    # byte-unchanged — digest recomputed over the merged checkout (same value).
+    "92631629765f5f67b6efba46aa13e84a6793cc460883d31c7f45623a4820d395"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

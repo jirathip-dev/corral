@@ -147,7 +147,7 @@ struct HerdView: View {
         .onReceive(NotificationCenter.default.publisher(for:UIApplication.significantTimeChangeNotification)) { _ in timeRevision += 1 }
         .onReceive(NotificationCenter.default.publisher(for:.NSSystemTimeZoneDidChange)) { _ in timeRevision += 1 }
         .onChange(of:paddocks.map(\.id),initial:true) { _,ids in
-            if !ids.contains(paddockID ?? "") { paddockID = ids.first }
+            paddockID = HerdProjection.reconciledPaddockID(paddockID,in:ids)
         }
 #if DEBUG
         .task {

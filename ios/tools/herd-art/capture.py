@@ -39,6 +39,7 @@ def main():
     while time.monotonic()<deadline:
         for marker in sorted(markers.glob('*.json')):
             if marker.stem in captured: continue
+            if args.first_only and marker.stem in {'449-01-active-first','449-02-selection-retained'}: continue
             info=json.loads(marker.read_bytes())
             png=args.output/(marker.stem+'.png')
             call('io',args.udid,'screenshot',png)
@@ -54,7 +55,31 @@ def main():
         call('terminate',args.udid,bundle)
         print('PASS: single native old-grazing comparison frame')
         return
-    assert len(captured)==9, f'expected 9 runtime markers, observed {len(captured)}'
+    assert len(captured)==11, f'expected 11 runtime markers, observed {len(captured)}'
+    for phase in ['449-01-active-first','449-02-selection-retained']:
+        assert phase in captured, f'missing runtime marker {phase}'
+    first=captured['449-01-active-first']['marker']; second=captured['449-02-selection-retained']['marker']
+    first_order=first['paddockOrder']
+    assert first_order, 'phase 1 paddock order is empty'
+    selected=first_order[0]
+    assert first['paddock']==f'repo:{selected}', 'phase 1 did not select the active-first repository'
+    assert first['paddockPosition']==1, 'phase 1 selected repository is not first'
+    assert second['paddock']==first['paddock'], 'selected repository identity changed during reorder'
+    if args.offline:
+        assert second['paddockOrder']==first_order, 'disconnected fixture reordered paddocks'
+    else:
+        assert second['paddockOrder']!=first_order, 'phase 2 did not reorder paddocks'
+    assert selected in second['paddockOrder'], 'selected repository disappeared during reorder'
+    if args.offline:
+        assert second['paddockPosition']==second['paddockOrder'].index(selected)+1, 'phase 2 selected repository position is not its order index'
+    else:
+        assert second['paddockPosition']==second['paddockOrder'].index(selected)+1==3, 'phase 2 selected repository position is not its new fixture index'
+    for phase in [first,second]:
+        working=phase['workingPaddocks']
+        if args.offline:
+            assert not working, f"{phase['phase']} disconnected fixture reported working paddocks"
+        else:
+            assert working and phase['paddockOrder'][:len(working)]==working, f"{phase['phase']} working paddocks are not the active prefix"
     day=captured['01-day-grazing']['marker']; night=captured['02-night-same-scene']['marker']
     assert day['sceneID']==night['sceneID'] and day['horseIDs']==night['horseIDs'] and day['paddock']==night['paddock']
     assert not day['night'] and night['night']
@@ -75,7 +100,7 @@ def main():
     assert captured['07-clock-running']['marker']['clockRunning'] != args.offline
     assert len(captured['06-dense-blocked']['marker']['horseIDs'])==60
     assert len(day['horseIDs'])==12
-    print('PASS: same native scene Day/Night, nine runtime frames, independent parallax, stopped Reduce Motion/dismissal clocks')
+    print('PASS: same native scene Day/Night, eleven runtime markers, independent parallax, stopped Reduce Motion/dismissal clocks')
 
 
 if __name__=='__main__': main()

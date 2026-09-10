@@ -303,6 +303,10 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # #428 source set.
     # #444 correction 1: native procedural Herd plus DEBUG-only evidence;
     # original V1 paths and scene/lifecycle sources are all digest-bound.
+    # #449: Herd paddocks prioritize connected working repositories while
+    # preserving identity selection; DEBUG evidence records the live reorder.
+    # r2 integration refresh: #449 + #458 merged source set — the digest
+    # is regenerated from the merged checkout; neither parent pin applies.
     # #458: persisted Board/Herd preference — AppModel restores the saved
     # presentation (Board default for missing/invalid) and owns the
     # select/saved/openBoard presentation API; FleetViews dropped the
@@ -319,7 +323,11 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # keeps its scaled ideal (layoutPriority), the rail + paddock column
     # scrolls under it at accessibility sizes, and the bottom navigation keeps
     # its >= 44 pt targets — re-pinned over the #456-r1 source set.
-    "4740de69b380f849194c67ce6c6a637127fdf32f75694270489f5d92553cdf58"
+    # #456 refresh: union of #449 (HerdProjection working-repo ordering +
+    # reconciledPaddockID, HerdEvidence paddock order/position markers) and
+    # #456/#456-r1 (full-screen shell + accessibility repair). The pin below
+    # is recomputed from THIS merged checkout — neither parent pin applies.
+    "184c7a646a948623c249acf15f1a1ee2c9de463e7e91986cce7c8fe8565cbcfd"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

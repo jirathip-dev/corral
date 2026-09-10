@@ -271,7 +271,8 @@ final class HostStreamCoordinator: ObservableObject {
             // Per-host cursor (B1/C3): resume from THIS host's persisted
             // cursor only. The legacy `fleetnotifier.lastEventId` default
             // is the ACTIVE host's mirror and is never read here.
-            store.restoreCursor(rev: profileStore?.cursor(for: profile.id))
+            store.restoreCursor(rev: profileStore?.cursor(for: profile.id),
+                                epoch: profileStore?.cursorEpoch(for: profile.id))
             store.acceptedHostIdentity = profile.hostKeyB64
             let session = Session(profileID: profile.id, store: store)
             // A pinned host has no continuity contract until its /host-key
@@ -557,7 +558,9 @@ final class HostStreamCoordinator: ObservableObject {
         guard let profileStore else { return }
         for profile in profiles where profile.id != activeProfileID {
             guard let session = sessions[profile.id] else { continue }
-            profileStore.setCursor(session.store.lastEventId, for: profile.id)
+            profileStore.setCursor(session.store.lastEventId,
+                                   epoch: session.store.lastEventEpoch,
+                                   for: profile.id)
         }
     }
 }

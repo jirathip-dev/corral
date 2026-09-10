@@ -88,6 +88,57 @@ where
     String::from_utf8_lossy(&frame).to_string()
 }
 
+async fn assert_restart_resnapshot(new_rev: u64) {
+    let (old_store, old_app) = app().await;
+    for _ in 0..10 {
+        old_store
+            .apply(Change::upsert(agent("old", AgentState::Working)))
+            .await;
+        old_store.flush().await;
+    }
+    let old_snapshot = get_json(&old_app, "/snapshot").await;
+    let old_epoch = old_snapshot["epoch"]
+        .as_str()
+        .expect("snapshot exposes the daemon epoch");
+
+    let (new_store, new_app) = app().await;
+    for _ in 0..new_rev {
+        new_store
+            .apply(Change::upsert(agent("new", AgentState::Idle)))
+            .await;
+        new_store.flush().await;
+    }
+    let new_snapshot = get_json(&new_app, "/snapshot").await;
+    let new_epoch = new_snapshot["epoch"]
+        .as_str()
+        .expect("restarted daemon exposes its epoch");
+    assert_ne!(
+        old_epoch, new_epoch,
+        "each Store lifetime needs a new epoch"
+    );
+
+    let request = Request::builder()
+        .uri("/events")
+        .header("Last-Event-ID", "10")
+        .header("Corral-Epoch", old_epoch)
+        .body(Body::empty())
+        .unwrap();
+    let response = new_app.oneshot(request).await.unwrap();
+    let mut stream = response.into_body().into_data_stream();
+    let first = read_frame(&mut stream, Duration::from_secs(2)).await;
+    assert!(
+        first.contains("event: snapshot"),
+        "restart must resnapshot: {first}"
+    );
+    assert!(
+        first.contains(&format!("\"epoch\":\"{new_epoch}\"")),
+        "{first}"
+    );
+    assert!(first.contains(&format!("\"rev\":{new_rev}")), "{first}");
+    assert!(first.contains("\"agent_id\":\"new\""), "{first}");
+    assert!(!first.contains("\"agent_id\":\"old\""), "{first}");
+}
+
 #[tokio::test]
 async fn healthz_ok() {
     let (_store, app) = app().await;
@@ -142,6 +193,30 @@ async fn snapshot_returns_json_with_rev_and_agents() {
     assert_eq!(v["schema_version"], 5);
     assert_eq!(v["rev"], 1);
     assert_eq!(v["agents"]["a"]["state"], "blocked");
+
+    #[derive(serde::Deserialize)]
+    struct LegacySnapshot {
+        schema_version: u32,
+        rev: u64,
+    }
+    let legacy: LegacySnapshot =
+        serde_json::from_value(v.clone()).expect("an old client ignores the additive epoch field");
+    assert_eq!((legacy.schema_version, legacy.rev), (5, 1));
+}
+
+#[tokio::test]
+async fn epoch_restart_with_lower_rev_resnapshots() {
+    assert_restart_resnapshot(2).await;
+}
+
+#[tokio::test]
+async fn epoch_restart_with_equal_rev_resnapshots() {
+    assert_restart_resnapshot(10).await;
+}
+
+#[tokio::test]
+async fn epoch_restart_with_higher_rev_resnapshots() {
+    assert_restart_resnapshot(20).await;
 }
 
 #[tokio::test]
@@ -332,6 +407,39 @@ async fn sse_with_fresh_cursor_resumes_incrementally() {
         !next.contains("\"agent_id\":\"a\""),
         "live delta is incremental, not full state"
     );
+}
+
+#[tokio::test]
+async fn epoch_matching_cursor_resumes_incrementally() {
+    let (store, app) = app().await;
+    store
+        .apply(Change::upsert(agent("a", AgentState::Working)))
+        .await;
+    store.flush().await;
+    let epoch = get_json(&app, "/snapshot").await["epoch"]
+        .as_str()
+        .expect("snapshot epoch")
+        .to_string();
+    store
+        .apply(Change::upsert(agent("b", AgentState::Idle)))
+        .await;
+    store.flush().await;
+
+    let request = Request::builder()
+        .uri("/events")
+        .header("Last-Event-ID", "1")
+        .header("Corral-Epoch", &epoch)
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    let mut stream = response.into_body().into_data_stream();
+    let first = read_frame(&mut stream, Duration::from_secs(2)).await;
+    assert!(
+        first.contains("event: delta"),
+        "matching epoch should resume: {first}"
+    );
+    assert!(first.contains(&format!("\"epoch\":\"{epoch}\"")), "{first}");
+    assert!(first.contains("\"agent_id\":\"b\""), "{first}");
 }
 
 #[tokio::test]

@@ -272,21 +272,41 @@ final class HostProfileStore {
         "fleetnotifier.hostProfile.cursor.\(id.uuidString)"
     }
 
+    private static func cursorEpochKey(_ id: UUID) -> String {
+        "fleetnotifier.hostProfile.cursorEpoch.\(id.uuidString)"
+    }
+
     func cursor(for id: UUID) -> UInt64? {
         guard profile(id: id) != nil,
               let raw = defaults.string(forKey: Self.cursorKey(id)) else { return nil }
         return UInt64(raw)
     }
 
+    func cursorEpoch(for id: UUID) -> String? {
+        guard profile(id: id) != nil else { return nil }
+        return defaults.string(forKey: Self.cursorEpochKey(id))
+    }
+
     func setCursor(_ rev: UInt64?, for id: UUID) {
+        setCursor(rev, epoch: nil, for: id)
+    }
+
+    func setCursor(_ rev: UInt64?, epoch: String?, for id: UUID) {
         guard profile(id: id) != nil else { return }
         if let rev {
             defaults.set(String(rev), forKey: Self.cursorKey(id))
+            if let epoch {
+                defaults.set(epoch, forKey: Self.cursorEpochKey(id))
+            } else {
+                defaults.removeObject(forKey: Self.cursorEpochKey(id))
+            }
         } else {
             defaults.removeObject(forKey: Self.cursorKey(id))
+            defaults.removeObject(forKey: Self.cursorEpochKey(id))
         }
         if let idx = index(of: id) {
             profiles[idx].cursorRev = rev
+            profiles[idx].cursorEpoch = rev == nil ? nil : epoch
             save()
         }
     }
@@ -301,6 +321,7 @@ final class HostProfileStore {
         guard let idx = index(of: id) else { return }
         profiles.remove(at: idx)
         defaults.removeObject(forKey: Self.cursorKey(id))
+        defaults.removeObject(forKey: Self.cursorEpochKey(id))
         boardCache.remove(for: id)
         save()
         // #400 consumes removal for stream-task/tail cancellation; this
@@ -314,6 +335,7 @@ final class HostProfileStore {
         let ids = profiles.map(\.id)
         for id in ids {
             defaults.removeObject(forKey: Self.cursorKey(id))
+            defaults.removeObject(forKey: Self.cursorEpochKey(id))
             boardCache.remove(for: id)
         }
         profiles = []

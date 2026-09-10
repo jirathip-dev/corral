@@ -52,7 +52,12 @@ struct CorraldClient: Sendable {
 
     /// Live SSE event stream with automatic reconnect.
     ///
-    /// - Resumes from `lastEventId` via the `Last-Event-ID` header.
+    /// - Resumes from the last cursor (`rev` + daemon `epoch`) via the
+    ///   `Last-Event-ID` and `Corral-Epoch` headers. A cursor without an
+    ///   epoch (`unknown`) tells a new daemon that this is an upgraded
+    ///   client carrying a legacy revision — it must answer with a full
+    ///   epoch-bearing snapshot, never deltas that would silently graft
+    ///   a stale revision onto a new daemon lifetime.
     /// - On disconnect (server close or network error) backs off
     ///   1s → 2s → 4s … capped at 30s, then reconnects from the latest
     ///   event id delivered so far (`onEvent` reports ids).
@@ -65,7 +70,7 @@ struct CorraldClient: Sendable {
     ///   framed), so the owner needs this to clear a stale `.error`
     ///   indicator (review F2).
     /// - Ends only on cancellation.
-    func stream(lastEventId: @escaping @Sendable () -> UInt64?,
+    func stream(lastEventId: @escaping @Sendable () -> SSECursor?,
                 onEvent: @escaping @Sendable (SSEFrame) -> Void,
                 onConnected: (@Sendable () -> Void)? = nil,
                 onConnectionError: (@Sendable (String) -> Void)? = nil) async {
@@ -75,8 +80,10 @@ struct CorraldClient: Sendable {
                 var request = URLRequest(url: host.appendingPathComponent("/events"))
                 request.timeoutInterval = 60
                 request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-                if let rev = lastEventId() {
-                    request.setValue(String(rev), forHTTPHeaderField: "Last-Event-ID")
+                if let cursor = lastEventId() {
+                    request.setValue(String(cursor.rev), forHTTPHeaderField: "Last-Event-ID")
+                    request.setValue(cursor.epoch ?? "unknown",
+                                     forHTTPHeaderField: "Corral-Epoch")
                 }
                 let (bytes, response) = try await session.bytes(for: request)
                 guard let http = response as? HTTPURLResponse else {

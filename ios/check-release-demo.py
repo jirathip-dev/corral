@@ -303,6 +303,12 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # #428 source set.
     # #444 correction 1: native procedural Herd plus DEBUG-only evidence;
     # original V1 paths and scene/lifecycle sources are all digest-bound.
+    # #450: restart-aware SSE authority — Snapshot/Delta gained the opaque
+    # daemon `epoch` (Models), FleetStore accepts()/cursor persistence and
+    # the reconnect headers became epoch-scoped, CorraldClient sends
+    # Corral-Epoch, and the per-host cursor mirrors carry the epoch
+    # (HostProfile/Store/Coordinator/AppModel) — re-pinned over the #450
+    # source set.
     # #449: Herd paddocks prioritize connected working repositories while
     # preserving identity selection; DEBUG evidence records the live reorder.
     # r2 integration refresh: #449 + #458 merged source set — the digest
@@ -315,6 +321,9 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # gained the Corral458Presentation launch scenarios + the accessibility
     # size route + demo-notification suppression for the evidence sim —
     # re-pinned over the #458 source set.
+    # #450 fix r1: F1 repair (stream-only epoch-reset authority) + the
+    # escaped stale-agent-pull regression — recomputed over the MERGED
+    # (16daaca) + repaired head; neither parent pin applies.
     # #456: full-screen Herd shell — FleetViews Herd branch (no opaque board
     # header / duplicated toolbar) + HerdView full-screen ranch cover,
     # floating scope/Settings/counts and floating paddock navigation with
@@ -336,11 +345,19 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # #464 integration refresh: #464 merged onto the #449/#458 integration
     # source set — the digest is regenerated from the merged checkout (union
     # of #449/#458 and #464 sources); neither parent pin applies.
+    # #450 integration refresh: #450 (epoch authority + fix r1) merged onto
+    # the #449/#458/#464 integration source set — union of all four source
+    # sets; regenerated from the merged checkout; neither parent pin applies.
     # #456 refresh2: union of #449/#458, #456/#456-r1 and #464/#464-r1 over
     # the 8671cfc integration — the pin below is recomputed from THIS merged
     # checkout; no parent pin (4740de69…, 184c7a64…, 0cb9dc0c…, c17cfe9a…)
     # applies.
-    "00cdc240dcb4489cacb3e6f7b5fe5cc92b0cd73d6dd9528778cd85fbfc016944"
+    # #450 refresh2: #450 (epoch authority + fix r1) merged onto the
+    # #449/#458/#456/#464 integration source set (3c7203d, #456 full-screen
+    # shell) — union of ALL source sets; the pin below is recomputed from
+    # THIS merged checkout; neither parent pin (30e6fe4e…, 00cdc240…)
+    # applies.
+    "8520aa200c26a9636bbab56380b0a47e8b997e8d6d105958d089efa9793645e0"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -486,18 +503,32 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # #428: SheetTranslucencyWiringTests gained the layered glass-branch
     # pins + the themedRowSurface counts (Settings 5 / Add Host 3 /
     # Fingerprint 6 sections) — re-pinned over the #428 test source.
+    # #450: EpochRecoveryTests (lower/equal/higher cross-lifetime
+    # convergence, same-lifetime monotonicity, stale-epoch refresh
+    # rejection, connection-generation isolation) and StaleCursorTests
+    # (epoch persistence + legacy numeric-only resume) — re-pinned over
+    # the #450 test source.
     # #458: PresentationPreferenceTests (restore/round-trip/override/
     # stream-preservation/demo-isolation), the HerdTests openBoard routing
     # assertion, and the SettingsAccessWiringTests DEBUG-gated opener count
     # (12 with the #458 presentation driver) — re-pinned over the #458 test
     # source.
+    # #450 fix r1: escaped-pull regression (handleStaleAgent) added —
+    # recomputed over the MERGED (16daaca) + repaired test source.
     # #464: the Settings themedRowSurface count moved 5 → 6 for the new App
     # Icon section (AppIconPickerTests lives in its own file) — re-pinned
     # over the #464 test source.
     # #464 integration refresh: recomputed on the merged checkout — the merged
     # pinned test file is byte-identical to the #464 lane's (#449's test change
     # landed in HerdTests.swift, outside this pin).
-    "7299c4e36ebe373350b79e34615f4fde3ff1cc86debae806fdbf0c870d64505f"
+    # #450 integration refresh: test source carries the #450 F1 regression on
+    # top of the #449/#458/#464 merged test sources — recomputed on the merged
+    # checkout; neither parent pin applies.
+    # #450 refresh2: the #456 import changed a different test file
+    # (HerdTests.swift, outside this pin); the pinned FleetNotifierTests.swift
+    # is byte-unchanged by the refresh — digest recomputed over the merged
+    # checkout (same value).
+    "4c99abf0756a5b6c4d49abd91a244d2c032e5fadd0b024a116ece1d54bd0f2bf"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

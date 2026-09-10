@@ -50,6 +50,9 @@ struct HostProfile: Codable, Equatable, Identifiable, Sendable {
     /// Per-host SSE cursor (B1). The single-host FleetStore cursor mirrors
     /// the first profile's value for parity; #400 owns N live cursors.
     var cursorRev: UInt64?
+    /// Daemon lifetime owning `cursorRev` (#450). Nil on pre-#450 profiles
+    /// and for per-host cursors established by a legacy daemon.
+    var cursorEpoch: String?
     /// Epoch millis of the last successful HTTP/SSE connection (C6) —
     /// updated on a successful connection, not only on data events.
     var lastSuccessfulConnectionTs: UInt64?
@@ -77,6 +80,7 @@ struct HostProfile: Codable, Equatable, Identifiable, Sendable {
          order: Int,
          connectionState: ProfileConnectionState = .disconnected,
          cursorRev: UInt64? = nil,
+         cursorEpoch: String? = nil,
          lastSuccessfulConnectionTs: UInt64? = nil,
          notificationsEnabled: Bool = true) {
         self.id = id
@@ -91,6 +95,7 @@ struct HostProfile: Codable, Equatable, Identifiable, Sendable {
         self.order = order
         self.connectionState = connectionState
         self.cursorRev = cursorRev
+        self.cursorEpoch = cursorEpoch
         self.lastSuccessfulConnectionTs = lastSuccessfulConnectionTs
         self.notificationsEnabled = notificationsEnabled
     }
@@ -117,6 +122,7 @@ extension HostProfile {
         case order
         case connectionState
         case cursorRev
+        case cursorEpoch
         case lastSuccessfulConnectionTs
         case notificationsEnabled
     }
@@ -136,6 +142,7 @@ extension HostProfile {
         connectionState = try c.decodeIfPresent(ProfileConnectionState.self,
                                                  forKey: .connectionState) ?? .disconnected
         cursorRev = try c.decodeIfPresent(UInt64.self, forKey: .cursorRev)
+        cursorEpoch = try c.decodeIfPresent(String.self, forKey: .cursorEpoch)
         lastSuccessfulConnectionTs = try c.decodeIfPresent(UInt64.self,
                                                            forKey: .lastSuccessfulConnectionTs)
         // #397 additive: pre-#397 documents have no key — default ON.
@@ -157,6 +164,7 @@ extension HostProfile {
         try c.encode(order, forKey: .order)
         try c.encode(connectionState, forKey: .connectionState)
         try c.encodeIfPresent(cursorRev, forKey: .cursorRev)
+        try c.encodeIfPresent(cursorEpoch, forKey: .cursorEpoch)
         try c.encodeIfPresent(lastSuccessfulConnectionTs, forKey: .lastSuccessfulConnectionTs)
         try c.encode(notificationsEnabled, forKey: .notificationsEnabled)
     }

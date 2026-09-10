@@ -4012,13 +4012,14 @@ final class SettingsAccessWiringTests: XCTestCase {
                        "the gear's >=44 pt frame must be release-active")
         // The sheet-open action: one release-active (the gear) + the
         // DEBUG-only recorded-evidence drivers (#365 settings, #372 theme,
-        // #379 connect, #385 glass, #388 connection-inputs and #416
-        // translucency sequences all open the same sheet); all required,
-        // none release-gated.
+        // #379 connect, #385 glass, #388 connection-inputs, #416
+        // translucency, #415 add-host lifecycle, #401 multi-host settings/
+        // add and #458 presentation A/C sequences all open the same sheet);
+        // all required, none release-gated.
         XCTAssertEqual(releaseActionLines.count, 1,
                        "the gear must be the ONLY release-active settings opener")
-        XCTAssertEqual(allActionLines.count - releaseActionLines.count, 10,
-                       "the #365, #372, #379, #385, #388, #389, #401-settings, #401-add, #415 add-host-lifecycle and #416 translucency DEBUG evidence drivers are the only debug-gated openers")
+        XCTAssertEqual(allActionLines.count - releaseActionLines.count, 12,
+                       "the #365, #372, #379, #385, #388, #389, #401-settings, #401-add, #415 add-host-lifecycle, #416 translucency and #458 presentation DEBUG evidence drivers are the only debug-gated openers")
     }
 
     func testDemoOverflowMenuIsDebugOnlyAndNoLongerHidesSettings() throws {

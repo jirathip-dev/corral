@@ -111,6 +111,10 @@ struct FleetNotifierApp: App {
                         } else {
                             model.enterDemo()
                         }
+                        // #458 evidence: scenario A/C start in the seeded
+                        // mode AFTER the demo seed (the Settings picker and
+                        // the sequence driver then persist the REAL choice).
+                        Corral458Presentation.seedIfNeeded(model)
                     }
 #endif
                 }
@@ -158,7 +162,8 @@ struct FleetNotifierApp: App {
 /// the argument the modifier leaves the environment untouched.
 struct DebugAccessibilitySizeModifier: ViewModifier {
     func body(content: Content) -> some View {
-        if CorralDemoLaunch.wantsFilterHeaderAccessibilitySizes(arguments: CommandLine.arguments) {
+        if CorralDemoLaunch.wantsFilterHeaderAccessibilitySizes(arguments: CommandLine.arguments)
+            || Corral458Presentation.wantsAccessibilitySizes(arguments: CommandLine.arguments) {
             content.environment(\.sizeCategory, .accessibilityLarge)
         } else {
             content
@@ -374,6 +379,70 @@ enum CorralDemoLaunch {
     /// #415: successful Add Host commit + original host present (evidence c).
     static func wantsAddHostCommitEvidence(arguments: [String]) -> Bool {
         arguments.contains(addHostCommitEvidenceArgument)
+    }
+}
+
+/// #458 evidence: deterministic Settings → Board/Herd → relaunch scenarios.
+/// The launch argument seeds the STARTING presentation in demo mode (the
+/// picker's Binding and the driver then write the REAL persisted
+/// preference), so every frame stays inside the actual Settings/root path
+/// and a cold relaunch is the same `simctl terminate` + `launch` cycle a
+/// user's relaunch takes.
+enum Corral458Presentation {
+    /// A: start Herd → Settings (Herd selected) → select Board → Board.
+    static let herdScenarioArgument = "-corral458HerdScenario"
+    /// B: relaunch that only proves the persisted value restored (Board
+    /// after A; also used for the final Herd-restored relaunch after C/D).
+    static let boardReloadScenarioArgument = "-corral458BoardReloadScenario"
+    /// C: start Board → Settings (Board selected) → select Herd → Herd.
+    static let boardScenarioArgument = "-corral458BoardScenario"
+    /// D: restored Herd + Open Board temporary override (never persisted).
+    static let openBoardScenarioArgument = "-corral458OpenBoardScenario"
+    /// Dynamic Type evidence: render the whole UI at the accessibility
+    /// content size (same convention as -corral427AccessibilitySizes).
+    static let accessibilitySizesArgument = "-corral458AccessibilitySizes"
+
+    static func wantsHerdScenario(arguments: [String]) -> Bool {
+        arguments.contains(herdScenarioArgument)
+    }
+
+    static func wantsBoardScenario(arguments: [String]) -> Bool {
+        arguments.contains(boardScenarioArgument)
+    }
+
+    static func wantsBoardReloadScenario(arguments: [String]) -> Bool {
+        arguments.contains(boardReloadScenarioArgument)
+    }
+
+    static func wantsOpenBoardScenario(arguments: [String]) -> Bool {
+        arguments.contains(openBoardScenarioArgument)
+    }
+
+    static func wantsAccessibilitySizes(arguments: [String]) -> Bool {
+        arguments.contains(accessibilitySizesArgument)
+    }
+
+    /// Applies the scenario's starting presentation AFTER the demo seed so
+    /// the marker frames start from the intended mode. Open Board (D) must
+    /// start on the RESTORED saved value, so it never seeds here.
+    /// The #458 evidence launches are demo-mode runs on a simulator whose
+    /// notification authorization was never answered (simctl cannot tap the
+    /// OS alert), so the one-shot OS prompt is suppressed exactly like the
+    /// #415 commit driver suppresses it — demo mode has no live
+    /// notification surface.
+    @MainActor
+    static func seedIfNeeded(_ model: AppModel) {
+        let arguments = CommandLine.arguments
+        guard wantsHerdScenario(arguments: arguments)
+                || wantsBoardScenario(arguments: arguments)
+                || wantsOpenBoardScenario(arguments: arguments)
+                || wantsBoardReloadScenario(arguments: arguments) else { return }
+        if wantsHerdScenario(arguments: arguments) {
+            model.fleetPresentation = .herd
+        } else if wantsBoardScenario(arguments: arguments) {
+            model.fleetPresentation = .board
+        }
+        model.suppressOSNotificationPromptForDemoEvidence()
     }
 }
 #endif

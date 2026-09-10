@@ -17,8 +17,28 @@ is bounded to ±4 points and never moves the button or label.
 
 `RanchEnvironment.swift` draws sky, native cloud/star particles, Milky Way,
 moonlight, hills, barn, trees, fences, ground grain, shadows and grass. Nothing
-loads scene or horse images. The original AppIcon input is the only approved
-art resource and remains byte-identical to the dispatch base.
+loads scene or horse images. The only approved app-target artwork is the four
+#463 Treatment-A horse app icons; `check-native-art.py` pins their exact bytes.
+
+## Shipping app icons (#463)
+
+The shipping catalog carries exactly four approved #462 Treatment-A masters:
+
+| Set | Master | Role |
+| --- | --- | --- |
+| `AppIcon` | `bay-1024.png` | primary/default; nil `alternateIconName` restores it |
+| `Palomino` | `palomino-1024.png` | stable alternate |
+| `Black` | `black-1024.png` | stable alternate |
+| `Grey` | `grey-1024.png` | stable alternate |
+
+The immutable approved masters and their approval metadata live outside
+`Assets.xcassets/**.appiconset` in `appicon-masters/treatment-a/` and
+`appicon-approval.json` (design commit, canonical `horsesvg.py` SHA-256, exact
+four-name allowlist, per-master SHA-256, forbidden legacy Original and
+Treatment-B hashes). `app-icons.py` materializes and checks the catalog,
+including opaque RGB 1024x1024 structure and the XcodeGen wiring; it never
+redraws or re-exports art. The legacy Original and every Treatment B master
+are forbidden shipping bytes.
 
 The independently composed planes use the #442 handoff ratios:
 
@@ -68,11 +88,21 @@ comparison output, or the #442 reference PNG/SVG/JSON files is in the app target
 
 From the repository root, with a concrete available simulator UDID:
 
+    python3 ios/tools/herd-art/app-icons.py --check
+    python3 ios/tools/herd-art/app-icons.py --write          # deterministic regeneration
+    python3 ios/tools/herd-art/test-app-icons.py --output /tmp/app-icon-proofs
     python3 ios/tools/herd-art/check-native-art.py
     python3 ios/tools/herd-art/check-native-art.py --bundle /path/to/FleetNotifier.app
     python3 ios/tools/herd-art/test-native-art.py --app /path/to/FleetNotifier.app --output /tmp/herd-art-proofs
     flock /tmp/corral-heavy-gate.lock python3 ios/tools/herd-art/probe-native.py --udid UDID --output /tmp/herd-native-proofs
     flock /tmp/corral-heavy-gate.lock python3 ios/tools/herd-art/capture.py UDID /path/to/Debug/FleetNotifier.app /tmp/herd-native-evidence
+
+`app-icons.py` is the #463 source-pinned generator/checker: `--write`
+materializes the approved masters into the four appiconsets and `--check`
+fails closed on catalog, master, approval-metadata or `ios/project.yml`
+drift. `test-app-icons.py` mutates disposable copies (missing/misnamed
+alternate, legacy Original/Treatment-B swap, duplicate Bay alternate, wrong
+hash/dimension/alpha, stale output/project config) and requires each to RED.
 
 `check-release-demo.py` also invokes the native source guard and, with `--binary`,
 the actual app-product guard. The manifest digest covers all Herd app sources;

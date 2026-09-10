@@ -305,7 +305,17 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # original V1 paths and scene/lifecycle sources are all digest-bound.
     # #449: Herd paddocks prioritize connected working repositories while
     # preserving identity selection; DEBUG evidence records the live reorder.
-    "61319e9cd148da9096c07135e359a4e26b99d2a81b6304e5ca85c200505b3ee1"
+    # r2 integration refresh: #449 + #458 merged source set — the digest
+    # is regenerated from the merged checkout; neither parent pin applies.
+    # #458: persisted Board/Herd preference — AppModel restores the saved
+    # presentation (Board default for missing/invalid) and owns the
+    # select/saved/openBoard presentation API; FleetViews dropped the
+    # principal top Board/Herd switch for the canonical Appearance-section
+    # picker and gained the #458 evidence sequence driver; FleetNotifierApp
+    # gained the Corral458Presentation launch scenarios + the accessibility
+    # size route + demo-notification suppression for the evidence sim —
+    # re-pinned over the #458 source set.
+    "0cb9dc0ca3a6e44527685e81603420fe18b92bcce3d77c3c69a415d4fc71db7e"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -451,7 +461,12 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # #428: SheetTranslucencyWiringTests gained the layered glass-branch
     # pins + the themedRowSurface counts (Settings 5 / Add Host 3 /
     # Fingerprint 6 sections) — re-pinned over the #428 test source.
-    "aa9c3dc9ef6accadce1d35787b02d032191ed5606ac08dac57ec7997ce08ce5a"
+    # #458: PresentationPreferenceTests (restore/round-trip/override/
+    # stream-preservation/demo-isolation), the HerdTests openBoard routing
+    # assertion, and the SettingsAccessWiringTests DEBUG-gated opener count
+    # (12 with the #458 presentation driver) — re-pinned over the #458 test
+    # source.
+    "9ed5585f57cef172bc4035b77a6ddda20536ca32fab54a87e91525de2b320ccd"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

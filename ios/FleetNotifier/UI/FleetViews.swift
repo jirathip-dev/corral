@@ -800,7 +800,7 @@ struct FleetView: View {
                                     model.requestRecents(for: horse.agent.agentId,
                                                          hostProfileID: horse.hostProfileID, haptic: false)
                                 },
-                                openBoard: { model.fleetPresentation = .board },
+                                openBoard: { model.openBoard() },
                                 retry: { await model.refreshFleet() })
                         }
                     } else {
@@ -955,20 +955,6 @@ struct FleetView: View {
                 // that exists only in Debug builds (Release shows the gear
                 // alone).
                 .toolbar {
-                    ToolbarItem(placement: .principal) {
-                        HStack(spacing: 0) {
-                            ForEach(FleetPresentation.allCases, id: \.self) { mode in
-                                Button { model.fleetPresentation = mode } label: {
-                                    Text(mode.rawValue).font(.subheadline.weight(.semibold))
-                                        .frame(minWidth: 64, minHeight: 44)
-                                        .background(model.fleetPresentation == mode ? theme.surface1 : .clear,
-                                                    in: RoundedRectangle(cornerRadius: 9))
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityAddTraits(model.fleetPresentation == mode ? .isSelected : [])
-                            }
-                        }
-                    }
                     ToolbarItemGroup(placement: .topBarTrailing) {
 #if DEBUG
                         Menu {
@@ -1049,6 +1035,13 @@ struct FleetView: View {
                 }
                 .task(id: model.mode) {
                     await runDemoEvidenceIfNeeded()
+                }
+                // #458 evidence: presentation preference scenarios ride the
+                // same deterministic marker pipeline (A: herd → Settings →
+                // Board; B: cold relaunch restores; C: Board → Settings →
+                // Herd; D: Open Board override + relaunch-restored Herd).
+                .task(id: model.mode) {
+                    await runPresentationEvidenceIfNeeded()
                 }
 #endif
 #if DEBUG
@@ -2370,6 +2363,68 @@ struct FleetView: View {
         filterHeaderEvidenceRan = true
         _ = await themePause(1500)
     }
+
+    /// #458 evidence: Settings → Board/Herd → dismiss → relaunch, plus the
+    /// Open Board temporary override. simctl cannot tap, so the driver
+    /// flips the same `showSettings` state the gear button sets and calls
+    /// the same `selectFleetPresentation` the Appearance picker's Binding
+    /// calls. Markers are unique per scenario; the host capture script
+    /// screenshots each marker on its first appearance.
+    private func runPresentationEvidenceIfNeeded() async {
+        let arguments = CommandLine.arguments
+        guard Corral458Presentation.wantsHerdScenario(arguments: arguments)
+                || Corral458Presentation.wantsBoardScenario(arguments: arguments)
+                || Corral458Presentation.wantsBoardReloadScenario(arguments: arguments)
+                || Corral458Presentation.wantsOpenBoardScenario(arguments: arguments) else { return }
+        guard model.mode == .demo else { return }
+        guard await themePause(0) else { return }
+        if Corral458Presentation.wantsHerdScenario(arguments: arguments) {
+            EvidenceMarkers.write("458-a-1-herd")
+            guard await themePause(4000) else { return }
+            showSettings = true
+            guard await themePause(4000) else { return }
+            EvidenceMarkers.write("458-a-2-settings-herd-selected")
+            guard await themePause(5000) else { return }
+            model.selectFleetPresentation(.board)
+            guard await themePause(2000) else { return }
+            EvidenceMarkers.write("458-a-3-settings-board-selected")
+            guard await themePause(5000) else { return }
+            showSettings = false
+            guard await themePause(4000) else { return }
+            EvidenceMarkers.write("458-a-4-board-after-dismissal")
+            _ = await themePause(5000)
+        } else if Corral458Presentation.wantsBoardScenario(arguments: arguments) {
+            // C: current Board → Settings → Herd → Board's Settings gear is
+            // the SAME always-visible control (reachable from both modes).
+            EvidenceMarkers.write("458-c-1-board")
+            guard await themePause(4000) else { return }
+            showSettings = true
+            guard await themePause(4000) else { return }
+            EvidenceMarkers.write("458-c-2-settings-board-selected")
+            guard await themePause(5000) else { return }
+            model.selectFleetPresentation(.herd)
+            guard await themePause(2000) else { return }
+            EvidenceMarkers.write("458-c-3-settings-herd-selected")
+            guard await themePause(5000) else { return }
+            showSettings = false
+            guard await themePause(4000) else { return }
+            EvidenceMarkers.write("458-c-4-herd-after-dismissal")
+            _ = await themePause(5000)
+        } else if Corral458Presentation.wantsBoardReloadScenario(arguments: arguments) {
+            // B: cold relaunch restores the persisted Board from scenario A.
+            EvidenceMarkers.write("458-b-1-board-restored")
+            _ = await themePause(6000)
+        } else {
+            // D: saved Herd restored, Open Board recovery is temporary, and
+            // the Open Board entry stays reachable inside Herd.
+            EvidenceMarkers.write("458-d-1-herd-restored")
+            guard await themePause(4000) else { return }
+            model.openBoard()
+            guard await themePause(4000) else { return }
+            EvidenceMarkers.write("458-d-2-board-recovery")
+            _ = await themePause(6000)
+        }
+    }
 #endif
 }
 
@@ -3418,8 +3473,26 @@ struct SettingsView: View {
     /// lock). One row per Catppuccin flavor, locked order + swatch strips
     /// (base / surface1 / mauve / teal / red of THAT flavor), checkmark on
     /// the active row; selection persists.
+    /// #458: the section also owns the canonical Board/Herd choice — the
+    /// principal top switch is gone, so Settings is the ONLY place the
+    /// saved presentation is controlled. Selection applies immediately
+    /// (the dismissal reveals the chosen mode) and persists for cold
+    /// relaunch.
     private var appearanceSection: some View {
         Section {
+            Picker("Board or Herd", selection: Binding(
+                get: { model.fleetPresentation },
+                set: { model.selectFleetPresentation($0) })) {
+                ForEach(FleetPresentation.allCases, id: \.self) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .accessibilityLabel("Board or Herd")
+            .accessibilityHint("Choose what the app opens to. Board is the default. This choice is saved.")
+            .accessibilityIdentifier("settings.presentation")
+            .id("settings.presentation")
+            .padding(.vertical, 2)
             ForEach(CatppuccinFlavor.allCases, id: \.self) { flavor in
                 let selected = flavor == theme.flavor
                 Button {
@@ -3454,7 +3527,7 @@ struct SettingsView: View {
         } header: {
             Text("Appearance")
         } footer: {
-            Text("Applies to the whole app — board, sheets, rail and settings.")
+            Text("Board or Herd opens immediately and is saved for next launch. Board is the default. Applies to the whole app — board, sheets, rail and settings.")
                 .foregroundStyle(theme.subtext1)
         }
         // #428: the native grouped CELL surface is system white/gray in

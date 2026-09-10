@@ -23,6 +23,8 @@ final class HerdTests: XCTestCase {
         XCTAssertTrue(route.contains("HerdProjection.multiple(hostSections"))
         XCTAssertTrue(route.contains("HerdProjection.single(sections"))
         XCTAssertTrue(route.contains("model.requestRecents(for:horse.agent.agentId,hostProfileID:horse.hostProfileID,haptic:false)"))
+        XCTAssertTrue(route.contains("openBoard:{model.openBoard()}"),
+                      "Herd's Open Board recovery must route through the temporary-override API")
     }
 
     func testIdentityMatchesOriginalV1AndSurvivesEveryPresentationInput() {
@@ -84,14 +86,14 @@ final class HerdTests: XCTestCase {
         model.requestRecents(for: horse.agent.agentId, haptic: false)
         let boardRequest = try XCTUnwrap(model.recentsRequest)
         let snapshot = model.fleet.agents
-        model.fleetPresentation = .herd
+        model.selectFleetPresentation(.herd)
         XCTAssertEqual(model.repoFilter, "demo-atlas")
         XCTAssertEqual(model.fleet.agents, snapshot)
         XCTAssertEqual(model.recentsRequest, boardRequest)
         model.requestRecents(for: horse.agent.agentId, hostProfileID: horse.hostProfileID, haptic: false)
         XCTAssertEqual(model.recentsRequest?.agentId, boardRequest.agentId)
         XCTAssertEqual(model.recentsRequest?.hostProfileID, boardRequest.hostProfileID)
-        model.fleetPresentation = .board
+        model.selectFleetPresentation(.board)
         XCTAssertEqual(model.repoFilter, "demo-atlas")
         XCTAssertEqual(model.fleet.agents, snapshot)
         XCTAssertEqual(Set(horses.map(\.agent.agentId)), Set(BoardModel.agents(agents, in: scope).map(\.agentId)))
@@ -246,5 +248,222 @@ final class HerdTests: XCTestCase {
                            disconnected: Bool = false) -> HerdHorse {
         HerdHorse(agent: Agent(agentId: id, state: state, workspace: Workspace(repo: repo)),
                   hostProfileID: nil, hostName: nil, disconnected: disconnected)
+    }
+}
+
+/// #458 stream-preservation probe: serves 200 text/event-stream and never
+/// finishes — an idle fleet delivers zero frames. Lock-guarded request
+/// counter (same pattern as the file-scope URLProtocol mocks in
+/// FleetNotifierTests.swift).
+private final class PresentationStreamURLProtocol: URLProtocol {
+    private static let requestLock = NSLock()
+    private static var requestCountStorage = 0
+
+    static func resetRequestCount() {
+        requestLock.lock()
+        requestCountStorage = 0
+        requestLock.unlock()
+    }
+
+    static var requestCount: Int {
+        requestLock.lock()
+        defer { requestLock.unlock() }
+        return requestCountStorage
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.requestLock.lock()
+        Self.requestCountStorage += 1
+        Self.requestLock.unlock()
+        guard let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        // SAFETY: HTTPURLResponse with fixed status/text is always valid.
+        let response = HTTPURLResponse(
+            url: url, statusCode: 200, httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "text/event-stream"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data())
+        // Deliberately never finishes: the daemon's stream stays open.
+    }
+
+    override func stopLoading() {}
+}
+
+@MainActor
+final class PresentationPreferenceTests: XCTestCase {
+    private func suite(_ name: String) throws -> UserDefaults {
+        let suiteName = "presentation-\(name)-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        return defaults
+    }
+
+    func testFreshLegacyInvalidAndStoredDefaultsRestorePresentation() throws {
+        let fresh = try suite("fresh")
+        let freshModel = AppModel(defaults: fresh)
+        XCTAssertEqual(freshModel.fleetPresentation, .board)
+        XCTAssertEqual(freshModel.mode, .needsSetup,
+                       "presentation restoration must not bypass setup")
+
+        let invalid = try suite("invalid")
+        invalid.set("gallery", forKey: "fleetnotifier.fleetPresentation")
+        let invalidModel = AppModel(defaults: invalid)
+        XCTAssertEqual(invalidModel.fleetPresentation, .board)
+        XCTAssertEqual(invalidModel.mode, .needsSetup)
+
+        let stored = try suite("stored")
+        stored.set(FleetPresentation.herd.rawValue,
+                   forKey: AppModel.fleetPresentationKey)
+        let restoredModel = AppModel(defaults: stored)
+        XCTAssertEqual(restoredModel.fleetPresentation, .herd,
+                       "a cold model must restore the saved presentation")
+        XCTAssertEqual(restoredModel.mode, .needsSetup,
+                       "restoring Herd must preserve the setup gate")
+    }
+
+    func testSettingsSelectionsApplyImmediatelyAndRoundTripBothValues() throws {
+        let defaults = try suite("round-trip")
+        let model = AppModel(defaults: defaults)
+
+        model.selectFleetPresentation(.herd)
+        XCTAssertEqual(model.fleetPresentation, .herd)
+        XCTAssertEqual(model.savedFleetPresentation, .herd)
+        XCTAssertEqual(defaults.string(forKey: AppModel.fleetPresentationKey),
+                       FleetPresentation.herd.rawValue)
+        XCTAssertEqual(AppModel(defaults: defaults).fleetPresentation, .herd,
+                       "a cold model must restore Herd")
+
+        model.selectFleetPresentation(.board)
+        XCTAssertEqual(model.fleetPresentation, .board)
+        XCTAssertEqual(model.savedFleetPresentation, .board)
+        XCTAssertEqual(defaults.string(forKey: AppModel.fleetPresentationKey),
+                       FleetPresentation.board.rawValue)
+        XCTAssertEqual(AppModel(defaults: defaults).fleetPresentation, .board,
+                       "a cold model must restore Board")
+    }
+
+    func testOpenBoardIsATemporaryOverrideThatNeverRewritesTheSavedPreference() throws {
+        let defaults = try suite("open-board")
+        let model = AppModel(defaults: defaults)
+        model.selectFleetPresentation(.herd)
+        XCTAssertEqual(model.fleetPresentation, .herd)
+        XCTAssertEqual(model.savedFleetPresentation, .herd)
+
+        model.openBoard()
+        XCTAssertEqual(model.fleetPresentation, .board,
+                       "Open Board applies immediately as a temporary override")
+        XCTAssertEqual(model.savedFleetPresentation, .herd,
+                       "the recovery override must not rewrite the saved preference")
+        XCTAssertEqual(defaults.string(forKey: AppModel.fleetPresentationKey),
+                       FleetPresentation.herd.rawValue,
+                       "UserDefaults must keep the saved Herd choice untouched")
+
+        model.selectFleetPresentation(.herd)
+        XCTAssertEqual(model.fleetPresentation, .herd,
+                       "a later explicit Settings selection wins immediately")
+        XCTAssertEqual(model.savedFleetPresentation, .herd)
+    }
+
+    func testPresentationChangesPreserveTheLiveFleetStream() async throws {
+        let defaults = try suite("stream")
+        let model = AppModel(defaults: defaults)
+        model.enterDemo()
+        defer { model.stopLive() }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [PresentationStreamURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        // SAFETY: fixed literal https URL used only by this test client.
+        let client = CorraldClient(host: URL(string: "https://fleet.test")!,
+                                   session: session)
+        model.fleet.connect(client: client)
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertTrue(model.fleet.isStreaming)
+        let generation = model.fleet.connectionGeneration
+        let snapshot = model.fleet.agents
+
+        model.selectFleetPresentation(.herd)
+        model.openBoard()
+        model.selectFleetPresentation(.board)
+
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(model.fleet.connectionGeneration, generation,
+                       "presentation changes must never restart the live stream")
+        XCTAssertTrue(model.fleet.isStreaming)
+        XCTAssertEqual(model.fleet.agents, snapshot,
+                       "presentation changes must not touch the live read model")
+        let disconnect = model.fleet.disconnect()
+        await disconnect?.value
+    }
+
+    func testDemoModeDoesNotLeakOrReadTheLivePreference() throws {
+        let defaults = try suite("demo-isolation")
+        defaults.set("gallery", forKey: AppModel.fleetPresentationKey)
+        let model = AppModel(defaults: defaults)
+        model.enterDemo()
+        model.selectFleetPresentation(.herd)
+        XCTAssertEqual(model.fleetPresentation, .herd)
+        model.exitDemo()
+        // .needsSetup: no legacy identity/profile store in this fixture —
+        // the demo never fabricated a pairing, so the setup gate stays.
+        XCTAssertEqual(model.mode, .needsSetup)
+        XCTAssertEqual(defaults.string(forKey: AppModel.fleetPresentationKey),
+                       FleetPresentation.herd.rawValue,
+                       "the Settings choice survives the demo round-trip")
+    }
+
+    func testHerdsSetupPathKeepsBoardDefaultUntilAPreferenceExists() throws {
+        let defaults = try suite("setup")
+        let model = AppModel(defaults: defaults)
+        XCTAssertEqual(model.mode, .needsSetup)
+        XCTAssertEqual(model.fleetPresentation, .board,
+                       "an unpaired model has no reason to prefer Herd")
+        let reloaded = AppModel(defaults: defaults)
+        XCTAssertEqual(reloaded.fleetPresentation, .board)
+        XCTAssertEqual(reloaded.mode, .needsSetup)
+    }
+
+    func testToolbarKeepsOnlyTheSettingsGearAndNeverRegrowsTheTopSwitch() throws {
+        let bundle = Bundle(for: HerdTests.self)
+        let url = try XCTUnwrap(bundle.url(forResource: "FleetViews",
+                                           withExtension: "swift.txt"))
+        let source = try String(contentsOf: url, encoding: .utf8)
+        let fromToolbar = try XCTUnwrap(source.range(of: ".toolbar {"))
+        // The board toolbar is the FIRST toolbar in the file and ends at
+        // the second .sheet modifier chain; Settings' own toolbar
+        // (navigationTitle "Settings") comes later and is out of scope.
+        let settingsTitle = try XCTUnwrap(source.range(of: "struct SettingsView: View {"))
+        let boardToolbar = source[fromToolbar.lowerBound..<settingsTitle.lowerBound]
+        XCTAssertFalse(boardToolbar.contains("ToolbarItem(placement: .principal)"),
+                       "the principal top Board/Herd switch is removed")
+        XCTAssertFalse(boardToolbar.contains("Text(mode.rawValue)"),
+                       "no segment-styled mode switch may regrow in the toolbar")
+        XCTAssertFalse(boardToolbar.contains("model.fleetPresentation = mode"),
+                       "the toolbar must never write the presentation directly")
+        XCTAssertTrue(boardToolbar.contains("Image(systemName: \"gearshape\")"),
+                      "the Settings gear stays in the toolbar")
+        XCTAssertTrue(boardToolbar.contains("SettingsView(model: model)"),
+                      "Settings remains reachable from the top bar")
+    }
+
+    func testAppearanceSectionOwnsTheCanonicalPersistedPicker() throws {
+        let bundle = Bundle(for: HerdTests.self)
+        let url = try XCTUnwrap(bundle.url(forResource: "FleetViews",
+                                           withExtension: "swift.txt"))
+        let source = try String(contentsOf: url, encoding: .utf8)
+        let fromAppearance = try XCTUnwrap(source.range(of: "private var appearanceSection: some View {"))
+        let section = String(source[fromAppearance.lowerBound...])
+        XCTAssertTrue(section.contains("Picker(\"Board or Herd\""),
+                      "the canonical Board/Herd picker lives in the Appearance section")
+        XCTAssertTrue(section.contains("model.selectFleetPresentation($0)"),
+                      "a Settings selection routes through the persisting API")
+        XCTAssertTrue(section.contains("accessibilityHint(\"Choose what the app opens to. Board is the default. This choice is saved.\")"),
+                      "the saved-choice explanation is exposed to VoiceOver")
+        XCTAssertTrue(section.contains(".pickerStyle(.segmented)"),
+                      "the Board/Herd choice renders as a visible segmented control")
     }
 }

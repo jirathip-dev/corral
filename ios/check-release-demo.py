@@ -324,7 +324,11 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # #464 integration refresh: #464 merged onto the #449/#458 integration
     # source set — the digest is regenerated from the merged checkout (union
     # of #449/#458 and #464 sources); neither parent pin applies.
-    "c17cfe9a211581bb17538b9b351451074fa70cbce68c70f8b5f32deae451e61f"
+    # #459: the ranch wind/foliage — RanchEnvironment samples the shared
+    # RanchWind contract and the HerdAmbientPolicy power/thermal fallback,
+    # and both helpers are Release app source — re-pinned over the #459
+    # source set.
+    "cd1422fc46890cdc5436b0be651aa75d2e50d57df839ac4478122f24322a1c76"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -542,6 +546,12 @@ SOURCE_REQUIRED: dict[str, tuple[str, ...]] = {
 
 RELEASE_SOURCE_REQUIRED: dict[str, tuple[str, ...]] = {
     "ios/FleetNotifier/UI/Herd/HerdView.swift": ("RanchEnvironment(", "clock.stop()"),
+    # #459: the wind contract and the ambient power/thermal fallback must
+    # stay Release-active (a Debug-only scene would silently stop shipping
+    # the animation).
+    "ios/FleetNotifier/UI/Herd/RanchEnvironment.swift": ("RanchWind", "HerdAmbientPolicy"),
+    "ios/FleetNotifier/UI/Herd/RanchWind.swift": ("canopyAmplitude", "grassBend"),
+    "ios/FleetNotifier/UI/Herd/HerdAmbientPolicy.swift": ("ambientMotionAllowed",),
     "ios/FleetNotifier/UI/Herd/HerdArt.swift": ("func drawing(", "art.grazing()"),
     "ios/FleetNotifier/App/FleetNotifierApp.swift": ("model.startLive()",),
     "ios/FleetNotifier/App/AppModel.swift": (

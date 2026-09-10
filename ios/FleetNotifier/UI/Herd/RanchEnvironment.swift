@@ -6,14 +6,24 @@ struct RanchEnvironment: View {
     let maxScroll: CGFloat
     let elapsed: Double
     let reduceMotion: Bool
+    // #459: ambient motion also falls back to the intentional static scene
+    // under Low Power or a serious/critical thermal state. These are read
+    // once and re-evaluated when iOS posts the process notifications; no
+    // timer or task is created here — the scene clock stays the only
+    // timing owner.
+    @State private var lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+    @State private var thermalState = ProcessInfo.processInfo.thermalState
     static let planes: [RanchPlane] = [.sky,.hills,.ground,.barnTrees,.rearFences,.foreground]
 
+    private var ambientFrozen: Bool {
+        reduceMotion || !HerdAmbientPolicy.ambientMotionAllowed(lowPower:lowPower,thermal:thermalState)
+    }
     var body: some View {
         ZStack {
             ForEach(Self.planes) { plane in
                 Canvas { context, size in
                     let offset = plane.offset(scroll:scroll,coverage:maxScroll,reduceMotion:reduceMotion)
-                    let painter = RanchPainter(night:night,elapsed:reduceMotion ? 0 : elapsed)
+                    let painter = RanchPainter(night:night,elapsed:ambientFrozen ? 0 : elapsed)
                     context.scaleBy(x:size.width/390,y:size.height/640)
                     context.translateBy(x:offset*390/size.width,y:0)
                     painter.draw(plane,&context,left:-offset*390/size.width)
@@ -21,8 +31,18 @@ struct RanchEnvironment: View {
                 .accessibilityHidden(true)
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for:.NSProcessInfoPowerStateDidChange)) { _ in
+            refreshAmbientFallback()
+        }
+        .onReceive(NotificationCenter.default.publisher(for:ProcessInfo.thermalStateDidChangeNotification)) { _ in
+            refreshAmbientFallback()
+        }
         .clipped()
         .allowsHitTesting(false)
+    }
+    private func refreshAmbientFallback() {
+        lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+        thermalState = ProcessInfo.processInfo.thermalState
     }
 }
 
@@ -142,13 +162,25 @@ struct RanchPainter {
         }
     }
     func tree(_ c:inout GraphicsContext,x:Double,y:Double,scale:Double) {
+        // #459: the trunk stays grounded and unswayed; only the leaf
+        // clusters ride the shared wind phase.
         fill(&c,Path(CGRect(x:x-2*scale,y:y-8*scale,width:4*scale,height:45*scale)),0x776745,0x3c4c4a)
+        let root = RanchWind.anchor(x)
         for i in 0..<22 {
             let dx = (noise(i,20)-0.5)*48*scale
             let dy = (noise(i,7)-0.5)*35*scale
-            fill(&c,ellipse(x+dx,y+dy,9*scale,11*scale),
+            // Cluster phase plus a height gradient: upper clusters travel
+            // further than lower ones, so the canopy shears gently instead
+            // of translating as one rigid sticker.
+            let cluster = Double(i % 4) * 0.5 + noise(i,11) * 0.7
+            let lift = 1.1 - (dy / (35 * scale)) * 0.35
+            let sway = RanchWind.sway(elapsed:elapsed,anchor:root + cluster,
+                                      amplitude:RanchWind.canopyAmplitude * scale * lift)
+            let bob = RanchWind.sway(elapsed:elapsed,anchor:root + cluster + 1.9,
+                                     amplitude:0.5 * scale * lift)
+            fill(&c,ellipse(x+dx+sway,y+dy+bob,9*scale,11*scale),
                  i%3 == 0 ? 0x859b5c : 0x66874f,i%3 == 0 ? 0x557068 : 0x405e59,opacity:0.9)
-            fill(&c,ellipse(x+dx-2*scale,y+dy-3*scale,5*scale,4*scale),0xb0b67b,0x96aea0,opacity:0.10)
+            fill(&c,ellipse(x+dx+sway-2*scale,y+dy+bob-3*scale,5*scale,4*scale),0xb0b67b,0x96aea0,opacity:0.10)
         }
     }
     func fence(_ c:inout GraphicsContext,left:CGFloat,y:Double) {
@@ -166,7 +198,7 @@ struct RanchPainter {
         for i in Int(left/9)-1...Int((left+390)/9)+1 {
             let x = Double(i)*9
             let y = 303 + noise(i,43)*333
-            let bend = sin(elapsed/2+Double(i))*1.4
+            let bend = RanchWind.grassBend(elapsed:elapsed,worldX:x)
             for blade in 0..<3 {
                 let dx = Double(blade)*2
                 let p = horsePath([.m(x+dx,y),.q(x+dx-1+bend,y-5,x+dx-3+bend,y-8-noise(i,4)*4)])

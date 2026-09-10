@@ -4,7 +4,7 @@ r0 phase-10 AX-XXXL day (DEFECTIVE)          pill_top_y= 65 band=y40..65 glyph_p
 r0 phase-11 AX-XXXL long names (DEFECTIVE)   pill_top_y= 65 band=y40..65 glyph_px=  728  LABEL_SPILLS_ABOVE_PILL=True
 r0 phase-12 AX-XXXL empty (DEFECTIVE)        pill_top_y= 65 band=y40..65 glyph_px=  728  LABEL_SPILLS_ABOVE_PILL=True
 
-== r1 committed frames (6150ab1) ==
+== r1 committed frames (captured from the repaired tree) ==
 r1 phase-1 default day (CONTROL)             pill_top_y= 65 band=y40..65 glyph_px=    0  LABEL_SPILLS_ABOVE_PILL=False
 r1 phase-6 default long names (CONTROL)      pill_top_y= 65 band=y40..65 glyph_px=    0  LABEL_SPILLS_ABOVE_PILL=False
 r1 phase-7 default empty (CONTROL)           pill_top_y= 65 band=y40..65 glyph_px=    0  LABEL_SPILLS_ABOVE_PILL=False

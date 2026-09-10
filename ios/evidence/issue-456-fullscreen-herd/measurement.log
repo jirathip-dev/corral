@@ -4,13 +4,13 @@ r0 phase-10 AX-XXXL day (DEFECTIVE)          pill_top_y= 65 band=y40..65 glyph_p
 r0 phase-11 AX-XXXL long names (DEFECTIVE)   pill_top_y= 65 band=y40..65 glyph_px=  728  LABEL_SPILLS_ABOVE_PILL=True
 r0 phase-12 AX-XXXL empty (DEFECTIVE)        pill_top_y= 65 band=y40..65 glyph_px=  728  LABEL_SPILLS_ABOVE_PILL=True
 
-== r1 committed frames (captured from the repaired tree) ==
-r1 phase-1 default day (CONTROL)             pill_top_y= 65 band=y40..65 glyph_px=    0  LABEL_SPILLS_ABOVE_PILL=False
-r1 phase-6 default long names (CONTROL)      pill_top_y= 65 band=y40..65 glyph_px=    0  LABEL_SPILLS_ABOVE_PILL=False
-r1 phase-7 default empty (CONTROL)           pill_top_y= 65 band=y40..65 glyph_px=    0  LABEL_SPILLS_ABOVE_PILL=False
-r1 phase-10 AX-XXXL day                      pill_top_y= 65 band=y40..65 glyph_px=    0  LABEL_SPILLS_ABOVE_PILL=False
-r1 phase-11 AX-XXXL night                    pill_top=10 (not measurable on this frame)
-r1 phase-12 AX-XXXL long names               pill_top_y= 65 band=y40..65 glyph_px=    0  LABEL_SPILLS_ABOVE_PILL=False
-r1 phase-13 AX-XXXL empty                    pill_top_y= 65 band=y40..65 glyph_px=    0  LABEL_SPILLS_ABOVE_PILL=False
-r1 phase-14 SE default day (CONTROL)         pill_top_y= 26 band=y17..26 glyph_px=    0  LABEL_SPILLS_ABOVE_PILL=False
-r1 phase-18 SE AX-XXXL day                   pill_top_y= 26 band=y17..26 glyph_px=    0  LABEL_SPILLS_ABOVE_PILL=False
+== merged-head committed frames (union of 16daaca #449 + #456/#456-r1) ==
+merged phase-1 default day (CONTROL)         pill_top_y= 65 band=y40..65 glyph_px=    0  LABEL_SPILLS_ABOVE_PILL=False
+merged phase-6 default long names (CONTROL)  pill_top_y= 65 band=y40..65 glyph_px=    0  LABEL_SPILLS_ABOVE_PILL=False
+merged phase-7 default empty (CONTROL)       pill_top_y= 65 band=y40..65 glyph_px=    0  LABEL_SPILLS_ABOVE_PILL=False
+merged phase-10 AX-XXXL day                  pill_top_y= 65 band=y40..65 glyph_px=    0  LABEL_SPILLS_ABOVE_PILL=False
+merged phase-11 AX-XXXL night                pill_top=10 (not measurable on this frame)
+merged phase-12 AX-XXXL long names           pill_top_y= 65 band=y40..65 glyph_px=    0  LABEL_SPILLS_ABOVE_PILL=False
+merged phase-13 AX-XXXL empty                pill_top_y= 65 band=y40..65 glyph_px=    0  LABEL_SPILLS_ABOVE_PILL=False
+merged phase-14 SE default day (CONTROL)     pill_top_y= 26 band=y17..26 glyph_px=    0  LABEL_SPILLS_ABOVE_PILL=False
+merged phase-18 SE AX-XXXL day               pill_top_y= 26 band=y17..26 glyph_px=    0  LABEL_SPILLS_ABOVE_PILL=False

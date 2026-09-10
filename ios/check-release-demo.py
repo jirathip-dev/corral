@@ -321,9 +321,10 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # gained the Corral458Presentation launch scenarios + the accessibility
     # size route + demo-notification suppression for the evidence sim —
     # re-pinned over the #458 source set.
-    # #450 fix r1: F1 repair (stream-only epoch-reset authority) — this
-    # constant is re-pinned at the repaired merged head.
-    "0cb9dc0ca3a6e44527685e81603420fe18b92bcce3d77c3c69a415d4fc71db7e"
+    # #450 fix r1: F1 repair (stream-only epoch-reset authority) + the
+    # escaped stale-agent-pull regression — recomputed over the MERGED
+    # (16daaca) + repaired head; neither parent pin applies.
+    "63c77f87f2c1161c12a97bc11a7d39d4c2ba8838f6080a1ae6b138263ad5cd99"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -479,9 +480,9 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # assertion, and the SettingsAccessWiringTests DEBUG-gated opener count
     # (12 with the #458 presentation driver) — re-pinned over the #458 test
     # source.
-    # #450 fix r1: escaped-pull regression (handleStaleAgent) — this
-    # constant is re-pinned at the repaired merged head.
-    "9ed5585f57cef172bc4035b77a6ddda20536ca32fab54a87e91525de2b320ccd"
+    # #450 fix r1: escaped-pull regression (handleStaleAgent) added —
+    # recomputed over the MERGED (16daaca) + repaired test source.
+    "0e904d07a8ceebccbed3fbf03e047dea5b17186938b3d36d9ebb2fa3dae057d4"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

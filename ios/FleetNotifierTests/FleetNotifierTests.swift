@@ -644,6 +644,140 @@ final class EpochRecoveryTests: XCTestCase {
         session.invalidateAndCancel()
         if let streamTask { await streamTask.value }
     }
+
+    // MARK: - #450 fix r1 (F1): the escaped stale-agent HTTP pull
+
+    /// F1 regression (fresh-reviewer FAIL at e467694): `handleStaleAgent`'s
+    /// reconciliation `fetchSnapshot` is a plain HTTP pull but used to
+    /// inherit epoch-reset authority from the generic `apply`. A late
+    /// dead-lifetime snapshot could then replace newer stream state, flip
+    /// `lastEventEpoch` back to the DEAD lifetime, and silently wedge
+    /// convergence — every later lifetime-B delta rejected as cross-epoch
+    /// while the connection still reads healthy. This drives the REAL
+    /// escaped path end to end (a Recent-output read refused `stale_agent`
+    /// → the real reconciliation fetch → `apply`) with that fetch HELD IN
+    /// FLIGHT while the stream re-anchors lifetime B — the exact
+    /// production race (a pull issued against A landing after B anchored).
+    func testStaleAgentPullFromDeadLifetimeCannotRollBackLiveStream() async throws {
+        // The reconciliation fetch is gated so it stays in flight while
+        // the stream re-anchors a new daemon lifetime.
+        let gate = DriveRequestGate()
+        let suiteName = "corral.epoch450.f1.\(UUID().uuidString)"
+        // SAFETY: a fresh UUID-based suite name is always a valid suite.
+        let defaults = UserDefaults(suiteName: suiteName)!
+        // The DEAD lifetime-A board (rev 5) the stale fetch will return.
+        let deadSnapshot = Snapshot(
+            schemaVersion: 5, rev: 5, generatedAt: 1,
+            agents: ["a-dead": agent("a-dead", title: "dead lifetime")],
+            epoch: oldEpoch)
+        let deadBody = Data(try addingEpoch(
+            oldEpoch, to: JSONEncoder().encode(deadSnapshot)).utf8)
+        let script = DeterministicDriveScript(
+            responses: [
+                "/drive": Data(#"{"kind":"stale_agent","message":"the agent moved or disappeared"}"#.utf8),
+                "/snapshot": deadBody,
+            ],
+            gates: ["/snapshot": gate],
+            statuses: ["/drive": 409])
+        DeterministicDriveURLProtocol.setScript(script)
+        // SAFETY: an ephemeral configuration whose only protocol class is
+        // the deterministic test seam.
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [DeterministicDriveURLProtocol.self]
+        let session = URLSession(configuration: config)
+        defer {
+            session.invalidateAndCancel()
+            defaults.removePersistentDomain(forName: suiteName)
+            DeterministicDriveURLProtocol.clearScript()
+        }
+        // SAFETY: a fixed valid URL literal.
+        let hostURL = URL(string: "http://daemon")!
+        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        let model = AppModel(session: session, defaults: defaults,
+                             identityLoader: { (signer, .insecureFallback) },
+                             loadMeta: { nil }, saveMeta: { _ in },
+                             wipeIdentity: {})
+        model.mode = .live
+        model.hostURL = hostURL
+        model.keyId = "dev_epoch450_f1"
+        model.grants = ["read_tail"]
+        model.signer = signer
+        let store = model.fleet
+        // Lifetime A is live and the stream has anchored its epoch. The
+        // stale-agent drive needs a readable, connected row.
+        let aLive = Agent(agentId: "a-live", state: .working, seq: 1, ts: 1,
+                          capabilities: ["read_tail"], title: "lifetime A")
+        await store.ingest(try snapshotFrame(
+            epoch: oldEpoch, rev: 4, agents: ["a-live": aLive])).value
+        XCTAssertEqual(store.connectionState, .connected)
+
+        // A Recent-output read against A is refused `stale_agent`; the
+        // reconciliation fetch is issued and HELD by the gate.
+        let client = DriveClient(host: hostURL, session: session)
+        model.driveReadTail(agent: try XCTUnwrap(store.agent("a-live")),
+                            driveClient: client, silent: true)
+        let deadline = Date().addingTimeInterval(5)
+        while !script.log.requests.contains(where: { $0.url?.path == "/snapshot" }),
+              Date() < deadline {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+        XCTAssertTrue(script.log.requests.contains { $0.url?.path == "/snapshot" },
+                      "the stale-agent reconciliation fetch must reach the wire")
+        XCTAssertEqual(model.banner?.kind, "stale_agent",
+                       "the refusal banner must name the stale target")
+        XCTAssertNil(store.agent("a-live"),
+                     "the stale target's row is removed before reconciliation")
+
+        // The stream reconnects to a NEW daemon lifetime B at a LOWER
+        // numeric rev — the stream snapshot is the authoritative boundary.
+        await store.ingest(try snapshotFrame(
+            epoch: newEpoch, rev: 1,
+            agents: ["b-live": agent("b-live", title: "lifetime B")])).value
+        XCTAssertEqual(Set(store.agents.keys), ["b-live"])
+        XCTAssertEqual(store.lastEventId, 1)
+        XCTAssertEqual(store.lastEventEpoch, newEpoch)
+
+        // Positive control: the SAME dead-lifetime frame through the
+        // pull-refresh entry point is rejected by the epoch rule — the
+        // defect is the stale-agent call-site authority, not the rule.
+        store.applyRefresh(deadSnapshot)
+        XCTAssertNil(store.agent("a-dead"),
+                     "a cross-epoch refresh snapshot must be rejected (control)")
+        XCTAssertEqual(store.lastEventId, 1,
+                       "the control must not move the cursor")
+
+        // Release the held dead-lifetime snapshot: it lands AFTER B
+        // anchored, exactly like the in-flight production pull.
+        gate.release()
+        let settled = await script.log.completed.waitFor(
+            atLeast: 2, timeoutNanoseconds: 5_000_000_000)
+        XCTAssertTrue(settled, "both scripted responses must complete")
+        // One main-actor hop remains between the fetch response and the
+        // apply; give it a bounded beat before asserting.
+        try? await Task.sleep(nanoseconds: 250_000_000)
+
+        // F1: the dead lifetime must NOT replace the live board, cursor,
+        // or epoch.
+        XCTAssertNil(store.agent("a-dead"),
+                     "a dead-lifetime HTTP pull must never replace stream state")
+        XCTAssertEqual(Set(store.agents.keys), ["b-live"])
+        XCTAssertEqual(store.lastEventId, 1,
+                       "the dead pull must not move the cursor")
+        XCTAssertEqual(store.lastEventEpoch, newEpoch,
+                       "the dead pull must not re-anchor the epoch")
+
+        // And the live stream keeps converging: subsequent B deltas apply.
+        await store.ingest(try deltaFrame(
+            epoch: newEpoch, rev: 2,
+            upd: [agent("b-live", title: "converged")])).value
+        await store.ingest(try deltaFrame(
+            epoch: newEpoch, rev: 3,
+            upd: [agent("b-live", title: "kept converging")])).value
+        XCTAssertEqual(store.agent("b-live")?.title, "kept converging",
+                       "lifetime-B deltas must keep converging after the dead pull")
+        XCTAssertEqual(store.lastEventId, 3)
+        XCTAssertEqual(store.lastEventEpoch, newEpoch)
+    }
 }
 
 // MARK: - Demo seed integrity (#354 L2 read-only fixture)

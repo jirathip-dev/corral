@@ -173,12 +173,28 @@ final class FleetStore: ObservableObject {
         }
     }
 
+    /// Generic frame application (stream-independent entry point): monotonic
+    /// ONLY. #450 F1: epoch-reset authority is a property of the live STREAM
+    /// (`applyStreamFrame`, entered via `ingest`) — an HTTP pull frame (the
+    /// stale-agent reconciliation `fetchSnapshot`, a refresh) must never
+    /// cross a daemon lifetime, or a late response from a DEAD lifetime
+    /// replaces newer stream state and wedges convergence behind a healthy
+    /// connection.
+    ///
+    /// #166 review F2: every apply path must track `stateEnteredAt`. The
+    /// snapshot/refresh path (AppModel → `fleet.apply`) and the streaming
+    /// path (`ingest`) both converge here, so the client-side state clock
+    /// is seeded on first sight and re-stamped on state change regardless
+    /// of which entry point delivered the event.
     func apply(_ event: FleetEvent) {
-        // #166 review F2: every apply path must track `stateEnteredAt`. The
-        // snapshot/refresh path (AppModel → `fleet.apply`) and the streaming
-        // path (`ingest`) both converge here, so the client-side state clock
-        // is seeded on first sight and re-stamped on state change regardless
-        // of which entry point delivered the event.
+        apply(withoutDiff: event, marksConnected: true, allowsEpochReset: false)
+    }
+
+    /// #450: the live-stream frame path. A full snapshot that RODE the SSE
+    /// stream is the ONE authoritative epoch boundary — a restarted
+    /// daemon's lower/equal-rev snapshot replaces the retained state. Only
+    /// `ingest` reaches this method.
+    private func applyStreamFrame(_ event: FleetEvent) {
         apply(withoutDiff: event, marksConnected: true, allowsEpochReset: true)
     }
 
@@ -591,7 +607,7 @@ final class FleetStore: ObservableObject {
             }
             switch outcome {
             case .event(let event):
-                self.apply(event)
+                self.applyStreamFrame(event)
             case .ignored:
                 break
             case .failed(let reason):

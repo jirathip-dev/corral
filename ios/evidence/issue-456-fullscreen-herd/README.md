@@ -61,6 +61,21 @@ validates it against the historical r0 frames.
 | phase-17-se-empty-scope-375x667.png | SE empty scope: counts and empty state. |
 | phase-18-se-ax-day-375x667.png | SE at AX-XXXL: chrome and navigation stay inside the safe area with >= 44 pt targets; the rail + paddock column scrolls between them (a small phone cannot show the whole column at this size without hiding content). Labels truncate (`Previo…`, `All repositori…`) rather than overlap. |
 
+## Measured AX geometry (pre-empting a low-resolution misread)
+
+On `phase-10-ax-day-390x844.png` the pill is materially present and contains
+the label — it is a large translucent card over a bright ranch, so a
+downscaled view can make it look like free-standing text:
+
+- pill material at x=44 spans rows **65..189** (navy `(46,71,84)`), i.e. from
+  the top safe-area margin (59 pt + 6 pt chrome padding) downwards;
+- the label glyph rows measured over x 48..200 are **80..181** — strictly
+  inside the pill, 15 rows below its top edge and 8 above its bottom edge;
+- rows **191..196** are ranch pixels (`(99,165,197)`) — the 6 pt gap between
+  the scope pill and the counts card, which starts at row 197;
+- `measurement.log` counts **0** chrome-text pixels above the pill
+  (status-bar/Dynamic Island band), versus 728 px on the historical r0 frames.
+
 ## Honest limits
 
 - **Physical iPhone evidence remains the explicit unverified gate.** These are

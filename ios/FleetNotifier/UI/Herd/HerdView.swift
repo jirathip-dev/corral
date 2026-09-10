@@ -12,6 +12,12 @@ struct HerdView: View {
     /// never owns a parallel sheet or a duplicated toolbar.
     @Binding var showFilters: Bool
     @Binding var showSettings: Bool
+    /// #457: the ranch lighting (night flag) the floating chrome resolved.
+    /// HerdView is the single `HerdSun` resolver site; it reports the value
+    /// up so the shared filter sheet's Herd context is styled from the SAME
+    /// lighting the trigger and the counts show. Inert by default for
+    /// standalone hosts (tests/previews).
+    let onLightingNight: (Bool) -> Void
     let select: (HerdHorse) -> Void
     let openBoard: () -> Void
     let retry: () async -> Void
@@ -32,6 +38,7 @@ struct HerdView: View {
          scopeLabel: String = "Filters", scopeSummary: String = "All repositories",
          showFilters: Binding<Bool> = .constant(false),
          showSettings: Binding<Bool> = .constant(false),
+         onLightingNight: @escaping (Bool) -> Void = { _ in },
          select: @escaping (HerdHorse) -> Void,
          openBoard: @escaping () -> Void, retry: @escaping () async -> Void,
          clock: HerdClock? = nil) {
@@ -41,6 +48,7 @@ struct HerdView: View {
         self.scopeSummary = scopeSummary
         _showFilters = showFilters
         _showSettings = showSettings
+        self.onLightingNight = onLightingNight
         self.select = select
         self.openBoard = openBoard
         self.retry = retry
@@ -70,6 +78,12 @@ struct HerdView: View {
     }
     var lighting: HerdLighting {
         HerdSun.resolve(effectiveEnvironment,now:now,location:location.sample())
+    }
+    /// #457: the sealed ranch Day/Night control palette — resolved from the
+    /// SAME `lighting` the ranch field renders with, so the floating chrome
+    /// and the environment can never disagree.
+    var ranchTokens: RanchControlTokens {
+        .resolve(night: lighting.night)
     }
     var elapsed: Double {
 #if DEBUG
@@ -125,6 +139,10 @@ struct HerdView: View {
             }
         }
         .onAppear { if motionEnabled { clock.start() } }
+        // #457: report the resolved lighting up to FleetView — the shared
+        // filter sheet's Herd context styles itself from this value.
+        // `initial: true` covers the first rendered frame.
+        .onChange(of:lighting.night,initial:true) { _,night in onLightingNight(night) }
         .onChange(of:motionEnabled) { _,enabled in
             if enabled { clock.start() } else { clock.stop() }
         }
@@ -167,9 +185,12 @@ struct HerdView: View {
     }
     /// #456: the floating top chrome — scope + Settings on the first row,
     /// truthful scoped counts + the environment explanation beneath. Each
-    /// surface floats over the ranch on the app's existing material (the
-    /// ranch-context glass alignment is #457) with >= 44 pt targets and a
-    /// safe-area-aware top margin.
+    /// surface floats over the ranch; #457 moves the scope pill, the
+    /// Settings control and the counts card onto the sealed ranch Day/Night
+    /// chrome (glass where available, opaque Reduce Transparency /
+    /// high-contrast fallback) so no light/dark text is inherited blindly
+    /// from the app flavor. Targets stay >= 44 pt with a safe-area-aware
+    /// top margin.
     private var topChrome: some View {
         VStack(spacing:6) {
             HStack(spacing:8) {
@@ -182,16 +203,17 @@ struct HerdView: View {
         .padding(.top,6)
     }
     /// The scope control repeats the board Filters control's contract over
-    /// the ranch: same reconciled labels, same sheet, one >= 44 pt button.
+    /// the ranch: same reconciled labels, same sheet, one >= 44 pt button —
+    /// presented in the ranch Day/Night chrome (#457).
     private var scopeControl: some View {
         Button { showFilters = true } label: {
             HStack(spacing:8) {
-                HerdFilterGlyph(color: theme.accent)
+                HerdFilterGlyph(color: ranchTokens.accentColor)
                     .frame(width:16,height:16)
                 VStack(alignment:.leading,spacing:1) {
                     Text(scopeLabel).font(.subheadline.weight(.semibold))
-                        .foregroundStyle(theme.text).lineLimit(1)
-                    Text(scopeSummary).font(.caption2).foregroundStyle(theme.subtext1)
+                        .foregroundStyle(ranchTokens.inkColor).lineLimit(1)
+                    Text(scopeSummary).font(.caption2).foregroundStyle(ranchTokens.mutedColor)
                         .lineLimit(1).truncationMode(.tail)
                 }
                 Spacer(minLength:0)
@@ -201,29 +223,31 @@ struct HerdView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .background(.regularMaterial,in:RoundedRectangle(cornerRadius:15))
+        .ranchChromeSurface(ranchTokens)
         .accessibilityElement(children:.ignore)
         .accessibilityLabel(scopeLabel + ", " + scopeSummary)
         .accessibilityHint("Opens host and repository filters")
     }
     /// #456: Settings stays reachable in Herd (the navigation toolbar is
     /// hidden here, so this floating gear is the mode's only gear — never a
-    /// duplicated toolbar).
+    /// duplicated toolbar). #457: it rides the same ranch chrome as the
+    /// trigger it sits beside.
     private var settingsControl: some View {
         Button { showSettings = true } label: {
-            HerdGearGlyph(color: theme.text)
+            HerdGearGlyph(color: ranchTokens.inkColor)
                 .frame(width:22,height:22)
                 .frame(width:44,height:44)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .background(.regularMaterial,in:RoundedRectangle(cornerRadius:15))
+        .ranchChromeSurface(ranchTokens)
         .accessibilityLabel("Settings")
         .accessibilityHint("Opens connection and notification settings")
     }
-    /// Truthful scoped counts + environment note. When Dynamic Type or a
-    /// narrow phone outgrows one line the counts wrap to a second/third row
-    /// (the base summary's own fallback) instead of clipping.
+    /// Truthful scoped counts + environment note, in the ranch Day/Night
+    /// ink (#457). When Dynamic Type or a narrow phone outgrows one line
+    /// the counts wrap to a second/third row (the base summary's own
+    /// fallback) instead of clipping.
     private var statusSummary: some View {
         VStack(spacing:4) {
             ViewThatFits(in:.horizontal) {
@@ -232,10 +256,10 @@ struct HerdView: View {
             }
             Text(lighting.explanation).font(.caption2)
         }
-        .foregroundStyle(theme.text)
+        .foregroundStyle(ranchTokens.inkColor)
         .padding(.vertical,6).padding(.horizontal,12)
         .frame(maxWidth:.infinity)
-        .background(.regularMaterial,in:RoundedRectangle(cornerRadius:15))
+        .ranchChromeSurface(ranchTokens)
     }
     @ViewBuilder private var counts: some View {
         ForEach([AgentState.blocked,.working,.idle,.done,.unknown],id:\.self) { state in

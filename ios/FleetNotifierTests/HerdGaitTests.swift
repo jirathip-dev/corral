@@ -254,4 +254,23 @@ final class HerdGaitTests: XCTestCase {
                                  stale.gait(elapsed: 3.0, reduceMotion: false))
         assertSameDrawing(staleDrawing, drawn(.unknown), "disconnected")
     }
+
+    /// The runtime call site must pass the gait into the REAL horseButton
+    /// renderer call with the same lifecycle gate as the pose — a renderer
+    /// API test alone cannot catch a view that never advances the phase.
+    /// The bundled HerdView source is the file the app target compiles
+    /// (test pre-build copy), so removing the argument turns this RED.
+    func testHorseButtonCallSitePassesGaitIntoTheRenderer() throws {
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "HerdView.swift", withExtension: "txt"),
+                                "HerdView.swift.txt must ride in the test bundle")
+        let source = try String(contentsOf: url, encoding: .utf8).filter { !$0.isWhitespace }
+        let call = "privatefunchorseButton("
+        let start = try XCTUnwrap(source.range(of: call))
+        let button = String(source[start.lowerBound...])
+        let painted = "HerdArt().paint(&context,identity:horse.identity,"
+            + "pose:horse.pose(elapsed:elapsed,reduceMotion:reduced||!motionEnabled),"
+            + "gait:horse.gait(elapsed:elapsed,reduceMotion:reduced||!motionEnabled))"
+        XCTAssertEqual(button.components(separatedBy: painted).count - 1, 1,
+                       "horseButton must paint with the derived gait exactly once")
+    }
 }

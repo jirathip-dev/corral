@@ -99,14 +99,32 @@ def main():
                'guard elapsed.isFinite else { return .standstill }  // #448 probe M3: reduce-motion mutation',
                'gait-reduce-motion-red', 'testHerdHorseGaitDerivationIsStateAppropriateAndMotionSafe')
 
+        # M4: remove the runtime call-site argument (horseButton) — the
+        # renderer API still exists, so only the call-site wiring pin may RED.
+        view = root / 'ios/FleetNotifier/UI/Herd/HerdView.swift'
+        view_pristine = view.read_text()
+        lines = view_pristine.splitlines(keepends=True)
+        marked = [index for index, line in enumerate(lines) if 'gait:horse.gait(' in line]
+        assert len(marked) == 1, 'M4: horseButton call-site line not unique'
+        index = marked[0]
+        assert lines[index - 1].endswith('),\n'), 'M4: preceding pose line'
+        lines[index - 1] = lines[index - 1].replace('),\n', '))\n')
+        del lines[index]
+        view.write_text(''.join(lines))
+        try:
+            run('gait-call-site-red', focused, expected=65,
+                failure='testHorseButtonCallSitePassesGaitIntoTheRenderer')
+        finally:
+            view.write_text(view_pristine)
+
         for relative, digest in sources.items():
             assert hashlib.sha256((root / relative).read_bytes()).hexdigest() == digest, relative
         run('restored-green', base + ['-only-testing:FleetNotifierTests/HerdGaitTests',
                                       '-only-testing:FleetNotifierTests/HerdTests',
                                       '-only-testing:FleetNotifierTests/HerdEnvironmentTests'])
         (args.output / 'restoration.json').write_text(json.dumps(sources, indent=2) + '\n')
-    print('PASS: #448 gait candidate GREEN; fixed-angle, coordination and reduce-motion mutations '
-          'each RED by assertion; restored byte-identical and GREEN')
+    print('PASS: #448 gait candidate GREEN; fixed-angle, coordination, reduce-motion and '
+          'call-site-removal mutations each RED by assertion; restored byte-identical and GREEN')
 
 
 if __name__ == '__main__':

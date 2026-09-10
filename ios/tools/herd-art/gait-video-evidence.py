@@ -83,9 +83,8 @@ def main():
     def launch(extra):
         sh("xcrun", "simctl", "terminate", sim, BUNDLE)
         time.sleep(0.4)
-        stamp = time.time()
         result = sh("xcrun", "simctl", "launch", sim, BUNDLE, *extra)
-        return stamp, result.stdout.strip() or result.stderr.strip()
+        return time.time(), result.stdout.strip() or result.stderr.strip()
 
     def screenshot(name):
         path = shots_dir / f"{name}.png"
@@ -102,10 +101,11 @@ def main():
             ["xcrun", "simctl", "io", sim, "recordVideo", "--codec=h264",
              "--mask=ignored", "--force", str(video)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        record_epoch = time.time()
         time.sleep(1.2)
-        record_epoch, launch_output = launch(extra)
+        launch_epoch, launch_output = launch(extra)
         entry["record_epoch"] = round(record_epoch, 3)
-        entry["launch_epoch"] = round(record_epoch, 3)
+        entry["launch_epoch"] = round(launch_epoch, 3)
         entry["launch_output"] = launch_output
         end = time.time() + duration
         next_shot = record_epoch + first_shot

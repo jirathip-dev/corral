@@ -324,6 +324,18 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # #450 fix r1: F1 repair (stream-only epoch-reset authority) + the
     # escaped stale-agent-pull regression — recomputed over the MERGED
     # (16daaca) + repaired head; neither parent pin applies.
+    # #456: full-screen Herd shell — FleetViews Herd branch (no opaque board
+    # header / duplicated toolbar) + HerdView full-screen ranch cover,
+    # floating scope/Settings/counts and floating paddock navigation with
+    # native glyphs — re-pinned over the #456 source set.
+    # #456 r1: accessibility Dynamic Type repair — the floating top chrome
+    # keeps its scaled ideal (layoutPriority), the rail + paddock column
+    # scrolls under it at accessibility sizes, and the bottom navigation keeps
+    # its >= 44 pt targets — re-pinned over the #456-r1 source set.
+    # #456 refresh: union of #449 (HerdProjection working-repo ordering +
+    # reconciledPaddockID, HerdEvidence paddock order/position markers) and
+    # #456/#456-r1 (full-screen shell + accessibility repair). The pin below
+    # is recomputed from THIS merged checkout — neither parent pin applies.
     # #464: the Settings App Icon picker — AppIconPicker (four #463 shipping
     # choices, the UIApplication alternate-icon seam, the live-state model)
     # added to the manifest, and FleetViews gained the App Icon section +
@@ -336,7 +348,16 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # #450 integration refresh: #450 (epoch authority + fix r1) merged onto
     # the #449/#458/#464 integration source set — union of all four source
     # sets; regenerated from the merged checkout; neither parent pin applies.
-    "30e6fe4e365448c6a6871d141f5cb16ebe23e339805dae9044ca1abd4ba180d5"
+    # #456 refresh2: union of #449/#458, #456/#456-r1 and #464/#464-r1 over
+    # the 8671cfc integration — the pin below is recomputed from THIS merged
+    # checkout; no parent pin (4740de69…, 184c7a64…, 0cb9dc0c…, c17cfe9a…)
+    # applies.
+    # #450 refresh2: #450 (epoch authority + fix r1) merged onto the
+    # #449/#458/#456/#464 integration source set (3c7203d, #456 full-screen
+    # shell) — union of ALL source sets; the pin below is recomputed from
+    # THIS merged checkout; neither parent pin (30e6fe4e…, 00cdc240…)
+    # applies.
+    "8520aa200c26a9636bbab56380b0a47e8b997e8d6d105958d089efa9793645e0"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -503,6 +524,10 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # #450 integration refresh: test source carries the #450 F1 regression on
     # top of the #449/#458/#464 merged test sources — recomputed on the merged
     # checkout; neither parent pin applies.
+    # #450 refresh2: the #456 import changed a different test file
+    # (HerdTests.swift, outside this pin); the pinned FleetNotifierTests.swift
+    # is byte-unchanged by the refresh — digest recomputed over the merged
+    # checkout (same value).
     "4c99abf0756a5b6c4d49abd91a244d2c032e5fadd0b024a116ece1d54bd0f2bf"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)

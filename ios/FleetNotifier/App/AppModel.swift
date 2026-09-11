@@ -402,6 +402,15 @@ final class AppModel: ObservableObject {
     /// Injectable for tests (URLProtocol-mocked session); `.shared` by
     /// default so production call sites are unchanged.
     private let session: URLSession
+    /// #451: bounded pacing for the ACTIVE host's `/host-key` preflight
+    /// ladder (the coordinator hosts share the same value).
+    private let preflightRetryPolicy: HostPreflightRetryPolicy
+    /// #451: the ACTIVE host's single preflight/retry ladder owner. Non-nil
+    /// while a check (including its retry pauses) is in flight; a repeated
+    /// startLive()/pull never stacks a second owner. A separate id keeps a
+    /// cancelled ladder's cleanup from clearing a newer one.
+    private var keyContinuityTask: Task<Void, Never>?
+    private var keyContinuityTaskId: UUID?
 
     private let defaults: UserDefaults
     private let identityLifecycle: IdentityLifecycle
@@ -548,7 +557,8 @@ final class AppModel: ObservableObject {
          },
          profileStore: HostProfileStore? = nil,
          haptics: @escaping () -> Void = Haptics.selection,
-         notificationPermissionProvider: NotificationPermissionProviding = SystemNotificationPermissionProvider()) {
+         notificationPermissionProvider: NotificationPermissionProviding = SystemNotificationPermissionProvider(),
+         preflightRetryPolicy: HostPreflightRetryPolicy = .default) {
         self.fleetPresentation = FleetPresentation(
             rawValue: defaults.string(forKey: Self.fleetPresentationKey) ?? ""
         ) ?? .board
@@ -556,6 +566,9 @@ final class AppModel: ObservableObject {
         self.identityLifecycle = identityLifecycle
         self.defaults = defaults
         self.notificationPermissionProvider = notificationPermissionProvider
+        // #451: the same bounded preflight ladder paces the ACTIVE host's
+        // /host-key re-check and every coordinator host's preflight.
+        self.preflightRetryPolicy = preflightRetryPolicy
         self.identityLoader = identityLoader
         self.loadMeta = loadMeta
         self.saveMeta = saveMeta
@@ -612,6 +625,7 @@ final class AppModel: ObservableObject {
                 defaults: defaults,
                 session: session,
                 profileStore: profileStore,
+                preflightPolicy: preflightRetryPolicy,
                 signerProvider: { [weak self] in self?.signer })
             coordinator.activeProfileID = activeProfileID
             coordinator.onSessionConnected = { [weak self] profileID in
@@ -1107,38 +1121,76 @@ final class AppModel: ObservableObject {
     /// launch/reconnect. On match: connect. On mismatch: fail closed —
     /// no stream/fetch/push-register/Recent Output reaches the
     /// replacement identity and the last safe snapshot stays stale.
+    /// #451: a transient failure (unreachable/timeout/server error) retries
+    /// at a bounded RATE on ONE cancellable ladder — the same
+    /// `HostPreflightRetryPolicy` the coordinator hosts use (parity), with at
+    /// most one owner per host, and cancellation at every background/mode/
+    /// identity boundary. The ladder keeps retrying for as long as this
+    /// owner lives, so a host that becomes reachable at any later point in
+    /// the foreground session still recovers automatically. A key mismatch
+    /// stays terminal (`failKeyContinuity`; only a fresh pairing recovers)
+    /// and is never retried or repaired.
     private func beginKeyContinuityCheck(for profile: HostProfile) {
         guard keyContinuityState != .mismatch else { return }
+        // #451: one owner — a ladder already running (or paused between its
+        // retries) owns this host; repeated startLive/pull calls are no-ops.
+        guard keyContinuityTask == nil else { return }
         let context = lifecycleContext()
         keyContinuityState = .pending
         guard let url = URL(string: profile.urlString),
               let pinned = profile.hostKeyB64 else { return }
         let client = CorraldClient(host: url, session: session)
+        let policy = preflightRetryPolicy
         let taskId = UUID()
-        let task = Task { @MainActor [weak self] in
+        keyContinuityTaskId = taskId
+        keyContinuityTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            defer { self.lifecycleTasks.removeValue(forKey: taskId) }
-            guard !Task.isCancelled, self.isCurrent(context) else { return }
-            do {
-                let response = try await client.fetchHostKey()
-                guard !Task.isCancelled, self.isCurrent(context) else { return }
-                if HostKeyTrust.matches(response, pinnedKeyB64: pinned) {
-                    self.keyContinuityState = .verified
-                    self.profileStore?.noteLastSuccessfulConnection(id: profile.id)
-                    self.startLive()
-                } else {
-                    self.failKeyContinuity(profile)
+            defer {
+                if self.keyContinuityTaskId == taskId {
+                    self.keyContinuityTask = nil
+                    self.keyContinuityTaskId = nil
                 }
-            } catch {
+            }
+            var attempt = 1
+            while true {
                 guard !Task.isCancelled, self.isCurrent(context) else { return }
-                // Could not reach the host to verify identity: the stream
-                // stays closed (never unverified-open). The next
-                // launch/foreground startLive() retries the check.
-                self.banner = .error("host_key_unverified",
-                                     "Could not verify \(profile.displayName)'s host key — the board stays paused until the host is reachable.")
+                do {
+                    let response = try await client.fetchHostKey()
+                    guard !Task.isCancelled, self.isCurrent(context) else { return }
+                    if HostKeyTrust.matches(response, pinnedKeyB64: pinned) {
+                        self.keyContinuityState = .verified
+                        self.profileStore?.noteLastSuccessfulConnection(id: profile.id)
+                        // #451: the retry notice (if one was shown) is no
+                        // longer true — the host verified.
+                        if self.banner?.kind == "host_key_unverified" {
+                            self.banner = nil
+                        }
+                        self.startLive()
+                    } else {
+                        self.failKeyContinuity(profile)
+                    }
+                    return
+                } catch {
+                    guard !Task.isCancelled, self.isCurrent(context) else { return }
+                    // Could not reach the host to verify identity: the
+                    // stream stays closed (never unverified-open) and the
+                    // banner states the truth. The ladder keeps its bounded
+                    // RATE for as long as this owner lives — a host that
+                    // becomes reachable later in the foreground session
+                    // still recovers automatically; background/mode
+                    // cancellation ends the retries, never a fixed window.
+                    attempt += 1
+                    self.banner = .error(
+                        "host_key_unverified",
+                        "Could not verify \(profile.displayName)'s host key — retrying automatically (attempt \(attempt)); the board stays paused until the host is reachable.")
+                    do {
+                        try await Task.sleep(nanoseconds: policy.delayNanoseconds(beforeAttempt: attempt))
+                    } catch {
+                        return  // cancelled (background/boundary): retries end
+                    }
+                }
             }
         }
-        lifecycleTasks[taskId] = task
     }
 
     /// Fail closed on a host-key mismatch (B4): no stream, no push, no
@@ -2211,6 +2263,11 @@ final class AppModel: ObservableObject {
             task.cancel()
         }
         lifecycleTasks.removeAll()
+        // #451: the ACTIVE host's preflight/retry ladder is part of the
+        // live session — a background boundary ends its retries too.
+        keyContinuityTask?.cancel()
+        keyContinuityTask = nil
+        keyContinuityTaskId = nil
         // #399: mirror the active profile's cursor into the profile store
         // and persist the allowlisted board metadata cache (background/
         // host-switch boundaries).
@@ -2250,6 +2307,20 @@ final class AppModel: ObservableObject {
         // the host key changed.
         guard keyContinuityAllowsLiveWork else {
             _ = keyContinuityDeniedBanner()
+            // #451 (AC5 parity): a pull on a pinned ACTIVE host that never
+            // verified is an explicit "try again now" — restart the single
+            // preflight owner so it re-checks immediately instead of
+            // waiting for the running ladder's next capped tick (the
+            // active-host mirror of the coordinator's never-SSE re-drive).
+            // Still one owner; a mismatch was already denied above and
+            // stays terminal.
+            if keyContinuityState == .pending, let profile = activeProfile,
+               profile.hostKeyB64 != nil {
+                keyContinuityTask?.cancel()
+                keyContinuityTask = nil
+                keyContinuityTaskId = nil
+                beginKeyContinuityCheck(for: profile)
+            }
             return
         }
         guard !isRefreshingFleet else { return }
@@ -3055,6 +3126,10 @@ final class AppModel: ObservableObject {
         driveTaskKeys.removeAll()
         lifecycleTasks.removeAll()
         registrationTaskId = nil
+        // #451: mode/identity boundaries cancel the preflight ladder too.
+        keyContinuityTask?.cancel()
+        keyContinuityTask = nil
+        keyContinuityTaskId = nil
         inFlightDriveKeys.removeAll()
         // Do not leave the shared delegate context live while reset/demo is
         // still clearing the model. A callback arriving on another queue must

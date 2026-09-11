@@ -363,12 +363,25 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # (521e7cd9 → ba15563, PR474) — union of ALL source sets; the pin below
     # is recomputed from THIS merged checkout; neither parent pin (1827b419…,
     # a898ad7a…) applies.
+    # #452: CorraldClient reconnect-loop retry contract — the /events ladder
+    # collapses only after a SUSTAINED healthy session (first-to-last
+    # received-line span ≥ StreamRetryPolicy.stableSessionThreshold; headers
+    # alone, single-line and silent-tail attempts keep escalating) with
+    # bounded equal-jitter waits and injectable clock/random/sleep seams,
+    # merged with origin/integration ee732625 (#457 contextual controls +
+    # #471 art/icon gate coverage) — the pin below is recomputed from THIS
+    # merged checkout; neither parent pin (8bccaf68…, b1994319…) applies.
     # #448 refresh: #448 (native coordinated gait phase in HerdModel/HerdArt
     # plus the horseButton runtime call site) merged onto the #457-refresh2
     # integration (ee73262, PR476) — union of ALL source sets; the pin below
     # is recomputed from THIS merged checkout; neither parent pin (8bccaf68…,
     # 6c90bc77…) applies.
-    "8fc75d5e4a202154bcc00bb7529ba9aa2cb9f7ea7fbcd6ac2bc08c36dd95c064"
+    # #452 refresh: bounded refresh after #448's PR475 (82f9b8d) delivered —
+    # the union now carries BOTH #452 (CorraldClient loop + StreamRetry-
+    # BackoffTests) and #448 (gait runtime + HerdGaitTests); the pin below is
+    # recomputed from THIS merged checkout by the canonical algorithm; neither
+    # parent pin (76443b88…, 8fc75d5e…) applies.
+    "e60a274d83c692e54c73b8cf0372befa229d7c73b7db294fa17e6f6d7150bce4"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

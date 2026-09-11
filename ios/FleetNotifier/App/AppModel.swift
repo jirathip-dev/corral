@@ -2283,6 +2283,51 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// #453: the app's scene-phase lifecycle routing — the production
+    /// SwiftUI scene handler (FleetNotifierApp) calls exactly this, and the
+    /// lifecycle regression tests drive the same seam with deterministic
+    /// phase sequences. Transient `.inactive` (Control Center, notification
+    /// banners, the app switcher, system alerts) is NOT a teardown boundary:
+    /// the healthy live session is retained — the SSE task, cursor and
+    /// board state stay coherent — while privacy-sensitive UI hiding and
+    /// nonessential animation/work stop independently in the views' own
+    /// scenePhase gates (e.g. the Herd pauses its motion while the scene is
+    /// not active). Only `.background` — the one transition from which iOS
+    /// may suspend the process — ends the live session (D5: backgrounded =
+    /// no connection): the ACTIVE host's stream plus its preflight/retry
+    /// ladder and every coordinator host's stream/preflight owners are
+    /// cancelled, and the cursors/allowlisted metadata are persisted for
+    /// resume. iOS delivers `.background` before suspension even when the
+    /// app went through `.inactive` first, so the actual-background
+    /// cancellation is never skipped.
+    func handleScenePhaseChange(_ phase: ScenePhase) {
+        switch phase {
+        case .background:
+            // D5: backgrounded = no connection — drop the SSE streams; the
+            // cursors are persisted for resume.
+            stopLive()
+        case .inactive:
+            // #453: a temporary interruption must never replace a healthy
+            // feed. Retain everything; never start or stop streaming work.
+            break
+        case .active:
+            if mode == .live {
+                startLive()
+                // #101: re-sync grants on foreground so a host-side
+                // promotion appears without a device reset (idempotent;
+                // never blocks the stream).
+                Task { await refreshGrants() }
+            }
+            // #389: re-read the OS notification permission on every
+            // foreground so the Settings Notifications guidance reflects a
+            // grant/denial the user just made in the system Settings app
+            // (the Settings sheet stays up across that trip).
+            Task { await refreshNotificationPermission() }
+        @unknown default:
+            break
+        }
+    }
+
     // MARK: - Fleet refresh (#219)
 
     /// Pull-to-refresh / foreground refresh: ONE authoritative snapshot,

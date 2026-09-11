@@ -408,7 +408,11 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # (CorraldClient sustained-session ladder + StreamRetryBackoffTests);
     # the pin below is recomputed from THIS merged checkout by the canonical
     # algorithm; neither parent pin (660c7d32…, e60a274d…) applies.
-    "325500fd6468d635d289b9fb9cb0a5c3122765a86fadc69cdbe8d76036ac82d6"
+    # #453: scene-phase lifecycle split — AppModel.handleScenePhaseChange
+    # (transient `.inactive` retains the live session; only actual
+    # `.background` cancels/persists) and FleetNotifierApp routes every
+    # phase through that single seam; re-pinned over the #453 source set.
+    "f7793dc046ab2f464ff1197532ea1f46a7db9ba634cc1c990d9aaa647ef1e6e7"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -581,7 +585,11 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # #448 refresh: HerdGaitTests.swift is a SEPARATE file outside this pin,
     # so the #448 refresh leaves the pinned FleetNotifierTests.swift
     # byte-unchanged — digest recomputed over the merged checkout (same value).
-    "92631629765f5f67b6efba46aa13e84a6793cc460883d31c7f45623a4820d395"
+    # #453: ScenePhaseLifecycleTests (deterministic scene-phase sequences +
+    # the FleetNotifierApp wiring pin) appended to the pinned test file
+    # (plus the SwiftUI import for ScenePhase) — digest recomputed over the
+    # #453 head.
+    "2b37a79a7cf6211df646819d4cf0f998165a3f658c4f0fb39d886f150f1ac2bd"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

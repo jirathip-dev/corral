@@ -19,7 +19,7 @@ concrete next action each:
 
 | class | what is checked | example result |
 |---|---|---|
-| `herdr` | Herdr socket exists, is a unix socket, and is readable/writable by this user | `FAIL no unix socket at ~/.config/herdr/herdr.sock` |
+| `herdr` | Herdr socket exists, is a unix socket, is readable/writable by this user, **and accepts a connection** (stale/refused and timed-out sockets are distinguished) | `FAIL socket ... is stale: it exists but nothing is listening (connect refused)` |
 | `corrald` | loopback `GET /healthz` answers `ok` (per-probe timeout) | `FAIL connection refused at http://127.0.0.1:8474/healthz (corrald is not running)` |
 | `tailscale` | `tailscale status --json`: backend state, node DNS name | `FAIL backend state "NeedsLogin" - this host is not signed in` |
 | `serve` | `tailscale serve status --json`: an HTTPS mapping for `<node>:<port>` -> the loopback origin, no Funnel | `FAIL no https:// mapping for <node>:443 -> http://127.0.0.1:8474` |
@@ -30,6 +30,12 @@ Notes:
 - The default check is **read-only**: it only ever runs
   `tailscale status --json` and `tailscale serve status --json`. No mutating
   Tailscale command, no `launchctl`/`systemctl`, no Serve change.
+- The Herdr socket check is **transport-level**: it connects once (read-only)
+  and closes. A `PASS` means the socket *accepts connections* - it is not a
+  claim about the Herdr protocol or the daemon's health, and nothing is ever
+  sent. A stale socket file (daemon stopped or crashed, or a `bind`+`close`
+  leftover) fails as `refused`; a listener that does not answer within the
+  timeout fails as `timed out`; both fail closed with a next action.
 - Every probe is bounded by `CORRAL_STATUS_TIMEOUT_SECONDS` (default 5 s).
 - A failing class makes the later classes that depend on it `SKIP`, and the
   exit code is the **first failing class in probe order**
@@ -38,7 +44,7 @@ Notes:
 | exit | meaning |
 |---|---|
 | 0 | all host-local checks passed |
-| 1 | Herdr missing / not a socket / not accessible |
+| 1 | Herdr missing / not a socket / not accessible / stale (nothing listening) / not accepting within the timeout |
 | 2 | usage, consent, or configuration error (nothing was attempted) |
 | 3 | corrald stopped, hung, or unhealthy |
 | 4 | Tailscale CLI missing, not running, signed out, or unrecognizable |
@@ -152,15 +158,22 @@ The suite is hermetic: the real script runs with a fixture `PATH`
   `serve status --json` invocations and never calls a mutator,
 - no recorded `curl` invocation carries `-k`/`--insecure`,
 - the host's real Tailscale CLI is not reachable from the fixture `PATH`,
+- the Herdr fixture is a **real accepting AF_UNIX listener** (its log must
+  show `ACCEPT`), while a `bind`+`close` socket is the stale/refused fixture
+  and a hung liveness probe is the bounded-timeout fixture; read-only and
+  write-only socket modes cover both operands of the permission check,
 - missing tools, timeouts, malformed status, HTTP/TLS failures, a healthy
   path, Serve conflicts/Funnel/unrecognized schemas, and the apply
   no-consent / replay / concurrent-conflict cases all behave as documented
-  (34 scenarios: healthy path, per-class failures, redaction, default-mode
-  compatibility, consent and conflict handling).
+  (38 scenarios: healthy path, per-class failures, Herdr liveness classes,
+  redaction, default-mode compatibility, consent and conflict handling).
 
-Fixtures, per-scenario stdout/stderr and raw exit codes are preserved under
-`.logs-484/<run-id>/` (`CORRAL_CONNECTIVITY_LOG_DIR` overrides the root).
-The suite never deletes anything - there is no cleanup trap.
+Fixture listener processes are bounded (they stop after a lifetime cap, and
+the suite stops only PIDs whose command line it verifies as its own listener);
+no socket path is ever unlinked. Fixtures, per-scenario stdout/stderr and raw
+exit codes are preserved under `.logs-484/<run-id>/`
+(`CORRAL_CONNECTIVITY_LOG_DIR` overrides the root). The suite never deletes
+anything - there is no cleanup trap.
 
 ## Scope and non-claims
 

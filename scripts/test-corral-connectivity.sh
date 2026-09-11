@@ -9,6 +9,13 @@
 #     those names can resolve to; the script has no fallback to a live
 #     tailscale/curl install, and the suite asserts the host's real
 #     `tailscale` CLI is NOT reachable from the fixture PATH.
+#   * Fixture truth for the Herdr socket (#484 r2): the healthy fixture is a
+#     REAL accepting AF_UNIX listener (the listener log must show ACCEPT), a
+#     bind+close socket is the stale/refused fixture, a hung liveness probe is
+#     the bounded-timeout fixture, and read-only / write-only modes cover both
+#     operands of the permission check. Listener processes are bounded, are
+#     stopped only after the PID's command line is verified as the fixture
+#     script, and their socket paths are never unlinked.
 #   * Read-only by default: for every check-mode scenario the suite asserts the
 #     stub recorded ONLY `status --json` / `serve status --json` invocations and
 #     that no mutator (`serve --bg`, `funnel`, `serve reset`) ever ran.
@@ -46,6 +53,10 @@ RUN_DIR="$RUN_ROOT/run-$(date -u +%Y%m%dT%H%M%SZ)-$$"
 SOCK_ROOT="/tmp/corral484-$$"
 mkdir -p "$RUN_DIR/scenarios"
 printf 'corral connectivity test run: %s\n' "$RUN_DIR" > "$RUN_DIR/summary.txt"
+printf 'fixture containment: run dir %s | socket root %s | interpreter %s | bash %s\n' \
+  "$RUN_DIR" "$SOCK_ROOT" "$PYTHON_BIN" "$BASH_BIN" >> "$RUN_DIR/summary.txt"
+printf 'fixture containment: run dir %s\n  socket root %s\n  fixture PATH prefix: <scenario>/bin (stub curl + stub tailscale only)\n' \
+  "$RUN_DIR" "$SOCK_ROOT"
 
 PASSED=0
 FAILED_SCENARIOS=0
@@ -170,6 +181,129 @@ SH
   chmod +x "$SCEN_BIN/tailscale"
 }
 
+# A REAL accepting unix-socket listener fixture. The pre-r2 suite used a
+# bind+close socket for "healthy", which is exactly the stale-socket case the
+# orchestrator reproduced (connect errno 61 while the file-mode-only probe
+# still PASSed). The fixture never unlinks its socket path and self-terminates
+# after a bounded lifetime as a leak backstop.
+write_fixture_listener() {
+  cat > "$SCEN_DIR/fixture-unix-listener.py" <<'PY'
+import socket
+import sys
+import time
+
+path = sys.argv[1]
+log = sys.argv[2]
+lifetime = float(sys.argv[3])
+
+server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+server.bind(path)
+server.listen(8)
+server.settimeout(0.2)
+deadline = time.monotonic() + lifetime
+handle = open(log, "a", encoding="utf-8")
+handle.write("LISTENING\n")
+handle.flush()
+while time.monotonic() < deadline:
+    try:
+        conn, _ = server.accept()
+    except socket.timeout:
+        continue
+    except OSError:
+        break
+    handle.write("ACCEPT\n")
+    handle.flush()
+    conn.close()
+handle.close()
+PY
+}
+
+start_fixture_listener() { # <socket-path> <log-path> <lifetime-seconds>
+  local sock="$1" log="$2" lifetime="$3" i=0
+  "$PYTHON_BIN" "$SCEN_DIR/fixture-unix-listener.py" "$sock" "$log" "$lifetime" >/dev/null 2>&1 &
+  SCEN_SERVER_PID=$!
+  disown "$SCEN_SERVER_PID" 2>/dev/null || true # no job-control "Terminated" notices in the log
+  while [[ "$i" -lt 50 ]]; do
+    if grep -q '^LISTENING' "$log" 2>/dev/null; then
+      return 0
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  scenario_fail "fixture listener did not report LISTENING within 5s (log: $log)"
+  return 1
+}
+
+stop_fixture_listener() {
+  # Bounded stop of ONLY the listener this scenario started: the PID must
+  # still be alive AND its command line must match the fixture script, then
+  # TERM, then KILL after at most 2s. No socket path is ever unlinked.
+  local pid="$SCEN_SERVER_PID" i=0 cmd
+  SCEN_SERVER_PID=""
+  [[ -n "$pid" ]] || return 0
+  if ! kill -0 "$pid" 2>/dev/null; then
+    return 0
+  fi
+  cmd="$(ps -o command= -p "$pid" 2>/dev/null || true)"
+  case "$cmd" in
+    *fixture-unix-listener.py*) kill -TERM "$pid" 2>/dev/null || true ;;
+    *)
+      printf '  note: leaving pid %s running (command does not match the fixture listener)\n' "$pid"
+      return 0
+      ;;
+  esac
+  while kill -0 "$pid" 2>/dev/null && [[ "$i" -lt 20 ]]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+  wait "$pid" 2>/dev/null || true # reap the owned child; keeps the run log clean
+  return 0
+}
+
+write_hung_python_wrapper() {
+  # Fixture stand-in for a liveness connect() that never returns. Plain macOS
+  # AF_UNIX cannot be made to block in connect() (a full listen backlog is
+  # refused immediately - verified on this host), so the hang is simulated at
+  # the interpreter the bounded runner invokes; every other invocation passes
+  # through to the real interpreter. The match is deliberately narrow: only
+  # the DIRECT connect-probe invocation (`-c <snippet containing liveness=>
+  # <path> <seconds>`, 4 args) hangs; the bounded runner's own invocation
+  # (which carries the snippet as an argument) passes through so the runner's
+  # own timeout is what bounds the probe.
+  cat > "$SCEN_DIR/hung-python" <<SH
+#!/bin/bash
+if [[ \$# -eq 4 && "\$1" == "-c" && "\$2" == *liveness=* ]]; then
+  sleep 30 >/dev/null 2>&1
+  exit 0
+fi
+exec "$PYTHON_BIN" "\$@"
+SH
+  chmod +x "$SCEN_DIR/hung-python"
+}
+
+assert_fixture_containment() {
+  # Inspected BEFORE the scenario executes: the script under test must resolve
+  # curl (and tailscale when stubbed) to the fixture bin dir only, and the
+  # herdr socket target must live under the short fixture socket root.
+  local resolved
+  resolved="$(PATH="$SCEN_BIN:/usr/bin:/bin" command -v curl || true)"
+  [[ "$resolved" == "$SCEN_BIN/curl" ]] \
+    || scenario_fail "curl does not resolve to the fixture stub (resolved: '$resolved')"
+  if [[ -x "$SCEN_BIN/tailscale" ]]; then
+    resolved="$(PATH="$SCEN_BIN:/usr/bin:/bin" command -v tailscale || true)"
+    [[ "$resolved" == "$SCEN_BIN/tailscale" ]] \
+      || scenario_fail "tailscale does not resolve to the fixture stub (resolved: '$resolved')"
+  fi
+  case "$SCEN_SOCKET" in
+    "$SOCK_ROOT"/*) : ;;
+    *) scenario_fail "herdr socket target is outside the fixture root: $SCEN_SOCKET" ;;
+  esac
+  return 0
+}
+
 # -------------------------------------------------------------- assertions ---
 
 scenario_fail() { SCEN_FAILED=1; printf '  FAIL: %s\n' "$*"; }
@@ -233,13 +367,17 @@ begin_scenario() {
   SCEN_CURL_BIN="curl"
   SCEN_TAILSCALE_BIN="tailscale"
   SCEN_PYTHON_BIN="$PYTHON_BIN"
+  SCEN_SERVER_PID=""
   mkdir -p "$SCEN_BIN" "$SCEN_HOME/.config/herdr" "$SCEN_STATE" "$SOCK_ROOT/$SCEN"
   write_stub_curl
+  write_fixture_listener
+  assert_fixture_containment
   TOTAL_SCENARIOS=$((TOTAL_SCENARIOS + 1))
   printf '== %s\n' "$SCEN"
 }
 
 end_scenario() {
+  stop_fixture_listener
   if [[ "$SCEN_FAILED" == 0 ]]; then
     printf '  PASS (exit %s)\n' "$(cat "$SCEN_PREFIX.exit")"
     PASSED=$((PASSED + 1))
@@ -279,7 +417,8 @@ run_default()    { run_under_test "$SCEN_PREFIX"; }
 run_apply()      { run_under_test "$SCEN_PREFIX" --connectivity --apply "$@"; }
 
 fixture_corrald_ok()      { printf 'ok' > "$SCEN_STATE/curl-mode"; }
-fixture_herdr_socket()    { create_unix_socket "$SCEN_SOCKET"; }
+fixture_herdr_socket()    { start_fixture_listener "$SCEN_SOCKET" "$SCEN_DIR/listener.log" "${SCEN_LISTENER_LIFETIME:-120}"; }
+fixture_herdr_stale_socket() { create_unix_socket "$SCEN_SOCKET"; }
 fixture_tailscale_up()    { write_stub_tailscale; printf '%s\n' "$TS_RUNNING_JSON" > "$SCEN_STATE/ts-status.json"; }
 fixture_serve_match()     { printf '%s\n' "$SERVE_MATCH_JSON" > "$SCEN_STATE/serve.json"; }
 fixture_full_healthy()    { fixture_herdr_socket; fixture_corrald_ok; fixture_tailscale_up; fixture_serve_match; }
@@ -313,13 +452,70 @@ fi
 
 if should_run herdr-permission; then
   begin_scenario herdr-permission
-  fixture_herdr_socket
+  fixture_herdr_stale_socket
   chmod 000 "$SCEN_SOCKET"
   fixture_corrald_ok; fixture_tailscale_up; fixture_serve_match
   run_check
   assert_exit 1
   assert_out_matches '^  herdr +FAIL'
   assert_out_matches '^  herdr +FAIL .*permission'
+  assert_only_readonly_tailscale_calls; assert_no_mutator; assert_no_tls_bypass
+  end_scenario
+fi
+
+if should_run herdr-permission-read-only; then
+  # mode 400 covers the "-w" operand of the permission check
+  begin_scenario herdr-permission-read-only
+  fixture_herdr_stale_socket
+  chmod 400 "$SCEN_SOCKET"
+  fixture_corrald_ok; fixture_tailscale_up; fixture_serve_match
+  run_check
+  assert_exit 1
+  assert_out_matches '^  herdr +FAIL .*permission'
+  assert_only_readonly_tailscale_calls; assert_no_mutator; assert_no_tls_bypass
+  end_scenario
+fi
+
+if should_run herdr-permission-write-only; then
+  # mode 200 covers the "-r" operand of the permission check
+  begin_scenario herdr-permission-write-only
+  fixture_herdr_stale_socket
+  chmod 200 "$SCEN_SOCKET"
+  fixture_corrald_ok; fixture_tailscale_up; fixture_serve_match
+  run_check
+  assert_exit 1
+  assert_out_matches '^  herdr +FAIL .*permission'
+  assert_only_readonly_tailscale_calls; assert_no_mutator; assert_no_tls_bypass
+  end_scenario
+fi
+
+if should_run herdr-stale; then
+  # AC1 regression (orchestrator reproduction): a bind+close socket is a
+  # stale socket file - connect() gets ECONNREFUSED (errno 61) - and the
+  # pre-r2 file-mode-only probe PASSed it. Must FAIL as stale/refused now.
+  begin_scenario herdr-stale
+  fixture_herdr_stale_socket
+  fixture_corrald_ok; fixture_tailscale_up; fixture_serve_match
+  run_check
+  assert_exit 1
+  assert_out_matches '^  herdr +FAIL .*stale'
+  assert_out_matches '^  herdr +FAIL .*refused'
+  assert_only_readonly_tailscale_calls; assert_no_mutator; assert_no_tls_bypass
+  end_scenario
+fi
+
+if should_run herdr-liveness-timeout; then
+  # A liveness probe that never returns must be bounded into a timeout
+  # verdict, not hang the check (the healthy listener is in place so every
+  # file check passes first).
+  begin_scenario herdr-liveness-timeout
+  fixture_herdr_socket
+  write_hung_python_wrapper
+  SCEN_PYTHON_BIN="$SCEN_DIR/hung-python"
+  fixture_corrald_ok; fixture_tailscale_up; fixture_serve_match
+  run_check
+  assert_exit 1
+  assert_out_matches '^  herdr +FAIL .*timed out'
   assert_only_readonly_tailscale_calls; assert_no_mutator; assert_no_tls_bypass
   end_scenario
 fi
@@ -571,6 +767,11 @@ if should_run healthy; then
   run_check
   assert_exit 0
   assert_out_matches '^  herdr +PASS'
+  assert_out_matches '^  herdr +PASS .*accepts connections'
+  assert_out_has "transport verified"
+  if ! grep -q '^ACCEPT' "$SCEN_DIR/listener.log"; then
+    scenario_fail "fixture listener never accepted a connection (log: $SCEN_DIR/listener.log)"
+  fi
   assert_out_matches '^  corrald +PASS'
   assert_out_matches '^  tailscale +PASS'
   assert_out_matches '^  serve +PASS'

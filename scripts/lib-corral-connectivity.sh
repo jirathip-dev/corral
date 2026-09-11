@@ -291,6 +291,41 @@ corral_conn_eval_tailscale() {
   printf '%s' "$1" | "$CORRAL_CONN_PYTHON" -c "$_CORRAL_CONN_EVAL_TAILSCALE"
 }
 
+# Bounded, read-only transport-liveness probe for a unix socket: connect()
+# once and close. Always prints one key=value line and exits 0; the caller
+# classifies. A stale socket file (bind+close leftover, crashed daemon, or a
+# daemon that never re-bound) passes every file check but refuses here.
+_CORRAL_CONN_SOCKET_CONNECT='
+import errno
+import socket
+import sys
+
+path = sys.argv[1]
+seconds = float(sys.argv[2])
+
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+client.settimeout(seconds)
+try:
+    client.connect(path)
+except socket.timeout:
+    print("liveness=timeout")
+except OSError as exc:
+    code = exc.errno
+    if code == errno.ECONNREFUSED:
+        print("liveness=refused")
+    elif code == errno.ENOENT:
+        print("liveness=missing")
+    elif code in (errno.EACCES, errno.EPERM):
+        print("liveness=denied")
+    else:
+        print("liveness=error")
+        print("errno=%s" % (code if code is not None else -1))
+else:
+    print("liveness=ok")
+finally:
+    client.close()
+'
+
 corral_conn_eval_serve() {
   printf '%s' "$1" | "$CORRAL_CONN_PYTHON" -c "$_CORRAL_CONN_EVAL_SERVE" "$2" "$3"
 }
@@ -303,6 +338,8 @@ corral_conn_parse_kv() {
   CORRAL_CONN_KV_SERVE=""
   CORRAL_CONN_KV_REASON=""
   CORRAL_CONN_KV_PROXY=""
+  CORRAL_CONN_KV_LIVENESS=""
+  CORRAL_CONN_KV_ERRNO=""
   local line key value
   while IFS= read -r line; do
     key="${line%%=*}"
@@ -314,6 +351,8 @@ corral_conn_parse_kv() {
       serve) CORRAL_CONN_KV_SERVE="$value" ;;
       reason) CORRAL_CONN_KV_REASON="$value" ;;
       proxy) CORRAL_CONN_KV_PROXY="$value" ;;
+      liveness) CORRAL_CONN_KV_LIVENESS="$value" ;;
+      errno) CORRAL_CONN_KV_ERRNO="$value" ;;
     esac
   done <<< "$1"
 }
@@ -345,6 +384,38 @@ _corral_conn_step_line() { # <name>
 
 # ---------------------------------------------------------------- probes ---
 
+CORRAL_CONN_LIVENESS=""
+CORRAL_CONN_LIVENESS_ERRNO=""
+
+corral_conn_probe_socket_liveness() { # <socket path>
+  # Bounded, read-only transport liveness: connect() once, then close. The
+  # bound is the socket timeout inside the probe plus the shared bounded
+  # runner around it, so a hung or non-listening peer cannot stall the check.
+  # The verdict is transport-only: the Herdr protocol is never spoken and
+  # never claimed healthy.
+  local sock="$1" out rc=0
+  CORRAL_CONN_LIVENESS=""
+  CORRAL_CONN_LIVENESS_ERRNO=""
+  out="$(corral_conn_bounded "$CORRAL_CONN_TIMEOUT" "$CORRAL_CONN_PYTHON" \
+    -c "$_CORRAL_CONN_SOCKET_CONNECT" "$sock" "$CORRAL_CONN_TIMEOUT")" || rc=$?
+  if [[ "$rc" == 124 ]]; then
+    CORRAL_CONN_LIVENESS="timeout"
+    return 0
+  fi
+  if [[ "$rc" != 0 ]]; then
+    CORRAL_CONN_LIVENESS="probe-failed"
+    CORRAL_CONN_LIVENESS_ERRNO="$rc"
+    return 0
+  fi
+  corral_conn_parse_kv "$out"
+  CORRAL_CONN_LIVENESS="$CORRAL_CONN_KV_LIVENESS"
+  CORRAL_CONN_LIVENESS_ERRNO="$CORRAL_CONN_KV_ERRNO"
+  if [[ -z "$CORRAL_CONN_LIVENESS" ]]; then
+    CORRAL_CONN_LIVENESS="probe-failed"
+  fi
+  return 0
+}
+
 corral_conn_probe_herdr() {
   local sock="$CORRAL_CONN_HERDR_SOCKET"
   if [[ ! -e "$sock" && ! -L "$sock" ]]; then
@@ -365,7 +436,46 @@ corral_conn_probe_herdr() {
       "fix the socket ownership/mode so the corrald user can connect to $sock"
     return 0
   fi
-  _corral_conn_pass "socket $sock is a readable unix socket"
+  # Transport liveness: a stale socket file (daemon stopped or crashed, or a
+  # bind+close leftover) passes every file check above but refuses
+  # connections. Connect once, bounded and read-only.
+  corral_conn_probe_socket_liveness "$sock"
+  case "$CORRAL_CONN_LIVENESS" in
+    ok)
+      _corral_conn_pass "socket $sock accepts connections (transport verified; the herdr protocol itself is not probed)"
+      ;;
+    refused)
+      _corral_conn_fail "$CORRAL_CONN_EXIT_HERDR" \
+        "socket $sock is stale: it exists but nothing is listening (connect refused)" \
+        "start or restart Herdr on this host (a stale socket file means no daemon is bound to it); if Herdr is running, point HERDR_SOCKET at its real socket"
+      ;;
+    timeout)
+      _corral_conn_fail "$CORRAL_CONN_EXIT_HERDR" \
+        "connecting to $sock timed out after ${CORRAL_CONN_TIMEOUT}s" \
+        "Herdr is not accepting connections (hung or overloaded); restart Herdr and re-run this check"
+      ;;
+    denied)
+      _corral_conn_fail "$CORRAL_CONN_EXIT_HERDR" \
+        "socket exists but the connection was refused (permission denied)" \
+        "fix the socket ownership/mode so the corrald user can connect to $sock"
+      ;;
+    missing)
+      _corral_conn_fail "$CORRAL_CONN_EXIT_HERDR" \
+        "no unix socket at $sock (it disappeared during the check)" \
+        "start or restart Herdr on this host, then re-run this check"
+      ;;
+    probe-failed)
+      _corral_conn_fail "$CORRAL_CONN_EXIT_HERDR" \
+        "could not verify that $sock accepts connections (liveness probe failed, exit ${CORRAL_CONN_LIVENESS_ERRNO})" \
+        "inspect Herdr on this host; the check fails closed instead of assuming health"
+      ;;
+    *)
+      _corral_conn_fail "$CORRAL_CONN_EXIT_HERDR" \
+        "could not verify that $sock accepts connections (unrecognized probe result)" \
+        "inspect Herdr on this host; the check fails closed instead of assuming health"
+      ;;
+  esac
+  return 0
 }
 
 corral_conn_probe_corrald() {

@@ -7,6 +7,63 @@ enum FleetEvent: Sendable {
     case delta(Delta)
 }
 
+/// #452: reconnect pacing for the `/events` ladder in `stream()`.
+///
+/// Waits are equal-jitter bounded: every wait is drawn from
+/// `[nominal × (1 − jitterFraction), nominal]`, so a wait can never exceed
+/// its rung's nominal value, the cap (`maxDelay`) is never exceeded, and
+/// the first rung still recovers an isolated transient failure fast.
+///
+/// The ladder collapses to `baseDelay` only after a SUSTAINED healthy
+/// session: the first-to-last RECEIVED-LINE span of one attempt must reach
+/// `stableSessionThreshold` seconds. Headers alone, a single line followed
+/// by silence, and sub-threshold bursts never qualify. The 30 s default is
+/// the client's own documented inactivity budget at the app's 60 s session
+/// configuration — two daemon keep-alive periods (`KEEPALIVE = 15s` in
+/// `src/api/mod.rs`) — so a session resets the ladder only once it
+/// demonstrably outlived the window the client would otherwise declare it
+/// stale within.
+struct StreamRetryPolicy: Equatable, Sendable {
+    /// First-rung wait: fast recovery after an isolated instability.
+    var baseDelay: TimeInterval = 1
+    /// Ceiling for every nominal rung; the ladder never grows past it.
+    var maxDelay: TimeInterval = 30
+    /// Maximum fraction of a nominal wait that jitter may remove.
+    var jitterFraction: Double = 0.5
+    /// Minimum first-to-last received-line span for a stable session.
+    var stableSessionThreshold: TimeInterval = 30
+
+    static let `default` = StreamRetryPolicy()
+}
+
+/// #452: per-attempt healthy-delivery ledger for the stable-session
+/// criterion — the monotonic timestamps of the FIRST and LAST received SSE
+/// line of one attempt (comment keep-alives included: the #425 byte-path
+/// signal). The clock is read once per received line, on the stream task's
+/// own read path; the ledger is per attempt and never carries across
+/// attempts. `span` is `nil` before any line and `0` for exactly one line,
+/// so a lone early line can never read as sustained health.
+final class DeliveryLedger: @unchecked Sendable {
+    private let lock = NSLock()
+    private var first: TimeInterval?
+    private var last: TimeInterval?
+
+    func mark(at instant: TimeInterval) {
+        lock.lock()
+        defer { lock.unlock() }
+        if first == nil { first = instant }
+        last = instant
+    }
+
+    /// First-to-last received-line span of this attempt.
+    var span: TimeInterval? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let first, let last else { return nil }
+        return last - first
+    }
+}
+
 /// The corrald read-path client (R2): `GET /snapshot` and `GET /events`
 /// with `Last-Event-ID` resume, delta application, and reconnect backoff.
 ///
@@ -16,10 +73,33 @@ enum FleetEvent: Sendable {
 struct CorraldClient: Sendable {
     let host: URL
     let session: URLSession
+    /// #452: reconnect pacing + stable-session threshold for `stream()`.
+    let retryPolicy: StreamRetryPolicy
+    /// #452: the reconnect wait. Injectable so tests record the ladder and
+    /// return immediately instead of sleeping out production delays; the
+    /// default is the production `Task.sleep`.
+    let sleep: @Sendable (TimeInterval) async throws -> Void
+    /// #452: uniform [0,1) jitter source. Injectable so tests can pin a
+    /// wait to either documented envelope bound deterministically.
+    let randomUnit: @Sendable () -> Double
+    /// #452: monotonic seconds source for the stable-session span.
+    /// Injectable so tests can script the timeline; the default is system
+    /// uptime (monotonic — immune to wall-clock changes).
+    let now: @Sendable () -> TimeInterval
 
-    init(host: URL, session: URLSession = .shared) {
+    init(host: URL, session: URLSession = .shared,
+         retryPolicy: StreamRetryPolicy = .default,
+         sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
+             try await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
+         },
+         randomUnit: @escaping @Sendable () -> Double = { Double.random(in: 0..<1) },
+         now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
         self.host = host
         self.session = session
+        self.retryPolicy = retryPolicy
+        self.sleep = sleep
+        self.randomUnit = randomUnit
+        self.now = now
     }
 
     /// Full point-in-time state (schema v5).
@@ -58,9 +138,17 @@ struct CorraldClient: Sendable {
     ///   client carrying a legacy revision — it must answer with a full
     ///   epoch-bearing snapshot, never deltas that would silently graft
     ///   a stale revision onto a new daemon lifetime.
-    /// - On disconnect (server close or network error) backs off
-    ///   1s → 2s → 4s … capped at 30s, then reconnects from the latest
-    ///   event id delivered so far (`onEvent` reports ids).
+    /// - On disconnect (server close or network error) waits with bounded
+    ///   equal-jitter pacing — rung `n` waits `min(baseDelay × 2^(n−1),
+    ///   maxDelay)` shortened by up to `jitterFraction` — then reconnects
+    ///   from the latest event id delivered so far (`onEvent` reports ids).
+    /// - #452: the ladder collapses to the first rung ONLY after a
+    ///   SUSTAINED healthy session — the attempt's first-to-last received
+    ///   line span must reach `stableSessionThreshold` (30 s by default,
+    ///   two daemon keep-alive periods). Headers alone, one early line
+    ///   followed by silence, and sub-threshold bursts never reset it, so
+    ///   a server that answers 200 and closes immediately escalates
+    ///   instead of retrying on the first rung forever.
     /// - Genuine failures (non-200, URLError, request errors) report via
     ///   `onConnectionError`; clean server EOF and task cancellation are
     ///   NOT reported as errors — the former is the daemon's normal
@@ -84,13 +172,16 @@ struct CorraldClient: Sendable {
                 onConnectionError: (@Sendable (String) -> Void)? = nil,
                 onStreamEnded: (@Sendable () -> Void)? = nil,
                 onActivity: (@Sendable () -> Void)? = nil) async {
-        var backoff: UInt64 = 1
+        var backoff = retryPolicy.baseDelay
         while !Task.isCancelled {
             // #425: dispatching an attempt is itself a liveness signal — a
             // replacement attempt gets its own full inactivity budget, so
             // the watchdog can never replace it before it had a chance to
             // answer.
             onActivity?()
+            // #452: fresh per-attempt healthy-delivery evidence. The
+            // stable-session span must never carry across attempts.
+            let delivered = DeliveryLedger()
             do {
                 var request = URLRequest(url: host.appendingPathComponent("/events"))
                 // #425: the transport's own request-inactivity timeout is
@@ -117,11 +208,19 @@ struct CorraldClient: Sendable {
                     throw DriveError.network(
                         "events failed: HTTP \(http.statusCode) from \(request.url?.path ?? "/events")")
                 }
-                backoff = 1 // connected: reset the backoff ladder
+                // #452: NO ladder reset here — a 200 is a header ack, not
+                // health. The ladder collapses after the attempt ends, and
+                // only for a sustained healthy session (see below).
                 onConnected?()
                 var parser = SSEParser()
                 try await Self.consumeLines(from: bytes, parser: &parser,
-                                            onActivity: onActivity, onEvent: onEvent)
+                                            onActivity: {
+                    // #452: one monotonic read per received line (comment
+                    // keep-alives included) is the stable-session evidence.
+                    delivered.mark(at: now())
+                    onActivity?()
+                },
+                                            onEvent: onEvent)
                 // Clean EOF: server closed the stream; reconnect. #425: the
                 // end of the live posture is reported IMMEDIATELY — the
                 // backoff wait below is NOT a live connection, and a host
@@ -149,8 +248,28 @@ struct CorraldClient: Sendable {
                 onConnectionError?(error.localizedDescription)
             }
             if Task.isCancelled { return }
-            try? await Task.sleep(nanoseconds: backoff * 1_000_000_000)
-            backoff = min(backoff * 2, 30)
+            // #452: stable-session reset, evaluated on THIS attempt's actual
+            // byte-path evidence: at least two received lines whose
+            // first-to-last span reached the documented threshold. A clean
+            // EOF or error after that healthy run collapses the ladder
+            // (fast recovery); headers alone, one early line followed by
+            // silence, and sub-threshold bursts keep it escalating.
+            if let span = delivered.span,
+               span >= retryPolicy.stableSessionThreshold {
+                backoff = retryPolicy.baseDelay
+            }
+            // #452: bounded equal-jitter wait — `nominal × (1 − jitterFraction
+            // × u)` with u clamped to [0,1], so the default fraction keeps
+            // every wait inside [nominal/2, nominal] and the cap is never
+            // exceeded. `sleep` is injected for deterministic tests (the
+            // production default really sleeps). Cancellation during the
+            // wait falls through to the loop's own check and exits without
+            // reporting an error or scheduling a retry.
+            let nominal = backoff
+            let jitter = min(max(randomUnit(), 0), 1)
+            let wait = nominal * (1 - retryPolicy.jitterFraction * jitter)
+            try? await sleep(wait)
+            backoff = min(nominal * 2, retryPolicy.maxDelay)
         }
     }
 

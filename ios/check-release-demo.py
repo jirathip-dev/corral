@@ -381,6 +381,14 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # boundary cancellation, immediate pull preflight) — MERGED WITH #457;
     # the pin is the union of ALL source sets recomputed from THIS merged
     # checkout; neither parent pin (a5dee3e4…, 8bccaf68…) applies.
+    # #452: CorraldClient reconnect-loop retry contract — the /events ladder
+    # collapses only after a SUSTAINED healthy session (first-to-last
+    # received-line span ≥ StreamRetryPolicy.stableSessionThreshold; headers
+    # alone, single-line and silent-tail attempts keep escalating) with
+    # bounded equal-jitter waits and injectable clock/random/sleep seams,
+    # merged with origin/integration ee732625 (#457 contextual controls +
+    # #471 art/icon gate coverage) — the pin below is recomputed from THIS
+    # merged checkout; neither parent pin (8bccaf68…, b1994319…) applies.
     # #448 refresh: #448 (native coordinated gait phase in HerdModel/HerdArt
     # plus the horseButton runtime call site) merged onto the #457-refresh2
     # integration (ee73262, PR476) — union of ALL source sets; the pin below
@@ -390,7 +398,17 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # the #448-refresh integration (82f9b8d, PR475) — union of ALL source
     # sets; the pin below is recomputed from THIS merged checkout; neither
     # parent pin (4416bbc1…, 8fc75d5e…) applies.
-    "660c7d3253c838f9bb5616e7b7f13c3ef0cd7b46fb23332814f58d5bfb9985c8"
+    # #452 refresh: bounded refresh after #448's PR475 (82f9b8d) delivered —
+    # the union now carries BOTH #452 (CorraldClient loop + StreamRetry-
+    # BackoffTests) and #448 (gait runtime + HerdGaitTests); the pin below is
+    # recomputed from THIS merged checkout by the canonical algorithm; neither
+    # parent pin (76443b88…, 8fc75d5e…) applies.
+    # #451 union refresh after #452 (c4acec2, PR479): the union now carries
+    # #451 (preflight retry ladders + PreflightRetryTests) AND #452
+    # (CorraldClient sustained-session ladder + StreamRetryBackoffTests);
+    # the pin below is recomputed from THIS merged checkout by the canonical
+    # algorithm; neither parent pin (660c7d32…, e60a274d…) applies.
+    "325500fd6468d635d289b9fb9cb0a5c3122765a86fadc69cdbe8d76036ac82d6"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

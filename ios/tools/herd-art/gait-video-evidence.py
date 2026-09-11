@@ -12,8 +12,9 @@ binary sha256, per-artifact sha256). Artifacts stay outside the source tree.
 The manifest's device block is never a hardcoded claim: it is resolved live
 from the selected simulator (name + model via `simctl list devices/devicetypes`)
 and from the screenshots this run actually captured (every screenshot must
-agree on one pixel size). The run fails explicitly when either cannot be
-resolved.
+agree on one positive pixel size). The run fails explicitly when the selected
+simulator's identity (udid/name/device type, all required non-blank) or the
+captured dimensions cannot be resolved.
 
 Scenarios:
   working-idle-grazing  -corralHerdEvidence -corral456FullScreenEvidence
@@ -82,18 +83,31 @@ def find_device(devices, udid):
 def device_identity(device, devicetypes):
     if device.get("state") != "Booted":
         fail(f"owned simulator {device.get('udid')} must be booted by the caller, state={device.get('state')!r}")
+    udid = device.get("udid")
+    if not isinstance(udid, str) or not udid.strip():
+        fail(f"selected simulator record has no usable udid: {udid!r}")
+    name = device.get("name")
+    if not isinstance(name, str) or not name.strip():
+        fail(f"selected simulator {udid} has no usable name: {name!r}")
     type_identifier = device.get("deviceTypeIdentifier")
+    if not isinstance(type_identifier, str) or not type_identifier.strip():
+        fail(f"selected simulator {udid} has no usable device type identifier: {type_identifier!r}")
     matched = [entry for entry in devicetypes.get("devicetypes", [])
                if entry.get("identifier") == type_identifier]
     if not matched:
-        fail(f"cannot resolve device type {type_identifier!r} for simulator {device.get('udid')}")
-    if not matched[0].get("name") or not matched[0].get("modelIdentifier"):
-        fail(f"device type {type_identifier!r} has no name/modelIdentifier")
+        fail(f"cannot resolve device type {type_identifier!r} for simulator {udid}")
+    entry = matched[0]
+    model = entry.get("name")
+    if not isinstance(model, str) or not model.strip():
+        fail(f"device type {type_identifier!r} has no usable name: {model!r}")
+    model_identifier = entry.get("modelIdentifier")
+    if not isinstance(model_identifier, str) or not model_identifier.strip():
+        fail(f"device type {type_identifier!r} has no usable modelIdentifier: {model_identifier!r}")
     return {
-        "udid": device["udid"],
-        "name": device.get("name", ""),
-        "model": matched[0]["name"],
-        "model_identifier": matched[0]["modelIdentifier"],
+        "udid": udid,
+        "name": name,
+        "model": model,
+        "model_identifier": model_identifier,
         "device_type_identifier": type_identifier,
     }
 
@@ -106,7 +120,10 @@ def png_pixels(path):
         fail(f"cannot read captured artifact {path}: {error}")
     if len(header) < 24 or header[:8] != b"\x89PNG\r\n\x1a\n" or header[12:16] != b"IHDR":
         fail(f"captured artifact is not a PNG screenshot: {path}")
-    return struct.unpack(">II", header[16:24])
+    width, height = struct.unpack(">II", header[16:24])
+    if width == 0 or height == 0:
+        fail(f"captured artifact has a zero pixel dimension: {path} ({width}x{height})")
+    return (width, height)
 
 
 def capture_pixels(paths):

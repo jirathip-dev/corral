@@ -9,7 +9,11 @@ from the historical hardcoded string ("iPhone 16 (393x852 pt; 1179x2556 @3x)
 — this host's only simulator"): Corral448Gait / iPhone 16 Pro Max / 1320x2868
 px, the real #448 capture identity. A hardcoded generator cannot satisfy the
 fixture equality, and every unresolvable identity/dimension case must fail
-explicitly ("gait-video-evidence FAIL: ..."). Stdlib only; no simulator, no
+explicitly ("gait-video-evidence FAIL: ..."). Round 2 (#480 adjudication)
+additionally pins that a missing/empty/whitespace/non-string selected
+simulator name, a missing udid or device-type field, a blank devicetype
+name/modelIdentifier, and a zero pixel dimension are all explicit failures,
+while a valid name is stored byte-for-byte. Stdlib only; no simulator, no
 capture, no repository mutation.
 
 RED usage against a pre-fix generator copy:
@@ -106,6 +110,10 @@ def main():
     corrupt_png = fixtures / 'capture-corrupt.png'
     corrupt_png.write_bytes(b'\x89PNG\r\n\x1a\n' + b'no IHDR here, not a screenshot')
     missing_png = fixtures / 'capture-missing.png'  # deliberately never written
+    zero_width_png = fixtures / 'capture-zero-width-0x2868.png'
+    zero_width_png.write_bytes(png(0, 2868))
+    zero_height_png = fixtures / 'capture-zero-height-1320x0.png'
+    zero_height_png.write_bytes(png(1320, 0))
 
     results = []
 
@@ -199,6 +207,64 @@ def main():
         return expect_fail('cannot resolve device type',
                            lambda: seam('device_identity')(device, FIXTURE_DEVICETYPES))
 
+    # Round 2 (#480 adjudication): a missing/blank selected-simulator name must
+    # be an explicit failure, not a silently empty manifest field.
+    def mutated_device(**changes):
+        return dict(FIXTURE_DEVICES['devices'][FIXTURE_RUNTIME][0], **changes)
+
+    def check_name_missing_fails():
+        device = mutated_device()
+        device.pop('name')
+        return expect_fail('no usable name',
+                           lambda: seam('device_identity')(device, FIXTURE_DEVICETYPES))
+
+    def check_name_empty_fails():
+        return expect_fail('no usable name',
+                           lambda: seam('device_identity')(mutated_device(name=''), FIXTURE_DEVICETYPES))
+
+    def check_name_whitespace_fails():
+        return expect_fail('no usable name',
+                           lambda: seam('device_identity')(mutated_device(name='   '), FIXTURE_DEVICETYPES))
+
+    def check_name_non_string_fails():
+        return expect_fail('no usable name',
+                           lambda: seam('device_identity')(mutated_device(name=16), FIXTURE_DEVICETYPES))
+
+    def check_name_preserved_verbatim():
+        identity = seam('device_identity')(mutated_device(name=' Corral448Gait '), FIXTURE_DEVICETYPES)
+        assert identity['name'] == ' Corral448Gait ', f'name {identity["name"]!r}'
+        return 'valid name stored byte-for-byte (no strip/normalization)'
+
+    def check_udid_missing_fails():
+        device = mutated_device()
+        device.pop('udid')
+        return expect_fail('no usable udid',
+                           lambda: seam('device_identity')(device, FIXTURE_DEVICETYPES))
+
+    def check_device_type_missing_fails():
+        device = mutated_device()
+        device.pop('deviceTypeIdentifier')
+        return expect_fail('no usable device type identifier',
+                           lambda: seam('device_identity')(device, FIXTURE_DEVICETYPES))
+
+    def check_devicetype_name_blank_fails():
+        types = {'devicetypes': [dict(FIXTURE_DEVICETYPES['devicetypes'][0], name=' ')]}
+        return expect_fail('no usable name',
+                           lambda: seam('device_identity')(mutated_device(), types))
+
+    def check_devicetype_model_identifier_blank_fails():
+        types = {'devicetypes': [dict(FIXTURE_DEVICETYPES['devicetypes'][0], modelIdentifier='')]}
+        return expect_fail('no usable modelIdentifier',
+                           lambda: seam('device_identity')(mutated_device(), types))
+
+    def check_pixels_zero_width_fails():
+        return expect_fail('zero pixel dimension',
+                           lambda: seam('capture_pixels')([zero_width_png]))
+
+    def check_pixels_zero_height_fails():
+        return expect_fail('zero pixel dimension',
+                           lambda: seam('capture_pixels')([zero_height_png]))
+
     checks = [
         ('fixture-discriminates', check_fixture_discriminates),
         ('source-wiring', check_source_wiring),
@@ -211,6 +277,17 @@ def main():
         ('unknown-udid-fails', check_unknown_udid_fails),
         ('not-booted-fails', check_not_booted_fails),
         ('unknown-device-type-fails', check_unknown_device_type_fails),
+        ('name-missing-fails', check_name_missing_fails),
+        ('name-empty-fails', check_name_empty_fails),
+        ('name-whitespace-fails', check_name_whitespace_fails),
+        ('name-non-string-fails', check_name_non_string_fails),
+        ('name-preserved-verbatim', check_name_preserved_verbatim),
+        ('udid-missing-fails', check_udid_missing_fails),
+        ('device-type-missing-fails', check_device_type_missing_fails),
+        ('devicetype-name-blank-fails', check_devicetype_name_blank_fails),
+        ('devicetype-model-identifier-blank-fails', check_devicetype_model_identifier_blank_fails),
+        ('pixels-zero-width-fails', check_pixels_zero_width_fails),
+        ('pixels-zero-height-fails', check_pixels_zero_height_fails),
     ]
     ok = True
     for name, exercise in checks:

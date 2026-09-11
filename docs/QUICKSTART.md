@@ -212,9 +212,10 @@ builds use only the real registration, SSE, and signed-read path; the
 Debug-only seeded demo is not a TestFlight or App Review path. This guide
 does not claim physical-device or TestFlight verification.
 
-Notifications are optional in normal setup: the board and recents need no
-notification permission and no APNs credentials, and the pairing flow does
-not ask for either. Explicit opt-in behavior is follow-up
+Notifications are optional in normal setup: the board and recents work
+without granting notification permission and without any APNs credentials.
+The app itself raises the OS notification-permission prompt on the first
+live board today — explicit opt-in, no-prompt behavior is follow-up
 [#487](https://github.com/jirathip-dev/corral/issues/487); host-approved QR
 pairing is follow-up [#486](https://github.com/jirathip-dev/corral/issues/486).
 

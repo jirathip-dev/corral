@@ -206,12 +206,34 @@ final class AppIconPickerTests: XCTestCase {
     }
 
     func testLiveRuntimeReadsReportTheSystemTruthfully() {
-        let supports = UIApplication.shared.supportsAlternateIcons
-        let live = UIApplication.shared.alternateIconName
-        let mapped = FleetAppIcon(systemAlternateIconName: live)
-        if !supports {
-            XCTAssertNil(live, "an unsupported system must not report an alternate")
+        // Explicit positive/negative controls first (host-independent): the
+        // mapping the live read uses is asserted in BOTH directions, so a nil
+        // simulator state can never reduce this test to a single inference.
+        for icon in FleetAppIcon.shipping {
+            XCTAssertEqual(FleetAppIcon(systemAlternateIconName: icon.alternateIconName), icon,
+                           "\(icon.displayName) must round-trip through the live-name mapping")
         }
+        XCTAssertEqual(FleetAppIcon(systemAlternateIconName: nil), .bay,
+                       "no alternate reported means Bay")
+        XCTAssertNil(FleetAppIcon(systemAlternateIconName: "Original"),
+                     "a non-shipping system name must not be shown as a tile")
+
+        // Truthful live observation through the production seam — the adapter
+        // AppIconPickerModel uses by default. The UIKit contract is: the
+        // alternate name is nil whenever the PRIMARY icon is in use, while a
+        // false `supportsAlternateIcons` only means alternates are
+        // unavailable for the process (it does not license an
+        // unsupported => nil inference), so both live values are observed and
+        // mapped, never assumed. The host's icon state is environmental:
+        // either branch below is a valid observation, and the controls above
+        // always ran.
+        let system = UIApplicationAppIconSystem()
+        XCTAssertEqual(system.supportsAlternateIcons, UIApplication.shared.supportsAlternateIcons,
+                       "the production seam must read the live support flag")
+        let live = system.alternateIconName
+        XCTAssertEqual(live, UIApplication.shared.alternateIconName,
+                       "the production seam must read the live alternate name")
+        let mapped = FleetAppIcon(systemAlternateIconName: live)
         if let live {
             XCTAssertNotNil(mapped,
                             "\(live) is outside the approved four-icon contract")

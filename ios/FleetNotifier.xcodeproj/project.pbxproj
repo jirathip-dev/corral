@@ -11,6 +11,7 @@
 		07BCD4DDA01FCF6529B8CB0B /* DemoFleet.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA101747C96FC7E0499AD652 /* DemoFleet.swift */; };
 		0CA9DE90ADE04F5216501014 /* HostProfileStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3B71810DA086A9B4A1F4DDA /* HostProfileStore.swift */; };
 		13DBAFCB67403E977144984E /* DriveClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77E397B25B007445181A67AA /* DriveClient.swift */; };
+		188E71A8F5913618EB437DCF /* HerdGaitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C420B2FF9BDA7C8A1E489E5A /* HerdGaitTests.swift */; };
 		21CE07E2350DAFAF99DDC395 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = C9ADF5D60D93CC23C54718AE /* Assets.xcassets */; };
 		2C40A2E48CCDFE13F28A3E84 /* FleetNotifierTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28FFFBB41044D976415E89BF /* FleetNotifierTests.swift */; };
 		2C5A149214EB19A432A65B7B /* FleetViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8439EED775F825EE1DE8EAC3 /* FleetViews.swift */; };
@@ -99,6 +100,7 @@
 		BA6724B7E29BAE37678BF8A8 /* HerdTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdTests.swift; sourceTree = "<group>"; };
 		C07EBB7872D62A8E042D4DB1 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		C0C20FA082A4EB189EDC30F9 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		C420B2FF9BDA7C8A1E489E5A /* HerdGaitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdGaitTests.swift; sourceTree = "<group>"; };
 		C4857B5F4535FFC7B0AA0F5D /* FleetNotifier.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = FleetNotifier.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C9ADF5D60D93CC23C54718AE /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		CA101747C96FC7E0499AD652 /* DemoFleet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoFleet.swift; sourceTree = "<group>"; };
@@ -146,6 +148,7 @@
 				FF5ABAA21F576FDDE8CD6060 /* AppIconPickerTests.swift */,
 				28FFFBB41044D976415E89BF /* FleetNotifierTests.swift */,
 				DD76760F92DA9C8F78AD6996 /* HerdEnvironmentTests.swift */,
+				C420B2FF9BDA7C8A1E489E5A /* HerdGaitTests.swift */,
 				BA6724B7E29BAE37678BF8A8 /* HerdTests.swift */,
 				79AC919735AE5168BF651BE6 /* PreflightRetryTests.swift */,
 				D48969B39CAC1EDAC289B97C /* StateStyleTests.swift */,
@@ -526,6 +529,7 @@
 				7602F4F40C74322A247CC565 /* AppIconPickerTests.swift in Sources */,
 				2C40A2E48CCDFE13F28A3E84 /* FleetNotifierTests.swift in Sources */,
 				4DABD08F3D7A07518E68F371 /* HerdEnvironmentTests.swift in Sources */,
+				188E71A8F5913618EB437DCF /* HerdGaitTests.swift in Sources */,
 				F2CF3ACD1811505E1FCAE1BC /* HerdTests.swift in Sources */,
 				9D8814F4DA572FE4936AAF32 /* PreflightRetryTests.swift in Sources */,
 				C0DE384BE4B4265BEB4C1808 /* StateStyleTests.swift in Sources */,

@@ -169,6 +169,24 @@ knowing before you push:
   Linux is real. If a test touches canonicalized paths, assume the two
   platforms disagree until CI says otherwise.
 
+### Native (iOS) art/icon gates
+
+`.github/workflows/ios-art.yml` runs the source-mode art/icon gates on a Linux
+runner for every push and pull request — no signing, no release build, no
+secrets. The same commands run locally:
+
+```sh
+python3 ios/check-release-demo.py                       # Release boundary + source digest + native-art source checks
+python3 ios/tools/herd-art/app-icons.py --check         # four-icon catalog + preview imagesets
+python3 ios/tools/herd-art/test-app-icons.py --output /tmp/app-icon-proofs   # guard mutation battery
+```
+
+`check-release-demo.py` also invokes `check-native-art.py` in source mode. The
+built-product and simulator sides stay off CI, as before:
+`check-native-art.py --bundle`, `test-native-art.py --app` and the
+probe/capture drivers need a prior build or a booted simulator, and the
+FleetNotifier XCTest suite runs only when `ios.yml` is dispatched.
+
 Historical verified results on main:
 
 | Gate | Result |

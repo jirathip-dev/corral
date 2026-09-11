@@ -14,38 +14,56 @@ herdr socket ─→ corrald (daemon) ─→ iOS app: board · recents · notific
 
 ## Setup
 
-### 1. Daemon (macOS host)
+### 1. Daemon — install the prebuilt release (macOS, Linux x86_64)
 
-From a checkout, build and run:
+Checksummed prebuilt daemon bundles are published per release — no Rust toolchain needed:
 
 ```sh
-cargo build --release -p corrald
-./target/release/corrald --socket ~/.config/herdr/herdr.sock
+bash <(curl -fsSL https://raw.githubusercontent.com/jirathip-dev/corral/main/scripts/install-corral.sh)   # latest release
 ```
 
-Verify it is up:
+From a checkout you can pin a release tag instead (works the same way):
+
+```sh
+bash scripts/install-corral.sh --release v0.4.2
+```
+
+The installer resolves the bundle for your platform, verifies it against the published `.sha256` (a mismatch is refused **before** any install state exists), swaps it into `~/.local/share/corral/release`, and starts `corrald` as a per-user managed service on loopback (`127.0.0.1:8474`, reading the local herdr socket): launchd (`com.corral.corrald`, KeepAlive) on macOS, hardened `systemd --user` on Linux. It health-checks the running service, and keys/device registry in `~/.config/corral` are never touched by install, update, or uninstall.
+
+Verify it is up (the installer already health-checks):
 
 ```sh
 curl -s http://127.0.0.1:8474/healthz    # → ok
 ```
 
-To keep it running at login, install it under launchd — `scripts/setup-corrald.sh` builds, installs the `com.corral.corrald` agent (KeepAlive, port 8474), and is idempotent:
-
-```sh
-bash scripts/setup-corrald.sh
-```
-
-Prebuilt daemon-only releases (no Rust toolchain) install with `scripts/install-corral.sh`.
+Published artifacts: `corral-<tag>-macos.tar.gz` (+`.sha256`) and, since v0.4.2, `corral-<tag>-linux-x86_64.tar.gz` (+`.sha256`). Other platforms and architectures (for example Linux aarch64) have no published bundle — the installer refuses them up front rather than relabel another platform's artifact or fall back to a source build. Linux specifics: [docs/LINUX.md](docs/LINUX.md).
 
 ### 2. Connect iOS (TestFlight build)
 
 1. Install the TestFlight build of FleetNotifier.
 2. Open the app → **Settings** (gear, top right) → **Host**: your Tailscale hostname (`https://<host>.<tailnet>.ts.net`) or `127.0.0.1:8474` for a same-LAN/dev setup.
 3. **Register / pair this device** with the daemon's registration token (in the daemon config dir or out-of-band). A fresh device is read-only: zero grants.
-4. **Enable Notifications** for state-change pushes (start / blocked / done). Simulator and DEBUG builds use the local notification bridge; real background APNs delivery awaits the host-side provisioning checkpoint (an APNs `.p8` auth key + `CORRAL_APNS_*` env).
-5. The host provisions the signed read grant (`read_tail` for recents) **out-of-band** — there is no grant UI or admin surface in the app or over HTTP.
+4. *(Optional)* **Notifications** for state-change alerts (start / blocked / done). The board and recents work without granting notification permission and need no APNs credentials — but the app raises the OS notification-permission prompt on first live use; explicit opt-in, no-prompt behavior is follow-up [#487](https://github.com/jirathip-dev/corral/issues/487). Background APNs delivery awaits the host-side provisioning checkpoint (an APNs `.p8` auth key + `CORRAL_APNS_*` env, see [docs/PUSH.md](docs/PUSH.md)); simulator and DEBUG builds use the local notification bridge.
+5. Recents (`read_tail`) needs the host-side signed read grant, provisioned **out-of-band** today — there is no grant UI or admin surface in the app or over HTTP. Host-approved enrollment without registry edits is follow-up [#485](https://github.com/jirathip-dev/corral/issues/485); QR pairing is [#486](https://github.com/jirathip-dev/corral/issues/486).
 
 Remote access note: the app talks plain HTTP only on loopback — point it at a Tailscale-hosted `https://` origin (Tailscale Serve fronting the loopback daemon), never at a tailnet IP bind. Details in [docs/OPERATIONS.md](docs/OPERATIONS.md).
+
+### 3. Developer: build from source
+
+Rust toolchain pinned by `rust-toolchain.toml`. From a checkout, build and run:
+
+```sh
+cargo build --release -p corrald
+./target/release/corrald --socket ~/.config/herdr/herdr.sock
+```
+
+To keep a source build running at login, `scripts/setup-corrald.sh` builds, installs the `com.corral.corrald` agent (KeepAlive, port 8474), and is idempotent:
+
+```sh
+bash scripts/setup-corrald.sh
+```
+
+Step-by-step source run: [docs/QUICKSTART.md](docs/QUICKSTART.md) §9. Workspace layout and gates: [docs/DEVELOPING.md](docs/DEVELOPING.md).
 
 ## Demo
 

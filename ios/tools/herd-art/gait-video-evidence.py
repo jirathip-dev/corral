@@ -9,6 +9,12 @@ the committed candidate, launches the existing DEBUG evidence routes, records
 writes a manifest with build/source provenance (head, source digest, app
 binary sha256, per-artifact sha256). Artifacts stay outside the source tree.
 
+The manifest's device block is never a hardcoded claim: it is resolved live
+from the selected simulator (name + model via `simctl list devices/devicetypes`)
+and from the screenshots this run actually captured (every screenshot must
+agree on one pixel size). The run fails explicitly when either cannot be
+resolved.
+
 Scenarios:
   working-idle-grazing  -corralHerdEvidence -corral456FullScreenEvidence
       live clock: day/night/next-paddock full-screen holds; working horses
@@ -25,6 +31,7 @@ import hashlib
 import json
 import shutil
 import signal
+import struct
 import subprocess
 import sys
 import time
@@ -52,6 +59,73 @@ def probe_seconds(path):
         return None
 
 
+def fail(message):
+    raise SystemExit(f"gait-video-evidence FAIL: {message}")
+
+
+def simctl_json(*arguments):
+    result = sh("xcrun", "simctl", *arguments, "-j")
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        fail(f"simctl {' '.join(arguments)} did not return JSON (exit {result.returncode}): {error}")
+
+
+def find_device(devices, udid):
+    for runtime in devices.get("devices", {}).values():
+        for device in runtime:
+            if device.get("udid") == udid:
+                return device
+    fail(f"selected simulator {udid} is absent from the simctl device list")
+
+
+def device_identity(device, devicetypes):
+    if device.get("state") != "Booted":
+        fail(f"owned simulator {device.get('udid')} must be booted by the caller, state={device.get('state')!r}")
+    type_identifier = device.get("deviceTypeIdentifier")
+    matched = [entry for entry in devicetypes.get("devicetypes", [])
+               if entry.get("identifier") == type_identifier]
+    if not matched:
+        fail(f"cannot resolve device type {type_identifier!r} for simulator {device.get('udid')}")
+    if not matched[0].get("name") or not matched[0].get("modelIdentifier"):
+        fail(f"device type {type_identifier!r} has no name/modelIdentifier")
+    return {
+        "udid": device["udid"],
+        "name": device.get("name", ""),
+        "model": matched[0]["name"],
+        "model_identifier": matched[0]["modelIdentifier"],
+        "device_type_identifier": type_identifier,
+    }
+
+
+def png_pixels(path):
+    try:
+        with open(path, "rb") as handle:
+            header = handle.read(24)
+    except OSError as error:
+        fail(f"cannot read captured artifact {path}: {error}")
+    if len(header) < 24 or header[:8] != b"\x89PNG\r\n\x1a\n" or header[12:16] != b"IHDR":
+        fail(f"captured artifact is not a PNG screenshot: {path}")
+    return struct.unpack(">II", header[16:24])
+
+
+def capture_pixels(paths):
+    sizes = {}
+    for path in paths:
+        sizes.setdefault(png_pixels(path), []).append(Path(path).name)
+    if not sizes:
+        fail("no captured screenshot artifacts; pixel dimensions cannot be derived")
+    if len(sizes) != 1:
+        fail("captured artifacts disagree on pixel dimensions: "
+             + ", ".join(f"{size[0]}x{size[1]} ({len(names)} shots)"
+                         for size, names in sorted(sizes.items())))
+    return next(iter(sizes))
+
+
+def device_metadata(identity, pixels):
+    return {**identity, "pixels": {"width": pixels[0], "height": pixels[1]}}
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--udid", required=True)
@@ -63,8 +137,8 @@ def main():
     shots_dir = args.output / "screenshots"
     shots_dir.mkdir(exist_ok=True)
     sim = args.udid
-    state = sh("xcrun", "simctl", "list", "devices").stdout
-    assert "Booted" in state, "owned simulator must be booted by the caller"
+    device = find_device(simctl_json("list", "devices"), sim)
+    identity = device_identity(device, simctl_json("list", "devicetypes"))
 
     def container():
         return Path(sh("xcrun", "simctl", "get_app_container", sim, BUNDLE, "data").stdout.strip())
@@ -130,7 +204,6 @@ def main():
     manifest = {
         "issue": 448,
         "head": args.head,
-        "device": "iPhone 16 (393x852 pt; 1179x2556 @3x) — this host's only simulator",
         "app": str(args.app),
         "app_binary_sha256": sha256(args.app / "FleetNotifier"),
         "xcodebuild": sh("xcodebuild", "-version").stdout.splitlines()[0],
@@ -166,6 +239,11 @@ def main():
     time.sleep(2)
     scene["screenshots"].append(screenshot("scene-3-foreground-return"))
     manifest["scenarios"].append(scene)
+
+    screenshots = [shots_dir / shot["file"]
+                   for scenario in manifest["scenarios"] for shot in scenario["screenshots"]]
+    manifest["device"] = device_metadata(identity, capture_pixels(screenshots))
+    print(json.dumps({"device": manifest["device"]}, sort_keys=True), flush=True)
 
     (args.output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     print("manifest:", args.output / "manifest.json")

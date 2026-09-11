@@ -1,7 +1,7 @@
 name: iOS art/icon gates
 
 # Source-mode art/icon gates (#471) run for every push and pull request. All
-# three commands are stdlib-only Python and read committed files, so they run
+# four commands are stdlib-only Python and read committed files, so they run
 # on a Linux runner in well under a minute with no signing, no release build,
 # no simulator and no secrets.
 #
@@ -42,3 +42,10 @@ jobs:
 
       - name: App-icon guard mutation battery
         run: python3 ios/tools/herd-art/test-app-icons.py --output "$RUNNER_TEMP/app-icon-proofs"
+
+      # #494: the #480 gait metadata fixture suite. A hardcoded device claim or
+      # an unresolvable identity/pixel source fails this step; the command's
+      # own exit status is the step result (never piped or masked) and its
+      # named per-check logs are written under --output.
+      - name: Gait video-evidence metadata regression
+        run: python3 ios/tools/herd-art/test-gait-video-evidence.py --output "$RUNNER_TEMP/gait-metadata-proofs"

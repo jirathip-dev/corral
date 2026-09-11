@@ -1,10 +1,33 @@
 #!/usr/bin/env bash
 # Read-only Herdr plugin status action for Corral.
 #
-# The action deliberately checks the daemon's public liveness endpoint before
-# parsing the public snapshot endpoint. It prints counts and cursors only;
-# the snapshot itself can contain fleet metadata and is never echoed.
+# Default output (no arguments) is unchanged: it checks the daemon's public
+# liveness endpoint before parsing the public snapshot endpoint, prints counts
+# and cursors only, and never echoes the snapshot (it can contain fleet
+# metadata).
+#
+# `--connectivity` switches to the bounded private-connectivity check
+# (`docs/CONNECTIVITY.md`): Herdr socket, corrald, Tailscale, Serve mapping,
+# TLS/HTTP - each with a concrete next action. It is read-only unless
+# `--apply --yes` explicitly consents to adding the missing loopback Serve
+# mapping.
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [[ "${1:-}" == "--connectivity" ]]; then
+  shift
+  CONNECTIVITY_LIB="$SCRIPT_DIR/lib-corral-connectivity.sh"
+  if [[ ! -r "$CONNECTIVITY_LIB" ]]; then
+    echo "corral connectivity: missing $CONNECTIVITY_LIB" >&2
+    exit 2
+  fi
+  # shellcheck disable=SC1090  # runtime-resolved sibling library
+  source "$CONNECTIVITY_LIB"
+  rc=0
+  corral_conn_main "$@" || rc=$?
+  exit "$rc"
+fi
 
 BASE_URL="${CORRALD_URL:-http://127.0.0.1:8474}"
 BASE_URL="${BASE_URL%/}"

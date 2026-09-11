@@ -39,16 +39,49 @@ APPROVED_SHA256 = {
     "assets/icon/corral-icon-256.png": "b3b59cb2c51564ac7aa8d1fe6ffcde0897d83676ed585eedd4284346ca7ae58a",
     "assets/icon/corral-icon-macos.png": "8c20a7a96f7405e51d3e49dcdb6477720645dc2c46116c9e034313b409de09d6",
     "assets/icon/social-preview.png": "9d8ec825b05cb8655fe9aef6d73e61e7ff443b54854b3d502078e3a01d4103ec",
-    "ios/FleetNotifier/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png": "e2c754cf3dd7cbc8f10090597360eb56c56fb4672856d48407453dc8190e15e7",
+    # #463: the shipping app icon is the approved Treatment-A Bay master;
+    # the legacy Original bytes above stay only as historical repository art.
+    "ios/FleetNotifier/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png": "e9e8e7ebb922660dd76d511dd039562dbb333edc59080d8ffdb9efe19c1590c9",
+    "ios/FleetNotifier/Assets.xcassets/Palomino.appiconset/Palomino-1024.png": "7e04da3407296c11f94f929124d4b6c82d83bce70e3a2700c6af906774d863ec",
+    "ios/FleetNotifier/Assets.xcassets/Black.appiconset/Black-1024.png": "3ff9ccc5d592a3f43c59f8fbdf09d95a75d8200666e6fc04a836babdee77e32c",
+    "ios/FleetNotifier/Assets.xcassets/Grey.appiconset/Grey-1024.png": "2d43e4c3a360ddc8d8fade528f227b8808b2bb2baaef0bb816a0373cb738402e",
+    # #464: the four loadable preview imagesets carry the SAME approved
+    # Treatment-A master bytes verbatim (iOS 18+ does not vend appiconset
+    # renditions to UIImage, so the Settings picker previews need imagesets).
+    "ios/FleetNotifier/Assets.xcassets/BayPreview.imageset/BayPreview-1024.png": "e9e8e7ebb922660dd76d511dd039562dbb333edc59080d8ffdb9efe19c1590c9",
+    "ios/FleetNotifier/Assets.xcassets/PalominoPreview.imageset/PalominoPreview-1024.png": "7e04da3407296c11f94f929124d4b6c82d83bce70e3a2700c6af906774d863ec",
+    "ios/FleetNotifier/Assets.xcassets/BlackPreview.imageset/BlackPreview-1024.png": "3ff9ccc5d592a3f43c59f8fbdf09d95a75d8200666e6fc04a836babdee77e32c",
+    "ios/FleetNotifier/Assets.xcassets/GreyPreview.imageset/GreyPreview-1024.png": "2d43e4c3a360ddc8d8fade528f227b8808b2bb2baaef0bb816a0373cb738402e",
+    "ios/tools/herd-art/appicon-masters/treatment-a/bay-1024.png": "e9e8e7ebb922660dd76d511dd039562dbb333edc59080d8ffdb9efe19c1590c9",
+    "ios/tools/herd-art/appicon-masters/treatment-a/palomino-1024.png": "7e04da3407296c11f94f929124d4b6c82d83bce70e3a2700c6af906774d863ec",
+    "ios/tools/herd-art/appicon-masters/treatment-a/black-1024.png": "3ff9ccc5d592a3f43c59f8fbdf09d95a75d8200666e6fc04a836babdee77e32c",
+    "ios/tools/herd-art/appicon-masters/treatment-a/grey-1024.png": "2d43e4c3a360ddc8d8fade528f227b8808b2bb2baaef0bb816a0373cb738402e",
 }
 
 INTEGRATION_SHA256 = {
-    "tools/icon/from-user-png.py": "ac45d24e32410c0c2738d1c516d4be6e95568c894d000252d7fe27bb32163084",
-    "ios/FleetNotifier/Assets.xcassets/AppIcon.appiconset/Contents.json": "5c09bec6eede599b14fa9e4c44b03e7febebc930615a0cd70f02981c09dfe48a",
-    # Pin refreshed by the #376 lane: the #371-#373 iOS xcodegen additions
-    # changed project.pbxproj without refreshing this pin, so the icon gate
-    # was already failing at the #376 base (ios/ is untouched by #376).
-    "ios/FleetNotifier.xcodeproj/project.pbxproj": "4e51ae807207105a88595b743bf5670058aa3bd58ec1b07486f5d3300280d2d5",
+    "tools/icon/from-user-png.py": "ded8b6c398aaaf17adc8af148af2bf8e001ffcbc090638b283e433a95171cab4",
+    "ios/tools/herd-art/app-icons.py": "d726a9745b4ec3b48cbb93c2f6a5d441fe86b1de04aafcbd9b24e701f02390d5",
+    "ios/tools/herd-art/appicon-approval.json": "3a3d907345fe1acad316c0f618a66b3b56aa7f165976cca82830627602305afb",
+    "ios/FleetNotifier/Assets.xcassets/AppIcon.appiconset/Contents.json": "9cf2928dad89427abd581b6852db081352417f400afb65e60c479228cdc4f4da",
+    "ios/FleetNotifier/Assets.xcassets/Palomino.appiconset/Contents.json": "fa8428298e77c3d34b2f4bb634d1d52d488e89893dd11298cc6dd25b87338611",
+    "ios/FleetNotifier/Assets.xcassets/Black.appiconset/Contents.json": "7cdf8e4c5e754aacdfa8bb41c878d8526f3b11c8b07012911bc8e58c8f4bade5",
+    "ios/FleetNotifier/Assets.xcassets/Grey.appiconset/Contents.json": "593a117639762bf7854b3f04e52df6abce9abc50c0577d441de1f3631c685443",
+    # #464: the generated loadable preview imagesets (contract-pinned).
+    "ios/FleetNotifier/Assets.xcassets/BayPreview.imageset/Contents.json": "15f64a5a507fc9130e05db19dfefb65f462d3d797c3a6fe2bd11ea4baa262bf6",
+    "ios/FleetNotifier/Assets.xcassets/PalominoPreview.imageset/Contents.json": "7cd7735b7052b3061ec6cb8d9099c7e79cde2414848cfe7526b88fccfae24fb5",
+    "ios/FleetNotifier/Assets.xcassets/BlackPreview.imageset/Contents.json": "9b9fc329a207b2bbe4bdb7229213a30f193924d36e77797fea837c6e20e75ca5",
+    "ios/FleetNotifier/Assets.xcassets/GreyPreview.imageset/Contents.json": "0462eb2d9fa5a449a3f54431cc83f2d3fbd1f2992f7345d3604eeb0704a62548",
+    # Pin refreshed by the #464 lane: xcodegen regenerate now also makes the
+    # app icon change visible to the test bundle through base64 fixtures
+    # (encoded, so the app-product art scan never sees extra loose artwork);
+    # the app product and its catalog wiring are unchanged.
+    # Pin refreshed by the #456 refresh2 lane: the project is regenerated from
+    # the merged ios/project.yml, so the test bundle's preBuild fixture copy
+    # step now carries BOTH the #456 RanchEnvironment source fixture and the
+    # #464 picker/master fixtures — the union, nothing else (diff vs the #464
+    # pin = the two RanchEnvironment inputFiles/outputFiles lines + the cp
+    # line). Re-pinned over the committed merged project.
+    "ios/FleetNotifier.xcodeproj/project.pbxproj": "848cffee8040392299160836929bec73ffb4aebd09e90c8cbf73c75284541a92",
 }
 
 PNG_SPECS = {
@@ -56,12 +89,35 @@ PNG_SPECS = {
     "assets/icon/corral-icon-1024.png": ((1024, 1024), "RGB"),
     "assets/icon/corral-icon-256.png": ((256, 256), "RGB"),
     "assets/icon/social-preview.png": ((1280, 640), "RGB"),
-    "ios/FleetNotifier/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png": (
-        (1024, 1024),
-        "RGB",
-    ),
+    "ios/FleetNotifier/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png": ((1024, 1024), "RGB"),
+    "ios/FleetNotifier/Assets.xcassets/Palomino.appiconset/Palomino-1024.png": ((1024, 1024), "RGB"),
+    "ios/FleetNotifier/Assets.xcassets/Black.appiconset/Black-1024.png": ((1024, 1024), "RGB"),
+    "ios/FleetNotifier/Assets.xcassets/Grey.appiconset/Grey-1024.png": ((1024, 1024), "RGB"),
+    "ios/FleetNotifier/Assets.xcassets/BayPreview.imageset/BayPreview-1024.png": ((1024, 1024), "RGB"),
+    "ios/FleetNotifier/Assets.xcassets/PalominoPreview.imageset/PalominoPreview-1024.png": ((1024, 1024), "RGB"),
+    "ios/FleetNotifier/Assets.xcassets/BlackPreview.imageset/BlackPreview-1024.png": ((1024, 1024), "RGB"),
+    "ios/FleetNotifier/Assets.xcassets/GreyPreview.imageset/GreyPreview-1024.png": ((1024, 1024), "RGB"),
+    "ios/tools/herd-art/appicon-masters/treatment-a/bay-1024.png": ((1024, 1024), "RGB"),
+    "ios/tools/herd-art/appicon-masters/treatment-a/palomino-1024.png": ((1024, 1024), "RGB"),
+    "ios/tools/herd-art/appicon-masters/treatment-a/black-1024.png": ((1024, 1024), "RGB"),
+    "ios/tools/herd-art/appicon-masters/treatment-a/grey-1024.png": ((1024, 1024), "RGB"),
     "assets/icon/corral-icon-macos.png": ((1024, 1024), "RGBA"),
 }
+
+SHIPPING_APPICONS = (
+    ("AppIcon", "bay"),
+    ("Palomino", "palomino"),
+    ("Black", "black"),
+    ("Grey", "grey"),
+)
+
+# #464: the loadable preview imagesets backing the Settings App Icon picker.
+SHIPPING_PREVIEWS = (
+    ("BayPreview", "bay"),
+    ("PalominoPreview", "palomino"),
+    ("BlackPreview", "black"),
+    ("GreyPreview", "grey"),
+)
 
 MAC_SAFE_EXTENT = 824
 MAC_PLATE_SIZE = 1024
@@ -73,10 +129,8 @@ SOCIAL_CAPTION_STATS = (3_526, (425, 345, 837, 382), ((170, 170, 170), 1_542))
 
 FIXTURE_FILES = [
     *APPROVED_SHA256,
-    "ios/FleetNotifier/Assets.xcassets/AppIcon.appiconset/Contents.json",
+    *INTEGRATION_SHA256,
     "ios/FleetNotifier/Info.plist",
-    "ios/FleetNotifier.xcodeproj/project.pbxproj",
-    "tools/icon/from-user-png.py",
 ]
 
 
@@ -173,15 +227,35 @@ def check_pixels(root: Path) -> None:
     icon_1024 = load_png(root, "assets/icon/corral-icon-1024.png")
     icon_256 = load_png(root, "assets/icon/corral-icon-256.png")
     social = load_png(root, "assets/icon/social-preview.png")
-    ios = load_png(
-        root,
-        "ios/FleetNotifier/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png",
-    )
     mac = load_png(root, "assets/icon/corral-icon-macos.png")
 
-    require(
-        icon_1024.tobytes() == ios.tobytes(), "iOS and repository 1024 icons differ"
-    )
+    # #463: every shipping app icon is pixel-identical to its approved
+    # Treatment-A master. The historical repository reference art above is
+    # deliberately no longer the app icon.
+    for name, coat in SHIPPING_APPICONS:
+        shipping = load_png(
+            root, f"ios/FleetNotifier/Assets.xcassets/{name}.appiconset/{name}-1024.png"
+        )
+        approved = load_png(
+            root, f"ios/tools/herd-art/appicon-masters/treatment-a/{coat}-1024.png"
+        )
+        require(
+            shipping.tobytes() == approved.tobytes(),
+            f"{name} app icon does not match its approved Treatment-A master",
+        )
+
+    # #464: every loadable preview is byte-identical to its approved master.
+    for name, coat in SHIPPING_PREVIEWS:
+        preview = load_png(
+            root, f"ios/FleetNotifier/Assets.xcassets/{name}.imageset/{name}-1024.png"
+        )
+        approved = load_png(
+            root, f"ios/tools/herd-art/appicon-masters/treatment-a/{coat}-1024.png"
+        )
+        require(
+            preview.tobytes() == approved.tobytes(),
+            f"#464 {name} preview does not match its approved Treatment-A master",
+        )
 
     expected_1024 = master.resize((1024, 1024), Image.Resampling.LANCZOS)
     expected_256 = master.resize((256, 256), Image.Resampling.LANCZOS)
@@ -256,23 +330,52 @@ def run_python_syntax(root: Path, relative: str) -> None:
 
 
 def check_references(root: Path) -> None:
-    contents_path = root / "ios/FleetNotifier/Assets.xcassets/AppIcon.appiconset/Contents.json"
-    try:
-        contents = json.loads(contents_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise SystemExit(f"icon check failed: invalid iOS AppIcon catalog: {error}") from error
-    images = contents.get("images", [])
-    expected_image = {
-        "filename": "AppIcon-512@2x.png",
-        "idiom": "universal",
-        "platform": "ios",
-        "size": "1024x1024",
-    }
-    require(expected_image in images, "iOS AppIcon catalog does not reference the 1024 asset")
-    require(
-        (contents_path.parent / "AppIcon-512@2x.png").is_file(),
-        "iOS AppIcon catalog points at a missing PNG",
-    )
+    for name, _ in SHIPPING_APPICONS:
+        contents_path = (
+            root / f"ios/FleetNotifier/Assets.xcassets/{name}.appiconset/Contents.json"
+        )
+        try:
+            contents = json.loads(contents_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise SystemExit(f"icon check failed: invalid iOS {name} catalog: {error}") from error
+        images = contents.get("images", [])
+        expected_image = {
+            "filename": f"{name}-1024.png",
+            "idiom": "universal",
+            "platform": "ios",
+            "size": "1024x1024",
+        }
+        require(
+            expected_image in images,
+            f"iOS {name} catalog does not reference the 1024 asset",
+        )
+        require(
+            (contents_path.parent / f"{name}-1024.png").is_file(),
+            f"iOS {name} catalog points at a missing PNG",
+        )
+
+    for name, _ in SHIPPING_PREVIEWS:
+        contents_path = (
+            root / f"ios/FleetNotifier/Assets.xcassets/{name}.imageset/Contents.json"
+        )
+        try:
+            contents = json.loads(contents_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise SystemExit(f"icon check failed: invalid iOS {name} preview catalog: {error}") from error
+        images = contents.get("images", [])
+        expected_image = {
+            "filename": f"{name}-1024.png",
+            "idiom": "universal",
+            "scale": "1x",
+        }
+        require(
+            expected_image in images,
+            f"iOS {name} preview catalog does not reference the 1024 asset at 1x",
+        )
+        require(
+            (contents_path.parent / f"{name}-1024.png").is_file(),
+            f"iOS {name} preview catalog points at a missing PNG",
+        )
 
     try:
         with (root / "ios/FleetNotifier/Info.plist").open("rb") as stream:
@@ -316,6 +419,17 @@ def check_references(root: Path) -> None:
     require(
         re.search(r"ASSETCATALOG_COMPILER_APPICON_NAME\s*=\s*AppIcon;", project),
         "Xcode project does not select AppIcon",
+    )
+    require(
+        re.search(
+            r'ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES\s*=\s*"Palomino Black Grey";',
+            project,
+        ),
+        "Xcode project does not select the approved alternate app icon sets",
+    )
+    require(
+        re.search(r'TARGETED_DEVICE_FAMILY\s*=\s*"1,2";', project),
+        "Xcode project does not declare the iPhone+iPad device family",
     )
 
     run_python_syntax(root, "tools/icon/from-user-png.py")
@@ -440,6 +554,36 @@ def mutate_appicon_catalog(root: Path) -> None:
     path.write_text(json.dumps(contents), encoding="utf-8")
 
 
+def mutate_alternate_catalog(root: Path) -> None:
+    path = root / "ios/FleetNotifier/Assets.xcassets/Palomino.appiconset/Contents.json"
+    contents = json.loads(path.read_text(encoding="utf-8"))
+    contents["images"][0]["filename"] = "Palomino-512.png"
+    path.write_text(json.dumps(contents), encoding="utf-8")
+
+
+def mutate_missing_alternate(root: Path) -> None:
+    shutil.rmtree(root / "ios/FleetNotifier/Assets.xcassets/Grey.appiconset")
+
+
+def mutate_preview_catalog(root: Path) -> None:
+    path = root / "ios/FleetNotifier/Assets.xcassets/BayPreview.imageset/Contents.json"
+    contents = json.loads(path.read_text(encoding="utf-8"))
+    contents["images"][0]["scale"] = "2x"
+    path.write_text(json.dumps(contents), encoding="utf-8")
+
+
+def mutate_missing_preview(root: Path) -> None:
+    shutil.rmtree(root / "ios/FleetNotifier/Assets.xcassets/GreyPreview.imageset")
+
+
+def mutate_project_alternates(root: Path) -> None:
+    path = root / "ios/FleetNotifier.xcodeproj/project.pbxproj"
+    source = path.read_text(encoding="utf-8")
+    line = '\t\t\t\tASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "Palomino Black Grey";\n'
+    require(line in source, "self-test fixture could not find the alternate app icon setting")
+    path.write_text(source.replace(line, "", 1), encoding="utf-8")
+
+
 def mutate_generator_noop(root: Path) -> None:
     path = root / "tools/icon/from-user-png.py"
     source = path.read_text(encoding="utf-8")
@@ -493,6 +637,13 @@ def self_test() -> None:
             ("social wordmark corruption", mutate_social_wordmark),
             ("social caption corruption", mutate_social_caption),
             ("iOS AppIcon catalog filename", mutate_appicon_catalog),
+            ("iOS alternate catalog filename", mutate_alternate_catalog),
+            ("iOS alternate appiconset removed", mutate_missing_alternate),
+            ("iOS preview catalog scale", mutate_preview_catalog),
+            ("iOS preview imageset removed", mutate_missing_preview),
+            ("alternate app icon sets removed from project", mutate_project_alternates),
+            ("approved master bytes", mutate_bytes(
+                "ios/tools/herd-art/appicon-masters/treatment-a/bay-1024.png")),
             ("immediate-return generator", mutate_generator_noop),
             ("generator source hash", mutate_generator_hash),
             ("AppIcon removed from Resources phase", mutate_appicon_resources_phase),

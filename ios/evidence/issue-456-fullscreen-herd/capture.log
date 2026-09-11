@@ -1,0 +1,99 @@
+# 456 capture log — refreshed 2026-09-10 ~11:22-11:30 +0700
+
+Union-head refresh capture (tree c2373857f81140069661dbe043b1e73d02b9ba0c =
+32db940 + `origin/integration` 8671cfc, i.e. #449 + #456/#456-r1 + #464/#464-r1;
+plus the a21a220 icon-contract re-pin, which does not touch app sources).
+Captured because #464 adds the App Icon picker to the Settings sheet
+(`phase-5`); the rest of the set was re-shot at the same head so the manifest
+is one consistent set. The previous r2 capture (same commands, same
+simulators, tree 32db940) and the r1 capture (tree 1ab8a811) are in git
+history.
+
+Owned simulators (this lane; both existed before this capture and are reused):
+
+  Corral456R1   = FFF9CE18-6082-48A5-8CE0-169299000C35 (iPhone 16, iOS 26.5)
+  Corral456R1SE = 96D99D2E-43FD-4673-813F-217922778863 (iPhone SE 3rd gen)
+
+Build for the frames (Debug app; the same tree's Release build is the separate
+gate in /tmp/refresh2-456-build-release.log):
+
+  $ cd /Users/jirathip/.herdr/worktrees/corral/g456-fullscreen-shell
+  $ HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 \
+      /Users/jirathip/.local/bin/flock /tmp/corral-heavy-gate.lock \
+      xcodebuild build -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier \
+      -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/refresh2-456-dd \
+      CODE_SIGNING_ALLOWED=NO
+  ** BUILD SUCCEEDED **        (CAP_BUILD_EXIT=0)
+  App: /tmp/refresh2-456-dd/Build/Products/Debug-iphonesimulator/FleetNotifier.app
+  Bundle id: com.corral.fleetnotifier (lowercase; simctl launch id)
+
+Raw status of the whole capture chain (/tmp/refresh2-456-capture-status.txt):
+
+  CAP_HEAD=a21a220108b3db60759307473af44d144b9ac4bf
+  CAP_BUILD_EXIT=0
+  R1_BOOT_EXIT=0  R1_BOOTSTATUS_EXIT=0  R1_INSTALL_EXIT=0
+  R1_NORMAL_CAP_EXIT=0  R1_OFFLINE_CAP_EXIT=0  R1_BOARD_SHOT_EXIT=0
+  R1_AX_CAP_EXIT=0      R1_SHUTDOWN_EXIT=0
+  SE_BOOT_EXIT=0  SE_BOOTSTATUS_EXIT=0  SE_INSTALL_EXIT=0
+  SE_NORMAL_CAP_EXIT=0  SE_AX_CAP_EXIT=0  SE_SHUTDOWN_EXIT=0
+  CAP_R3_FRAMES=29
+  CAP_CHAIN_DONE=1
+
+Capture chains (one per scenario; the host script terminates the app, removes
+the container's ux-evidence dir, launches, polls for each new marker, shoots
+1.5 s after the marker appears and stops at the sentinel):
+
+  # iPhone 16, default content size
+  $ xcrun simctl ui $R1 content_size large
+  $ bash /tmp/corral-456-capture.sh $R1 r3-16-normal 456-7-empty-scope \
+      -corralHerdEvidence -corral456FullScreenEvidence
+  $ bash /tmp/corral-456-capture.sh $R1 r3-16-offline 456-offline-fullscreen \
+      -corralHerdEvidence -corral456FullScreenEvidence -corralHerdOffline
+  $ xcrun simctl launch $R1 com.corral.fleetnotifier -demoMode; sleep 8
+  $ xcrun simctl io $R1 screenshot .../r3-16-board-no-regression.png
+
+  # iPhone 16, AX-XXXL
+  $ xcrun simctl ui $R1 content_size accessibility-extra-extra-extra-large
+  $ bash /tmp/corral-456-capture.sh $R1 r3-16-ax 456-7-empty-scope \
+      -corralHerdEvidence -corral456FullScreenEvidence
+  $ xcrun simctl ui $R1 content_size large && xcrun simctl shutdown $R1
+
+  # iPhone SE 3rd gen, default content size
+  $ xcrun simctl ui $SE content_size large
+  $ bash /tmp/corral-456-capture.sh $SE r3-se-normal 456-7-empty-scope \
+      -corralHerdEvidence -corral456FullScreenEvidence
+
+  # iPhone SE 3rd gen, AX-XXXL
+  $ xcrun simctl ui $SE content_size accessibility-extra-extra-extra-large
+  $ bash /tmp/corral-456-capture.sh $SE r3-se-ax 456-7-empty-scope \
+      -corralHerdEvidence -corral456FullScreenEvidence
+  $ xcrun simctl ui $SE content_size large && xcrun simctl shutdown $SE
+
+The `-corral456FullScreenEvidence` argument suppresses the #449 evidence
+phases (`449-01-active-first`, `449-02-selection-retained`) inside the same
+driver, so this chain records exactly the #456 markers.
+
+Downscale to the repo's evidence sizes (no other image processing):
+
+  $ sips -z 844 390 <raw>.png --out phase-*-390x844.png    # 1179x2556 -> 390x844
+  $ sips -z 667 375 <raw>.png --out phase-*-375x667.png    # 750x1334  -> 375x667
+
+Marker phases written by the DEBUG driver (Documents/ux-evidence/<name>.marker):
+
+  456-1-day-fullscreen, 456-2-night-fullscreen, 456-3-next-paddock,
+  456-4-scope-sheet, 456-5-settings-sheet, 456-6-long-names,
+  456-7-empty-scope, 456-offline-fullscreen
+
+Visual audit (vision model, per frame, before commit): every committed frame
+was inspected — full-screen ranch behind the status bar and bottom edge,
+floating scope + native gear + five truthful counts, floating
+Previous/position/Next; at AX-XXXL the scope label is INSIDE its own pill,
+`All repositories` is uncovered and nothing renders in the status-bar/Dynamic
+Island band; the Settings frame now carries the #464 App Icon picker (Bay
+checked) below Appearance; the outage frame carries `Open Board` + `Retry` and
+the alphabetical fallback paddock; the Board frame is the unchanged list; no
+OS alert or permission dialog appears in any frame.
+
+Raw capture hashes are distinct per phase (no stale-framebuffer re-capture:
+29 raw r3 files, zero duplicate hashes); the committed hashes are in
+SHA256SUMS.txt.

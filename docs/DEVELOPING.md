@@ -76,10 +76,26 @@ AppIcon catalog:
 - `social-preview.png` is the 1280×640 repository preview asset. Committing
   it does not change GitHub's social-preview setting; that remains a manual
   repository-settings step.
-- `ios/FleetNotifier/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png`
-  is the opaque 1024px iOS AppIcon selected by the Xcode project.
+- The iOS app icon is no longer derived from this art (#463). The shipping
+  catalog carries exactly the four approved Treatment-A horse masters:
+  `AppIcon.appiconset/AppIcon-1024.png` (Bay, primary/default) plus the
+  `Palomino`, `Black` and `Grey` alternates. Immutable approved masters live
+  in `ios/tools/herd-art/appicon-masters/treatment-a/`; regenerate and verify
+  them with `python3 ios/tools/herd-art/app-icons.py --write` /
+  `--check`. The legacy `corral-icon-1024.png` bytes above remain historical
+  repository art and are forbidden shipping bytes.
+- #464 surfaces those four choices in Settings → Appearance → App Icon. The
+  picker reads the live `UIApplication.alternateIconName` (nil = Bay) and
+  `supportsAlternateIcons`; it keeps no preference of its own and never
+  switches automatically. Preview tiles load the four generated imagesets
+  (`BayPreview`, `PalominoPreview`, `BlackPreview`, `GreyPreview`) —
+  byte-identical copies of the same approved masters, because iOS 18+ does not
+  vend appiconset renditions to `UIImage`. They are the only non-symbol image
+  loaders `check-native-art.py` allows in app source; regenerate them with
+  `python3 ios/tools/herd-art/app-icons.py --write` / `--check`.
 
-When the approved source PNG is available, regenerate the outputs with:
+When the approved source PNG is available, regenerate the historical
+repository outputs with:
 
 ```sh
 mise exec -- python tools/icon/from-user-png.py <approved-source.png>
@@ -152,6 +168,24 @@ knowing before you push:
   macOS only because `/var` is a symlink to `/private/var` while `/tmp` on
   Linux is real. If a test touches canonicalized paths, assume the two
   platforms disagree until CI says otherwise.
+
+### Native (iOS) art/icon gates
+
+`.github/workflows/ios-art.yml` runs the source-mode art/icon gates on a Linux
+runner for every push and pull request — no signing, no release build, no
+secrets. The same commands run locally:
+
+```sh
+python3 ios/check-release-demo.py                       # Release boundary + source digest + native-art source checks
+python3 ios/tools/herd-art/app-icons.py --check         # four-icon catalog + preview imagesets
+python3 ios/tools/herd-art/test-app-icons.py --output /tmp/app-icon-proofs   # guard mutation battery
+```
+
+`check-release-demo.py` also invokes `check-native-art.py` in source mode. The
+built-product and simulator sides stay off CI, as before:
+`check-native-art.py --bundle`, `test-native-art.py --app` and the
+probe/capture drivers need a prior build or a booted simulator, and the
+FleetNotifier XCTest suite runs only when `ios.yml` is dispatched.
 
 Historical verified results on main:
 

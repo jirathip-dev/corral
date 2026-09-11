@@ -651,6 +651,11 @@ struct FleetView: View {
     /// binding is flipped by the top-left Filters control and the DEBUG
     /// recorded-evidence driver; dismissal preserves the current selection.
     @State private var showFilters = false
+    /// #457: the ranch lighting the floating Herd chrome resolved (reported
+    /// by HerdView, the single `HerdSun` resolver site). The shared filter
+    /// sheet's Herd context is styled from this SAME value, so the trigger,
+    /// the counts and the sheet can never disagree about Day/Night.
+    @State private var herdChromeNight = false
     // #379: the How-to-connect sheet. Presented from the Settings '?' Help
     // button AND auto-presented over the board on an unpaired first launch
     // (fresh install); the DEBUG evidence driver opens the same binding.
@@ -664,6 +669,11 @@ struct FleetView: View {
     /// the .task(id:) hook can fire twice on demo entry, and a second
     /// concurrent instance would interleave phase state (the #387 lesson).
     @State private var filterHeaderEvidenceRan = false
+    /// #457: single-fire guard for the Herd-context filter evidence
+    /// sequence (same double-fire protection as #427).
+    @State private var contextFilterEvidenceRan = false
+    /// #457: single-fire guard for the separate Board no-regression shot.
+    @State private var contextBoardShotRan = false
 #endif
     /// #386: which status sections are collapsed. View-owned so the state
     /// lives for the board session ONLY — never persisted, never restored
@@ -785,24 +795,29 @@ struct FleetView: View {
             // no scroll machinery compiles into Release.
             ScrollViewReader { proxy in
                 Group {
-                    if model.fleetPresentation == .herd && model.mode != .needsSetup {
-                        VStack(spacing: 0) {
-                            filterHeaderControl(filterButtonLabel: filterButtonLabel,
-                                                filterSummaryText: filterSummaryText)
-                            HerdView(horses: multiHost
-                                ? HerdProjection.multiple(hostSections, names: Dictionary(uniqueKeysWithValues:
-                                    model.profiles.map { ($0.id, $0.displayName) }))
-                                : HerdProjection.single(sections, host: model.activeProfile?.id,
-                                    disconnected: herdDisconnected),
-                                obscured: showSettings || showFilters || showConnectHelp
-                                    || model.recentsRequest != nil || model.fingerprintConfirmation != nil,
-                                select: { horse in
-                                    model.requestRecents(for: horse.agent.agentId,
-                                                         hostProfileID: horse.hostProfileID, haptic: false)
-                                },
-                                openBoard: { model.fleetPresentation = .board },
-                                retry: { await model.refreshFleet() })
-                        }
+                    if showsHerdSurface {
+                        // #456: no opaque board header strip and no board
+                        // toolbar in Herd — the floating scope + Settings
+                        // controls live in HerdView's own full-screen shell
+                        // and drive these SAME sheets/bindings.
+                        HerdView(horses: multiHost
+                            ? HerdProjection.multiple(hostSections, names: Dictionary(uniqueKeysWithValues:
+                                model.profiles.map { ($0.id, $0.displayName) }))
+                            : HerdProjection.single(sections, host: model.activeProfile?.id,
+                                disconnected: herdDisconnected),
+                            obscured: showSettings || showFilters || showConnectHelp
+                                || model.recentsRequest != nil || model.fingerprintConfirmation != nil,
+                            scopeLabel: filterButtonLabel,
+                            scopeSummary: filterSummaryText,
+                            showFilters: $showFilters,
+                            showSettings: $showSettings,
+                            onLightingNight: { herdChromeNight = $0 },
+                            select: { horse in
+                                model.requestRecents(for: horse.agent.agentId,
+                                                     hostProfileID: horse.hostProfileID, haptic: false)
+                            },
+                            openBoard: { model.openBoard() },
+                            retry: { await model.refreshFleet() })
                     } else {
                 List {
                     // Issue #219: the board chrome is the FIRST section of the same
@@ -948,6 +963,12 @@ struct FleetView: View {
                 .navigationTitle("")
                 .background(theme.base)
                 .navigationBarTitleDisplayMode(.inline)
+                // #456: Herd owns its floating scope + Settings chrome, so
+                // the navigation bar (and its gear) is hidden there — the
+                // mode never shows a duplicated toolbar over the ranch.
+                // Board keeps the bar exactly as #365/#387 pinned it.
+                .toolbar(model.fleetPresentation == .herd && model.mode != .needsSetup
+                            ? .hidden : .visible, for: .navigationBar)
                 // #365: Settings is an ALWAYS-VISIBLE top-bar control — a plain
                 // gear Button (system gear shape, >=44 pt target, VoiceOver
                 // label) opening the Settings sheet. The DEBUG demo toggle is
@@ -955,20 +976,6 @@ struct FleetView: View {
                 // that exists only in Debug builds (Release shows the gear
                 // alone).
                 .toolbar {
-                    ToolbarItem(placement: .principal) {
-                        HStack(spacing: 0) {
-                            ForEach(FleetPresentation.allCases, id: \.self) { mode in
-                                Button { model.fleetPresentation = mode } label: {
-                                    Text(mode.rawValue).font(.subheadline.weight(.semibold))
-                                        .frame(minWidth: 64, minHeight: 44)
-                                        .background(model.fleetPresentation == mode ? theme.surface1 : .clear,
-                                                    in: RoundedRectangle(cornerRadius: 9))
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityAddTraits(model.fleetPresentation == mode ? .isSelected : [])
-                            }
-                        }
-                    }
                     ToolbarItemGroup(placement: .topBarTrailing) {
 #if DEBUG
                         Menu {
@@ -1004,7 +1011,7 @@ struct FleetView: View {
                 // (fraction + full detents, drag indicator) over the shared
                 // translucent backdrop, so the board stays visible behind.
                 .sheet(isPresented: $showFilters) {
-                    FilterScopeSheet(model: model)
+                    FilterScopeSheet(model: model, context: filterSheetContext)
                 }
                 // #364 C: recents bottom sheet binds DIRECTLY to the model-owned
                 // request — row taps, notification deep links, and the demo route
@@ -1050,6 +1057,13 @@ struct FleetView: View {
                 .task(id: model.mode) {
                     await runDemoEvidenceIfNeeded()
                 }
+                // #458 evidence: presentation preference scenarios ride the
+                // same deterministic marker pipeline (A: herd → Settings →
+                // Board; B: cold relaunch restores; C: Board → Settings →
+                // Herd; D: Open Board override + relaunch-restored Herd).
+                .task(id: model.mode) {
+                    await runPresentationEvidenceIfNeeded()
+                }
 #endif
 #if DEBUG
                 // #387: the recorded-evidence driver's scroll requests —
@@ -1070,6 +1084,22 @@ struct FleetView: View {
         }
         .tint(theme.accent)
         .preferredColorScheme(theme.flavor.isLight ? .light : .dark)
+    }
+
+    /// #457: the explicit presentation context for the ONE shared filter
+    /// sheet — whichever surface's control opened it. Board keeps the
+    /// existing Catppuccin treatment; the Herd surface takes the ranch
+    /// Day/Night tokens from the SAME lighting its floating chrome shows
+    /// (reported by HerdView, the single `HerdSun` resolver site).
+    private var filterSheetContext: FilterSheetContext {
+        showsHerdSurface ? .herd(night: herdChromeNight) : .board
+    }
+
+    /// #456/#458: the Herd surface renders only when the saved presentation
+    /// selects it and setup is complete — the ONE gate the body branch and
+    /// the filter sheet's context now share.
+    private var showsHerdSurface: Bool {
+        model.fleetPresentation == .herd && model.mode != .needsSetup
     }
 
     private var herdDisconnected: Bool {
@@ -1598,7 +1628,11 @@ struct FleetView: View {
     /// phase writes a marker file that the host-side screenshot script
     /// observes, so the recorded sequence is deterministic.
     private func runDemoEvidenceIfNeeded() async {
-        if CorralDemoLaunch.wantsReopenEvidence(arguments: CommandLine.arguments) {
+        if Corral457Evidence.wantsBoardShot(arguments: CommandLine.arguments) {
+            await runContextBoardShot()
+        } else if Corral457Evidence.wantsContextSequence(arguments: CommandLine.arguments) {
+            await runContextFilterSheetSequence()
+        } else if CorralDemoLaunch.wantsReopenEvidence(arguments: CommandLine.arguments) {
             await runReopenSequence()
         } else if CorralDemoLaunch.wantsFilterEvidence(arguments: CommandLine.arguments) {
             await runFilterSequence()
@@ -2370,6 +2404,174 @@ struct FleetView: View {
         filterHeaderEvidenceRan = true
         _ = await themePause(1500)
     }
+
+    /// #457 evidence: the Herd-context filter sequence — Day trigger over
+    /// the ranch, the ONE shared sheet (all scopes → selection → scrolled
+    /// end), the Day/Night four-flavor matrix (Latte day; Latte/Frappé/
+    /// Macchiato/Mocha night — the ranch chrome must be flavor-independent
+    /// and the environment flip must never rewrite the saved flavor), the
+    /// night trigger. The driver flips the SAME state the floating scope
+    /// control and the sheet rows set (simctl cannot inject taps) and
+    /// posts the sheet scroll request the sheet's own ScrollViewReader
+    /// consumes. The board → herd presentation flip re-identifies the
+    /// hosting chain once (the first instance is cancelled and the
+    /// restarted instance re-runs this idempotent sequence), so the
+    /// single-fire flag is set only after the final marker (#427
+    /// convention).
+    private func runContextFilterSheetSequence() async {
+        guard model.mode == .demo else { return }
+        guard await themePause(0) else { return }
+        guard !contextFilterEvidenceRan else { return }
+        model.suppressOSNotificationPromptForDemoEvidence()
+        model.enterMultiHostDemo(hostBConnecting: false)
+        model.fleetPresentation = .herd
+        Corral457Evidence.setEnvironment(.day)
+        let hostA = filterHeaderDemoHost("Host A")
+        theme.setFlavor(.mocha)
+        model.selectHostFilter(nil)
+        model.repoFilter = nil
+        showFilters = false
+        guard await themePause(4000) else { return }
+        EvidenceMarkers.write("457-1-herd-day-trigger-mocha")
+        guard await themePause(9000) else { return }
+        showFilters = true
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("457-2-sheet-day-all-mocha")
+        guard await themePause(9000) else { return }
+        model.selectHostFilter(hostA)
+        model.repoFilter = "demo-atlas"
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("457-3-sheet-day-selected-mocha")
+        guard await themePause(9000) else { return }
+        NotificationCenter.default.post(name: Corral457Evidence.scrollNotification, object: nil)
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("457-4-sheet-day-scrolled-mocha")
+        guard await themePause(9000) else { return }
+        NotificationCenter.default.post(name: Corral457Evidence.scrollNotification,
+                                        object: FilterScopeSheet.scrollTop)
+        theme.setFlavor(.latte)
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("457-5-sheet-day-selected-latte")
+        guard await themePause(9000) else { return }
+        Corral457Evidence.setEnvironment(.night)
+        guard await themePause(3000) else { return }
+        EvidenceMarkers.write("457-6-sheet-night-selected-latte")
+        guard await themePause(9000) else { return }
+        theme.setFlavor(.frappe)
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("457-7-sheet-night-selected-frappe")
+        guard await themePause(9000) else { return }
+        theme.setFlavor(.macchiato)
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("457-8-sheet-night-selected-macchiato")
+        guard await themePause(9000) else { return }
+        theme.setFlavor(.mocha)
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("457-9-sheet-night-selected-mocha")
+        guard await themePause(9000) else { return }
+        NotificationCenter.default.post(name: Corral457Evidence.scrollNotification, object: nil)
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("457-10-sheet-night-scrolled-mocha")
+        guard await themePause(9000) else { return }
+        showFilters = false
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("457-11-herd-night-trigger-mocha")
+        guard await themePause(6000) else { return }
+        // Single-fire completion: a re-fired `.task(id:)` instance after a
+        // cancelled run may only re-run BEFORE the final marker (the #387
+        // lesson) — the flag is set only once the sequence completed.
+        contextFilterEvidenceRan = true
+        EvidenceMarkers.write("457-12-herd-done")
+        _ = await themePause(1500)
+    }
+
+    /// #457 evidence: the Board no-regression frame — the SAME shared sheet
+    /// launched from the board keeps its Catppuccin treatment. A separate
+    /// launch (its own single-fire flag) because flipping the presentation
+    /// mid-run restarts the `.task(id:)` chain — the herd sequence and this
+    /// shot never mix in one instance.
+    private func runContextBoardShot() async {
+        guard model.mode == .demo else { return }
+        guard await themePause(0) else { return }
+        guard !contextBoardShotRan else { return }
+        model.fleetPresentation = .board
+        model.enterMultiHostDemo(hostBConnecting: false)
+        theme.setFlavor(.mocha)
+        model.selectHostFilter(nil)
+        model.repoFilter = nil
+        guard await themePause(4000) else { return }
+        showFilters = true
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("457-20-board-sheet-no-regression")
+        guard await themePause(9000) else { return }
+        showFilters = false
+        guard await themePause(1500) else { return }
+        contextBoardShotRan = true
+        EvidenceMarkers.write("457-21-board-done")
+        _ = await themePause(1500)
+    }
+
+    /// #458 evidence: Settings → Board/Herd → dismiss → relaunch, plus the
+    /// Open Board temporary override. simctl cannot tap, so the driver
+    /// flips the same `showSettings` state the gear button sets and calls
+    /// the same `selectFleetPresentation` the Appearance picker's Binding
+    /// calls. Markers are unique per scenario; the host capture script
+    /// screenshots each marker on its first appearance.
+    private func runPresentationEvidenceIfNeeded() async {
+        let arguments = CommandLine.arguments
+        guard Corral458Presentation.wantsHerdScenario(arguments: arguments)
+                || Corral458Presentation.wantsBoardScenario(arguments: arguments)
+                || Corral458Presentation.wantsBoardReloadScenario(arguments: arguments)
+                || Corral458Presentation.wantsOpenBoardScenario(arguments: arguments) else { return }
+        guard model.mode == .demo else { return }
+        guard await themePause(0) else { return }
+        if Corral458Presentation.wantsHerdScenario(arguments: arguments) {
+            EvidenceMarkers.write("458-a-1-herd")
+            guard await themePause(4000) else { return }
+            showSettings = true
+            guard await themePause(4000) else { return }
+            EvidenceMarkers.write("458-a-2-settings-herd-selected")
+            guard await themePause(5000) else { return }
+            model.selectFleetPresentation(.board)
+            guard await themePause(2000) else { return }
+            EvidenceMarkers.write("458-a-3-settings-board-selected")
+            guard await themePause(5000) else { return }
+            showSettings = false
+            guard await themePause(4000) else { return }
+            EvidenceMarkers.write("458-a-4-board-after-dismissal")
+            _ = await themePause(5000)
+        } else if Corral458Presentation.wantsBoardScenario(arguments: arguments) {
+            // C: current Board → Settings → Herd → Board's Settings gear is
+            // the SAME always-visible control (reachable from both modes).
+            EvidenceMarkers.write("458-c-1-board")
+            guard await themePause(4000) else { return }
+            showSettings = true
+            guard await themePause(4000) else { return }
+            EvidenceMarkers.write("458-c-2-settings-board-selected")
+            guard await themePause(5000) else { return }
+            model.selectFleetPresentation(.herd)
+            guard await themePause(2000) else { return }
+            EvidenceMarkers.write("458-c-3-settings-herd-selected")
+            guard await themePause(5000) else { return }
+            showSettings = false
+            guard await themePause(4000) else { return }
+            EvidenceMarkers.write("458-c-4-herd-after-dismissal")
+            _ = await themePause(5000)
+        } else if Corral458Presentation.wantsBoardReloadScenario(arguments: arguments) {
+            // B: cold relaunch restores the persisted Board from scenario A.
+            EvidenceMarkers.write("458-b-1-board-restored")
+            _ = await themePause(6000)
+        } else {
+            // D: saved Herd restored, Open Board recovery is temporary, and
+            // the Open Board entry stays reachable inside Herd.
+            EvidenceMarkers.write("458-d-1-herd-restored")
+            guard await themePause(4000) else { return }
+            model.openBoard()
+            guard await themePause(4000) else { return }
+            EvidenceMarkers.write("458-d-2-board-recovery")
+            _ = await themePause(6000)
+        }
+    }
 #endif
 }
 
@@ -2432,6 +2634,130 @@ struct BannerView: View {
     }
 }
 
+// MARK: - #457 ranch-context filter presentation (Day/Night chrome + sheet)
+
+/// #457: the shared filter sheet's EXPLICIT presentation context. The board
+/// passes `.board` — the existing Catppuccin treatment, unchanged. The Herd
+/// surface passes `.herd(night:)` resolved from the SAME lighting the ranch
+/// renders with, so the trigger, the HUD counts and the ONE shared sheet
+/// speak the approved ranch Day/Night language while Board-launched filters
+/// (and every other sheet) keep their own treatment. Selecting a herd
+/// environment never touches the app's global theme preference.
+enum FilterSheetContext: Equatable {
+    case board
+    case herd(night: Bool)
+}
+
+/// #457: the approved ranch-context control palette, sealed in the #455
+/// V1/A prototype (`variant-a.html`, SHA-256 `ca0a1a09…bf61`; CSS custom
+/// properties `--ink` / `--muted` / `--accent` / `--line` / `--glass` and
+/// the `--glass-solid` fallback). Hex strings — not resolved colors — keep
+/// the WCAG floor testable with `SheetBackdrop`'s contrast math.
+struct RanchControlTokens: Equatable {
+    /// Primary text on the ranch chrome (prototype `--ink`).
+    let ink: String
+    /// Secondary/summary text on the ranch chrome (prototype `--muted`).
+    let muted: String
+    /// The ranch accent (glyphs, selected rows, controls — `--accent`).
+    let accent: String
+    /// Hairline/border tone for the ranch chrome (`--line`).
+    let line: String
+    /// The opaque ranch surface (`--glass-solid`): the Reduce Transparency
+    /// / high-contrast fill and the tint base of the glass recipe.
+    let solid: String
+
+    /// `body{--ink:#23362f;--muted:#3e5147;--accent:#304e41;--line:#8c9a89}`
+    /// with `--glass-solid:#f6f5e1` (the prototype's 94 % cream glass).
+    static let day = RanchControlTokens(ink: "#23362f", muted: "#3e5147",
+                                        accent: "#304e41", line: "#8c9a89",
+                                        solid: "#f6f5e1")
+    /// `body[data-environment=night]` overrides with `--glass-solid:#1d2b33`.
+    static let night = RanchControlTokens(ink: "#edf1e8", muted: "#c2cec9",
+                                          accent: "#d4e4db", line: "#647b80",
+                                          solid: "#1d2b33")
+
+    /// The sealed palette for the resolved ranch lighting.
+    static func resolve(night: Bool) -> RanchControlTokens {
+        night ? .night : .day
+    }
+
+    var inkColor: Color { Color(UIColor(catppuccinHex: ink)) }
+    var mutedColor: Color { Color(UIColor(catppuccinHex: muted)) }
+    var accentColor: Color { Color(UIColor(catppuccinHex: accent)) }
+    var lineColor: Color { Color(UIColor(catppuccinHex: line)) }
+    var solidColor: Color { Color(UIColor(catppuccinHex: solid)) }
+}
+
+/// #457: the ranch-context chrome surface — the SAME native recipe as the
+/// shared sheet backdrop (#428: ultra-thin material + the ranch solid at
+/// the locked `SheetBackdrop.fallbackTintAlpha`, with the iOS 26+ native
+/// `.regular` glass — tinted at the locked whisper `glassTintOpacity` —
+/// layered on top), clipped to the control's rounded shape. Deliberate
+/// deployment-target-compatible fallbacks:
+///
+/// - iOS 17–25 (the deployment target): the tinted ultra-thin material
+///   alone — the same `else` branch the shared backdrop renders there;
+/// - Reduce Transparency OR Increase Contrast: the OPAQUE ranch solid (no
+///   blur under the text — contrast is preserved on bright sky and dark
+///   field);
+/// - `-corral457ForceOpaqueChrome` (DEBUG evidence only): takes the SAME
+///   opaque branch a Reduce Transparency device executes, so the fallback
+///   is captured on real rendered frames.
+struct RanchChromeSurface: View {
+    let tokens: RanchControlTokens
+    var cornerRadius: CGFloat = 15
+    /// Explicit opaque-surface override (the deterministic test seam — the
+    /// system Reduce Transparency / Increase Contrast keys are read-only in
+    /// hosted test windows). nil = decide from the system settings.
+    var forcesOpaque: Bool? = nil
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    private var opaque: Bool {
+        if let forcesOpaque { return forcesOpaque }
+        return reduceTransparency || contrast == .increased
+            || Corral457Evidence.forcesOpaqueChrome
+    }
+
+    var body: some View {
+        Group {
+            if opaque {
+                tokens.solidColor
+            } else if #available(iOS 26.0, *) {
+                // The native glass renders as its own adaptive surface on
+                // this runtime; the ranch tint layer sits ABOVE it so the
+                // approved Day/Night cast (the prototype's ~94 % glass) is
+                // what the eye meets first, with the material's blur and
+                // the glass response showing through it.
+                ZStack {
+                    Rectangle().fill(.ultraThinMaterial)
+                    Rectangle().fill(Color.clear)
+                        .glassEffect(.regular
+                            .tint(tokens.solidColor.opacity(SheetBackdrop.glassTintOpacity)),
+                            in: RoundedRectangle(cornerRadius: cornerRadius))
+                    tokens.solidColor.opacity(SheetBackdrop.fallbackTintAlpha)
+                }
+            } else {
+                ZStack {
+                    Rectangle().fill(.ultraThinMaterial)
+                    tokens.solidColor.opacity(SheetBackdrop.fallbackTintAlpha)
+                }
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+        .accessibilityHidden(true)
+    }
+}
+
+extension View {
+    /// #457: float a control over the shared ranch-context chrome surface
+    /// (see `RanchChromeSurface` for the day/night + fallback contract).
+    func ranchChromeSurface(_ tokens: RanchControlTokens,
+                            cornerRadius: CGFloat = 15) -> some View {
+        background { RanchChromeSurface(tokens: tokens, cornerRadius: cornerRadius) }
+    }
+}
+
 // MARK: - #427 Direction A filter scope sheet
 
 /// The native bottom sheet behind the top-left `Filters` control (#427
@@ -2446,12 +2772,43 @@ struct BannerView: View {
 ///   an obvious close path (`Close filters` + the drag indicator);
 /// - rows >= 50 pt, distinct VoiceOver labels + selected trait, Dynamic
 ///   Type-safe wrapping in the vertical scroll surface;
-/// - the shared translucent backdrop (Liquid Glass on iOS 26+, themed
-///   fallback below the availability gate) with the board visible behind.
+/// - #457: ONE shared sheet with an explicit presentation context — the
+///   board keeps the #385/#416 shared translucent backdrop and Catppuccin
+///   tokens verbatim; the Herd context renders the ranch Day/Night tokens
+///   (header, rows, selection, footer + the ranch glass surface with its
+///   Reduce Transparency / high-contrast opaque fallback).
 struct FilterScopeSheet: View {
     @ObservedObject var model: AppModel
+    /// #457: WHO launched this sheet (Board chrome vs the Herd surface) and
+    /// the resolved ranch lighting for the Herd case. Explicit — never
+    /// inferred from ambient styles, so board filters can never inherit
+    /// leaked herd styling.
+    let context: FilterSheetContext
     @EnvironmentObject private var theme: ThemeStore
     @Environment(\.dismiss) private var dismiss
+
+    /// #457: the ranch tokens for the Herd context; nil = .board, which
+    /// keeps every existing Catppuccin token verbatim (no herd styling can
+    /// leak into a board-launched sheet).
+    private var tokens: RanchControlTokens? {
+        if case .herd(let night) = context { return .resolve(night: night) }
+        return nil
+    }
+    private var ink: Color { tokens?.inkColor ?? theme.text }
+    private var muted: Color { tokens?.mutedColor ?? theme.subtext1 }
+    private var accent: Color { tokens?.accentColor ?? theme.accent }
+    private var rowSeparator: Color {
+        tokens?.lineColor.opacity(0.35) ?? theme.surface1.opacity(0.35)
+    }
+    private var divider: Color {
+        tokens?.lineColor.opacity(0.4) ?? theme.surface1.opacity(0.4)
+    }
+    private var sectionSurface: Color {
+        tokens?.solidColor.opacity(0.92) ?? theme.base.opacity(0.92)
+    }
+    private var contentBackdrop: Color {
+        tokens?.solidColor.opacity(0.55) ?? theme.base.opacity(0.55)
+    }
 
     /// "1 lane" / "N lanes" — the same singular handling the board chips
     /// used, now riding the scope-row metadata line.
@@ -2469,24 +2826,24 @@ struct FilterScopeSheet: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(name)
                         .font(.footnote.weight(.semibold))
-                        .foregroundStyle(selected ? theme.accent : theme.text)
+                        .foregroundStyle(selected ? accent : ink)
                         .multilineTextAlignment(.leading)
                     Text(subtitle)
                         .font(.caption2)
-                        .foregroundStyle(theme.subtext1)
+                        .foregroundStyle(muted)
                         .multilineTextAlignment(.leading)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 if selected {
                     Image(systemName: "checkmark")
                         .font(.footnote.weight(.bold))
-                        .foregroundStyle(theme.accent)
+                        .foregroundStyle(accent)
                         .accessibilityHidden(true)
                 }
             }
             .padding(.horizontal, 16)
             .frame(maxWidth: .infinity, minHeight: 50, alignment: .leading)
-            .background(selected ? theme.accent.opacity(0.12) : Color.clear)
+            .background(selected ? accent.opacity(0.12) : Color.clear)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -2507,12 +2864,12 @@ struct FilterScopeSheet: View {
                     .font(.caption2.weight(.semibold))
                     .kerning(0.6)
                     .textCase(.uppercase)
-                    .foregroundStyle(theme.subtext1)
+                    .foregroundStyle(muted)
                 Spacer(minLength: 0)
                 Button(action: clearAction) {
                     Text(clearLabel)
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(theme.accent.opacity(clearEnabled ? 1 : 0.35))
+                        .foregroundStyle(accent.opacity(clearEnabled ? 1 : 0.35))
                         .frame(minWidth: 44, minHeight: 44)
                         .contentShape(Rectangle())
                 }
@@ -2533,14 +2890,23 @@ struct FilterScopeSheet: View {
                 .overlay(alignment: .bottom) {
                     if index < rows.count - 1 {
                         Rectangle()
-                            .fill(theme.surface1.opacity(0.35))
+                            .fill(rowSeparator)
                             .frame(height: 1)
                     }
                 }
             }
         }
-        .background(theme.base.opacity(0.92))
+        .background(sectionSurface)
     }
+
+    /// #457 evidence scroll anchors (inert strings; the DEBUG driver scrolls
+    /// to them through the sheet's own ScrollViewReader — simctl cannot
+    /// inject the drag).
+    static let topAnchor = "filter-sheet-top"
+    static let bottomAnchor = "filter-sheet-bottom"
+    /// Object value of a scroll-to-TOP request (any other request scrolls
+    /// to the end anchor).
+    static let scrollTop = "top"
 
     var body: some View {
         let multiHost = model.multiHostConfigured
@@ -2603,10 +2969,10 @@ struct FilterScopeSheet: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Filters")
                         .font(.headline.weight(.bold))
-                        .foregroundStyle(theme.text)
+                        .foregroundStyle(ink)
                     Text(sheetSummaryText)
                         .font(.caption)
-                        .foregroundStyle(theme.subtext1)
+                        .foregroundStyle(muted)
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
@@ -2616,7 +2982,7 @@ struct FilterScopeSheet: View {
                 } label: {
                     Image(systemName: "xmark")
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(theme.accent)
+                        .foregroundStyle(accent)
                         .frame(minWidth: 44, minHeight: 44)
                         .contentShape(Rectangle())
                 }
@@ -2626,33 +2992,48 @@ struct FilterScopeSheet: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 6)
             Rectangle()
-                .fill(theme.surface1.opacity(0.4))
+                .fill(divider)
                 .frame(height: 1)
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 8) {
-                    if multiHost {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        Color.clear.frame(height: 1).id(Self.topAnchor)
+                        if multiHost {
+                            scopeSection(
+                                title: "Host scope",
+                                clearLabel: "Clear host",
+                                clearEnabled: model.hostFilter != nil,
+                                clearAction: {
+                                    model.selectHostFilter(nil)
+                                },
+                                rows: hostScopeRows)
+                        }
                         scopeSection(
-                            title: "Host scope",
-                            clearLabel: "Clear host",
-                            clearEnabled: model.hostFilter != nil,
+                            title: "Repository scope",
+                            clearLabel: "Clear repository",
+                            clearEnabled: activeRepoChoice != nil,
                             clearAction: {
-                                model.selectHostFilter(nil)
+                                model.repoFilter = nil
                             },
-                            rows: hostScopeRows)
+                            rows: repoScopeRows)
+                        Color.clear.frame(height: 1).id(Self.bottomAnchor)
                     }
-                    scopeSection(
-                        title: "Repository scope",
-                        clearLabel: "Clear repository",
-                        clearEnabled: activeRepoChoice != nil,
-                        clearAction: {
-                            model.repoFilter = nil
-                        },
-                        rows: repoScopeRows)
+                    .padding(.vertical, 8)
                 }
-                .padding(.vertical, 8)
+#if DEBUG
+                // #457 evidence scroll: the host cannot drag the sheet, so
+                // the recorded driver posts a request and the sheet scrolls
+                // to its own end/top anchor through the SAME ScrollViewReader
+                // path a user's drag takes the content through.
+                .onReceive(NotificationCenter.default.publisher(for: Corral457Evidence.scrollNotification)) { note in
+                    let wantsTop = (note.object as? String) == Self.scrollTop
+                    proxy.scrollTo(wantsTop ? Self.topAnchor : Self.bottomAnchor,
+                                   anchor: wantsTop ? .top : .bottom)
+                }
+#endif
             }
             Rectangle()
-                .fill(theme.surface1.opacity(0.4))
+                .fill(divider)
                 .frame(height: 1)
             Button {
                 model.selectHostFilter(nil)
@@ -2660,7 +3041,7 @@ struct FilterScopeSheet: View {
             } label: {
                 Text("Reset all filters")
                     .font(.footnote.weight(.semibold))
-                    .foregroundStyle(theme.accent)
+                    .foregroundStyle(accent)
                     .frame(minWidth: 44, minHeight: 44)
                     .frame(maxWidth: .infinity)
                     .contentShape(Rectangle())
@@ -2668,10 +3049,32 @@ struct FilterScopeSheet: View {
             .buttonStyle(.plain)
             .padding(.vertical, 4)
         }
-        .background(theme.base.opacity(0.55))
-        .translucentSheetBackdrop(theme.base)
+        .background(contentBackdrop)
+        .modifier(FilterSheetBackdrop(tokens: tokens, boardTint: theme.base))
         .presentationDetents([.fraction(0.78), .large])
         .presentationDragIndicator(.visible)
+    }
+}
+
+/// #457: the sheet surface follows the explicit presentation context — the
+/// board keeps the #385/#416 shared translucent backdrop verbatim; the herd
+/// context takes the ranch Day/Night chrome (with its own deliberate Reduce
+/// Transparency / high-contrast opaque fallback). One modifier, so the
+/// sheet cannot silently diverge between the two contexts.
+private struct FilterSheetBackdrop: ViewModifier {
+    let tokens: RanchControlTokens?
+    let boardTint: Color
+
+    func body(content: Content) -> some View {
+        if let tokens {
+            content.presentationBackground {
+                RanchChromeSurface(tokens: tokens, cornerRadius: 0)
+            }
+        } else {
+            content.presentationBackground {
+                TranslucentSheetBackdrop(tint: boardTint)
+            }
+        }
     }
 }
 
@@ -2884,6 +3287,51 @@ enum Corral416Evidence {
     }
 }
 
+/// #457 evidence plumbing: `-corral457ContextEvidence` runs the
+/// deterministic Herd-context sequence (Day trigger + the shared filter
+/// sheet over the ranch, selection, scrolled end, the full Day/Night
+/// four-flavor matrix, then the Board sheet no-regression frame);
+/// `-corral457ForceOpaqueChrome` makes the ranch chrome take the SAME
+/// opaque branch a Reduce Transparency / Increase Contrast device
+/// executes (identical source — the environment check is the only
+/// difference), so the fallback is captured on real rendered frames.
+enum Corral457Evidence {
+    static let contextArgument = "-corral457ContextEvidence"
+    static let boardShotArgument = "-corral457BoardShot"
+    static let opaqueChromeArgument = "-corral457ForceOpaqueChrome"
+    /// DEBUG sheet-scroll hook: simctl cannot inject the drag, so the
+    /// recorded driver posts this and the sheet scrolls to its own
+    /// end/top anchor through the SAME ScrollViewReader path a user's drag
+    /// moves the content through. `object == FilterScopeSheet.scrollTop`
+    /// requests the start; anything else (nil) requests the end.
+    static let scrollNotification = Notification.Name("corral457ScrollFilterSheet")
+
+    static func wantsContextSequence(arguments: [String]) -> Bool {
+        arguments.contains(contextArgument)
+    }
+
+    static func wantsBoardShot(arguments: [String]) -> Bool {
+        arguments.contains(boardShotArgument)
+    }
+
+    /// #457 evidence: drive the REAL persisted ranch-environment preference
+    /// exactly like the Settings picker's `@AppStorage("herdEnvironment")`
+    /// binding — the frames prove the environment flip uses (and never
+    /// rewrites) the app's own preference stores.
+    static func setEnvironment(_ choice: HerdEnvironmentChoice) {
+        UserDefaults.standard.set(choice.rawValue, forKey: "herdEnvironment")
+    }
+
+    /// Release never forces the opaque chrome: the system settings decide.
+    static var forcesOpaqueChrome: Bool {
+#if DEBUG
+        CommandLine.arguments.contains(opaqueChromeArgument)
+#else
+        false
+#endif
+    }
+}
+
 #if DEBUG
 /// #416 evidence: under `-corral416MediumDetents` the Settings / Add Host
 /// sheets present at the MEDIUM detent (release keeps the system LARGE
@@ -3015,6 +3463,12 @@ struct SettingsView: View {
     /// #389: the blocked-permission escape hatch — opens THIS app's
     /// notification permission in the system Settings app.
     @Environment(\.openURL) private var openURL
+    /// #464: re-read the system icon state whenever Settings returns to the
+    /// foreground — the system Settings app can change it while we're away,
+    /// and the system is the only source of truth.
+    @Environment(\.scenePhase) private var scenePhase
+    /// #464: the App Icon picker's live state (system read + in-flight guard).
+    @StateObject private var appIcon = AppIconPickerModel()
 
     @State private var host: String
     @State private var token = ""
@@ -3070,6 +3524,9 @@ struct SettingsView: View {
             ScrollViewReader { proxy in
                 Form {
                     appearanceSection
+                    // #464: the App Icon picker sits directly below the
+                    // Appearance section's Board/Herd picker.
+                    appIconSection
                     HerdEnvironmentSettings()
                     // #423: the legacy single-host Connection section — host
                     // endpoint, registration status, Re-register — serves the
@@ -3228,6 +3685,13 @@ struct SettingsView: View {
                     .task { await model.refreshNotificationPermission() }
                 }
                 .navigationTitle("Settings")
+                // #464: the system owns the icon state — re-read it when the
+                // sheet appears and on every return to the active scene (the
+                // system Settings app can change it while Corral is away).
+                .onAppear { appIcon.refresh() }
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .active { appIcon.refresh() }
+                }
                 .toolbar {
                     // #379: Settings-header '?' Help entry — opens the same
                     // shared HowToConnectSheet the unpaired first launch
@@ -3418,8 +3882,26 @@ struct SettingsView: View {
     /// lock). One row per Catppuccin flavor, locked order + swatch strips
     /// (base / surface1 / mauve / teal / red of THAT flavor), checkmark on
     /// the active row; selection persists.
+    /// #458: the section also owns the canonical Board/Herd choice — the
+    /// principal top switch is gone, so Settings is the ONLY place the
+    /// saved presentation is controlled. Selection applies immediately
+    /// (the dismissal reveals the chosen mode) and persists for cold
+    /// relaunch.
     private var appearanceSection: some View {
         Section {
+            Picker("Board or Herd", selection: Binding(
+                get: { model.fleetPresentation },
+                set: { model.selectFleetPresentation($0) })) {
+                ForEach(FleetPresentation.allCases, id: \.self) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .accessibilityLabel("Board or Herd")
+            .accessibilityHint("Choose what the app opens to. Board is the default. This choice is saved.")
+            .accessibilityIdentifier("settings.presentation")
+            .id("settings.presentation")
+            .padding(.vertical, 2)
             ForEach(CatppuccinFlavor.allCases, id: \.self) { flavor in
                 let selected = flavor == theme.flavor
                 Button {
@@ -3454,7 +3936,7 @@ struct SettingsView: View {
         } header: {
             Text("Appearance")
         } footer: {
-            Text("Applies to the whole app — board, sheets, rail and settings.")
+            Text("Board or Herd opens immediately and is saved for next launch. Board is the default. Applies to the whole app — board, sheets, rail and settings.")
                 .foregroundStyle(theme.subtext1)
         }
         // #428: the native grouped CELL surface is system white/gray in
@@ -3464,6 +3946,91 @@ struct SettingsView: View {
         // surface the board rows use), so no system-default grouped
         // surface leaks through the translucent backdrop.
         .themedRowSurface(theme)
+    }
+
+    /// #464: Settings → Appearance → App Icon. Exactly the four shipping
+    /// choices from the #463 packaging contract, previewed with the SHIPPED
+    /// catalog art. The selected tile is the LIVE system state (nil
+    /// `alternateIconName` = Bay); an unsupported device renders disabled
+    /// with truthful copy instead of a fake success.
+    private var appIconSection: some View {
+        Section {
+            if appIcon.supportsAlternateIcons {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10),
+                                         count: 4),
+                          spacing: 10) {
+                    ForEach(FleetAppIcon.shipping) { icon in
+                        appIconTile(icon)
+                    }
+                }
+                .padding(.vertical, 4)
+                if let message = appIcon.errorMessage {
+                    Label(message, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(theme.peach)
+                        .id("settings.app-icon.error")
+                }
+            } else {
+                Label("Alternate app icons aren't available on this device.",
+                      systemImage: "slash.circle")
+                    .font(.caption)
+                    .foregroundStyle(theme.subtext1)
+            }
+        } header: {
+            Text("App Icon")
+        } footer: {
+            Text(appIcon.supportsAlternateIcons
+                 ? "Sets the Home Screen icon for Corral. iOS asks you to confirm the change; Bay is the default."
+                 : "This device can't change the Home Screen icon — the Bay icon stays in place.")
+                .foregroundStyle(theme.subtext1)
+        }
+        // #428: themed row surface (see themedRowSurface).
+        .themedRowSurface(theme)
+    }
+
+    /// One #464 icon tile: shipped catalog preview, accessible name, and a
+    /// selected state derived from the live system state (checkmark only when
+    /// the system reports that choice).
+    private func appIconTile(_ icon: FleetAppIcon) -> some View {
+        let selected = appIcon.selection == icon
+        return Button {
+            appIcon.select(icon)
+        } label: {
+            VStack(spacing: 6) {
+                icon.preview
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 52, height: 52)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(selected ? theme.accent : theme.surface2,
+                                          lineWidth: selected ? 2 : 1)
+                    }
+                    .overlay(alignment: .bottomTrailing) {
+                        if selected {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.caption)
+                                .foregroundStyle(theme.accent)
+                                .background(Circle().fill(theme.base))
+                                .accessibilityHidden(true)
+                        }
+                    }
+                Text(icon.displayName)
+                    .font(.caption2)
+                    .foregroundStyle(selected ? theme.accent : theme.subtext1)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!appIcon.supportsAlternateIcons || appIcon.isApplying)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(icon.displayName)
+        .accessibilityHint("Sets the \(icon.displayName) Home Screen icon")
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
+        .accessibilityIdentifier("settings.app-icon.\(icon.rawValue)")
     }
 
     /// #401 D2/D7: the Hosts section — one row per configured host in the

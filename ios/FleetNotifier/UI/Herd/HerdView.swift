@@ -3,6 +3,21 @@ import SwiftUI
 struct HerdView: View {
     let horses: [HerdHorse]
     let obscured: Bool
+    /// #456: the board's reconciled scope labels (the SAME projections the
+    /// board's Filters control uses) rendered by the floating top chrome.
+    let scopeLabel: String
+    let scopeSummary: String
+    /// #456: the floating chrome drives the SAME sheets the board chrome
+    /// does — the bindings are FleetView's own presentation state, so Herd
+    /// never owns a parallel sheet or a duplicated toolbar.
+    @Binding var showFilters: Bool
+    @Binding var showSettings: Bool
+    /// #457: the ranch lighting (night flag) the floating chrome resolved.
+    /// HerdView is the single `HerdSun` resolver site; it reports the value
+    /// up so the shared filter sheet's Herd context is styled from the SAME
+    /// lighting the trigger and the counts show. Inert by default for
+    /// standalone hosts (tests/previews).
+    let onLightingNight: (Bool) -> Void
     let select: (HerdHorse) -> Void
     let openBoard: () -> Void
     let retry: () async -> Void
@@ -19,11 +34,21 @@ struct HerdView: View {
     @State private var now = Date()
     @State private var timeRevision = 0
     @State private var dragging = false
-    init(horses: [HerdHorse], obscured: Bool, select: @escaping (HerdHorse) -> Void,
+    init(horses: [HerdHorse], obscured: Bool,
+         scopeLabel: String = "Filters", scopeSummary: String = "All repositories",
+         showFilters: Binding<Bool> = .constant(false),
+         showSettings: Binding<Bool> = .constant(false),
+         onLightingNight: @escaping (Bool) -> Void = { _ in },
+         select: @escaping (HerdHorse) -> Void,
          openBoard: @escaping () -> Void, retry: @escaping () async -> Void,
          clock: HerdClock? = nil) {
         self.horses = horses
         self.obscured = obscured
+        self.scopeLabel = scopeLabel
+        self.scopeSummary = scopeSummary
+        _showFilters = showFilters
+        _showSettings = showSettings
+        self.onLightingNight = onLightingNight
         self.select = select
         self.openBoard = openBoard
         self.retry = retry
@@ -35,6 +60,7 @@ struct HerdView: View {
     @State var evidenceReduceMotion = false
     @State var evidenceRan = false
     @State var evidencePhase: String?
+    @State var evidenceFullScreenRan = false
 #endif
     private var paddocks: [HerdPaddock] { HerdProjection.paddocks(horses) }
     private var rail: [HerdHorse] { horses.filter(\.atRail) }
@@ -53,6 +79,12 @@ struct HerdView: View {
     var lighting: HerdLighting {
         HerdSun.resolve(effectiveEnvironment,now:now,location:location.sample())
     }
+    /// #457: the sealed ranch Day/Night control palette — resolved from the
+    /// SAME `lighting` the ranch field renders with, so the floating chrome
+    /// and the environment can never disagree.
+    var ranchTokens: RanchControlTokens {
+        .resolve(night: lighting.night)
+    }
     var elapsed: Double {
 #if DEBUG
         if let evidenceElapsed { return evidenceElapsed }
@@ -66,29 +98,51 @@ struct HerdView: View {
         "\(effectiveEnvironment.rawValue)-\(location.revision)-\(timeRevision)-\(scenePhase == .active)"
     }
     var body: some View {
-        VStack(spacing: 0) {
-            summary
-            if horses.contains(where: \.disconnected) { outage }
-        GeometryReader { geometry in
-            let maxScroll = CGFloat(max(0,paddocks.count-1))*geometry.size.width
-            ZStack {
-                RanchEnvironment(night:lighting.night,scroll:scroll,maxScroll:maxScroll,
-                                 elapsed:elapsed,reduceMotion:!motionEnabled)
-                VStack(spacing:0) {
-                    Spacer(minLength:12).frame(maxHeight:88)
-                    frontRail
-                    if paddocks.isEmpty {
-                        ContentUnavailableView("No agents in this scope",systemImage:"line.3.horizontal.decrease")
-                    } else {
-                        pager(width:geometry.size.width)
-                        navigation
+        // #456: the procedural ranch is the full-screen ROOT layer, painted
+        // behind every safe area; the floating chrome + content render above
+        // it (the ranch already refuses hit testing), so Day/Night covers the
+        // whole Herd surface instead of a strip under an opaque board header.
+        // The cover gives the approved 390x640 world ONE uniform scale for
+        // both axes — no per-axis stretch, cropped by the screen.
+        ZStack {
+            GeometryReader { screen in
+                HerdRanchCover {
+                    RanchEnvironment(night:lighting.night,scroll:scroll,
+                                     maxScroll:CGFloat(max(0,paddocks.count-1))*screen.size.width,
+                                     elapsed:elapsed,reduceMotion:!motionEnabled)
+                }
+            }
+            .ignoresSafeArea()
+            VStack(spacing:0) {
+                topChrome
+                    // #456-r1: at accessibility sizes the chrome's ideal height
+                    // grows with the type. It is the surface that must never be
+                    // squeezed (the pre-fix squeeze drew the scope label outside
+                    // its own pill and under the counts card), so it keeps its
+                    // Dynamic-Type ideal and the pager region below absorbs the
+                    // difference instead.
+                    .layoutPriority(1)
+                if horses.contains(where: \.disconnected) { outage }
+                GeometryReader { geometry in
+                    VStack(spacing:0) {
+                        if paddocks.isEmpty {
+                            ContentUnavailableView("No agents in this scope",systemImage:"line.3.horizontal.decrease")
+                        } else {
+                            herdColumn(width:geometry.size.width)
+                            navigation
+                                // #456-r1: Previous/Next/position keep their
+                                // >= 44 pt targets at accessibility sizes too.
+                                .layoutPriority(1)
+                        }
                     }
                 }
             }
-            .clipped()
-        }
         }
         .onAppear { if motionEnabled { clock.start() } }
+        // #457: report the resolved lighting up to FleetView — the shared
+        // filter sheet's Herd context styles itself from this value.
+        // `initial: true` covers the first rendered frame.
+        .onChange(of:lighting.night,initial:true) { _,night in onLightingNight(night) }
         .onChange(of:motionEnabled) { _,enabled in
             if enabled { clock.start() } else { clock.stop() }
         }
@@ -111,10 +165,17 @@ struct HerdView: View {
         .onReceive(NotificationCenter.default.publisher(for:UIApplication.significantTimeChangeNotification)) { _ in timeRevision += 1 }
         .onReceive(NotificationCenter.default.publisher(for:.NSSystemTimeZoneDidChange)) { _ in timeRevision += 1 }
         .onChange(of:paddocks.map(\.id),initial:true) { _,ids in
-            if !ids.contains(paddockID ?? "") { paddockID = ids.first }
+            paddockID = HerdProjection.reconciledPaddockID(paddockID,in:ids)
         }
 #if DEBUG
-        .task { await runHerdEvidence() }
+        .task {
+            // #456 full-screen evidence supersedes the #459-era sequence in
+            // the same launch (one deterministic marker stream).
+            if !CommandLine.arguments.contains("-corral456FullScreenEvidence") {
+                await runHerdEvidence()
+            }
+        }
+        .task { await runFullScreenEvidence() }
         // Record from the current rendered value, not the task's captured
         // View struct (whose environment/immutable horse props may be stale).
         .onChange(of:evidencePhase) { _,phase in
@@ -122,7 +183,72 @@ struct HerdView: View {
         }
 #endif
     }
-    private var summary: some View {
+    /// #456: the floating top chrome — scope + Settings on the first row,
+    /// truthful scoped counts + the environment explanation beneath. Each
+    /// surface floats over the ranch; #457 moves the scope pill, the
+    /// Settings control and the counts card onto the sealed ranch Day/Night
+    /// chrome (glass where available, opaque Reduce Transparency /
+    /// high-contrast fallback) so no light/dark text is inherited blindly
+    /// from the app flavor. Targets stay >= 44 pt with a safe-area-aware
+    /// top margin.
+    private var topChrome: some View {
+        VStack(spacing:6) {
+            HStack(spacing:8) {
+                scopeControl
+                settingsControl
+            }
+            statusSummary
+        }
+        .padding(.horizontal,12)
+        .padding(.top,6)
+    }
+    /// The scope control repeats the board Filters control's contract over
+    /// the ranch: same reconciled labels, same sheet, one >= 44 pt button —
+    /// presented in the ranch Day/Night chrome (#457).
+    private var scopeControl: some View {
+        Button { showFilters = true } label: {
+            HStack(spacing:8) {
+                HerdFilterGlyph(color: ranchTokens.accentColor)
+                    .frame(width:16,height:16)
+                VStack(alignment:.leading,spacing:1) {
+                    Text(scopeLabel).font(.subheadline.weight(.semibold))
+                        .foregroundStyle(ranchTokens.inkColor).lineLimit(1)
+                    Text(scopeSummary).font(.caption2).foregroundStyle(ranchTokens.mutedColor)
+                        .lineLimit(1).truncationMode(.tail)
+                }
+                Spacer(minLength:0)
+            }
+            .frame(maxWidth:.infinity,minHeight:44,alignment:.leading)
+            .padding(.horizontal,12)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .ranchChromeSurface(ranchTokens)
+        .accessibilityElement(children:.ignore)
+        .accessibilityLabel(scopeLabel + ", " + scopeSummary)
+        .accessibilityHint("Opens host and repository filters")
+    }
+    /// #456: Settings stays reachable in Herd (the navigation toolbar is
+    /// hidden here, so this floating gear is the mode's only gear — never a
+    /// duplicated toolbar). #457: it rides the same ranch chrome as the
+    /// trigger it sits beside.
+    private var settingsControl: some View {
+        Button { showSettings = true } label: {
+            HerdGearGlyph(color: ranchTokens.inkColor)
+                .frame(width:22,height:22)
+                .frame(width:44,height:44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .ranchChromeSurface(ranchTokens)
+        .accessibilityLabel("Settings")
+        .accessibilityHint("Opens connection and notification settings")
+    }
+    /// Truthful scoped counts + environment note, in the ranch Day/Night
+    /// ink (#457). When Dynamic Type or a narrow phone outgrows one line
+    /// the counts wrap to a second/third row (the base summary's own
+    /// fallback) instead of clipping.
+    private var statusSummary: some View {
         VStack(spacing:4) {
             ViewThatFits(in:.horizontal) {
                 HStack(spacing:8) { counts }
@@ -130,9 +256,10 @@ struct HerdView: View {
             }
             Text(lighting.explanation).font(.caption2)
         }
-        .foregroundStyle(theme.text)
-        .padding(.vertical,6).frame(maxWidth:.infinity)
-        .background(.ultraThinMaterial)
+        .foregroundStyle(ranchTokens.inkColor)
+        .padding(.vertical,6).padding(.horizontal,12)
+        .frame(maxWidth:.infinity)
+        .ranchChromeSurface(ranchTokens)
     }
     @ViewBuilder private var counts: some View {
         ForEach([AgentState.blocked,.working,.idle,.done,.unknown],id:\.self) { state in
@@ -148,7 +275,10 @@ struct HerdView: View {
                 Button("Open Board",action:openBoard).frame(minWidth:44,minHeight:44)
                 Button("Retry") { Task { await retry() } }.frame(minWidth:44,minHeight:44)
             }
-        }.foregroundStyle(theme.text).frame(maxWidth:.infinity).background(.regularMaterial)
+        }.foregroundStyle(theme.text)
+            .padding(.vertical,6).padding(.horizontal,12).frame(maxWidth:.infinity)
+            .background(.regularMaterial,in:RoundedRectangle(cornerRadius:15))
+            .padding(.horizontal,12).padding(.top,6)
     }
     private var frontRail: some View {
         VStack(alignment:.leading,spacing:4) {
@@ -166,6 +296,28 @@ struct HerdView: View {
             }
         }
         .accessibilityElement(children:.contain).accessibilityLabel("Global blocked front rail")
+    }
+    /// #456-r1: the rail + paddock column. At accessibility sizes a small
+    /// phone cannot show the rail, the paddock header and the field at once,
+    /// so the column scrolls under the pinned chrome and above the pinned
+    /// navigation instead of being squeezed (the squeeze previously drew the
+    /// rail outside its pills and pushed the navigation out of place). At the
+    /// approved normal sizes the composition is unchanged.
+    @ViewBuilder private func herdColumn(width:CGFloat) -> some View {
+        if dynamicType.isAccessibilitySize {
+            ScrollView(.vertical) {
+                VStack(spacing:0) {
+                    frontRail
+                    pager(width:width)
+                }
+            }
+        } else {
+            VStack(spacing:0) {
+                Spacer(minLength:12).frame(maxHeight:88)
+                frontRail
+                pager(width:width)
+            }
+        }
     }
     private func pager(width:CGFloat) -> some View {
         ScrollView(.horizontal) {
@@ -201,6 +353,9 @@ struct HerdView: View {
         .modifier(HerdScrollTracking(offset: $scroll))
         .simultaneousGesture(DragGesture().onChanged { _ in dragging = true }.onEnded { _ in dragging = false })
     }
+    /// #456: compact floating paddock navigation above the home indicator —
+    /// Previous / position / Next as a rounded material pill instead of the
+    /// old opaque full-width bar.
     private var navigation: some View {
         let index = paddocks.firstIndex { $0.id == paddockID } ?? 0
         return HStack {
@@ -209,7 +364,10 @@ struct HerdView: View {
             Text("\(index+1) / \(paddocks.count)").font(.caption.monospacedDigit())
             Spacer(minLength:4)
             Button("Next") { movePage(1) }.disabled(index+1 >= paddocks.count).frame(minWidth:44,minHeight:44)
-        }.font(.caption).padding(.horizontal,12).background(.regularMaterial)
+        }.font(.caption)
+            .padding(.horizontal,12).padding(.vertical,6)
+            .background(.regularMaterial,in:RoundedRectangle(cornerRadius:15))
+            .padding(.horizontal,12).padding(.bottom,6)
             .accessibilityLabel("Repository paddocks")
     }
     func movePage(_ delta:Int) {
@@ -223,7 +381,8 @@ struct HerdView: View {
                 ZStack(alignment:.bottom) {
                     Canvas { context,_ in
                         HerdArt().paint(&context,identity:horse.identity,
-                                        pose:horse.pose(elapsed:elapsed,reduceMotion:reduced || !motionEnabled))
+                                        pose:horse.pose(elapsed:elapsed,reduceMotion:reduced || !motionEnabled),
+                                        gait:horse.gait(elapsed:elapsed,reduceMotion:reduced || !motionEnabled))
                     }
                     .frame(width:132,height:100)
                     .offset(x:horse.roam(elapsed:elapsed,enabled:motionEnabled && !dragging && !rail),
@@ -253,6 +412,152 @@ struct HerdView: View {
         .accessibilityHint(horse.disconnected ? "Source disconnected" : "Opens recent output")
     }
 }
+
+/// #456: full-screen cover mapping for the procedural ranch. The approved
+/// native scene is a 390x640 world; the cover gives it ONE uniform scale
+/// for both axes (never a per-axis stretch) and centers the overflow, which
+/// the screen crops — the ranch paints behind every safe area without
+/// deforming the approved horses or environment.
+enum HerdRanchViewport {
+    static let world = CGSize(width: 390, height: 640)
+    static func scale(for size: CGSize) -> CGFloat {
+        guard size.width > 0, size.height > 0 else { return 1 }
+        return max(size.width / world.width, size.height / world.height)
+    }
+}
+
+/// The cover container: the ranch content always receives a frame with the
+/// world's exact aspect ratio, so its own canvas scales uniformly.
+struct HerdRanchCover<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+    var body: some View {
+        GeometryReader { geometry in
+            let scale = HerdRanchViewport.scale(for: geometry.size)
+            content()
+                .frame(width: HerdRanchViewport.world.width*scale,
+                       height: HerdRanchViewport.world.height*scale)
+                .frame(width: geometry.size.width, height: geometry.size.height)
+                .clipped()
+        }
+    }
+}
+
+/// #456: native filter glyph (three decreasing lines) for the floating
+/// scope control — the Herd renderer cannot use the platform picture APIs.
+struct HerdFilterGlyph: View {
+    let color: Color
+    var body: some View {
+        Canvas { context, size in
+            for index in 0..<3 {
+                let fraction = 1.0-Double(index)*0.33
+                let y = size.height*(0.25+Double(index)*0.25)
+                let rect = CGRect(x:0, y:y-size.height*0.09,
+                                  width:size.width*fraction, height:size.height*0.18)
+                context.fill(Path(roundedRect:rect, cornerRadius:size.height*0.09),
+                             with:.color(color))
+            }
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+/// #456: the Herd renderer stays fail-closed against the platform picture
+/// APIs (ios/tools/herd-art/check-native-art.py), so the floating Settings
+/// control draws its gear from native geometry like the rest of the surface.
+struct HerdGearGlyph: View {
+    let color: Color
+    var body: some View {
+        Canvas { context, size in
+            let center = CGPoint(x: size.width/2, y: size.height/2)
+            let radius = min(size.width, size.height)/2
+            let hub = radius*0.62
+            for index in 0..<8 {
+                let angle = Double(index)/8*2*Double.pi
+                var tooth = Path(roundedRect: CGRect(x: -radius*0.17, y: -radius,
+                                                     width: radius*0.34, height: radius*0.55),
+                                 cornerRadius: radius*0.09)
+                tooth = tooth.applying(CGAffineTransform(rotationAngle: angle))
+                tooth = tooth.applying(CGAffineTransform(translationX: center.x, y: center.y))
+                context.fill(tooth, with: .color(color))
+            }
+            context.fill(Path(ellipseIn: CGRect(x: center.x-hub, y: center.y-hub,
+                                                width: hub*2, height: hub*2)),
+                         with: .color(color))
+            context.blendMode = .destinationOut
+            let bore = hub*0.42
+            context.fill(Path(ellipseIn: CGRect(x: center.x-bore, y: center.y-bore,
+                                                width: bore*2, height: bore*2)),
+                         with: .color(.black))
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+#if DEBUG
+extension HerdView {
+    /// #456 recorded-evidence driver (launch-arg gated; Release never
+    /// compiles it). Phases: Day full screen → Night full screen → next
+    /// paddock → floating scope sheet → floating Settings sheet → long
+    /// repository/horse names → empty scope. `-corralHerdOffline` records
+    /// the disconnected/outage frame instead. The host capture script polls
+    /// the Documents/ux-evidence markers and screenshots each phase.
+    func runFullScreenEvidence() async {
+        guard CommandLine.arguments.contains("-corral456FullScreenEvidence"),
+              !evidenceFullScreenRan else { return }
+        evidenceFullScreenRan = true
+        if CommandLine.arguments.contains("-corralHerdOffline") {
+            try? await Task.sleep(for:.seconds(2))
+            EvidenceMarkers.write("456-offline-fullscreen")
+            try? await Task.sleep(for:.seconds(9))
+            return
+        }
+        evidenceEnvironment = .day
+        try? await Task.sleep(for:.seconds(2))
+        EvidenceMarkers.write("456-1-day-fullscreen")
+        try? await Task.sleep(for:.seconds(9))
+        evidenceEnvironment = .night
+        try? await Task.sleep(for:.seconds(2))
+        EvidenceMarkers.write("456-2-night-fullscreen")
+        try? await Task.sleep(for:.seconds(9))
+        evidenceEnvironment = .day
+        movePage(1)
+        try? await Task.sleep(for:.seconds(2))
+        EvidenceMarkers.write("456-3-next-paddock")
+        try? await Task.sleep(for:.seconds(9))
+        movePage(-1)
+        showFilters = true
+        try? await Task.sleep(for:.seconds(2))
+        EvidenceMarkers.write("456-4-scope-sheet")
+        try? await Task.sleep(for:.seconds(9))
+        showFilters = false
+        try? await Task.sleep(for:.seconds(1))
+        showSettings = true
+        try? await Task.sleep(for:.seconds(2))
+        EvidenceMarkers.write("456-5-settings-sheet")
+        try? await Task.sleep(for:.seconds(9))
+        showSettings = false
+        try? await Task.sleep(for:.seconds(1))
+        var longNames: [String: Agent] = [:]
+        let states: [AgentState] = [.blocked, .blocked, .working, .working, .idle, .done, .unknown, .working]
+        for i in 0..<8 {
+            let id = "herdr:herd-fixture-long-\(i)"
+            longNames[id] = Agent(agentId:id, state:states[i], seq:UInt64(i+1),
+                                  ts:1_800_000_000_000, capabilities:["read_tail"],
+                                  workspace:Workspace(repo:"extremely-long-repository-name-for-truncation-\(i)"),
+                                  attachment:Attachment(kind:"herdr",reference:"fixture:456:\(i)"),
+                                  displayName:"very-long-horse-display-name-for-truncation-\(i)")
+        }
+        HerdEvidence.model?.fleet.seedDemo(agents:longNames,rev:2)
+        try? await Task.sleep(for:.seconds(2))
+        EvidenceMarkers.write("456-6-long-names")
+        try? await Task.sleep(for:.seconds(9))
+        HerdEvidence.model?.fleet.seedDemo(agents:[:],rev:3)
+        try? await Task.sleep(for:.seconds(2))
+        EvidenceMarkers.write("456-7-empty-scope")
+        try? await Task.sleep(for:.seconds(9))
+    }
+}
+#endif
 
 struct HerdScrollOffset: PreferenceKey {
     static var defaultValue: CGFloat = 0

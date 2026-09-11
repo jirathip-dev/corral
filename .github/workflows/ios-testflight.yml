@@ -81,6 +81,7 @@ jobs:
           grep -Eq '^[[:space:]]*default:[[:space:]]*validate[[:space:]]*$' "$workflow"
 
           ruby -c fastlane/Fastfile >/dev/null
+          python3 scripts/test-ios-build-number.py
           grep -q '^gem "fastlane"' Gemfile
           grep -Eq '^    fastlane \(2\.237\.0\)$' Gemfile.lock
           grep -Eq '^  arm64-darwin-24$' Gemfile.lock
@@ -249,7 +250,7 @@ jobs:
           set -euo pipefail
           build_number="unavailable"
           if [ "${{ inputs.mode }}" = upload ]; then
-            build_number="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' build/ios/Payload/FleetNotifier.app/Info.plist 2>/dev/null || true)"
+            build_number="$(python3 scripts/ios-build-number.py build/ios/FleetNotifier.ipa)"
             [ -n "$build_number" ] || build_number="unavailable"
           fi
           derived="$RUNNER_TEMP/corral-ios-simulator"

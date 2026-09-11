@@ -60,9 +60,9 @@
 - **GitHub plane (SWR / client-absence)**: `cadence_step` `src/adapters/gh_plane.rs:398-437`
   — **zero network polling until the first SSE client has EVER connected**
   (`RecheckSubscribers` `:644-646`); first-ever join and every reconnect trigger an
-  immediate fetch (`:464-471`); while connected: foreground 60 s (`:92`); after the
+  immediate fetch (`cadence_step` `src/adapters/gh_plane.rs:405-414`); while connected: foreground 60 s (`:92`); after the
   first-ever client, with none live: background 300 s (`:94`); in-process wake slice
-  2 s (`:98`); HTTP timeout 30 s (`:100`); failure backoff starts 5 s, doubles,
+  2 s (`:98`; wake-slice mechanism `src/adapters/gh_plane.rs:646-653`); HTTP timeout 30 s (`:100`); failure backoff starts 5 s, doubles,
   capped at the cadence (`:103`, `:438-443`); one GraphQL round-trip per poll
   (`:706-760`); per-alias null data skips that repo, keeping last-known state (`:790-796`).
 - Neither plane's cost is measured in this audit; no estimate is presented as a result.
@@ -176,7 +176,7 @@ Retained logs: `.audit-logs-488-490/` (untracked, preserved).
 
 | Log | Command (verbatim) | Raw result |
 |---|---|---|
-| `489-negative-searches.log` | `git grep -n 'headSha\|head_sha\|headSubject\|head_subject' -- ios/FleetNotifier/ ios/FleetNotifierTests/` (exit 1); `git grep -n 'CiStatus\|ciStatus' -- ios/FleetNotifier/` (8 hits: 3 demo seeds + 5 model decode/init lines, no UI reader); `git grep -n 'gitPlaneBacklog' -- ios/` (exit 1) | raw exits preserved |
+| `489-negative-searches.log` | `git grep -n 'headSha\|head_sha\|headSubject\|head_subject' -- ios/FleetNotifier/ ios/FleetNotifierTests/` (exit 1); `git grep -n 'CiStatus\|ciStatus' -- ios/FleetNotifier/` (9 hits: 3 demo seed lines 40/276/311 + 6 model lines 24/46/55/60/66/78 — the :60/:66 init pair counted as the two separate matched lines it is, not merged; no UI reader); `git grep -n 'gitPlaneBacklog' -- ios/` (exit 1) | raw exits preserved |
 | `489-schedule-constants.log` | `git grep -nE 'const [A-Z_]+.*=\|Duration::from_secs\(' -- src/adapters/git_plane.rs src/adapters/gh_plane.rs` | see log |
 | `citations-489.log` | citation verifier at pinned head | see log |
 

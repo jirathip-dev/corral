@@ -1,0 +1,71 @@
+{
+  "issue": 463,
+  "approval": {
+    "source_issue": 462,
+    "approval_comment": "https://github.com/jirathip-dev/corral/issues/462#issuecomment-5604776862",
+    "confirmation_comment": "https://github.com/jirathip-dev/corral/issues/463#issuecomment-5604778295",
+    "design_commit": "060220c32c4b5de638f4950dd8bd71fa71814816",
+    "treatment": "A",
+    "decision": "Treatment A only. Bay is the primary/default app icon, so a nil alternateIconName restores Bay; the stable alternates are exactly Palomino, Black and Grey. The legacy Original and every Treatment B master are forbidden shipping bytes. No Bay alternate entry."
+  },
+  "canonical_source": {
+    "path": "ios/tools/herd-art/horsesvg.py",
+    "sha256": "a9c172de9aa42080daf987ca6919f827895c363903c16e1ec3fbdf865b6041ec",
+    "note": "Canonical horse generator; imported unmodified by the #462 design gate. The approved masters are not redrawn or re-exported by #463."
+  },
+  "catalog": {
+    "root": "ios/FleetNotifier/Assets.xcassets",
+    "primary_set": "AppIcon",
+    "alternate_sets": [
+      "Palomino",
+      "Black",
+      "Grey"
+    ],
+    "master_dir": "ios/tools/herd-art/appicon-masters/treatment-a",
+    "image_name": "{set}-1024.png",
+    "pixel_size": 1024,
+    "bit_depth": 8,
+    "color_type": 2,
+    "interlace": 0,
+    "nil_restores": "AppIcon",
+    "preview_sets": [
+      "BayPreview",
+      "PalominoPreview",
+      "BlackPreview",
+      "GreyPreview"
+    ],
+    "preview_image_name": "{set}-1024.png",
+    "preview_note": "#464: byte-identical copies of the same approved Treatment-A masters, materialized as regular imagesets so the Settings App Icon picker can render them (iOS 18+ does not vend appiconset renditions to UIImage). No new art."
+  },
+  "masters": {
+    "bay": {
+      "set": "AppIcon",
+      "sha256": "e9e8e7ebb922660dd76d511dd039562dbb333edc59080d8ffdb9efe19c1590c9",
+      "preview_set": "BayPreview"
+    },
+    "palomino": {
+      "set": "Palomino",
+      "sha256": "7e04da3407296c11f94f929124d4b6c82d83bce70e3a2700c6af906774d863ec",
+      "preview_set": "PalominoPreview"
+    },
+    "black": {
+      "set": "Black",
+      "sha256": "3ff9ccc5d592a3f43c59f8fbdf09d95a75d8200666e6fc04a836babdee77e32c",
+      "preview_set": "BlackPreview"
+    },
+    "grey": {
+      "set": "Grey",
+      "sha256": "2d43e4c3a360ddc8d8fade528f227b8808b2bb2baaef0bb816a0373cb738402e",
+      "preview_set": "GreyPreview"
+    }
+  },
+  "forbidden": {
+    "legacy_original": "e2c754cf3dd7cbc8f10090597360eb56c56fb4672856d48407453dc8190e15e7",
+    "treatment_b": [
+      "9f1298d17c7995d08f26da63236cbbe6010c3d6a0b68ef10aa71c97e2c053137",
+      "638590a47472c217ab5805cca34fb98b6d9e1f8945ec3e09bb808e198cc1eee3",
+      "f067ac3169175a094aabc11cc5367e8cb0362106aca293ecb029f9787ce9ee23",
+      "cb97ca8867807500168b5a69d0314beccc6545c36c0ac96edaeafedaa83bab10"
+    ]
+  }
+}

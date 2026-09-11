@@ -28,6 +28,13 @@ enum HerdEvidence {
         }
         return result
     }
+    static func reorderedAgents() -> [String:Agent] {
+        var agents = seedAgents(dense:false)
+        agents["herdr:herd-fixture-2"]?.state = .working
+        agents["herdr:herd-fixture-4"]?.state = .idle
+        agents["herdr:herd-fixture-7"]?.state = .idle
+        return agents
+    }
     struct Marker: Encodable {
         let phase: String
         let sceneID: String
@@ -35,6 +42,9 @@ enum HerdEvidence {
         let environment: String
         let scroll: Double
         let paddock: String?
+        let paddockOrder: [String]
+        let workingPaddocks: [String]
+        let paddockPosition: Int?
         let reduceMotion: Bool
         let clockRunning: Bool
         let ticks: Int
@@ -55,8 +65,12 @@ enum HerdEvidence {
     }
     static func record(_ phase:String,scene:HerdView) {
         guard CommandLine.arguments.contains("-corralHerdEvidence") else { return }
+        let paddocks = HerdProjection.paddocks(scene.horses)
         let marker = Marker(phase:phase,sceneID:scene.sceneID.uuidString,night:scene.lighting.night,
                             environment:scene.effectiveEnvironment.rawValue,scroll:Double(scene.scroll),paddock:scene.paddockID,
+                            paddockOrder:paddocks.map(\.title),
+                            workingPaddocks:paddocks.filter { $0.horses.contains { $0.state == .working } }.map(\.title),
+                            paddockPosition:paddocks.firstIndex { $0.id == scene.paddockID }.map { $0+1 },
                             reduceMotion:scene.reduced,clockRunning:scene.clock.running,ticks:scene.clock.ticks,
                             horseIDs:scene.horses.map(\.id),planeOffsets:Dictionary(uniqueKeysWithValues:
                                 RanchPlane.allCases.map { ($0.rawValue,Double($0.offset(scroll:scene.scroll,coverage:10_000,
@@ -81,6 +95,14 @@ extension HerdView {
         evidenceEnvironment = .day
         evidenceElapsed = 25-HorseIdentity(name:"willow-bend").phase
         guard await evidencePause() else { return }
+        evidencePhase = "449-01-active-first"
+        guard await evidencePause(10) else { return }
+        HerdEvidence.model?.fleet.seedDemo(agents:HerdEvidence.reorderedAgents(),rev:2)
+        guard await evidencePause() else { return }
+        evidencePhase = "449-02-selection-retained"
+        guard await evidencePause(10) else { return }
+        HerdEvidence.model?.fleet.seedDemo(agents:HerdEvidence.seedAgents(dense:false),rev:3)
+        guard await evidencePause() else { return }
         evidencePhase = "01-day-grazing"
         guard await evidencePause() else { return }
         // ONE view/scene identity, same agents, filters, paddock and pose.
@@ -100,7 +122,7 @@ extension HerdView {
         guard await evidencePause() else { return }
         evidencePhase = "05-auto-fallback"
         guard await evidencePause() else { return }
-        HerdEvidence.model?.fleet.seedDemo(agents:HerdEvidence.seedAgents(dense:true),rev:2)
+        HerdEvidence.model?.fleet.seedDemo(agents:HerdEvidence.seedAgents(dense:true),rev:4)
         guard await evidencePause() else { return }
         evidencePhase = "06-dense-blocked"
         guard await evidencePause() else { return }
@@ -111,8 +133,8 @@ extension HerdView {
         guard await evidencePause() else { return }
         openBoard()
     }
-    private func evidencePause() async -> Bool {
-        do { try await Task.sleep(for:.seconds(2)); return true }
+    private func evidencePause(_ seconds:Int = 2) async -> Bool {
+        do { try await Task.sleep(for:.seconds(seconds)); return true }
         catch { return false }
     }
 }

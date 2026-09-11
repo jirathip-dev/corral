@@ -14,6 +14,7 @@
 //! calls, one page-cache write syscall.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -51,6 +52,9 @@ struct Inner {
 /// Cloneable handle into the store.
 #[derive(Clone)]
 pub struct Store {
+    /// Opaque identity for this daemon/store lifetime. Clones share it;
+    /// every fresh Store gets a new value even when its numeric rev repeats.
+    epoch: Arc<str>,
     inner: Arc<Mutex<Inner>>,
     tx: broadcast::Sender<Delta>,
     notify: Arc<Notify>,
@@ -76,6 +80,7 @@ impl Default for Store {
         let (tx, _) = broadcast::channel(BROADCAST_CAP);
         let (version, _) = watch::channel(0);
         Self {
+            epoch: Arc::from(new_epoch()),
             inner: Arc::new(Mutex::new(Inner::default())),
             tx,
             notify: Arc::new(Notify::new()),
@@ -90,6 +95,11 @@ impl Default for Store {
 impl Store {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Opaque daemon-lifetime identity used to scope SSE resume cursors.
+    pub fn epoch(&self) -> Arc<str> {
+        self.epoch.clone()
     }
 
     /// Daemon entry: history persists under `dir` (see [`crate::history`]).
@@ -350,14 +360,36 @@ impl Store {
     /// the client has no cursor (always a full snapshot). Flushes pending
     /// changes first so the returned boundary matches the live stream.
     ///
-    /// Cursor semantics: equal to current -> go live; older but covered by
-    /// the history ring -> replay deltas; older than the ring, or NEWER than
-    /// current (a daemon restart resets `rev` to 0, so a future cursor means
-    /// the client is on a dead epoch) -> full snapshot. A future cursor must
-    /// never silently go live, or the client keeps its stale epoch forever.
+    /// Cursor semantics (numeric): equal to current -> go live; older but
+    /// covered by the history ring -> replay deltas; older than the ring, or
+    /// NEWER than current (a daemon restart resets `rev` to 0, so a future
+    /// cursor means the client is on a dead epoch) -> full snapshot. A
+    /// future cursor must never silently go live, or the client keeps its
+    /// stale epoch forever.
+    ///
+    /// The epoch-scoped variant adds the daemon-lifetime check: a cursor
+    /// naming ANY other lifetime (including one whose numeric rev is equal
+    /// or lower) is stale state and must be replaced by a full snapshot,
+    /// never resumed incrementally. Legacy clients omit the epoch and keep
+    /// the numeric-only behavior above.
     pub async fn resume_from(&self, last_rev: Option<u64>) -> Resume {
+        self.resume_from_epoch(last_rev, None).await
+    }
+
+    /// Epoch-scoped resume (#450). `epoch: None` is a legacy cursor
+    /// (numeric-only behavior); `Some(other)` names a different daemon
+    /// lifetime and always forces a full snapshot of the CURRENT lifetime.
+    pub async fn resume_from_epoch(&self, last_rev: Option<u64>, epoch: Option<&str>) -> Resume {
         self.flush().await;
         let inner = self.inner.lock().await;
+        if let Some(requested) = epoch
+            && requested != self.epoch.as_ref()
+        {
+            // The client's retained state belongs to another daemon
+            // lifetime — even an equal or lower numeric rev must not
+            // survive or go live. Replace it wholesale.
+            return Resume::Snapshot(self.snapshot_locked(&inner));
+        }
         let Some(last_rev) = last_rev else {
             return Resume::Snapshot(self.snapshot_locked(&inner));
         };
@@ -411,4 +443,14 @@ fn now_millis() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+fn new_epoch() -> String {
+    let mut bytes = [0_u8; 16];
+    getrandom::fill(&mut bytes).expect("OS RNG failure: cannot create daemon epoch");
+    let mut epoch = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(&mut epoch, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    epoch
 }

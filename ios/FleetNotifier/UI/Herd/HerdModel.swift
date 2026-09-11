@@ -5,6 +5,25 @@ import SwiftUI
 enum FleetPresentation: String, CaseIterable { case board = "Board", herd = "Herd" }
 enum HorsePose: String { case stand, working, blocked, done, unknown, graze, alertStatic }
 
+/// #448: deterministic gait phase for the native procedural renderer.
+///
+/// Derived only from the shared presentation clock's `elapsed` plus the
+/// name-derived identity offset — no per-horse timer, task, or mutable
+/// animation state. `phase` is normalized into [0,1) so sampling a full
+/// cycle later renders identically; `swing` is the peak leg rotation in
+/// degrees around the pose's approved rest angles, and 0 means standstill
+/// (the approved static pose then renders byte-identical).
+struct HorseGait: Equatable {
+    let phase: Double
+    let swing: Double
+    init(phase: Double, swing: Double) {
+        self.phase = phase - phase.rounded(.down)
+        self.swing = swing
+    }
+    static let standstill = HorseGait(phase: 0, swing: 0)
+    var isStepping: Bool { swing > 0 }
+}
+
 struct HorseIdentity: Equatable {
     let coat: Int
     let breed: Int
@@ -49,6 +68,24 @@ struct HerdHorse: Identifiable, Equatable {
             return !reduceMotion && phase >= 24 && phase < 28 ? .graze : .stand
         }
     }
+    /// #448 cadence and amplitude per state: a working horse cycles through
+    /// a coordinated diagonal trot; an idle horse outside its deliberate
+    /// grazing window steps in small slow strides (its 12 s cycle stays
+    /// cadence-aligned with the 24 s roam sway); every stationary pose —
+    /// blocked, done, unknown, grazing, alert static, disconnected and
+    /// reduce-motion — is standstill.
+    static let workingGait = (cycle: 2.4, swing: 22.0)
+    static let idleGait = (cycle: 12.0, swing: 8.0)
+    func gait(elapsed: Double, reduceMotion: Bool) -> HorseGait {
+        guard !reduceMotion, elapsed.isFinite else { return .standstill }
+        let tuning: (cycle: Double, swing: Double)
+        switch pose(elapsed: elapsed, reduceMotion: false) {
+        case .working: tuning = Self.workingGait
+        case .stand: tuning = Self.idleGait
+        default: return .standstill
+        }
+        return HorseGait(phase: elapsed / tuning.cycle + identity.phase / 30, swing: tuning.swing)
+    }
     func roam(elapsed: Double, enabled: Bool) -> CGFloat {
         guard enabled, !disconnected, state == .idle || state == .working else { return 0 }
         // 132 pt art in a 156 pt slot leaves 12 pt inset; ±4 retains ≥8.
@@ -68,8 +105,15 @@ struct HerdPaddock: Identifiable {
 enum HerdProjection {
     static func paddocks(_ horses: [HerdHorse]) -> [HerdPaddock] {
         let grouped = Dictionary(grouping: horses) { BoardModel.repoKey(of: $0.agent) }
-        return grouped.keys.sorted { ($0 ?? "\u{10ffff}") < ($1 ?? "\u{10ffff}") }
-            .map { HerdPaddock(repo: $0, horses: grouped[$0] ?? []) }
+        return grouped.keys.sorted { left, right in
+            let leftWorking = grouped[left]?.contains { $0.state == .working } == true
+            let rightWorking = grouped[right]?.contains { $0.state == .working } == true
+            if leftWorking != rightWorking { return leftWorking }
+            return (left ?? "\u{10ffff}") < (right ?? "\u{10ffff}")
+        }.map { HerdPaddock(repo: $0, horses: grouped[$0] ?? []) }
+    }
+    static func reconciledPaddockID(_ selected: String?, in ids: [String]) -> String? {
+        ids.contains(selected ?? "") ? selected : ids.first
     }
     static func single(_ sections: BoardModel.Sections, host: UUID?, disconnected: Bool) -> [HerdHorse] {
         sections.statuses.flatMap(\.subgroups).flatMap(\.agents).map {

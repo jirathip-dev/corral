@@ -303,7 +303,72 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # #428 source set.
     # #444 correction 1: native procedural Herd plus DEBUG-only evidence;
     # original V1 paths and scene/lifecycle sources are all digest-bound.
-    "b5e3a3b3a3bb1f06c914d78b41752e1f38f66adbaa94ccc59001041d22cbf656"
+    # #450: restart-aware SSE authority — Snapshot/Delta gained the opaque
+    # daemon `epoch` (Models), FleetStore accepts()/cursor persistence and
+    # the reconnect headers became epoch-scoped, CorraldClient sends
+    # Corral-Epoch, and the per-host cursor mirrors carry the epoch
+    # (HostProfile/Store/Coordinator/AppModel) — re-pinned over the #450
+    # source set.
+    # #449: Herd paddocks prioritize connected working repositories while
+    # preserving identity selection; DEBUG evidence records the live reorder.
+    # r2 integration refresh: #449 + #458 merged source set — the digest
+    # is regenerated from the merged checkout; neither parent pin applies.
+    # #458: persisted Board/Herd preference — AppModel restores the saved
+    # presentation (Board default for missing/invalid) and owns the
+    # select/saved/openBoard presentation API; FleetViews dropped the
+    # principal top Board/Herd switch for the canonical Appearance-section
+    # picker and gained the #458 evidence sequence driver; FleetNotifierApp
+    # gained the Corral458Presentation launch scenarios + the accessibility
+    # size route + demo-notification suppression for the evidence sim —
+    # re-pinned over the #458 source set.
+    # #450 fix r1: F1 repair (stream-only epoch-reset authority) + the
+    # escaped stale-agent-pull regression — recomputed over the MERGED
+    # (16daaca) + repaired head; neither parent pin applies.
+    # #456: full-screen Herd shell — FleetViews Herd branch (no opaque board
+    # header / duplicated toolbar) + HerdView full-screen ranch cover,
+    # floating scope/Settings/counts and floating paddock navigation with
+    # native glyphs — re-pinned over the #456 source set.
+    # #456 r1: accessibility Dynamic Type repair — the floating top chrome
+    # keeps its scaled ideal (layoutPriority), the rail + paddock column
+    # scrolls under it at accessibility sizes, and the bottom navigation keeps
+    # its >= 44 pt targets — re-pinned over the #456-r1 source set.
+    # #456 refresh: union of #449 (HerdProjection working-repo ordering +
+    # reconciledPaddockID, HerdEvidence paddock order/position markers) and
+    # #456/#456-r1 (full-screen shell + accessibility repair). The pin below
+    # is recomputed from THIS merged checkout — neither parent pin applies.
+    # #464: the Settings App Icon picker — AppIconPicker (four #463 shipping
+    # choices, the UIApplication alternate-icon seam, the live-state model)
+    # added to the manifest, and FleetViews gained the App Icon section +
+    # scene-active re-read — re-pinned over the #464 source set.
+    # #464 r1 (owner-authorized preview repair): FleetAppIcon.preview now maps
+    # to the four generated loadable preview imagesets — re-pinned.
+    # #464 integration refresh: #464 merged onto the #449/#458 integration
+    # source set — the digest is regenerated from the merged checkout (union
+    # of #449/#458 and #464 sources); neither parent pin applies.
+    # #450 integration refresh: #450 (epoch authority + fix r1) merged onto
+    # the #449/#458/#464 integration source set — union of all four source
+    # sets; regenerated from the merged checkout; neither parent pin applies.
+    # #456 refresh2: union of #449/#458, #456/#456-r1 and #464/#464-r1 over
+    # the 8671cfc integration — the pin below is recomputed from THIS merged
+    # checkout; no parent pin (4740de69…, 184c7a64…, 0cb9dc0c…, c17cfe9a…)
+    # applies.
+    # #457 refresh2: #457 (contextual Herd controls: the ONE shared filter
+    # sheet with an explicit Board/Herd presentation context, the sealed
+    # ranch control palette + lighting report in HerdView, and the ranch
+    # chrome surface with the Reduce Transparency/high-contrast opaque
+    # fallback) merged together with #425 (FleetStore transport-liveness
+    # policy/heartbeat/watchdog — clean-EOF posture, stale-aware pull
+    # recovery — and CorraldClient onActivity/onStreamEnded byte-path
+    # signals) onto the #450/#449/#458/#456/#464 integration source set
+    # (521e7cd9 → ba15563, PR474) — union of ALL source sets; the pin below
+    # is recomputed from THIS merged checkout; neither parent pin (1827b419…,
+    # a898ad7a…) applies.
+    # #448 refresh: #448 (native coordinated gait phase in HerdModel/HerdArt
+    # plus the horseButton runtime call site) merged onto the #457-refresh2
+    # integration (ee73262, PR476) — union of ALL source sets; the pin below
+    # is recomputed from THIS merged checkout; neither parent pin (8bccaf68…,
+    # 6c90bc77…) applies.
+    "8fc75d5e4a202154bcc00bb7529ba9aa2cb9f7ea7fbcd6ac2bc08c36dd95c064"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -449,7 +514,34 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # #428: SheetTranslucencyWiringTests gained the layered glass-branch
     # pins + the themedRowSurface counts (Settings 5 / Add Host 3 /
     # Fingerprint 6 sections) — re-pinned over the #428 test source.
-    "aa9c3dc9ef6accadce1d35787b02d032191ed5606ac08dac57ec7997ce08ce5a"
+    # #450: EpochRecoveryTests (lower/equal/higher cross-lifetime
+    # convergence, same-lifetime monotonicity, stale-epoch refresh
+    # rejection, connection-generation isolation) and StaleCursorTests
+    # (epoch persistence + legacy numeric-only resume) — re-pinned over
+    # the #450 test source.
+    # #458: PresentationPreferenceTests (restore/round-trip/override/
+    # stream-preservation/demo-isolation), the HerdTests openBoard routing
+    # assertion, and the SettingsAccessWiringTests DEBUG-gated opener count
+    # (12 with the #458 presentation driver) — re-pinned over the #458 test
+    # source.
+    # #450 fix r1: escaped-pull regression (handleStaleAgent) added —
+    # recomputed over the MERGED (16daaca) + repaired test source.
+    # #464: the Settings themedRowSurface count moved 5 → 6 for the new App
+    # Icon section (AppIconPickerTests lives in its own file) — re-pinned
+    # over the #464 test source.
+    # #464 integration refresh: recomputed on the merged checkout — the merged
+    # pinned test file is byte-identical to the #464 lane's (#449's test change
+    # landed in HerdTests.swift, outside this pin).
+    # #457 refresh2: #457's FleetNotifierTests theme-token needle and #425's
+    # HeartbeatRecoveryTests (real client byte-path regression for
+    # comment-only keep-alives, silent half-open drops, clean EOF,
+    # exactly-once stale replacement and per-host watchdog teardown) merged
+    # onto the #450-refresh test source — digest recomputed over the merged
+    # checkout; neither parent pin (dd9d3952…, 5200562a…) applies.
+    # #448 refresh: HerdGaitTests.swift is a SEPARATE file outside this pin,
+    # so the #448 refresh leaves the pinned FleetNotifierTests.swift
+    # byte-unchanged — digest recomputed over the merged checkout (same value).
+    "92631629765f5f67b6efba46aa13e84a6793cc460883d31c7f45623a4820d395"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

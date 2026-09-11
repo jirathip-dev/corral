@@ -180,6 +180,8 @@ struct Agent: Codable, Equatable, Identifiable, Sendable {
 /// client's cursor is too old.
 struct Snapshot: Codable, Sendable {
     var schemaVersion: UInt32
+    /// Opaque daemon/store lifetime. Absent on pre-#450 daemons.
+    var epoch: String?
     /// Monotonic cursor; a client's `Last-Event-ID` is compared against this.
     var rev: UInt64
     /// Epoch millis when this snapshot was assembled.
@@ -189,7 +191,7 @@ struct Snapshot: Codable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
-        case rev
+        case epoch, rev
         case generatedAt = "generated_at"
         case agents
     }
@@ -199,8 +201,10 @@ struct Snapshot: Codable, Sendable {
         rev: UInt64,
         generatedAt: UInt64,
         agents: [String: Agent],
+        epoch: String? = nil,
     ) {
         self.schemaVersion = schemaVersion
+        self.epoch = epoch
         self.rev = rev
         self.generatedAt = generatedAt
         self.agents = agents
@@ -209,6 +213,7 @@ struct Snapshot: Codable, Sendable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try container.decode(UInt32.self, forKey: .schemaVersion)
+        epoch = try container.decodeIfPresent(String.self, forKey: .epoch)
         rev = try container.decode(UInt64.self, forKey: .rev)
         generatedAt = try container.decode(UInt64.self, forKey: .generatedAt)
         agents = try container.decode([String: Agent].self, forKey: .agents)
@@ -217,11 +222,20 @@ struct Snapshot: Codable, Sendable {
 
 /// Incremental change batch, the unit of SSE delivery.
 struct Delta: Codable, Equatable, Sendable {
+    /// Opaque daemon/store lifetime. Absent on pre-#450 daemons.
+    var epoch: String?
     var rev: UInt64
     /// Full records to upsert.
     var upd: [Agent]
     /// agent_ids to delete.
     var del: [String]
+
+    init(rev: UInt64, upd: [Agent], del: [String], epoch: String? = nil) {
+        self.epoch = epoch
+        self.rev = rev
+        self.upd = upd
+        self.del = del
+    }
 }
 
 /// Response to a drive read: `{request_id, ok, error?, error_kind?, rev, result?}`.

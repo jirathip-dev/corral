@@ -4,20 +4,101 @@ import Observation
 
 /// Thread-safe cursor for the SSE reconnect closure (the stream task reads
 /// it off the main actor).
+struct SSECursor: Sendable {
+    let rev: UInt64
+    let epoch: String?
+}
+
 final class CursorBox: @unchecked Sendable {
     private let lock = NSLock()
-    private var value: UInt64?
+    private var value: SSECursor?
 
-    func read() -> UInt64? {
+    func read() -> SSECursor? {
         lock.lock()
         defer { lock.unlock() }
         return value
     }
 
-    func write(_ newValue: UInt64?) {
+    func write(rev: UInt64?, epoch: String?) {
         lock.lock()
         defer { lock.unlock() }
-        value = newValue
+        value = rev.map { SSECursor(rev: $0, epoch: epoch) }
+    }
+}
+
+/// #425: the client-side liveness policy for ONE host's SSE stream — an
+/// explicit, documented inactivity budget plus the (bounded) watchdog poll
+/// cadence.
+///
+/// Why a client-side budget exists at all: the daemon already emits an SSE
+/// keep-alive COMMENT every 15s on an idle stream (`src/api/mod.rs`
+/// `KEEPALIVE`), and comment lines are never framed, so frames alone cannot
+/// tell a healthy idle stream from a silently wedged (half-open) one. The
+/// ONLY honest liveness signal is received BYTES. The budget is half of the
+/// transport's own configured request-inactivity timeout
+/// (`URLSessionConfiguration.timeoutIntervalForRequest` — 60s for the app's
+/// session), i.e. **30s by default: two missed 15s keep-alives**. The
+/// transport timeout itself is unchanged and remains the outer layer (Apple
+/// documents it as reset by received data); the watchdog is what preempts
+/// it, so a silent connection is detected and replaced deterministically
+/// instead of lingering as `.connected`.
+struct StreamLiveness: Sendable {
+    /// Fraction of the transport's configured inactivity timeout that the
+    /// client tolerates before declaring a stream stale.
+    static let budgetRatio: Double = 0.5
+    /// Upper bound on the watchdog poll cadence: with the app's defaults
+    /// (budget 30s) the watchdog polls every 5s, so staleness is exposed and
+    /// replaced within budget + 5s — always before the transport's own 60s
+    /// inactivity timeout fires.
+    static let maxTickInterval: TimeInterval = 5
+    /// Floors so a degenerate (zero/negative) configured timeout can never
+    /// produce a busy-loop cadence.
+    static let minBudget: TimeInterval = 0.05
+    static let minTickInterval: TimeInterval = 0.01
+
+    let inactivityBudget: TimeInterval
+    let tickInterval: TimeInterval
+
+    /// Explicit form — the owner (or a test) may pin both values.
+    init(inactivityBudget: TimeInterval, tickInterval: TimeInterval) {
+        self.inactivityBudget = max(Self.minBudget, inactivityBudget)
+        self.tickInterval = max(Self.minTickInterval, tickInterval)
+    }
+
+    /// Derive the budget from the transport's configured request-inactivity
+    /// timeout (see the type doc for the ratio and its rationale).
+    init(transportTimeout: TimeInterval) {
+        let budget = max(Self.minBudget, transportTimeout * Self.budgetRatio)
+        self.init(inactivityBudget: budget,
+                  tickInterval: min(Self.maxTickInterval, budget / 3))
+    }
+}
+
+/// #425: thread-safe "when did this host's transport last prove itself"
+/// clock. The byte path (off the main actor) marks it; the main actor reads
+/// the age to decide staleness. Monotonic (`DispatchTime`), never
+/// wall-clock, so a clock change can never fabricate liveness or staleness.
+final class TransportHeartbeat: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lastSignal: DispatchTime
+
+    init(now: DispatchTime = .now()) {
+        lastSignal = now
+    }
+
+    /// Record a transport signal: received bytes, a 200 stream ack, or the
+    /// dispatch of a new stream attempt.
+    func mark(now: DispatchTime = .now()) {
+        lock.lock()
+        defer { lock.unlock() }
+        lastSignal = now
+    }
+
+    /// Seconds since the last transport signal.
+    func age(now: DispatchTime = .now()) -> TimeInterval {
+        lock.lock()
+        defer { lock.unlock() }
+        return TimeInterval(now.uptimeNanoseconds &- lastSignal.uptimeNanoseconds) / 1.0e9
     }
 }
 
@@ -48,6 +129,8 @@ final class FleetStore: ObservableObject {
     /// reads this pane, the legacy text surface reads `tails`.
     @Published private(set) var tailPanes: [String: TailPane] = [:]
     @Published private(set) var lastEventId: UInt64?
+    /// Daemon lifetime that owns `lastEventId`; nil is a legacy daemon.
+    private(set) var lastEventEpoch: String?
     @Published private(set) var connectionState: ConnectionState = .disconnected
     /// #166 review F2: client-side state-entered wall clock (epoch millis).
     /// Seeded from `agent.ts` at first sight; updated ONLY when `state`
@@ -108,6 +191,34 @@ final class FleetStore: ObservableObject {
     private static let log = Logger(subsystem: "com.corral.fleetnotifier", category: "stream")
 
     private var streamTask: Task<Void, Never>?
+    /// #425: this host's transport-liveness policy. Re-derived from the
+    /// connecting client's own session configuration on every `connect()`
+    /// (see `StreamLiveness`); the owner may override it afterwards to pin a
+    /// scenario (tests shrink the budget, or suppress the watchdog with a
+    /// large tick, to exercise one recovery path deterministically). A
+    /// change re-arms the watchdog, so the new cadence takes effect for the
+    /// NEXT tick instead of only after the one already scheduled.
+    var streamLiveness = StreamLiveness(transportTimeout: 60) {
+        didSet {
+            guard streamTask != nil else { return }
+            startWatchdog(generation: connectionGeneration)
+        }
+    }
+    /// #425: last transport signal for THIS host's stream (bytes, a 200 ack,
+    /// or an attempt dispatch). Shared with the byte path off the main actor.
+    private let heartbeat = TransportHeartbeat()
+    /// #425: the per-host liveness watchdog. Alive only while a stream task
+    /// is owned; cancelled by every teardown path (`disconnect`, `reset`,
+    /// background stop, host removal).
+    private var watchdogTask: Task<Void, Never>?
+    /// #425: the client the watchdog replaces a stale stream with (the same
+    /// host/session/cursor the owner connected with).
+    private var streamClient: CorraldClient?
+    /// #425: one replacement per stale episode. A replacement is started by
+    /// the refresh path or the watchdog; until it produces its own transport
+    /// signal (200 ack / clean end / error) — or its freshness window
+    /// expires — neither path stacks a second replacement on top of it.
+    private var replacementInFlight = false
     /// Review F3: bumped on every `connect()`. Hop closures capture it, so
     /// a report from a PREVIOUS stream cannot land after `disconnect()` —
     /// or worse, after a NEW connect — and flip the state back.
@@ -137,27 +248,58 @@ final class FleetStore: ObservableObject {
 
     // MARK: - Application
 
-    private func accepts(_ event: FleetEvent) -> Bool {
+    private func accepts(_ event: FleetEvent, allowsEpochReset: Bool) -> Bool {
         let current = lastEventId ?? 0
         switch event {
         case .snapshot(let snapshot):
-            // Recovery snapshots may race a newer SSE delta. Equal revisions
-            // are safe replacements; older snapshots are stale responses.
-            return snapshot.rev >= current
+            guard let incomingEpoch = snapshot.epoch else {
+                // Pre-#450 daemon: retain revision-only compatibility.
+                return snapshot.rev >= current
+            }
+            guard let lastEventEpoch else {
+                // A stream snapshot establishes epoch authority even when an
+                // upgraded client retained a higher legacy revision. Pull
+                // snapshots stay monotonic until the stream anchors it.
+                return allowsEpochReset || snapshot.rev >= current
+            }
+            return incomingEpoch == lastEventEpoch
+                ? snapshot.rev >= current
+                : allowsEpochReset
         case .delta(let delta):
+            if let incomingEpoch = delta.epoch {
+                // A delta can never establish or cross an epoch: only a full
+                // stream snapshot is an authoritative replacement boundary.
+                guard incomingEpoch == lastEventEpoch else { return false }
+            }
             // A duplicate/late delta must not mutate records even if its
             // cursor is already behind the current state.
             return delta.rev > current
         }
     }
 
+    /// Generic frame application (stream-independent entry point): monotonic
+    /// ONLY. #450 F1: epoch-reset authority is a property of the live STREAM
+    /// (`applyStreamFrame`, entered via `ingest`) — an HTTP pull frame (the
+    /// stale-agent reconciliation `fetchSnapshot`, a refresh) must never
+    /// cross a daemon lifetime, or a late response from a DEAD lifetime
+    /// replaces newer stream state and wedges convergence behind a healthy
+    /// connection.
+    ///
+    /// #166 review F2: every apply path must track `stateEnteredAt`. The
+    /// snapshot/refresh path (AppModel → `fleet.apply`) and the streaming
+    /// path (`ingest`) both converge here, so the client-side state clock
+    /// is seeded on first sight and re-stamped on state change regardless
+    /// of which entry point delivered the event.
     func apply(_ event: FleetEvent) {
-        // #166 review F2: every apply path must track `stateEnteredAt`. The
-        // snapshot/refresh path (AppModel → `fleet.apply`) and the streaming
-        // path (`ingest`) both converge here, so the client-side state clock
-        // is seeded on first sight and re-stamped on state change regardless
-        // of which entry point delivered the event.
-        apply(withoutDiff: event, marksConnected: true)
+        apply(withoutDiff: event, marksConnected: true, allowsEpochReset: false)
+    }
+
+    /// #450: the live-stream frame path. A full snapshot that RODE the SSE
+    /// stream is the ONE authoritative epoch boundary — a restarted
+    /// daemon's lower/equal-rev snapshot replaces the retained state. Only
+    /// `ingest` reaches this method.
+    private func applyStreamFrame(_ event: FleetEvent) {
+        apply(withoutDiff: event, marksConnected: true, allowsEpochReset: true)
     }
 
     /// Issue #219: authoritative pull/toolbar refresh application.
@@ -174,10 +316,12 @@ final class FleetStore: ObservableObject {
     /// fired on every successful `/events` 200) may, so a snapshot-only
     /// success can never render a dead/offline host as live.
     func applyRefresh(_ snapshot: Snapshot) {
-        apply(withoutDiff: .snapshot(snapshot), marksConnected: false)
+        apply(withoutDiff: .snapshot(snapshot), marksConnected: false,
+              allowsEpochReset: false)
     }
 
-    private func apply(withoutDiff event: FleetEvent, marksConnected: Bool) {
+    private func apply(withoutDiff event: FleetEvent, marksConnected: Bool,
+                       allowsEpochReset: Bool) {
         // #399 B4/C1: fail closed when the frame carries records from a
         // DIFFERENT host identity than the one this store was pinned to.
         // The prior (stale) snapshot stays untouched — nothing is applied.
@@ -190,14 +334,15 @@ final class FleetStore: ObservableObject {
             onHostIntegrityMismatch?()
             return
         }
-        guard accepts(event) else { return }
+        guard accepts(event, allowsEpochReset: allowsEpochReset) else { return }
         switch event {
         case .snapshot(let snapshot):
             let old = agents
             agents = snapshot.agents
             tails = tails.filter { snapshot.agents[$0.key] != nil }
             lastEventId = snapshot.rev
-            cursorBox.write(snapshot.rev)
+            lastEventEpoch = snapshot.epoch
+            cursorBox.write(rev: snapshot.rev, epoch: snapshot.epoch)
             updateStateEnteredAt(old: old, new: snapshot.agents)
             trackTransitions(.snapshot(snapshot))
         case .delta(let delta):
@@ -210,7 +355,8 @@ final class FleetStore: ObservableObject {
             let old = agents
             agents = next
             lastEventId = delta.rev
-            cursorBox.write(delta.rev)
+            lastEventEpoch = delta.epoch
+            cursorBox.write(rev: delta.rev, epoch: delta.epoch)
             updateStateEnteredAt(old: old, new: next)
             trackTransitions(.delta(delta))
         }
@@ -425,17 +571,31 @@ final class FleetStore: ObservableObject {
     /// #425: the task's OWN exit clears the handle — when the async stream
     /// owner finishes (for any reason other than `disconnect()`), the
     /// non-nil `streamTask` must not keep refusing later reconnects.
+    /// #425: also derives this host's liveness policy from the connecting
+    /// transport, marks the attempt as the first heartbeat of its window,
+    /// and arms the per-host staleness watchdog.
     func connect(client: CorraldClient) {
         guard streamTask == nil else { return }
         connectionState = .connecting
         connectionGeneration += 1
         lastConnectionErrorReason = nil
+        // #425: the policy follows the connecting transport's own configured
+        // request-inactivity timeout, and the attempt dispatch is this
+        // window's first liveness signal (a replacement therefore always
+        // gets a full budget before it can be judged silent).
+        streamLiveness = StreamLiveness(
+            transportTimeout: client.session.configuration.timeoutIntervalForRequest)
+        streamClient = client
+        heartbeat.mark()
         // #91: a cursor is only valid while the store holds the state it is
         // a delta-base for — resetDevice() wipes the map but NOT the
         // persisted cursor, so an EMPTY store must not resume one (the
         // daemon would answer deltas-only and the board would stay empty).
-        if agents.isEmpty && lastEventId != nil { lastEventId = nil }
-        cursorBox.write(lastEventId)
+        if agents.isEmpty && lastEventId != nil {
+            lastEventId = nil
+            lastEventEpoch = nil
+        }
+        cursorBox.write(rev: lastEventId, epoch: lastEventEpoch)
         let generation = connectionGeneration
         // CorraldClient.stream() is a nonisolated async operation on a
         // Sendable value, so its URLSession transport, retry loop, and
@@ -469,6 +629,22 @@ final class FleetStore: ObservableObject {
                           self.connectionGeneration == generation else { return }
                     self.noteConnectionError(reason)
                 }
+            }, onStreamEnded: { [weak self] in
+                // #425: a clean server EOF ends the live posture NOW (the
+                // backoff wait before the retry is not a live connection).
+                // Same generation guard as the other hops, so a late report
+                // from an obsolete stream can never revive it.
+                Task { @MainActor in
+                    guard let self, self.streamTask != nil,
+                          self.connectionGeneration == generation else { return }
+                    self.noteStreamEnded()
+                }
+            }, onActivity: { [heartbeat] in
+                // #425: received bytes — comment keep-alives included — are
+                // THE liveness signal the watchdog measures. Runs off the
+                // main actor on the transport's read path; the clock box is
+                // lock-guarded.
+                heartbeat.mark()
             })
             // #425: the stream owner EXITED. Clear the stale task handle
             // on the main actor so the next refresh/foreground reconnect is
@@ -486,22 +662,97 @@ final class FleetStore: ObservableObject {
                 }
             }
         }
+        startWatchdog(generation: generation)
     }
 
     /// #425: pull-to-refresh stream recovery. `applyRefresh` never claims
     /// liveness, so a successful snapshot over an ended/wedged stream
     /// leaves the host honestly offline. This clears the stale task
     /// ownership (cancel + handle) and starts EXACTLY ONE replacement
-    /// stream from the shared cursor whenever the stream has NOT
-    /// acknowledged a live connection; it is a no-op while the stream is
-    /// acknowledged live, so refreshing a healthy host stays idempotent —
-    /// no duplicate SSE tasks are ever created. Fire-and-forget: the pull
-    /// indicator is governed by the caller's own awaits, never by the
-    /// (re)connect.
+    /// stream from the shared cursor whenever the stream is NOT provably
+    /// live. A stream is left alone only while it is BOTH `.connected` AND
+    /// fresh (a transport signal within the documented inactivity budget) —
+    /// so refreshing a healthy host stays idempotent (no duplicate SSE
+    /// tasks), while a half-open stream whose last handshake succeeded but
+    /// whose bytes stopped arriving is replaced exactly once.
+    /// Fire-and-forget: the pull indicator is governed by the caller's own
+    /// awaits, never by the (re)connect.
     func reconnectIfNeeded(client: CorraldClient) {
-        guard connectionState != .connected else { return }
+        if connectionState == .connected, !isTransportStale { return }
+        // #425: a replacement that is still inside its own freshness window
+        // is already the one recovery attempt for this stale episode — do
+        // not stack a second one on top of it (a replacement that never
+        // answers falls out of this guard once its window expires).
+        if replacementInFlight, !isTransportStale { return }
+        replaceStream(client: client)
+    }
+
+    /// #425: tear down whatever stream is owned and start EXACTLY ONE
+    /// replacement from the shared cursor. Every replacement path (refresh
+    /// and watchdog) funnels through here so a stale episode can never end
+    /// with two competing stream tasks.
+    private func replaceStream(client: CorraldClient?) {
+        guard let client else { return }
         disconnect()
         connect(client: client)
+        replacementInFlight = true
+    }
+
+    /// #425: has THIS host's transport gone silent past the documented
+    /// inactivity budget? A stream attempt is born fresh (its dispatch
+    /// marks the clock), so only real silence — no bytes, no ack — can make
+    /// this true. An idle-but-healthy fleet keeps sending 15s comment
+    /// keep-alives, which mark the clock and keep this false.
+    var isTransportStale: Bool {
+        heartbeat.age() > streamLiveness.inactivityBudget
+    }
+
+    /// #425: per-host liveness watchdog. Bounded poll cadence (never a tight
+    /// loop), armed only while a stream task is owned, and cancelled by
+    /// every teardown path (`disconnect`, `reset`, background stop, host
+    /// removal). Generation-guarded, so a tick belonging to a replaced
+    /// stream can never touch its successor's state.
+    private func startWatchdog(generation: Int) {
+        watchdogTask?.cancel()
+        watchdogTask = Task { [weak self] in
+            while !Task.isCancelled {
+                let tick = self?.streamLiveness.tickInterval ?? StreamLiveness.maxTickInterval
+                try? await Task.sleep(nanoseconds: UInt64(tick * 1_000_000_000))
+                guard !Task.isCancelled, let self else { return }
+                self.watchdogTick(generation: generation)
+            }
+        }
+    }
+
+    private func watchdogTick(generation: Int) {
+        guard connectionGeneration == generation, streamTask != nil else { return }
+        // A stream that ACKED live and then went silent is a half-open
+        // socket the daemon (and the user) still believe is live — it must
+        // leave the live posture and be replaced. An attempt that never
+        // acked is deliberately NOT touched here: the #436 pull contract
+        // keeps a pull able to restart it, and the transport's own 60s
+        // inactivity timeout backs it up, so one wedge never triggers two
+        // independent replacement paths.
+        guard connectionState == .connected, isTransportStale else { return }
+        let budget = streamLiveness.inactivityBudget
+        Self.log.error(
+            "stream heartbeat silent past the \(budget, privacy: .public)s budget — replacing the wedged stream"
+        )
+        replaceStream(client: streamClient)
+    }
+
+    /// #425: the transport reported a CLEAN server EOF (the daemon closed
+    /// the stream; the client is between attempts on its backoff ladder).
+    /// A continuously-live posture must end IMMEDIATELY — a host that
+    /// stopped delivering must never keep rendering live while the retry
+    /// waits — and a later 200 ack (`noteConnected`) clears the retry
+    /// posture safely. This is the transport's normal reconnect path, not a
+    /// failure: it gets a log line, never an error banner.
+    func noteStreamEnded() {
+        replacementInFlight = false
+        guard connectionState == .connected else { return }
+        Self.log.info("stream ended cleanly — retry pending")
+        connectionState = .connecting
     }
 
     /// #92: visible + diagnosable connection-failure state (never a silent
@@ -512,6 +763,9 @@ final class FleetStore: ObservableObject {
     /// returns the state to `.connected`, so a transient failure is visible
     /// but not fatal.
     func noteConnectionError(_ reason: String) {
+        // #425: the failing attempt's episode is over — a later refresh may
+        // start a fresh replacement.
+        replacementInFlight = false
         // F4: the retry ladder re-reports every attempt; only surface on
         // change (first failure, or when the reason differs).
         guard reason != lastConnectionErrorReason else { return }
@@ -525,8 +779,13 @@ final class FleetStore: ObservableObject {
     /// (an idle fleet emits no frames, so `apply()` never runs to clear
     /// it). Also ends the F4 dedupe episode: a later failure after a real
     /// recovery is a NEW failure and must report again.
+    /// #425: the 200 is a transport liveness signal (it refreshes the
+    /// watchdog's clock) and it settles any in-flight replacement, so a
+    /// later pull sees a healthy stream and stays snapshot-only.
     func noteConnected() {
         lastConnectionErrorReason = nil
+        replacementInFlight = false
+        heartbeat.mark()
         connectionState = .connected
         onConnected?()
     }
@@ -562,7 +821,7 @@ final class FleetStore: ObservableObject {
             }
             switch outcome {
             case .event(let event):
-                self.apply(event)
+                self.applyStreamFrame(event)
             case .ignored:
                 break
             case .failed(let reason):
@@ -590,11 +849,19 @@ final class FleetStore: ObservableObject {
     /// owner, so `connect` resumes without a full snapshot when fresh. The
     /// cancelled task is returned so teardown callers can await termination
     /// before invalidating the session that owns its transport.
+    /// #425: teardown also ends the per-host watchdog (background,
+    /// host removal, reset — one cancellation point per host) and the
+    /// replacement episode, so no timer or late callback can revive
+    /// obsolete state.
     @discardableResult
     func disconnect() -> Task<Void, Never>? {
         let task = streamTask
         task?.cancel()
         streamTask = nil
+        watchdogTask?.cancel()
+        watchdogTask = nil
+        streamClient = nil
+        replacementInFlight = false
         connectionState = .disconnected
         return task
     }
@@ -605,10 +872,12 @@ final class FleetStore: ObservableObject {
         tails = [:]
         tailPanes = [:]
         lastEventId = nil
-        cursorBox.write(nil)
+        lastEventEpoch = nil
+        cursorBox.write(rev: nil, epoch: nil)
         // A reset abandons the delta base; retaining it would let a later
         // live connection resume from demo or otherwise unrelated state.
         cursorDefaults.removeObject(forKey: "fleetnotifier.lastEventId")
+        cursorDefaults.removeObject(forKey: "fleetnotifier.lastEventEpoch")
         previousStates = [:]
         activeAgents = []
         stateEnteredAt = [:]
@@ -622,7 +891,8 @@ final class FleetStore: ObservableObject {
         self.agents = agents
         tails = tails.filter { agents[$0.key] != nil }
         lastEventId = rev
-        cursorBox.write(rev)
+        lastEventEpoch = nil
+        cursorBox.write(rev: rev, epoch: nil)
         updateStateEnteredAt(old: old, new: agents)
         // Seed the transition shadows so demo seeding never fires hooks.
         for (id, agent) in agents {
@@ -645,6 +915,14 @@ final class FleetStore: ObservableObject {
     func persistCursor() {
         if let lastEventId {
             cursorDefaults.set(String(lastEventId), forKey: "fleetnotifier.lastEventId")
+            if let lastEventEpoch {
+                cursorDefaults.set(lastEventEpoch, forKey: "fleetnotifier.lastEventEpoch")
+            } else {
+                cursorDefaults.removeObject(forKey: "fleetnotifier.lastEventEpoch")
+            }
+        } else {
+            cursorDefaults.removeObject(forKey: "fleetnotifier.lastEventId")
+            cursorDefaults.removeObject(forKey: "fleetnotifier.lastEventEpoch")
         }
     }
 
@@ -652,7 +930,8 @@ final class FleetStore: ObservableObject {
         if let raw = cursorDefaults.string(forKey: "fleetnotifier.lastEventId"),
            let rev = UInt64(raw) {
             lastEventId = rev
-            cursorBox.write(rev)
+            lastEventEpoch = cursorDefaults.string(forKey: "fleetnotifier.lastEventEpoch")
+            cursorBox.write(rev: rev, epoch: lastEventEpoch)
         }
     }
 
@@ -660,9 +939,10 @@ final class FleetStore: ObservableObject {
     /// stream coordinator), never the legacy single-host default. The
     /// active single-host store keeps the legacy key for parity; every
     /// coordinator session store restores/advances its own profile cursor.
-    func restoreCursor(rev: UInt64?) {
+    func restoreCursor(rev: UInt64?, epoch: String? = nil) {
         lastEventId = rev
-        cursorBox.write(rev)
+        lastEventEpoch = rev == nil ? nil : epoch
+        cursorBox.write(rev: rev, epoch: lastEventEpoch)
     }
 
     /// #400 (E3): purge one host's in-memory read state — rows, tails,
@@ -679,7 +959,8 @@ final class FleetStore: ObservableObject {
         tails = [:]
         tailPanes = [:]
         lastEventId = nil
-        cursorBox.write(nil)
+        lastEventEpoch = nil
+        cursorBox.write(rev: nil, epoch: nil)
         previousStates = [:]
         activeAgents = []
         stateEnteredAt = [:]

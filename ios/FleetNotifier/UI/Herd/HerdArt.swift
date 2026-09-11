@@ -37,18 +37,24 @@ struct HerdArt {
     static let darks = [0x6f4527,0x7d4520,0x2a2a31,0x989ca9,0xa37a3c,0x8e6f45,0x77524a,0x96703a]
     static let manes = [0x2e2019,0x5d3317,0x17161a,0x7d8089,0xe8dcc0,0x41321f,0x4a342c,0x241a10]
 
-    func drawing(_ identity: HorseIdentity, pose: HorsePose) -> [HorseInk] {
+    /// #448: `gait` swings the four legs in two diagonal pairs around the
+    /// approved rest angles — legs 0 (front) + 3 (rear) step together, legs
+    /// 1 (rear) + 2 (front) oppose them — and each hoof ink rides its leg's
+    /// arc. The default standstill leaves every approved pose byte-identical.
+    func drawing(_ identity: HorseIdentity, pose: HorsePose, gait: HorseGait = .standstill) -> [HorseInk] {
         var art = HorseDraft(identity: identity)
         let belly = [66.0,69,72][identity.breed]
         let width = [5.0,6.2,7.4][identity.breed]
         let height = [34.0,31,28][identity.breed]
         let raised = pose == .blocked || pose == .alertStatic || pose == .working
-        let legs: [Double] = pose == .working ? [28,-26,-26,24]
+        let rest: [Double] = pose == .working ? [28,-26,-26,24]
             : pose == .blocked ? [-26,0,0,0] : pose == .unknown ? [6,-6,-6,6] : [0,0,0,0]
+        let step = gait.isStepping && (pose == .working || pose == .stand) ? gait.swing * sin(2 * .pi * gait.phase) : 0
+        let legs = [rest[0] + step, rest[1] - step, rest[2] - step, rest[3] + step]
         art.ellipse(64,97,44,4,"2f2a26", opacity: 0.14)
         let bodyStart = art.inks.count
-        art.leg(78,belly-6,width*0.88,height,legs[1],"dark")
-        art.leg(51,belly-6,width*0.88,height,legs[3],"dark")
+        art.leg(78,belly-6,width*0.88,height,legs[1],"dark",part:"leg-1")
+        art.leg(51,belly-6,width*0.88,height,legs[3],"dark",part:"leg-3")
         art.add(raised ? [.m(40,41),.q(30,35,26,21)] : [.m(39,43),.q(28,53,27,69)], "mane", stroke: 6.5)
         if pose == .graze { art.grazing() }
         else {
@@ -69,10 +75,14 @@ struct HerdArt {
             art.add([.m(50,37),.q(60,33,70,36),.l(71,belly-22),.q(61,belly-17,51,belly-21),.close],"7a4f2c")
             art.add([.m(60,belly-19),.q(60,belly-6,64,belly-3)],"5d3a1f",stroke:1.8)
         } else if identity.tack == 1 { art.rect(52,belly-30,20,9,3,"c2543f") }
-        art.leg(84,belly-6,width,height,legs[0],"body")
-        art.leg(43,belly-6,width,height,legs[2],"body")
+        art.leg(84,belly-6,width,height,legs[0],"body",part:"leg-0")
+        art.leg(43,belly-6,width,height,legs[2],"body",part:"leg-2")
         if identity.breed == 2 {
-            for x in [84.0,43] { art.rect(x-width/2-1,belly-6+height-8,width+2,6,3,"mane") }
+            for (x, angle) in [(84.0, step), (43, -step)] {
+                let start = art.inks.count
+                art.rect(x-width/2-1,belly-6+height-8,width+2,6,3,"mane")
+                if angle != 0 { art.rotate(from:start,angle:angle,x:x,y:belly-6) }
+            }
         }
         if pose == .graze {
             // Grazing-only joint accents: original barrel, leg lengths and hoof anchors retained.
@@ -87,8 +97,8 @@ struct HerdArt {
         return art.inks
     }
 
-    func paint(_ context: inout GraphicsContext, identity: HorseIdentity, pose: HorsePose) {
-        for ink in drawing(identity,pose:pose) {
+    func paint(_ context: inout GraphicsContext, identity: HorseIdentity, pose: HorsePose, gait: HorseGait = .standstill) {
+        for ink in drawing(identity,pose:pose,gait:gait) {
             let value: Int
             switch ink.color {
             case "body": value = Self.coats[identity.coat]
@@ -126,10 +136,14 @@ struct HorseDraft {
         let transform = CGAffineTransform(translationX:x,y:y).rotated(by:angle * .pi/180).translatedBy(x:-x,y:-y)
         for index in start..<inks.count { inks[index].path = inks[index].path.applying(transform) }
     }
-    mutating func leg(_ x:Double,_ y:Double,_ w:Double,_ h:Double,_ a:Double,_ color:String) {
+    mutating func leg(_ x:Double,_ y:Double,_ w:Double,_ h:Double,_ a:Double,_ color:String,part:String = "") {
         let start = inks.count
         rect(x-w/2,y,w,h,w/2,color)
         rect(x-w/2,y+h-5,w,5,2.5,"3a332e")
+        if !part.isEmpty {
+            inks[start].part = part
+            inks[start+1].part = part + "-hoof"
+        }
         rotate(from:start,angle:a,x:x,y:y)
     }
     mutating func hat(_ x:Double,_ y:Double,_ r:Double) {

@@ -1,0 +1,44 @@
+name: iOS art/icon gates
+
+# Source-mode art/icon gates (#471) run for every push and pull request. All
+# three commands are stdlib-only Python and read committed files, so they run
+# on a Linux runner in well under a minute with no signing, no release build,
+# no simulator and no secrets.
+#
+# The macOS-only remainder stays where it was: the built-product guards
+# (check-native-art.py --bundle, test-native-art.py --app) and the simulator
+# probe/capture drivers need a prior build or a booted simulator, and the
+# FleetNotifier XCTest suite runs only when the orchestrator dispatches
+# ios.yml (the deliberate 2026-08 macOS cost policy).
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ios-art:
+    name: art/icon source gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Release boundary + source digest, and (via subprocess) the
+      # check-native-art.py source checks for the four approved icon masters.
+      - name: Release boundary, digest and native-art source checks
+        run: python3 ios/check-release-demo.py
+
+      - name: App-icon catalog check
+        run: python3 ios/tools/herd-art/app-icons.py --check
+
+      - name: App-icon guard mutation battery
+        run: python3 ios/tools/herd-art/test-app-icons.py --output "$RUNNER_TEMP/app-icon-proofs"

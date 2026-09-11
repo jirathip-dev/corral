@@ -75,7 +75,13 @@ INTEGRATION_SHA256 = {
     # app icon change visible to the test bundle through base64 fixtures
     # (encoded, so the app-product art scan never sees extra loose artwork);
     # the app product and its catalog wiring are unchanged.
-    "ios/FleetNotifier.xcodeproj/project.pbxproj": "a0c2fe691d0e771e7a53d5dee81c52dad48e3283220f6e78f20ca459134496d2",
+    # Pin refreshed by the #456 refresh2 lane: the project is regenerated from
+    # the merged ios/project.yml, so the test bundle's preBuild fixture copy
+    # step now carries BOTH the #456 RanchEnvironment source fixture and the
+    # #464 picker/master fixtures — the union, nothing else (diff vs the #464
+    # pin = the two RanchEnvironment inputFiles/outputFiles lines + the cp
+    # line). Re-pinned over the committed merged project.
+    "ios/FleetNotifier.xcodeproj/project.pbxproj": "848cffee8040392299160836929bec73ffb4aebd09e90c8cbf73c75284541a92",
 }
 
 PNG_SPECS = {

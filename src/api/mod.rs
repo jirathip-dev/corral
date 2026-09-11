@@ -186,7 +186,7 @@ async fn history(
 
 async fn snapshot(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let snap = state.store.snapshot().await;
-    Json(serde_json::to_value(&snap).unwrap_or_else(|_| serde_json::json!({ "error": "encode" })))
+    Json(wire_value(&state.store.epoch(), &snap))
 }
 
 /// SSE stream. The first frame is either a full `snapshot` or a `delta`
@@ -196,10 +196,16 @@ async fn events(
     headers: HeaderMap,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let store = state.store.clone();
-    let last_rev = headers
+    let requested_rev = headers
         .get("last-event-id")
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<u64>().ok());
+    let requested_epoch = headers.get("corral-epoch").and_then(|v| v.to_str().ok());
+    // Epoch-aware clients (iOS #450) name the daemon lifetime their cursor
+    // belongs to; a stale or `unknown` epoch forces a full authoritative
+    // snapshot inside `resume_from_epoch`. Legacy clients omit the header
+    // and keep revision-only resume exactly as before.
+    let epoch = store.epoch();
 
     // Subscribe BEFORE resolving the cursor: any delta flushed in between is
     // still delivered (skipped below when already covered by the initial
@@ -208,10 +214,16 @@ async fn events(
 
     // Live: cursor is current — emit nothing (the SSE keep-alive suffices).
     // A fabricated empty delta would look like a state change to clients.
-    let (initial, live_from_rev) = match store.resume_from(last_rev).await {
+    let (initial, live_from_rev) = match store
+        .resume_from_epoch(requested_rev, requested_epoch)
+        .await
+    {
         Resume::Snapshot(snap) => {
             info!(rev = snap.rev, "SSE client joined with full snapshot");
-            (vec![delta_event("snapshot", snap.rev, &snap)], snap.rev)
+            (
+                vec![delta_event("snapshot", snap.rev, &epoch, &snap)],
+                snap.rev,
+            )
         }
         Resume::Deltas {
             deltas,
@@ -221,7 +233,7 @@ async fn events(
             (
                 deltas
                     .iter()
-                    .map(|d| delta_event("delta", d.rev, d))
+                    .map(|d| delta_event("delta", d.rev, &epoch, d))
                     .collect(),
                 live_from_rev,
             )
@@ -231,17 +243,18 @@ async fn events(
 
     let live = stream::unfold(rx, move |mut rx| {
         let store = store.clone();
+        let epoch = epoch.clone();
         async move {
             loop {
                 match rx.recv().await {
                     Ok(delta) if delta.rev <= live_from_rev => continue,
                     Ok(delta) => {
-                        return Some((Ok(delta_event("delta", delta.rev, &delta)), rx));
+                        return Some((Ok(delta_event("delta", delta.rev, &epoch, &delta)), rx));
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         // Client fell too far behind: full resnapshot.
                         let snap = store.snapshot().await;
-                        return Some((Ok(delta_event("snapshot", snap.rev, &snap)), rx));
+                        return Some((Ok(delta_event("snapshot", snap.rev, &epoch, &snap)), rx));
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
                 }
@@ -253,12 +266,21 @@ async fn events(
     Sse::new(stream).keep_alive(KeepAlive::new().interval(KEEPALIVE))
 }
 
-fn delta_event(kind: &str, rev: u64, data: &impl serde::Serialize) -> Event {
+fn delta_event(kind: &str, rev: u64, epoch: &str, data: &impl serde::Serialize) -> Event {
     Event::default()
         .event(kind)
         .id(rev.to_string())
-        .json_data(data)
+        .json_data(wire_value(epoch, data))
         .expect("delta/snapshot serializes")
+}
+
+fn wire_value(epoch: &str, data: &impl serde::Serialize) -> serde_json::Value {
+    let mut value = serde_json::to_value(data).expect("delta/snapshot serializes");
+    value
+        .as_object_mut()
+        .expect("delta/snapshot wire value is an object")
+        .insert("epoch".to_string(), serde_json::json!(epoch));
+    value
 }
 
 /// Max accepted skew between a signed device-token request's `ts` and the

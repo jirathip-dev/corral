@@ -3181,6 +3181,20 @@ struct RegistrationView: View {
 /// top. One shared visual contract: solid themed content surfaces over a
 /// frosted, flavor-tinted sheet surface on every supported runtime.
 ///
+/// #428 correction (this pass): with the flat slab gone, the remaining
+/// opaque coverage over the sheet BACKGROUND was the masking layer —
+/// the recents header band painted base over its full height (padding
+/// included) and the loading/empty/error panels painted a full-bleed
+/// base slab over the whole content area, leaving the board readable
+/// through nothing but thin margins. The recents sheet now scopes every
+/// text tier's opaque backing to the tier itself (the contract #385
+/// states: "the translucency lives in the sheet background between and
+/// around them"), so the background regions the owner called out
+/// (header band, non-loaded panels, gaps) stay on this shared
+/// backdrop. The locked tint alphas and the WCAG floor math are
+/// unchanged; `-corral428MaskSheetBackground` (DEBUG) restores the
+/// opaque coverage as the rendered gate's masking-layer RED control.
+///
 /// - iOS 26+: native Liquid Glass OVER the tinted-material base —
 ///   `.regular` glass with the locked whisper tint, availability-gated at
 ///   compile time, over the same ultraThinMaterial + base recipe the <26
@@ -3281,6 +3295,23 @@ enum Corral416Evidence {
     static var forceFallbackBackdrop: Bool {
 #if DEBUG
         CommandLine.arguments.contains(fallbackBackdropArgument)
+#else
+        false
+#endif
+    }
+
+    /// #428 evidence: `-corral428MaskSheetBackground` makes the recents
+    /// sheet's background regions (the card surface behind the header band
+    /// and the content area) take the SAME opaque full-bleed base fill the
+    /// pre-#428 coverage (and any masking-layer revert) paints — the
+    /// rendered gate's RED control. Identical source to the reverted
+    /// build's one painted layer; the availability/scope check is the only
+    /// difference. Debug builds only; Release never contains it.
+    static let maskSheetBackgroundArgument = "-corral428MaskSheetBackground"
+
+    static var wantsMaskedSheetBackground: Bool {
+#if DEBUG
+        CommandLine.arguments.contains(maskSheetBackgroundArgument)
 #else
         false
 #endif
@@ -5084,6 +5115,16 @@ struct RecentOutputSheet: View {
         // #372: scheme forced at the SHEET level (covers the nav bar +
         // drag chrome of the presented stack).
         .preferredColorScheme(theme.flavor.isLight ? .light : .dark)
+        // #428 evidence (DEBUG-only effect): `-corral428MaskSheetBackground`
+        // paints the card's background regions with the opaque full-bleed
+        // base fill a masking-layer revert (the pre-#428 coverage) uses —
+        // over the shared backdrop, behind the content. Release: never
+        // (the flag is DEBUG-gated in Corral416Evidence).
+        .background {
+            if Corral416Evidence.wantsMaskedSheetBackground {
+                theme.base
+            }
+        }
         // #385/#416: the recents sheet floats over the shared translucent
         // backdrop (Liquid Glass on iOS 26+, tinted-material fallback
         // below) so the busy board behind shows through the sheet surface
@@ -5161,12 +5202,17 @@ struct RecentOutputSheet: View {
             }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 10)
         // #385: the header strip's caption row KEEPS its opaque base
         // backing — muted/dim caption tiers (tailMuted/tailQuiet) must not
         // float over the translucent backdrop in the darkest underlying
         // case (SheetBackdropTests locks the tiers that can).
+        //
+        // #428: the backing hugs the caption row exactly — the band's
+        // vertical padding stays on the shared translucent backdrop, so
+        // the board reads through around the tier inside the header band
+        // (the background region the pre-#428 coverage painted opaque).
         .background(theme.base)
+        .padding(.vertical, 10)
     }
 
     private var showLiveIndicator: Bool {
@@ -5183,6 +5229,9 @@ struct RecentOutputSheet: View {
                 // #385: the non-loaded states keep an OPAQUE base backing
                 // (they paint directly on the sheet surface, which is now
                 // translucent) so their muted ink keeps today's AA.
+                // #428: the backing hugs the tier — the background area
+                // around it stays on the shared translucent backdrop (the
+                // board reads through the rest of the state panel).
                 HStack(spacing: 8) {
                     ProgressView()
                         .controlSize(.small)
@@ -5191,16 +5240,16 @@ struct RecentOutputSheet: View {
                         .font(.caption)
                         .foregroundStyle(theme.tailMuted)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .padding(16)
                 .background(theme.base)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             case .empty:
                 Text("No output yet.")
                     .font(.caption)
                     .foregroundStyle(theme.tailMuted)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .padding(16)
                     .background(theme.base)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             case .error(let failure):
                 // #424: a not_granted refusal is a PERMISSION state — the
                 // host owner must grant read_tail before any output can
@@ -5220,8 +5269,8 @@ struct RecentOutputSheet: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     .padding(16)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .background(theme.base)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .accessibilityElement(children: .combine)
                 } else {
                     VStack(alignment: .leading, spacing: 8) {
@@ -5237,8 +5286,8 @@ struct RecentOutputSheet: View {
                         .accessibilityLabel("Retry recent output")
                     }
                     .padding(16)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .background(theme.base)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
             case .loaded:
                 // #385: the loaded block stream floats over the translucent

@@ -133,3 +133,64 @@ Add Host (multi-host seed, medium):
 
 SHA-256s: `SHA256SUMS.txt` (all artifacts above). Capture commands:
 `capture.log`.
+
+## Correction pass (bounded #428 repair): sheet background unmasked + gate G5
+
+Owner verdict on build 21: the sheet still read as a flat dark slab; the
+investigation found the opaque coverage left only thin margins on the
+shared backdrop and that THIS host cannot composite the presenter behind
+the sheet card (see below). This pass removes the remaining masking
+layer over the sheet BACKGROUND:
+
+- `RecentOutputSheet.header`: the opaque base backing now hugs the
+  caption row; the band's vertical padding stays on the shared backdrop.
+- `RecentOutputSheet` loading/empty/error panels: the opaque base backing
+  now hugs the tier instead of painting the whole content area.
+- The locked `SheetBackdrop` alphas and their WCAG floor math are
+  UNCHANGED (no floor was lowered; the `theme.base` backings under every
+  text tier are unchanged).
+- `-corral428MaskSheetBackground` (DEBUG-only, Release never contains
+  its effect) paints the pre-repair opaque coverage back over the card
+  as the gate's masking-layer RED control.
+
+### Correction frames (`correction/`, medium detent, iPhone 16 @3x → 390x844)
+
+| File | Shows |
+|---|---|
+| phase-416-2-recents-mocha / -3-recents-latte | candidate: in-sheet ring + header band on the backdrop |
+| phase-416-2-recents-mocha-fallback | the forced <26 material branch, same scene |
+| phase-416-5-settings-mocha (+ -fallback) | Settings sheet (shared contract), glass vs fallback |
+| phase-416-1-board-mocha | busy-board A/B control |
+| phase-416-2-recents-mocha-masked, -3-recents-latte-masked | masking-layer revert (RED) |
+| masked/ | the same RED frames under standard names for the gate run |
+
+### Gate G5 (rendered pixels, inside the card rect)
+
+`translucency-analysis.py` now checks the recents sheet's background
+regions INSIDE the card (left/right in-card ring + the strip under the
+last block): they must measure as the TRANSLUCENT backdrop (max-channel
+delta from the opaque base paint >= 4.5) — a region painted base reads
+as base exactly. Runs (raw logs in `correction/analysis-correction.txt`):
+
+- GREEN: candidate frames, default mode — **12/12, RC 0** (mocha ring
+  max-delta 5.0/5.9, latte 9.3/13.3);
+- CONTROL: masked frames via `--mode=masked` — **4/4, RC 0** (the ring
+  measures (30,30,46)/(239,241,245) = the paint exactly: the check bites);
+- RED: the SAME masked frames under the default mode — **3/8, RC 1**
+  (ring max-delta 0.0/0.1/0.3 → FAIL): the masking-layer revert breaks
+  the rendered gate; the candidate frames restore it.
+
+### What this host still cannot show (unchanged, re-verified)
+
+- The iOS 26.5 simulator never composites the presenting board behind
+  the sheet card (#416 probe; re-confirmed here by cross-era measurement:
+  the in-card ring column correlates ~0 with the board while the
+  OUTSIDE screen-edge sliver correlates 0.87-0.94 — the sliver is the
+  presenter, not read-through; the #385 correlation gate had measured
+  that sliver). In-card board-content read-through is therefore not
+  pixel-showable on this host for ANY recipe; the discriminating
+  rendered facts are the surface that allows it + the masking revert.
+- Physical-device appearance remains OPEN (the human gate): the locked
+  tint share (base @ 0.8 + material + native glass over the system-dimmed
+  presenter) is unchanged by this pass and can only be judged on an
+  iPhone.

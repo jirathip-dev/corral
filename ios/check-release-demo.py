@@ -394,6 +394,12 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # integration (ee73262, PR476) — union of ALL source sets; the pin below
     # is recomputed from THIS merged checkout; neither parent pin (8bccaf68…,
     # 6c90bc77…) applies.
+    # #459 refresh: #459 (wind-driven canopy/grass — RanchEnvironment samples
+    # the shared RanchWind contract and the HerdAmbientPolicy power/thermal
+    # fallback, and both helpers are Release app source) merged onto the
+    # #448-refresh integration (82f9b8d, PR475) — union of ALL source sets;
+    # the pin below is recomputed from THIS merged checkout; neither parent
+    # pin (cd1422fc…, 8fc75d5e…) applies.
     # #451 refresh: #451 (transient host-key preflight retries) merged onto
     # the #448-refresh integration (82f9b8d, PR475) — union of ALL source
     # sets; the pin below is recomputed from THIS merged checkout; neither
@@ -418,7 +424,7 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # manifest/app-tree membership in both directions independently of this
     # digest; the pin below is recomputed from THIS union checkout
     # (#451/#452/#453 merged, 71775c0); no parent pin applies.
-    "90ac658bb2bc1263a33f18d913a73891554701ac574559c6c2fbbba43c5763a4"
+    "94172201c8d48f63579f1cb840b1181e9b45379c9a294d2deaabae3902f6afd9"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -656,6 +662,12 @@ SOURCE_REQUIRED: dict[str, tuple[str, ...]] = {
 
 RELEASE_SOURCE_REQUIRED: dict[str, tuple[str, ...]] = {
     "ios/FleetNotifier/UI/Herd/HerdView.swift": ("RanchEnvironment(", "clock.stop()"),
+    # #459: the wind contract and the ambient power/thermal fallback must
+    # stay Release-active (a Debug-only scene would silently stop shipping
+    # the animation).
+    "ios/FleetNotifier/UI/Herd/RanchEnvironment.swift": ("RanchWind", "HerdAmbientPolicy"),
+    "ios/FleetNotifier/UI/Herd/RanchWind.swift": ("canopyAmplitude", "grassBend"),
+    "ios/FleetNotifier/UI/Herd/HerdAmbientPolicy.swift": ("ambientMotionAllowed",),
     "ios/FleetNotifier/UI/Herd/HerdArt.swift": ("func drawing(", "art.grazing()"),
     "ios/FleetNotifier/App/FleetNotifierApp.swift": ("model.startLive()",),
     "ios/FleetNotifier/App/AppModel.swift": (

@@ -21,6 +21,7 @@
 		556B0AA75AA13EF1DDF99AF0 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B21EE35CCFE7F224BFA95B8 /* Models.swift */; };
 		5ABC2CBB85C1CA772779D79E /* RanchEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23C9A0FFFF8D2072716C41AF /* RanchEnvironment.swift */; };
 		63EE02B9EB9EDE2CF1A7D086 /* HostProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49B690693FFABE1900E59374 /* HostProfile.swift */; };
+		64377CAEAACBB25D4F79BC24 /* RanchWind.swift in Sources */ = {isa = PBXBuildFile; fileRef = 943C844EB2836A1AC2E77659 /* RanchWind.swift */; };
 		695F86362C9F62AA692D3671 /* FleetNotifierApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B51578ED349E70B121FA432 /* FleetNotifierApp.swift */; };
 		6B4EFEE1A903FB1D0587883D /* HerdView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB5C19509398D4E45B76831E /* HerdView.swift */; };
 		732AD2E20EBA2919797BB81A /* StreamRetryBackoffTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F977DD3F71E92A3EFB9D7EC1 /* StreamRetryBackoffTests.swift */; };
@@ -32,12 +33,14 @@
 		8A8D27B992E86AA6BF6A2D61 /* RecentOutputModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F933E32D259974E2C207BA96 /* RecentOutputModel.swift */; };
 		8A92C7D0B8506221E1534A51 /* HerdEnvironmentChoice.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26A964F18A76BB557547C558 /* HerdEnvironmentChoice.swift */; };
 		8BA704C511F728B13BED571A /* NotificationPermission.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C9ED72A6994B72236953BF4 /* NotificationPermission.swift */; };
+		8F3BA72D285997DE16AF46A2 /* HerdWindTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 301E6FD848CFA9843D5E35E5 /* HerdWindTests.swift */; };
 		925B3FC0D4179A1672C6D5AA /* SSEParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D352A1E84318BD30D5AF512 /* SSEParser.swift */; };
 		9D8814F4DA572FE4936AAF32 /* PreflightRetryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79AC919735AE5168BF651BE6 /* PreflightRetryTests.swift */; };
 		ABD378861F032E17454B664B /* ThemeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B79F7EC88E38AB98DD73849D /* ThemeTests.swift */; };
 		B1B753021D4BD35EA747E260 /* HostStreamCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A568381FE0489171C5D7AFF7 /* HostStreamCoordinator.swift */; };
 		B7984BA77A26919C41AAA822 /* DeviceKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B067A4097474D65BC031C32 /* DeviceKeyStore.swift */; };
 		C0DE384BE4B4265BEB4C1808 /* StateStyleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D48969B39CAC1EDAC289B97C /* StateStyleTests.swift */; };
+		C789961117261CDD0DF006EF /* HerdAmbientPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51A81A561127F3EF3BF19906 /* HerdAmbientPolicy.swift */; };
 		D255BE88E7E632EB7D66A128 /* AppTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 618453091ACB944DC94CC9DD /* AppTheme.swift */; };
 		D2912B39BEEAE10FC78B61AB /* AddHostCommitEvidenceURLProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA8DA0D8FF70742D57C6ABE0 /* AddHostCommitEvidenceURLProtocol.swift */; };
 		E0F3758F2A7AE656DACBC57A /* StateStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5544FDC9B954FE32A7275A43 /* StateStyle.swift */; };
@@ -73,12 +76,14 @@
 		26A964F18A76BB557547C558 /* HerdEnvironmentChoice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdEnvironmentChoice.swift; sourceTree = "<group>"; };
 		28FFFBB41044D976415E89BF /* FleetNotifierTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FleetNotifierTests.swift; sourceTree = "<group>"; };
 		2C9ED72A6994B72236953BF4 /* NotificationPermission.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationPermission.swift; sourceTree = "<group>"; };
+		301E6FD848CFA9843D5E35E5 /* HerdWindTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdWindTests.swift; sourceTree = "<group>"; };
 		3A93FB1435D5ABF159C4E740 /* live_session_exchange_golden.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; name = live_session_exchange_golden.json; path = ../tests/fixtures/live_session_exchange_golden.json; sourceTree = "<group>"; };
 		44FA86DC0C83D2F4FF8AE707 /* CorraldClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CorraldClient.swift; sourceTree = "<group>"; };
 		49B690693FFABE1900E59374 /* HostProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostProfile.swift; sourceTree = "<group>"; };
 		49D01A23F02B422A1C580729 /* TimeInState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimeInState.swift; sourceTree = "<group>"; };
 		4B067A4097474D65BC031C32 /* DeviceKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceKeyStore.swift; sourceTree = "<group>"; };
 		50F26DAD993D41DCB89F3342 /* HostKeyTrust.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostKeyTrust.swift; sourceTree = "<group>"; };
+		51A81A561127F3EF3BF19906 /* HerdAmbientPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdAmbientPolicy.swift; sourceTree = "<group>"; };
 		5544FDC9B954FE32A7275A43 /* StateStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StateStyle.swift; sourceTree = "<group>"; };
 		57CF73196010B8A07065E85F /* HerdArt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdArt.swift; sourceTree = "<group>"; };
 		5BE93BE3E43A856F09154FE7 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -89,6 +94,7 @@
 		79AC919735AE5168BF651BE6 /* PreflightRetryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreflightRetryTests.swift; sourceTree = "<group>"; };
 		8439EED775F825EE1DE8EAC3 /* FleetViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FleetViews.swift; sourceTree = "<group>"; };
 		8D352A1E84318BD30D5AF512 /* SSEParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSEParser.swift; sourceTree = "<group>"; };
+		943C844EB2836A1AC2E77659 /* RanchWind.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RanchWind.swift; sourceTree = "<group>"; };
 		A3B71810DA086A9B4A1F4DDA /* HostProfileStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostProfileStore.swift; sourceTree = "<group>"; };
 		A568381FE0489171C5D7AFF7 /* HostStreamCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStreamCoordinator.swift; sourceTree = "<group>"; };
 		AA140E666807BDE06A8CFAB6 /* KeyContinuityGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyContinuityGate.swift; sourceTree = "<group>"; };
@@ -152,6 +158,7 @@
 				DD76760F92DA9C8F78AD6996 /* HerdEnvironmentTests.swift */,
 				C420B2FF9BDA7C8A1E489E5A /* HerdGaitTests.swift */,
 				BA6724B7E29BAE37678BF8A8 /* HerdTests.swift */,
+				301E6FD848CFA9843D5E35E5 /* HerdWindTests.swift */,
 				79AC919735AE5168BF651BE6 /* PreflightRetryTests.swift */,
 				D48969B39CAC1EDAC289B97C /* StateStyleTests.swift */,
 				F977DD3F71E92A3EFB9D7EC1 /* StreamRetryBackoffTests.swift */,
@@ -224,11 +231,13 @@
 		74E1EC77F4C4AB8A71290CEA /* Herd */ = {
 			isa = PBXGroup;
 			children = (
+				51A81A561127F3EF3BF19906 /* HerdAmbientPolicy.swift */,
 				57CF73196010B8A07065E85F /* HerdArt.swift */,
 				26A964F18A76BB557547C558 /* HerdEnvironmentChoice.swift */,
 				B95E9B064296CFE296E3717E /* HerdModel.swift */,
 				FB5C19509398D4E45B76831E /* HerdView.swift */,
 				23C9A0FFFF8D2072716C41AF /* RanchEnvironment.swift */,
+				943C844EB2836A1AC2E77659 /* RanchWind.swift */,
 			);
 			path = Herd;
 			sourceTree = "<group>";
@@ -426,7 +435,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "mkdir -p \"$TARGET_BUILD_DIR/$WRAPPER_NAME\"\ncp \"$SRCROOT/FleetNotifier/UI/FleetViews.swift\" \\\n   \"$TARGET_BUILD_DIR/$WRAPPER_NAME/FleetViews.swift.txt\"\ncp \"$SRCROOT/FleetNotifier/UI/Herd/HerdView.swift\" \\\n   \"$TARGET_BUILD_DIR/$WRAPPER_NAME/HerdView.swift.txt\"\ncp \"$SRCROOT/FleetNotifier/UI/Herd/RanchEnvironment.swift\" \\\n   \"$TARGET_BUILD_DIR/$WRAPPER_NAME/RanchEnvironment.swift.txt\"\n# #464: the App Icon picker seam/wiring tests read the real source.\ncp \"$SRCROOT/FleetNotifier/UI/AppIconPicker.swift\" \\\n   \"$TARGET_BUILD_DIR/$WRAPPER_NAME/AppIconPicker.swift.txt\"\n# #453: the scene-phase lifecycle wiring pin reads the REAL scene\n# owner, so a revert to the unfixed `.inactive` teardown in the\n# view (instead of the model seam) makes the focused suite RED.\ncp \"$SRCROOT/FleetNotifier/App/FleetNotifierApp.swift\" \\\n   \"$TARGET_BUILD_DIR/$WRAPPER_NAME/FleetNotifierApp.swift.txt\"\n# #464 review r1: the approved Treatment-A masters as base64 test\n# fixtures (the app-product art scan must never see extra loose\n# artwork, so the bytes ride encoded, exactly like the .swift.txt\n# source fixtures above).\nfor coat in bay palomino black grey; do\n  python3 -c \"import base64,sys;print(base64.b64encode(open(sys.argv[1],'rb').read()).decode())\" \\\n    \"$SRCROOT/tools/herd-art/appicon-masters/treatment-a/$coat-1024.png\" \\\n    > \"$TARGET_BUILD_DIR/$WRAPPER_NAME/master-$coat.base64\"\ndone\n";
+			shellScript = "mkdir -p \"$TARGET_BUILD_DIR/$WRAPPER_NAME\"\ncp \"$SRCROOT/FleetNotifier/UI/FleetViews.swift\" \\\n   \"$TARGET_BUILD_DIR/$WRAPPER_NAME/FleetViews.swift.txt\"\ncp \"$SRCROOT/FleetNotifier/UI/Herd/HerdView.swift\" \\\n   \"$TARGET_BUILD_DIR/$WRAPPER_NAME/HerdView.swift.txt\"\n# #459: the wind tests pin the production scene gate (ambient\n# policy consult, freeze wiring, single timing owner) against the\n# real source.\ncp \"$SRCROOT/FleetNotifier/UI/Herd/RanchEnvironment.swift\" \\\n   \"$TARGET_BUILD_DIR/$WRAPPER_NAME/RanchEnvironment.swift.txt\"\n# #464: the App Icon picker seam/wiring tests read the real source.\ncp \"$SRCROOT/FleetNotifier/UI/AppIconPicker.swift\" \\\n   \"$TARGET_BUILD_DIR/$WRAPPER_NAME/AppIconPicker.swift.txt\"\n# #453: the scene-phase lifecycle wiring pin reads the REAL scene\n# owner, so a revert to the unfixed `.inactive` teardown in the\n# view (instead of the model seam) makes the focused suite RED.\ncp \"$SRCROOT/FleetNotifier/App/FleetNotifierApp.swift\" \\\n   \"$TARGET_BUILD_DIR/$WRAPPER_NAME/FleetNotifierApp.swift.txt\"\n# #464 review r1: the approved Treatment-A masters as base64 test\n# fixtures (the app-product art scan must never see extra loose\n# artwork, so the bytes ride encoded, exactly like the .swift.txt\n# source fixtures above).\nfor coat in bay palomino black grey; do\n  python3 -c \"import base64,sys;print(base64.b64encode(open(sys.argv[1],'rb').read()).decode())\" \\\n    \"$SRCROOT/tools/herd-art/appicon-masters/treatment-a/$coat-1024.png\" \\\n    > \"$TARGET_BUILD_DIR/$WRAPPER_NAME/master-$coat.base64\"\ndone\n";
 		};
 		F6207AF155842583C8143257 /* Embed Release source digest */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -466,6 +475,8 @@
 				"$(SRCROOT)/FleetNotifier/UI/Herd/HerdModel.swift",
 				"$(SRCROOT)/FleetNotifier/UI/Herd/HerdView.swift",
 				"$(SRCROOT)/FleetNotifier/UI/Herd/RanchEnvironment.swift",
+				"$(SRCROOT)/FleetNotifier/UI/Herd/HerdAmbientPolicy.swift",
+				"$(SRCROOT)/FleetNotifier/UI/Herd/RanchWind.swift",
 				"$(SRCROOT)/FleetNotifier/UI/RecentOutputModel.swift",
 				"$(SRCROOT)/FleetNotifier/UI/StateStyle.swift",
 				"$(SRCROOT)/FleetNotifier/UI/TimeInState.swift",
@@ -506,6 +517,7 @@
 				695F86362C9F62AA692D3671 /* FleetNotifierApp.swift in Sources */,
 				F633BB49ACEC0A2CB69B3B35 /* FleetStore.swift in Sources */,
 				2C5A149214EB19A432A65B7B /* FleetViews.swift in Sources */,
+				C789961117261CDD0DF006EF /* HerdAmbientPolicy.swift in Sources */,
 				F1F96712EA848F5A79DC0AE7 /* HerdArt.swift in Sources */,
 				8A92C7D0B8506221E1534A51 /* HerdEnvironmentChoice.swift in Sources */,
 				77837D3786BB6FB16AE849AD /* HerdEvidence.swift in Sources */,
@@ -521,6 +533,7 @@
 				8BA704C511F728B13BED571A /* NotificationPermission.swift in Sources */,
 				E8914363F8A3C1658F96CA3F /* PushPayload.swift in Sources */,
 				5ABC2CBB85C1CA772779D79E /* RanchEnvironment.swift in Sources */,
+				64377CAEAACBB25D4F79BC24 /* RanchWind.swift in Sources */,
 				8A8D27B992E86AA6BF6A2D61 /* RecentOutputModel.swift in Sources */,
 				925B3FC0D4179A1672C6D5AA /* SSEParser.swift in Sources */,
 				E0F3758F2A7AE656DACBC57A /* StateStyle.swift in Sources */,
@@ -537,6 +550,7 @@
 				4DABD08F3D7A07518E68F371 /* HerdEnvironmentTests.swift in Sources */,
 				188E71A8F5913618EB437DCF /* HerdGaitTests.swift in Sources */,
 				F2CF3ACD1811505E1FCAE1BC /* HerdTests.swift in Sources */,
+				8F3BA72D285997DE16AF46A2 /* HerdWindTests.swift in Sources */,
 				9D8814F4DA572FE4936AAF32 /* PreflightRetryTests.swift in Sources */,
 				C0DE384BE4B4265BEB4C1808 /* StateStyleTests.swift in Sources */,
 				732AD2E20EBA2919797BB81A /* StreamRetryBackoffTests.swift in Sources */,

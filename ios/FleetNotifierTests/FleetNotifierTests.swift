@@ -12322,6 +12322,106 @@ final class ScenePhaseLifecycleTests: XCTestCase {
 }
 
 
+// MARK: - #487 F1: real-OS call spies (pre-review repair)
+
+/// The pre-#487 `startLive()` re-created its automatic behavior by calling the
+/// REAL OS surfaces directly — `LocalNotifier.requestAuthorization()` (which
+/// goes to `UNUserNotificationCenter.current()`) and
+/// `UIApplication.shared.registerForRemoteNotifications()` — with no injectable
+/// seam. These spies exchange those exact implementations for the lifetime of
+/// a test, so the ORIGINAL production calls stay observable: a reintroduction
+/// of the pre-#487 behavior fails the runtime assertions in
+/// `NotificationOptInRuntimeTests` even though it bypasses the model's seams,
+/// while the shipped code keeps both counters at zero unless the user acts.
+private final class NotificationOSSpies: @unchecked Sendable {
+    static let shared = NotificationOSSpies()
+
+    private let lock = NSLock()
+    private var installDepth = 0
+    private var permissionRequests = 0
+    private var registrations = 0
+
+    private init() {}
+
+    var observedPermissionRequests: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return permissionRequests
+    }
+
+    var observedRegistrations: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return registrations
+    }
+
+    func recordPermissionRequest() {
+        lock.lock()
+        permissionRequests += 1
+        lock.unlock()
+    }
+
+    func recordRegistration() {
+        lock.lock()
+        registrations += 1
+        lock.unlock()
+    }
+
+    func install() {
+        lock.lock()
+        defer { lock.unlock() }
+        installDepth += 1
+        guard installDepth == 1 else { return }
+        permissionRequests = 0
+        registrations = 0
+        Self.exchange(UIApplication.self,
+                      NSSelectorFromString("registerForRemoteNotifications"),
+                      #selector(UIApplication.fleet487SpyRegisterForRemoteNotifications))
+        Self.exchange(UNUserNotificationCenter.self,
+                      #selector(UNUserNotificationCenter.requestAuthorization(options:completionHandler:)),
+                      #selector(UNUserNotificationCenter.fleet487SpyRequestAuthorization(options:completionHandler:)))
+    }
+
+    func uninstall() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard installDepth > 0 else { return }
+        installDepth -= 1
+        guard installDepth == 0 else { return }
+        Self.exchange(UIApplication.self,
+                      NSSelectorFromString("registerForRemoteNotifications"),
+                      #selector(UIApplication.fleet487SpyRegisterForRemoteNotifications))
+        Self.exchange(UNUserNotificationCenter.self,
+                      #selector(UNUserNotificationCenter.requestAuthorization(options:completionHandler:)),
+                      #selector(UNUserNotificationCenter.fleet487SpyRequestAuthorization(options:completionHandler:)))
+    }
+
+    private static func exchange(_ cls: AnyClass, _ lhs: Selector, _ rhs: Selector) {
+        guard let a = class_getInstanceMethod(cls, lhs),
+              let b = class_getInstanceMethod(cls, rhs) else { return }
+        method_exchangeImplementations(a, b)
+    }
+}
+
+private extension UIApplication {
+    /// Spy half of the exchange: records the call, then forwards to the
+    /// original implementation (the selector holds it post-exchange).
+    @objc func fleet487SpyRegisterForRemoteNotifications() {
+        NotificationOSSpies.shared.recordRegistration()
+        fleet487SpyRegisterForRemoteNotifications()
+    }
+}
+
+private extension UNUserNotificationCenter {
+    /// Spy half of the exchange: records the permission request, then forwards
+    /// to the original implementation.
+    @objc func fleet487SpyRequestAuthorization(options: UNAuthorizationOptions,
+                                               completionHandler: @escaping (Bool, Error?) -> Void) {
+        NotificationOSSpies.shared.recordPermissionRequest()
+        fleet487SpyRequestAuthorization(options: options, completionHandler: completionHandler)
+    }
+}
+
 // MARK: - #487: explicit notification opt-in (runtime side effects)
 
 /// #487 AC1/AC3/AC5: notification permission requests and APNs registration
@@ -12374,6 +12474,7 @@ final class NotificationOptInRuntimeTests: XCTestCase {
         model = nil
         session?.invalidateAndCancel()
         session = nil
+        NotificationOSSpies.shared.uninstall()
         AddHostFlowURLProtocol.clearScript()
         AppDelegate.apnsRegistered = false
         AppDelegate.shared?.clearRetainedDeviceToken()
@@ -12472,15 +12573,19 @@ final class NotificationOptInRuntimeTests: XCTestCase {
 
     /// Confirm the pending fingerprint (production single confirmation point)
     /// — pins `Self.hostKey`, sets `.verified`, and re-enters `startLive()`,
-    /// which reaches the former notification block synchronously.
-    private func driveFirstLiveBoard(_ model: AppModel, profile: HostProfile) {
+    /// which reaches the former notification block synchronously. The settle
+    /// lets detached tasks land (the pre-#487 behavior fired its OS calls
+    /// from `Task { … }`) before the assertions read the spies.
+    private func driveFirstLiveBoard(_ model: AppModel, profile: HostProfile) async {
         model.confirmFingerprint(profileID: profile.id,
                                  hostKeyB64: Self.hostKey,
                                  fingerprint: "FINGER-487")
+        try? await Task.sleep(nanoseconds: 250_000_000)
     }
 
     func testFreshInstallAbsentOptInIsOffAndUnpairedStartLiveHasNoSideEffects() async {
         defer { cleanup() }
+        NotificationOSSpies.shared.install()
         let provider = CountingPermissionProvider()
         let model = makeModel(provider: provider)
 
@@ -12496,14 +12601,19 @@ final class NotificationOptInRuntimeTests: XCTestCase {
         XCTAssertEqual(provider.currentCount, 0)
         XCTAssertEqual(provider.promptCount, 0)
         XCTAssertEqual(registerCount, 0)
+        XCTAssertEqual(NotificationOSSpies.shared.observedRegistrations, 0,
+                       "pairing/pre-board must not call UIApplication.registerForRemoteNotifications")
+        XCTAssertEqual(NotificationOSSpies.shared.observedPermissionRequests, 0,
+                       "pairing/pre-board must not ask UNUserNotificationCenter for permission")
     }
 
     func testFirstLiveBoardWithAbsentOptInNeverPromptsOrRegisters() async {
         defer { cleanup() }
+        NotificationOSSpies.shared.install()
         let provider = CountingPermissionProvider()
         let (model, profile) = makeLiveModel(provider: provider)
 
-        driveFirstLiveBoard(model, profile: profile)
+        await driveFirstLiveBoard(model, profile: profile)
 
         XCTAssertEqual(model.keyContinuityState, .verified,
                        "the first live board must actually have run")
@@ -12515,10 +12625,15 @@ final class NotificationOptInRuntimeTests: XCTestCase {
         XCTAssertEqual(registerCount, 0,
                        "the first live board must not register APNs")
         XCTAssertNil(persistedOptIn(), "the live board must not write an opt-in value")
+        XCTAssertEqual(NotificationOSSpies.shared.observedRegistrations, 0,
+                       "the first live board must not call UIApplication.registerForRemoteNotifications (pre-#487 behavior)")
+        XCTAssertEqual(NotificationOSSpies.shared.observedPermissionRequests, 0,
+                       "the first live board must not ask UNUserNotificationCenter for permission (pre-#487 behavior)")
     }
 
     func testExplicitEnableWhileDeniedStaysOffAndNeverRegisters() async {
         defer { cleanup() }
+        NotificationOSSpies.shared.install()
         let provider = CountingPermissionProvider()
         provider.status = .denied
         let model = makeModel(provider: provider)
@@ -12531,10 +12646,14 @@ final class NotificationOptInRuntimeTests: XCTestCase {
         XCTAssertEqual(registerCount, 0, "a denied enable must never register APNs")
         XCTAssertNil(persistedOptIn(),
                      "a denied enable must not persist an opt-in value")
+        XCTAssertEqual(NotificationOSSpies.shared.observedRegistrations, 0)
+        XCTAssertEqual(NotificationOSSpies.shared.observedPermissionRequests, 0,
+                       "the stub-provider path must not reach the real OS surfaces")
     }
 
     func testExplicitEnableAfterPromptRegistersAPNsExactlyOnce() async {
         defer { cleanup() }
+        NotificationOSSpies.shared.install()
         let provider = CountingPermissionProvider()
         provider.status = .notDetermined
         provider.promptResult = true
@@ -12547,10 +12666,15 @@ final class NotificationOptInRuntimeTests: XCTestCase {
         XCTAssertEqual(registerCount, 1, "the granted explicit opt-in registers APNs once")
         XCTAssertEqual(persistedOptIn(), true, "the explicit opt-in persists")
         XCTAssertEqual(model.notificationPermission, .granted)
+        XCTAssertEqual(NotificationOSSpies.shared.observedRegistrations, 0,
+                       "the injected registration seam replaces the OS call in tests")
+        XCTAssertEqual(NotificationOSSpies.shared.observedPermissionRequests, 0,
+                       "the stubbed provider replaces the OS authorization request in tests")
     }
 
     func testExplicitEnableWhenAlreadyGrantedRegistersAPNsExactlyOnce() async {
         defer { cleanup() }
+        NotificationOSSpies.shared.install()
         let provider = CountingPermissionProvider()
         provider.status = .granted
         let model = makeModel(provider: provider)
@@ -12561,10 +12685,13 @@ final class NotificationOptInRuntimeTests: XCTestCase {
         XCTAssertEqual(provider.promptCount, 0, "an already-granted permission never prompts")
         XCTAssertEqual(registerCount, 1, "the explicit opt-in registers APNs once")
         XCTAssertEqual(persistedOptIn(), true)
+        XCTAssertEqual(NotificationOSSpies.shared.observedRegistrations, 0,
+                       "the injected registration seam replaces the OS call in tests")
     }
 
     func testExistingOptInIsPreservedAndNeverRegistersImplicitly() async {
         defer { cleanup() }
+        NotificationOSSpies.shared.install()
         let provider = CountingPermissionProvider()
         provider.status = .granted
         let (model, profile) = makeLiveModel(provider: provider, notificationsOn: true)
@@ -12572,7 +12699,7 @@ final class NotificationOptInRuntimeTests: XCTestCase {
         XCTAssertTrue(model.notificationsEnabled,
                       "an explicitly persisted opt-in is preserved from birth")
 
-        driveFirstLiveBoard(model, profile: profile)
+        await driveFirstLiveBoard(model, profile: profile)
 
         XCTAssertEqual(model.keyContinuityState, .verified)
         XCTAssertTrue(model.notificationsEnabled,
@@ -12582,6 +12709,10 @@ final class NotificationOptInRuntimeTests: XCTestCase {
         XCTAssertEqual(provider.promptCount, 0)
         XCTAssertEqual(registerCount, 0,
                        "an existing opt-in value alone is not an explicit action — no implicit registration")
+        XCTAssertEqual(NotificationOSSpies.shared.observedRegistrations, 0,
+                       "an existing opt-in value alone must not call UIApplication.registerForRemoteNotifications")
+        XCTAssertEqual(NotificationOSSpies.shared.observedPermissionRequests, 0,
+                       "an existing opt-in value alone must not ask UNUserNotificationCenter for permission")
     }
 
     func testMultiHostPerHostPreferencesAndGlobalOptInStayIntact() async {
@@ -12633,7 +12764,7 @@ final class NotificationOptInRuntimeTests: XCTestCase {
                              })
         self.model = model
 
-        driveFirstLiveBoard(model, profile: profileA)
+        await driveFirstLiveBoard(model, profile: profileA)
 
         // Per-host preferences persist independently; the GLOBAL opt-in
         // (absent here) is never implicitly written by the multi-host flow.
@@ -12671,5 +12802,35 @@ final class NotificationOptInRuntimeTests: XCTestCase {
                        "the multi-host flow must not prompt on its own")
         XCTAssertEqual(registerCount, 0,
                        "the multi-host flow must not call the global registration seam")
+    }
+
+    /// AC6 (client half): with push unconfigured (no retained APNs token, no
+    /// APNs secrets), repeated live-path entries stay bounded — no stacked
+    /// stream requests, no push enrollment attempts, and no warning surface.
+    func testBoundedNoWarningOrRetryWithPushUnconfigured() async {
+        defer { cleanup() }
+        let provider = CountingPermissionProvider()
+        let (model, profile) = makeLiveModel(provider: provider)
+
+        await driveFirstLiveBoard(model, profile: profile)
+
+        // SAFETY: fixed fixture URL (the profile stores a valid https URL).
+        let hostURL = URL(string: profile.urlString)!
+        let eventsURL = hostURL.appendingPathComponent("/events")
+        let tokenURL = hostURL.appendingPathComponent("/device-token")
+
+        // Re-enter the live path the way relaunch/foreground do.
+        for _ in 0..<3 { model.startLive() }
+        try? await Task.sleep(nanoseconds: 250_000_000)
+
+        XCTAssertLessThanOrEqual(requests(to: eventsURL).count, 1,
+                                 "repeated startLive must not stack stream requests (no retry storm)")
+        XCTAssertTrue(requests(to: tokenURL).isEmpty,
+                      "no push enrollment is attempted while APNs is unconfigured")
+        XCTAssertFalse(model.banner?.isError ?? false,
+                       "push-absent live use must not raise an error/warning banner")
+        XCTAssertEqual(registerCount, 0)
+        XCTAssertEqual(provider.promptCount, 0)
+        XCTAssertEqual(provider.currentCount, 0)
     }
 }

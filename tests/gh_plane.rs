@@ -114,9 +114,6 @@ fn repo_json(repo: &TestTrackedRepo) -> Value {
         "pullRequests": { "nodes": [
             {
                 "number": 7,
-                "title": "P2 three planes",
-                "state": "OPEN",
-                "mergeable": "MERGEABLE",
                 "headRefOid": "abc123",
                 "headRefName": "ws2/gh-plane",
                 "closingIssuesReferences": { "nodes": [
@@ -606,9 +603,6 @@ async fn sustained_failures_back_off_then_recover() {
             json!({ "nodes": [
                 {
                     "number": 9,
-                    "title": "NEW: failing check",
-                    "state": "OPEN",
-                    "mergeable": "CONFLICTING",
                     "headRefOid": "def456",
                     "statusCheckRollup": {
                         "state": "FAILURE",
@@ -711,9 +705,6 @@ async fn maps_all_repos_and_emits_only_changes() {
             json!({ "nodes": [
                 {
                     "number": 7,
-                    "title": "P2 three planes",
-                    "state": "OPEN",
-                    "mergeable": "MERGEABLE",
                     "headRefOid": "abc123",
                     "statusCheckRollup": {
                         "state": "SUCCESS",
@@ -724,9 +715,6 @@ async fn maps_all_repos_and_emits_only_changes() {
                 },
                 {
                     "number": 9,
-                    "title": "NEW: failing check",
-                    "state": "OPEN",
-                    "mergeable": "CONFLICTING",
                     "headRefOid": "def456",
                     "statusCheckRollup": {
                         "state": "FAILURE",
@@ -811,10 +799,186 @@ async fn maps_all_repos_and_emits_only_changes() {
     assert_eq!(state.prs.len(), 2);
     assert_eq!(state.prs[0].pr_number, 7, "PRs sorted by number (F7)");
     assert_eq!(state.prs[1].ci_status, "FAILURE");
-    assert_eq!(state.prs[1].mergeable, "CONFLICTING");
     assert!(
         drain_gh_events(&mut rx).is_empty(),
         "only the changed repo is emitted"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #500 AC3: discriminating emission fixtures. The payloads below deliberately
+// still carry the removed PR-record keys (`title`/`state`/`mergeable` — an
+// older or fixture-shaped server); the daemon no longer collects them, so
+// their changes must be invisible to the poll dedupe while a retained PR fact
+// change still emits and updates the canonical last-known state.
+// ---------------------------------------------------------------------------
+
+/// Seed the PR-record keys the wire no longer collects into a canned
+/// response. `tag` distinguishes one payload generation from another so the
+/// tests can prove a RENAMED title / flipped mergeability alone is inert.
+fn seed_removed_pr_record_keys(response: &mut Value, tag: &str) {
+    let data = response["data"]
+        .as_object_mut()
+        .expect("canned data object");
+    for i in 0..TEST_TRACKED_REPOS.len() {
+        let Some(nodes) = data[&format!("q{i}")]["pullRequests"]["nodes"].as_array_mut() else {
+            continue;
+        };
+        for node in nodes {
+            let obj = node.as_object_mut().expect("PR node object");
+            obj.insert("title".to_string(), json!(format!("inert title {tag}")));
+            obj.insert("state".to_string(), json!("OPEN"));
+            obj.insert("mergeable".to_string(), json!("CONFLICTING"));
+        }
+    }
+}
+
+/// #500 AC3, direction 1: a controlled title/mergeability-only change must NOT
+/// emit a meaningless event; a subsequent retained PR fact change (head SHA)
+/// must still emit. RED under the old behaviour — with `title`/`mergeable`
+/// collected, poll 2 compared unequal and emitted all eight repos.
+#[tokio::test]
+async fn title_or_mergeability_only_change_does_not_emit() {
+    let store = Arc::new(Store::new());
+    let _subscriber = store.subscribe(); // go live immediately
+
+    // Poll 2 differs from poll 1 ONLY in the removed PR-record keys.
+    let mut inert_only = canned_response();
+    seed_removed_pr_record_keys(&mut inert_only, "renamed");
+    // Poll 3 keeps poll 2's inert keys and changes a RETAINED fact (head SHA).
+    let mut head_moved = inert_only.clone();
+    head_moved["data"]["q5"]["pullRequests"]["nodes"][0]["headRefOid"] = json!("def456");
+
+    let mock = Arc::new(MockTransport::new(vec![
+        canned_response(),
+        inert_only,
+        head_moved,
+    ]));
+    // Paced cadence (700ms > the 300ms observation beat below) so poll 2's
+    // dedupe is observed BEFORE poll 3 can add any event to the channel.
+    let config = GhPlaneConfig {
+        foreground: Duration::from_millis(700),
+        background: Duration::from_millis(1500),
+        wake: Duration::from_millis(10),
+        failure_backoff: Duration::from_millis(30),
+    };
+    let plane = configured_plane(
+        store.clone(),
+        mock.clone(),
+        Some("test-token".to_string()),
+        config,
+    );
+    let (sink, mut rx) = plane_channel();
+    plane.start(sink);
+
+    // Poll 1 (immediate, subscriber already present): all 8 repos emitted.
+    wait_until("initial poll", Duration::from_secs(1), || {
+        mock.call_count() >= 1
+    })
+    .await;
+    assert_eq!(drain_gh_events(&mut rx).len(), TEST_TRACKED_REPOS.len());
+
+    // Poll 2 (renamed title + flipped mergeable only): NOTHING is emitted.
+    // The beat outlasts any post-transport send latency while staying under
+    // the paced foreground cadence, so a spurious emission would be in the
+    // channel before this assertion runs.
+    wait_until("inert-change poll", Duration::from_secs(2), || {
+        mock.call_count() >= 2
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        drain_gh_events(&mut rx).is_empty(),
+        "a title/mergeability-only change must not emit (removed facts must stay out of the compare)"
+    );
+
+    // Poll 3 (retained head SHA moved): exactly one event, for that repo.
+    wait_until("retained-change poll", Duration::from_secs(3), || {
+        mock.call_count() >= 3
+    })
+    .await;
+    let ev = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("retained-change event within the window")
+        .expect("sink alive");
+    let PlaneEvent::Gh(state) = ev else {
+        panic!("expected Gh event");
+    };
+    assert_eq!(state.repo, "herdr-board");
+    assert_eq!(state.prs.len(), 1);
+    assert_eq!(state.prs[0].head_sha, "def456");
+    assert!(
+        drain_gh_events(&mut rx).is_empty(),
+        "only the repo whose retained fact changed is emitted"
+    );
+}
+
+/// #500 AC3, direction 2: a retained PR fact change (CI verdict) still emits
+/// and the reduced state becomes the canonical last-known — the identical
+/// next poll is deduped. The inert removed keys are present and unchanged in
+/// both payloads, isolating the emission to the retained fact.
+#[tokio::test]
+async fn retained_pr_fact_change_still_emits_and_updates_canonical_state() {
+    let store = Arc::new(Store::new());
+    let _subscriber = store.subscribe();
+
+    let mut base = canned_response();
+    seed_removed_pr_record_keys(&mut base, "stable");
+    let mut ci_failed = base.clone();
+    ci_failed["data"]["q5"]["pullRequests"]["nodes"][0]["statusCheckRollup"] = json!({
+        "state": "FAILURE",
+        "contexts": { "nodes": [
+            { "__typename": "CheckRun", "status": "COMPLETED", "conclusion": "FAILURE" }
+        ]}
+    });
+
+    // Poll 3 repeats poll 2 byte-for-byte via the mock's fallback.
+    let mock = Arc::new(MockTransport::new(vec![base, ci_failed]));
+    let plane = configured_plane(
+        store.clone(),
+        mock.clone(),
+        Some("test-token".to_string()),
+        fast_config(),
+    );
+    let (sink, mut rx) = plane_channel();
+    plane.start(sink);
+
+    wait_until("initial poll", Duration::from_secs(1), || {
+        mock.call_count() >= 1
+    })
+    .await;
+    assert_eq!(drain_gh_events(&mut rx).len(), TEST_TRACKED_REPOS.len());
+
+    // Poll 2 (CI verdict moved): exactly one event carrying the new verdict.
+    wait_until("ci-change poll", Duration::from_secs(2), || {
+        mock.call_count() >= 2
+    })
+    .await;
+    let ev = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("ci-change event within the window")
+        .expect("sink alive");
+    let PlaneEvent::Gh(state) = ev else {
+        panic!("expected Gh event");
+    };
+    assert_eq!(state.repo, "herdr-board");
+    assert_eq!(state.prs[0].ci_status, "FAILURE");
+    assert_eq!(state.prs[0].head_sha, "abc123", "retained facts intact");
+    assert!(
+        drain_gh_events(&mut rx).is_empty(),
+        "only the changed repo is emitted"
+    );
+
+    // Poll 3 (identical payload): the reduced state was recorded as the new
+    // canonical last-known, so nothing re-emits.
+    wait_until("repeat poll", Duration::from_secs(2), || {
+        mock.call_count() >= 3
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        drain_gh_events(&mut rx).is_empty(),
+        "the retained change updated canonical state -> repeat poll is deduped"
     );
 }
 
@@ -968,8 +1132,8 @@ async fn live_round_trip_all_repos() {
         );
         for pr in &state.prs {
             println!(
-                "      PR #{:<5} [{}] mergeable={:<12} ci={:<9} head={:.8}",
-                pr.pr_number, pr.state, pr.mergeable, pr.ci_status, pr.head_sha
+                "      PR #{:<5} ci={:<9} head={:.8}",
+                pr.pr_number, pr.ci_status, pr.head_sha
             );
         }
     }

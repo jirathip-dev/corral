@@ -424,7 +424,13 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # manifest/app-tree membership in both directions independently of this
     # digest; the pin below is recomputed from THIS union checkout
     # (#451/#452/#453 merged, 71775c0); no parent pin applies.
-    "94172201c8d48f63579f1cb840b1181e9b45379c9a294d2deaabae3902f6afd9"
+    # #428: the recents-sheet background unmask (FleetViews.swift — the
+    # header/state text-tier backings scoped to the tier + the
+    # -corral428MaskSheetBackground evidence control) moved the app source
+    # set; re-pinned from THIS merged checkout by the canonical algorithm.
+    # Verified: this digest equals the previous pin at the adopted base
+    # 9d914f78 and differs ONLY by the #428 sheet-source change.
+    "54410cf4540b2c334f73f44498ea53c491989be6e591260319fce17fd22228db"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

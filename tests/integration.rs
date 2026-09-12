@@ -48,7 +48,6 @@ fn agent(id: &str, worktree: Option<&str>) -> Agent {
 fn gh_state(repo: &str, prs: Vec<GhPrState>) -> GhRepoState {
     GhRepoState {
         repo: repo.to_string(),
-        default_branch: "main".to_string(),
         prs,
         ..Default::default()
     }

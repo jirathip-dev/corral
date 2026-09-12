@@ -441,7 +441,30 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # is merged with the PR509 integration head 9abfa897 — the pin below is
     # recomputed from THIS union checkout by the canonical algorithm; neither
     # parent pin (ab0e0234… from 9f525af nor 94172201… from 9d914f7) applies.
-    "d729ce6d9eef920f9dd767c5d27b9db7941c2cf5ee6d2c06d1a51c4b31c37d69"
+    # #428 ∪ #491 ∪ #487 union: the recents-sheet background unmask
+    # (FleetViews.swift — #428), the owner-adaptive Herd summary fit ladder
+    # (HerdView.swift — #491), and the explicit opt-in notifications
+    # (AppModel.swift + the FleetViews step-5 copy — #487) — re-pinned from
+    # THIS merged checkout by the canonical algorithm
+    # (release_source_manifest). Neither parent pin applies
+    # (94172201… = 9d914f7 base, 54410cf4… = #428-only, 0dad5c34… = #491-only,
+    # ab0e0234… = #487∪#491).
+    # #486: enrollment QR privacy module — two Wire sources
+    # (EnrollmentClient/EnrollmentPayload) added to the Release source set;
+    # digest re-pinned by the canonical algorithm over this checkout.
+    # #486 refresh ∪ #428 integration: the two Wire sources now live with the
+    # #428∪#491∪#487 Release-source set — the pin below is recomputed from
+    # THIS merged checkout (refresh486-qr-contract + f327dec7) by the
+    # canonical algorithm; neither parent pin applies
+    # (c9d4465f… = pre-#428 refresh, 165b282e… = #428∪#491∪#487 integration).
+    # #454 refresh ∪ #486/#428 integration: the lifecycle-owned, debounced
+    # network-path retry hint (AppModel.swift + HostStreamCoordinator.swift)
+    # now lives with the #486 enrollment Wire sources and the
+    # #428∪#491∪#487 Release-source set — the pin below is recomputed from
+    # THIS merged checkout (refresh454-union + 18089eb) by the canonical
+    # algorithm; neither parent pin applies
+    # (d729ce6d… = #454 lane stage, 56b71243… = integration refresh).
+    "04bc0d2d9d97548c5dab4b25e9b1a19c6abffeb4af5a7e558afbed5e9e367a40"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -629,6 +652,16 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # digest below is recomputed over THIS union file (integration 9abfa897 ∪
     # lane head 809341f); neither parent pin (5ca855db… from 648cfca nor
     # 2b37a79a… from 9d914f7) applies.
+    # #428∪#491∪#487 final union: canonical recompute over this merge equals
+    # the #487 value (the pinned test file is byte-unchanged by #428/#491).
+    # #486 refresh ∪ #428: the pinned test file is byte-unchanged by both
+    # sides (the #486 module tests are separate files outside this pin);
+    # canonical recompute over the merged checkout equals the same value.
+    # #454 refresh ∪ #486/#428 integration: the pinned test file is
+    # byte-unchanged by the incoming refresh (#486's tests are separate
+    # files outside this pin) — canonical recompute over the merged checkout
+    # equals the lane value (39af3bb9…); the integration parent pin
+    # (5ca855db…) does not apply.
     "39af3bb94fbf8af44f7f426e9ae06a73ee1ba8e4aeabfb529c68c502280fb0ae"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)

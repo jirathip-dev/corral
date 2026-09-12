@@ -1,0 +1,229 @@
+{
+  "status": "PASS",
+  "checks": [
+    {
+      "name": "a mode round-trip retains paddock",
+      "pass": true
+    },
+    {
+      "name": "a shared filtered identity projection",
+      "pass": true
+    },
+    {
+      "name": "a Board shares output destination",
+      "pass": true
+    },
+    {
+      "name": "a modal keyboard containment 0",
+      "pass": true
+    },
+    {
+      "name": "a modal keyboard containment 1",
+      "pass": true
+    },
+    {
+      "name": "a modal keyboard containment 2",
+      "pass": true
+    },
+    {
+      "name": "a modal keyboard containment 3",
+      "pass": true
+    },
+    {
+      "name": "a modal keyboard containment 4",
+      "pass": true
+    },
+    {
+      "name": "a modal keyboard containment 5",
+      "pass": true
+    },
+    {
+      "name": "a modal keyboard containment 6",
+      "pass": true
+    },
+    {
+      "name": "a modal keyboard containment 7",
+      "pass": true
+    },
+    {
+      "name": "a modal keyboard containment 8",
+      "pass": true
+    },
+    {
+      "name": "a modal keyboard containment 9",
+      "pass": true
+    },
+    {
+      "name": "a modal keyboard containment 10",
+      "pass": true
+    },
+    {
+      "name": "a modal keyboard containment 11",
+      "pass": true
+    },
+    {
+      "name": "a modal keyboard containment 12",
+      "pass": true
+    },
+    {
+      "name": "a modal keyboard containment 13",
+      "pass": true
+    },
+    {
+      "name": "a modal keyboard containment 14",
+      "pass": true
+    },
+    {
+      "name": "a modal keyboard containment 15",
+      "pass": true
+    },
+    {
+      "name": "a modal keyboard containment 16",
+      "pass": true
+    },
+    {
+      "name": "a modal keyboard containment 17",
+      "pass": true
+    },
+    {
+      "name": "a modal keyboard containment 18",
+      "pass": true
+    },
+    {
+      "name": "a modal keyboard containment 19",
+      "pass": true
+    },
+    {
+      "name": "a modal keyboard containment 20",
+      "pass": true
+    },
+    {
+      "name": "a modal keyboard containment 21",
+      "pass": true
+    },
+    {
+      "name": "a modal keyboard containment 22",
+      "pass": true
+    },
+    {
+      "name": "a modal keyboard containment 23",
+      "pass": true
+    },
+    {
+      "name": "a Escape closes sheet",
+      "pass": true
+    },
+    {
+      "name": "b mode round-trip retains paddock",
+      "pass": true
+    },
+    {
+      "name": "b shared filtered identity projection",
+      "pass": true
+    },
+    {
+      "name": "b Board shares output destination",
+      "pass": true
+    },
+    {
+      "name": "b modal keyboard containment 0",
+      "pass": true
+    },
+    {
+      "name": "b modal keyboard containment 1",
+      "pass": true
+    },
+    {
+      "name": "b modal keyboard containment 2",
+      "pass": true
+    },
+    {
+      "name": "b modal keyboard containment 3",
+      "pass": true
+    },
+    {
+      "name": "b modal keyboard containment 4",
+      "pass": true
+    },
+    {
+      "name": "b modal keyboard containment 5",
+      "pass": true
+    },
+    {
+      "name": "b modal keyboard containment 6",
+      "pass": true
+    },
+    {
+      "name": "b modal keyboard containment 7",
+      "pass": true
+    },
+    {
+      "name": "b modal keyboard containment 8",
+      "pass": true
+    },
+    {
+      "name": "b modal keyboard containment 9",
+      "pass": true
+    },
+    {
+      "name": "b modal keyboard containment 10",
+      "pass": true
+    },
+    {
+      "name": "b modal keyboard containment 11",
+      "pass": true
+    },
+    {
+      "name": "b modal keyboard containment 12",
+      "pass": true
+    },
+    {
+      "name": "b modal keyboard containment 13",
+      "pass": true
+    },
+    {
+      "name": "b modal keyboard containment 14",
+      "pass": true
+    },
+    {
+      "name": "b modal keyboard containment 15",
+      "pass": true
+    },
+    {
+      "name": "b modal keyboard containment 16",
+      "pass": true
+    },
+    {
+      "name": "b modal keyboard containment 17",
+      "pass": true
+    },
+    {
+      "name": "b modal keyboard containment 18",
+      "pass": true
+    },
+    {
+      "name": "b modal keyboard containment 19",
+      "pass": true
+    },
+    {
+      "name": "b modal keyboard containment 20",
+      "pass": true
+    },
+    {
+      "name": "b modal keyboard containment 21",
+      "pass": true
+    },
+    {
+      "name": "b modal keyboard containment 22",
+      "pass": true
+    },
+    {
+      "name": "b modal keyboard containment 23",
+      "pass": true
+    },
+    {
+      "name": "b Escape closes sheet",
+      "pass": true
+    }
+  ]
+}

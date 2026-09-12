@@ -352,6 +352,15 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # the 8671cfc integration — the pin below is recomputed from THIS merged
     # checkout; no parent pin (4740de69…, 184c7a64…, 0cb9dc0c…, c17cfe9a…)
     # applies.
+    # #450 refresh2: #450 (epoch authority + fix r1) merged onto the
+    # #449/#458/#456/#464 integration source set (3c7203d, #456 full-screen
+    # shell) — union of ALL source sets; the pin below is recomputed from
+    # THIS merged checkout; neither parent pin (30e6fe4e…, 00cdc240…)
+    # applies.
+    # #425 addendum: FleetStore transport-liveness policy/heartbeat/watchdog
+    # (+ clean-EOF posture, stale-aware pull recovery) and CorraldClient
+    # onActivity/onStreamEnded byte-path signals — re-pinned over the #468
+    # merged source set.
     # #457 refresh2: #457 (contextual Herd controls: the ONE shared filter
     # sheet with an explicit Board/Herd presentation context, the sealed
     # ranch control palette + lighting report in HerdView, and the ranch
@@ -363,12 +372,47 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # (521e7cd9 → ba15563, PR474) — union of ALL source sets; the pin below
     # is recomputed from THIS merged checkout; neither parent pin (1827b419…,
     # a898ad7a…) applies.
+    # #451 (g451-preflight-retry): transient host-key preflight retry ladders
+    # — the shared bounded-RATE HostPreflightRetryPolicy (3s→30s steady
+    # cadence, no finite availability window), the coordinator's
+    # one-owner/cancellable per-host ladder (terminal mismatch, truthful
+    # retry reason, immediate pull preflight of a never-SSE host) and
+    # AppModel's active-host parity ladder (single owner, background/
+    # boundary cancellation, immediate pull preflight) — MERGED WITH #457;
+    # the pin is the union of ALL source sets recomputed from THIS merged
+    # checkout; neither parent pin (a5dee3e4…, 8bccaf68…) applies.
+    # #452: CorraldClient reconnect-loop retry contract — the /events ladder
+    # collapses only after a SUSTAINED healthy session (first-to-last
+    # received-line span ≥ StreamRetryPolicy.stableSessionThreshold; headers
+    # alone, single-line and silent-tail attempts keep escalating) with
+    # bounded equal-jitter waits and injectable clock/random/sleep seams,
+    # merged with origin/integration ee732625 (#457 contextual controls +
+    # #471 art/icon gate coverage) — the pin below is recomputed from THIS
+    # merged checkout; neither parent pin (8bccaf68…, b1994319…) applies.
     # #448 refresh: #448 (native coordinated gait phase in HerdModel/HerdArt
     # plus the horseButton runtime call site) merged onto the #457-refresh2
     # integration (ee73262, PR476) — union of ALL source sets; the pin below
     # is recomputed from THIS merged checkout; neither parent pin (8bccaf68…,
     # 6c90bc77…) applies.
-    "8fc75d5e4a202154bcc00bb7529ba9aa2cb9f7ea7fbcd6ac2bc08c36dd95c064"
+    # #451 refresh: #451 (transient host-key preflight retries) merged onto
+    # the #448-refresh integration (82f9b8d, PR475) — union of ALL source
+    # sets; the pin below is recomputed from THIS merged checkout; neither
+    # parent pin (4416bbc1…, 8fc75d5e…) applies.
+    # #452 refresh: bounded refresh after #448's PR475 (82f9b8d) delivered —
+    # the union now carries BOTH #452 (CorraldClient loop + StreamRetry-
+    # BackoffTests) and #448 (gait runtime + HerdGaitTests); the pin below is
+    # recomputed from THIS merged checkout by the canonical algorithm; neither
+    # parent pin (76443b88…, 8fc75d5e…) applies.
+    # #451 union refresh after #452 (c4acec2, PR479): the union now carries
+    # #451 (preflight retry ladders + PreflightRetryTests) AND #452
+    # (CorraldClient sustained-session ladder + StreamRetryBackoffTests);
+    # the pin below is recomputed from THIS merged checkout by the canonical
+    # algorithm; neither parent pin (660c7d32…, e60a274d…) applies.
+    # #453: scene-phase lifecycle split — AppModel.handleScenePhaseChange
+    # (transient `.inactive` retains the live session; only actual
+    # `.background` cancels/persists) and FleetNotifierApp routes every
+    # phase through that single seam; re-pinned over the #453 source set.
+    "f7793dc046ab2f464ff1197532ea1f46a7db9ba634cc1c990d9aaa647ef1e6e7"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -541,7 +585,11 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # #448 refresh: HerdGaitTests.swift is a SEPARATE file outside this pin,
     # so the #448 refresh leaves the pinned FleetNotifierTests.swift
     # byte-unchanged — digest recomputed over the merged checkout (same value).
-    "92631629765f5f67b6efba46aa13e84a6793cc460883d31c7f45623a4820d395"
+    # #453: ScenePhaseLifecycleTests (deterministic scene-phase sequences +
+    # the FleetNotifierApp wiring pin) appended to the pinned test file
+    # (plus the SwiftUI import for ScenePhase) — digest recomputed over the
+    # #453 head.
+    "2b37a79a7cf6211df646819d4cf0f998165a3f658c4f0fb39d886f150f1ac2bd"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

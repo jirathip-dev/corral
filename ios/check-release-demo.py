@@ -479,7 +479,12 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # #460's test delta touches only HerdWindTests.swift, outside the test
     # pin; the pinned file recomputes to the #454 lane value (39af3bb9…)
     # over the merged checkout — integration's 5ca855db… does not apply.
-    "96c926e19de50a43eeb4cb79aece091e79ebcb84222fefebe44e7a72bf8c1a43"
+    # #397 FIX (completion-tap vocabulary): Notifications/PushPayload.swift
+    # PushType now accepts the daemon's wire `done` (aliased to .finished) —
+    # the pin below is recomputed over THIS merged checkout (fix397 lane,
+    # integration 7dd7603c) by the canonical algorithm; the integration
+    # value (96c926e1…) does not apply.
+    "fdbcc720c658e54252b738ee804d3c552ff3fae253684b4e505227c8da51afa2"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -677,7 +682,12 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # files outside this pin) — canonical recompute over the merged checkout
     # equals the lane value (39af3bb9…); the integration parent pin
     # (5ca855db…) does not apply.
-    "39af3bb94fbf8af44f7f426e9ae06a73ee1ba8e4aeabfb529c68c502280fb0ae"
+    # #397 FIX: the daemon done-payload regression test
+    # (testParsesDaemonDoneCompletionPush — the wire `done` body parses as
+    # .finished, the `blocked` body is the control) was added to the pinned
+    # test source over integration 7dd7603c — recomputed over THIS checkout
+    # by the canonical algorithm (32d70d13…).
+    "32d70d131b5bef490a63eb658772f15a5dad6e6975dd83cd0226949b0cb16f50"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

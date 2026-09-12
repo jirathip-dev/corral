@@ -233,6 +233,55 @@ final class PushPayloadTests: XCTestCase {
         XCTAssertNil(PushPayload.parse(userInfo: [:]))
     }
 
+    /// #397 FIX: the daemon's completion push carries `type: "done"`
+    /// (src/push/payload.rs `done_payload`), NOT this client's internal
+    /// `finished` — so before the PushType wire alias every completion tap
+    /// fell out of `LocalNotifier.didReceive`'s `if let payload` guard and
+    /// never produced a navigation intent. This replays the daemon's wire
+    /// bodies: `done` must parse as `.finished`; the `blocked` body is the
+    /// control leg.
+    func testParsesDaemonDoneCompletionPush() throws {
+        // done_payload shape: nested aps.alert + type "done" + host_id.
+        let done: [AnyHashable: Any] = [
+            "aps": [
+                "alert": ["title": "builder · demo-garden",
+                          "body": "demo-garden · main — done"],
+                "sound": "default",
+                "thread-id": "\(Self.hostA)::herdr:ses-1",
+            ],
+            "type": "done",
+            "host_id": Self.hostA,
+            "agent_id": "herdr:ses-1",
+            "ts": 1700000000,
+        ]
+        let donePayload = try XCTUnwrap(PushPayload.parse(userInfo: done))
+        XCTAssertEqual(donePayload.type, .finished)
+        XCTAssertEqual(donePayload.agentId, "herdr:ses-1")
+        XCTAssertEqual(donePayload.hostId, Self.hostA)
+
+        // Blocked-notification control: the daemon's other emitted type.
+        let blocked: [AnyHashable: Any] = [
+            "aps": [
+                "alert": ["title": "runner · demo-garden", "body": "needs approval"],
+                "sound": "default",
+                "category": "AGENT_BLOCKED",
+                "thread-id": "\(Self.hostA)::herdr:ses-2",
+            ],
+            "type": "blocked",
+            "host_id": Self.hostA,
+            "agent_id": "herdr:ses-2",
+            "prompt_hash": "sha256:ab",
+            "approval_id": "ap-1",
+            "choices": ["y", "n"],
+            "kind": "menu",
+            "repo": "demo-garden",
+            "branch": "main",
+            "ts": 1700000001,
+        ]
+        let blockedPayload = try XCTUnwrap(PushPayload.parse(userInfo: blocked))
+        XCTAssertEqual(blockedPayload.type, .blocked)
+    }
+
     // MARK: - #397 composite (host_id, agent_id) target
 
     /// SAFETY: 32-byte fixtures are valid X25519 public-key byte strings.

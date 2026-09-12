@@ -195,26 +195,34 @@ async fn handle(
     identity: Arc<dyn PeerIdentity>,
     owner_uid: u32,
 ) -> io::Result<()> {
-    // Peer credential check BEFORE any request parse.
+    // Peer credential check BEFORE any request parse. A denied peer still
+    // receives the typed refusal (frozen §2): the response goes out first,
+    // then the peer's pending bytes are drained so the close cannot turn
+    // into a Linux connection reset that would discard it (see
+    // [`drain_pending`] — hosted rust run 34675447060).
     let peer = match identity.uid(&stream) {
         Ok(uid) => uid,
         Err(e) => {
             tracing::warn!(error = %e, "owner socket: peer credential unavailable");
-            return respond_error(
+            let out = respond_error(
                 &mut stream,
                 "owner credential unavailable",
                 "owner_credential_mismatch",
             )
             .await;
+            drain_pending(&mut stream).await;
+            return out;
         }
     };
     if peer != owner_uid {
-        return respond_error(
+        let out = respond_error(
             &mut stream,
             "owner credential mismatch",
             "owner_credential_mismatch",
         )
         .await;
+        drain_pending(&mut stream).await;
+        return out;
     }
     let request = match read_request(&mut stream).await {
         Ok(v) => v,
@@ -231,9 +239,10 @@ async fn handle(
     write_json(&mut stream, &response).await
 }
 
-/// Read one JSON request: terminated by `\n` or EOF (half-close), capped
-/// at [`MAX_REQUEST_BYTES`], bounded by [`REQUEST_TIMEOUT`].
-async fn read_request(stream: &mut UnixStream) -> Result<serde_json::Value, String> {
+/// Read one framed request's raw BYTES: terminated by `\n` or EOF
+/// (half-close), capped at [`MAX_REQUEST_BYTES`], bounded by
+/// [`REQUEST_TIMEOUT`]. Returns the bytes unparsed.
+async fn read_frame(stream: &mut UnixStream) -> Result<Vec<u8>, String> {
     let mut buf: Vec<u8> = Vec::new();
     let mut byte = [0u8; 1];
     loop {
@@ -249,7 +258,32 @@ async fn read_request(stream: &mut UnixStream) -> Result<serde_json::Value, Stri
         }
         buf.push(byte[0]);
     }
+    Ok(buf)
+}
+
+/// Read one JSON request: [`read_frame`] plus the parse.
+async fn read_request(stream: &mut UnixStream) -> Result<serde_json::Value, String> {
+    let buf = read_frame(stream).await?;
     serde_json::from_slice(&buf).map_err(|e| e.to_string())
+}
+
+/// Consume whatever the peer sent, bounded ([`MAX_REQUEST_BYTES`] /
+/// [`REQUEST_TIMEOUT`]), WITHOUT parsing or acting on it.
+///
+/// This runs before a refused connection is closed. Closing an AF_UNIX
+/// stream socket while unread bytes sit in its receive queue turns the
+/// close into a connection RESET for the peer on Linux — the peer's read
+/// fails with `ECONNRESET` (os 104) and the queued refusal is DISCARDED.
+/// Observed in hosted rust run 34675447060: the denied-peer test failed
+/// with `ConnectionReset` on Linux while macOS delivered the refusal
+/// cleanly. The frozen contract (§2) requires the denied peer to receive
+/// the typed `owner_credential_mismatch` refusal, so the pending bytes are
+/// drained first; errors/timeouts are ignored (the refusal must still go
+/// out). Residual: a peer that sends more than the frame bound may still
+/// trigger the reset — it receives no refusal, but the connection is
+/// always terminated (fail closed).
+async fn drain_pending(stream: &mut UnixStream) {
+    let _ = read_frame(stream).await;
 }
 
 async fn write_json(stream: &mut UnixStream, value: &serde_json::Value) -> io::Result<()> {

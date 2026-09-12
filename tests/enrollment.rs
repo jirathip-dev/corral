@@ -790,6 +790,12 @@ async fn owner_socket_requires_owner_peer_credentials_and_0600() {
         Arc::new(FakePeerIdentity(999_999_999)),
     )
     .await;
+    // The STRICT read in `owner_call` is deliberate: a denied peer must
+    // receive the full typed refusal on every OS. A connection reset (Linux
+    // close-with-unread-data) or a lost response FAILS this test instead of
+    // being tolerated — hosted rust run 34675447060 caught exactly that;
+    // the daemon now drains the peer's pending bytes before closing
+    // (src/auth/owner.rs `drain_pending`).
     let refused = owner_call(
         &foreign.sock,
         serde_json::json!({ "op": "mint", "endpoint": "https://host.example.ts.net" }),

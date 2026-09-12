@@ -424,14 +424,30 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # manifest/app-tree membership in both directions independently of this
     # digest; the pin below is recomputed from THIS union checkout
     # (#451/#452/#453 merged, 71775c0); no parent pin applies.
-    # #491: owner-adaptive Herd summary fit ladder (HerdView.swift) —
-    # re-pinned over the #459 integration tree; the test digest was
-    # recomputed unchanged (FleetNotifierTests.swift untouched).
-    # #460: RanchPainter.sky sky-only drift (RanchEnvironment.swift) —
-    # re-pinned canonically at the explicit #460 checker handoff over the
-    # #491/#485-integrated tree (base b2e4ee23); the test digest stays
-    # unchanged (FleetNotifierTests.swift untouched).
-    "70f1397eaf54675bf2be133de0be83ee4b33771259592550a1716c33fe388a53"
+    # #428 ∪ #491 ∪ #487 union: the recents-sheet background unmask
+    # (FleetViews.swift — #428), the owner-adaptive Herd summary fit ladder
+    # (HerdView.swift — #491), and the explicit opt-in notifications
+    # (AppModel.swift + the FleetViews step-5 copy — #487) — re-pinned from
+    # THIS merged checkout by the canonical algorithm
+    # (release_source_manifest). Neither parent pin applies
+    # (94172201… = 9d914f7 base, 54410cf4… = #428-only, 0dad5c34… = #491-only,
+    # ab0e0234… = #487∪#491).
+    # #486: enrollment QR privacy module — two Wire sources
+    # (EnrollmentClient/EnrollmentPayload) added to the Release source set;
+    # digest re-pinned by the canonical algorithm over this checkout.
+    # #486 refresh ∪ #428 integration: the two Wire sources now live with the
+    # #428∪#491∪#487 Release-source set — the pin below is recomputed from
+    # THIS merged checkout (refresh486-qr-contract + f327dec7) by the
+    # canonical algorithm; neither parent pin applies
+    # (c9d4465f… = pre-#428 refresh, 165b282e… = #428∪#491∪#487 integration).
+    # #460 final union: the sky-only RanchPainter drift
+    # (RanchEnvironment.swift) joins the integration set (18089eb3) — the pin
+    # below is recomputed by the canonical algorithm over THIS merged
+    # checkout (g460-sky-drift × 18089eb3); neither parent pin applies
+    # (70f1397e… = #460-only over b2e4ee23, 56b71243… = 18089eb3 without
+    # #460). The #460 test delta touches only HerdWindTests.swift, so the test
+    # pin above stays integration's canonical value.
+    "577c868c83608f71388fa42ba56622326208cc759be86cebee5a856f7f5c06ab"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -608,7 +624,16 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # the FleetNotifierApp wiring pin) appended to the pinned test file
     # (plus the SwiftUI import for ScenePhase) — digest recomputed over the
     # #453 head.
-    "2b37a79a7cf6211df646819d4cf0f998165a3f658c4f0fb39d886f150f1ac2bd"
+    # #487: NotificationOptInRuntimeTests (an absent opt-in stays off on every
+    # first-live path; an explicit enable is the only APNs registration site)
+    # and the F1 OS-boundary spies were appended to the pinned test file —
+    # digest recomputed over the #487 head (648cfca).
+    # #428∪#491∪#487 final union: canonical recompute over this merge equals
+    # the #487 value (the pinned test file is byte-unchanged by #428/#491).
+    # #486 refresh ∪ #428: the pinned test file is byte-unchanged by both
+    # sides (the #486 module tests are separate files outside this pin);
+    # canonical recompute over the merged checkout equals the same value.
+    "5ca855dba32315bcb77c9323e064e6e119d771b5a1e07e6f600fa961d69044a8"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

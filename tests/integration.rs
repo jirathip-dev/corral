@@ -48,7 +48,6 @@ fn agent(id: &str, worktree: Option<&str>) -> Agent {
 fn gh_state(repo: &str, prs: Vec<GhPrState>) -> GhRepoState {
     GhRepoState {
         repo: repo.to_string(),
-        default_branch: "main".to_string(),
         prs,
         ..Default::default()
     }
@@ -58,9 +57,6 @@ fn pr(number: u64, head_sha: &str, ci: &str) -> GhPrState {
     GhPrState {
         repo: "herdr-board".to_string(),
         pr_number: number,
-        title: "t".to_string(),
-        state: "OPEN".to_string(),
-        mergeable: "MERGEABLE".to_string(),
         ci_status: ci.to_string(),
         head_sha: head_sha.to_string(),
         head_branch: String::new(),

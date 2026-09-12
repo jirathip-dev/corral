@@ -93,16 +93,20 @@ pub enum GitEvent {
     },
 }
 
-/// PR state for one pull request (WS2). `state` is OPEN/CLOSED/MERGED,
-/// `mergeable` MERGEABLE/CONFLICTING/UNKNOWN, `ci_status` SUCCESS/FAILURE/
-/// PENDING/UNKNOWN — canonical strings, normalized from the GraphQL payload.
+/// PR state for one pull request (WS2): the facts the fold and the dedupe
+/// actually use — number, the collapsed CI verdict (`ci_status`
+/// SUCCESS/FAILURE/PENDING/UNKNOWN, canonical strings normalized from the
+/// GraphQL payload), head identity and the authoritative closing refs.
+///
+/// #500: the never-folded `title`/`state`/`mergeable` copies are gone — an
+/// owner-approved subtractive contract change recorded in
+/// `docs/evidence/issue-500/compatibility-decision.md`. `state` was
+/// constant `"OPEN"` by query construction; `title`/`mergeable` were never
+/// read by any in-repo consumer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GhPrState {
     pub repo: String,
     pub pr_number: u64,
-    pub title: String,
-    pub state: String,
-    pub mergeable: String,
     pub ci_status: String,
     pub head_sha: String,
     /// Head branch name (`headRefName`), the (repo, branch) matching key
@@ -183,13 +187,16 @@ pub struct GhIssueRef {
 }
 
 /// Repo-level gh facts for one poll round-trip (WS2).
+///
+/// #499: the never-folded `default_branch` and the constant-zero repo
+/// `ahead`/`behind` counters are gone — an owner-approved subtractive
+/// contract change recorded in
+/// `docs/evidence/issue-499/compatibility-decision.md`. Local tracking
+/// stays on the git plane (`GitStatus`), which is the only place the
+/// product reads it from; the gh plane never had an ahead/behind input.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GhRepoState {
     pub repo: String,
-    pub default_branch: String,
-    /// Local tracking info, where the poller can observe it.
-    pub ahead: u64,
-    pub behind: u64,
     pub prs: Vec<GhPrState>,
     pub issues: Vec<GhIssueRef>,
 }
@@ -280,13 +287,9 @@ mod tests {
             }),
             PlaneEvent::Gh(GhRepoState {
                 repo: "herdr-board".to_string(),
-                default_branch: "main".to_string(),
                 prs: vec![GhPrState {
                     repo: "herdr-board".to_string(),
                     pr_number: 7,
-                    title: "P2 three planes".to_string(),
-                    state: "OPEN".to_string(),
-                    mergeable: "MERGEABLE".to_string(),
                     ci_status: "SUCCESS".to_string(),
                     head_sha: "abc123".to_string(),
                     head_branch: "ws2/gh-plane".to_string(),

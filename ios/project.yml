@@ -70,6 +70,10 @@ targets:
           - "$(SRCROOT)/FleetNotifier/UI/TimeInState.swift"
           - "$(SRCROOT)/FleetNotifier/Wire/CanonicalJSON.swift"
           - "$(SRCROOT)/FleetNotifier/Wire/DriveClient.swift"
+          # #486: the enrollment QR privacy module adds the device-enrollment
+          # client + payload wire sources.
+          - "$(SRCROOT)/FleetNotifier/Wire/EnrollmentClient.swift"
+          - "$(SRCROOT)/FleetNotifier/Wire/EnrollmentPayload.swift"
           - "$(SRCROOT)/embed-release-source-digest.py"
           - "$(SRCROOT)/release_source_manifest.py"
         outputFiles:
@@ -78,7 +82,10 @@ targets:
     info:
       path: FleetNotifier/Info.plist
       properties:
-        CFBundleDisplayName: "Corral: Agent Fleet"
+        # #512: the installed Home Screen name is exactly `Corral`; the
+        # truncating `Corral: Agent Fleet` is pinned out by
+        # tools/herd-art/check-display-name.py (source and built product).
+        CFBundleDisplayName: "Corral"
         UIApplicationSupportsIndirectInputEvents: YES
         UILaunchScreen: {}
         ITSAppUsesNonExemptEncryption: false

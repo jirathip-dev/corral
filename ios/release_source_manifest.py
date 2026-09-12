@@ -71,6 +71,10 @@ RELEASE_SOURCE_FILES = (
     "ios/FleetNotifier/UI/TimeInState.swift",
     "ios/FleetNotifier/Wire/CanonicalJSON.swift",
     "ios/FleetNotifier/Wire/DriveClient.swift",
+    # #486: the enrollment QR privacy module adds the device-enrollment
+    # client + payload wire sources — added to the manifest.
+    "ios/FleetNotifier/Wire/EnrollmentClient.swift",
+    "ios/FleetNotifier/Wire/EnrollmentPayload.swift",
 )
 SOURCE_DIGEST_PREFIX = "corral-release-source-sha256:"
 

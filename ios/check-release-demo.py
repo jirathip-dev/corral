@@ -424,13 +424,12 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # manifest/app-tree membership in both directions independently of this
     # digest; the pin below is recomputed from THIS union checkout
     # (#451/#452/#453 merged, 71775c0); no parent pin applies.
-    # #428: the recents-sheet background unmask (FleetViews.swift — the
-    # header/state text-tier backings scoped to the tier + the
-    # -corral428MaskSheetBackground evidence control) moved the app source
-    # set; re-pinned from THIS merged checkout by the canonical algorithm.
-    # Verified: this digest equals the previous pin at the adopted base
-    # 9d914f78 and differs ONLY by the #428 sheet-source change.
-    "54410cf4540b2c334f73f44498ea53c491989be6e591260319fce17fd22228db"
+    # #428+#491 union: the recents-sheet background unmask (FleetViews.swift)
+    # + the #491 owner-adaptive Herd summary fit ladder (HerdView.swift) —
+    # re-pinned from THIS merged checkout by the canonical algorithm
+    # (release_source_manifest). Neither parent pin applies
+    # (94172201… = 9d914f7 base, 54410cf4… = #428-only, 0dad5c34… = #491-only).
+    "26489daf1c8105f505f3849d4f37493f70c463087a8b2773e160b074eafd878a"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

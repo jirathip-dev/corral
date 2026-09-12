@@ -111,7 +111,6 @@ fn canned_response() -> Value {
 fn repo_json(repo: &TestTrackedRepo) -> Value {
     json!({
         "name": repo.repo,
-        "defaultBranchRef": { "name": "main" },
         "pullRequests": { "nodes": [
             {
                 "number": 7,
@@ -766,12 +765,6 @@ async fn maps_all_repos_and_emits_only_changes() {
     );
     for (i, state) in states.iter().enumerate() {
         assert_eq!(state.repo, TEST_TRACKED_REPOS[i].name);
-        assert_eq!(state.default_branch, "main");
-        assert_eq!(
-            state.ahead, 0,
-            "ahead/behind are local tracking info (WS1), 0 from gh"
-        );
-        assert_eq!(state.behind, 0);
         assert_eq!(state.prs.len(), 1);
         assert_eq!(state.prs[0].pr_number, 7);
         assert_eq!(state.prs[0].ci_status, "SUCCESS");
@@ -968,13 +961,10 @@ async fn live_round_trip_all_repos() {
     );
     for state in &states {
         println!(
-            "  repo={:<28} default={:<10} prs={:<3} issues={:<3} ahead={} behind={}",
+            "  repo={:<28} prs={:<3} issues={:<3}",
             state.repo,
-            state.default_branch,
             state.prs.len(),
-            state.issues.len(),
-            state.ahead,
-            state.behind
+            state.issues.len()
         );
         for pr in &state.prs {
             println!(

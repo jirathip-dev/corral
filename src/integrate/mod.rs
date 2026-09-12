@@ -774,7 +774,6 @@ mod tests {
         // different PR (pushed agents never regress to the fallback).
         let state = GhRepoState {
             repo: "herdr-board".to_string(),
-            default_branch: "main".to_string(),
             prs: vec![
                 pr(7, "abc123", "other/branch", "PENDING"),
                 pr(42, "abc123", "ws2/gh-plane", "SUCCESS"),
@@ -873,7 +872,6 @@ mod tests {
         // --- The PR leaves the open set entirely -> fields reset.
         let empty = GhRepoState {
             repo: "herdr-board".to_string(),
-            default_branch: "main".to_string(),
             prs: Vec::new(),
             ..Default::default()
         };
@@ -917,7 +915,6 @@ mod tests {
         ];
         let state = GhRepoState {
             repo: "herdr-board".to_string(),
-            default_branch: "main".to_string(),
             prs: vec![
                 with_issues,
                 pr(9, "zzzzzz", "other/branch", "PENDING"),
@@ -977,7 +974,6 @@ mod tests {
         // state, independent of whether that repo is issue-startable.
         let state = GhRepoState {
             repo: "plush-meadow".to_string(),
-            default_branch: "main".to_string(),
             issues: vec![GhIssueRef {
                 repo: "plush-meadow".to_string(),
                 number: 5,
@@ -1014,7 +1010,6 @@ mod tests {
         );
         let state = GhRepoState {
             repo: "herdr-board".to_string(),
-            default_branch: "main".to_string(),
             issues: vec![GhIssueRef {
                 repo: "herdr-board".to_string(),
                 number: 7,

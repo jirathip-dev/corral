@@ -183,13 +183,16 @@ pub struct GhIssueRef {
 }
 
 /// Repo-level gh facts for one poll round-trip (WS2).
+///
+/// #499: the never-folded `default_branch` and the constant-zero repo
+/// `ahead`/`behind` counters are gone — an owner-approved subtractive
+/// contract change recorded in
+/// `docs/evidence/issue-499/compatibility-decision.md`. Local tracking
+/// stays on the git plane (`GitStatus`), which is the only place the
+/// product reads it from; the gh plane never had an ahead/behind input.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GhRepoState {
     pub repo: String,
-    pub default_branch: String,
-    /// Local tracking info, where the poller can observe it.
-    pub ahead: u64,
-    pub behind: u64,
     pub prs: Vec<GhPrState>,
     pub issues: Vec<GhIssueRef>,
 }
@@ -280,7 +283,6 @@ mod tests {
             }),
             PlaneEvent::Gh(GhRepoState {
                 repo: "herdr-board".to_string(),
-                default_branch: "main".to_string(),
                 prs: vec![GhPrState {
                     repo: "herdr-board".to_string(),
                     pr_number: 7,

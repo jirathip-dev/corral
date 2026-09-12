@@ -6,7 +6,7 @@
 //! schema's rollup `contexts` pagination, so treat <2s as the budget target)
 //! and emits [`GhRepoState`] facts into the [`PlaneSink`]: open PRs (state,
 //! mergeability, head oid, head branch name, closing-issue refs, CI status
-//! collapsed from `statusCheckRollup`), recent issue refs, default branch.
+//! collapsed from `statusCheckRollup`), recent issue refs.
 //!
 //! Cadence rule (acceptance criterion 2):
 //! - **Zero polling** until at least one SSE client has EVER connected this
@@ -852,7 +852,6 @@ fn build_query(specs: &[GhRepoSpec]) -> String {
     query.push_str(&format!(
         r#"}}
 fragment GhPlaneRepo on Repository {{
-  defaultBranchRef {{ name }}
   pullRequests(first: {PR_LIMIT}, states: OPEN, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{
     nodes {{
       number
@@ -894,15 +893,8 @@ fragment GhPlaneRepo on Repository {{
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct RepoWire {
-    default_branch_ref: Option<DefaultBranchRefWire>,
     pull_requests: Option<NodesWire<PrWire>>,
     issues: Option<NodesWire<IssueWire>>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-struct DefaultBranchRefWire {
-    name: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -1176,15 +1168,6 @@ fn build_repo_state(spec: &GhRepoSpec, wire: &RepoWire) -> GhRepoState {
     issues.sort_by_key(|issue| issue.number);
     GhRepoState {
         repo: spec.key.clone(),
-        default_branch: wire
-            .default_branch_ref
-            .as_ref()
-            .and_then(|b| b.name.clone())
-            .unwrap_or_default(),
-        // GitHub's API has no "ahead/behind vs default branch" concept; local
-        // tracking info is WS1's job. Cheaply unavailable in-query -> 0.
-        ahead: 0,
-        behind: 0,
         prs,
         issues,
     }
@@ -1366,7 +1349,6 @@ mod tests {
         };
         let response = json!({
             "q0": {
-                "defaultBranchRef": { "name": "main" },
                 "issues": { "nodes": [
                     { "number": 7, "state": "OPEN", "title": "shared issue" }
                 ]}
@@ -1435,6 +1417,51 @@ mod tests {
             query.matches('}').count(),
             "query block must be brace-balanced (a missing close is a hard GraphQL parse error)"
         );
+    }
+
+    /// #499: the removed repo-level facts must stay absent from the
+    /// production poll artifact (the GraphQL query actually POSTed).
+    #[test]
+    fn removed_repo_facts_stay_absent_from_the_poll_query() {
+        let specs = fixture_specs();
+        let query = build_query(&specs);
+        assert!(
+            !query.contains("defaultBranchRef"),
+            "removed default-branch selection must stay out of the poll query:\n{query}"
+        );
+        // The removal deleted a selection; it must not have smuggled in a
+        // replacement leg (still exactly one repository clause per spec).
+        assert_eq!(query.matches("repository(owner:").count(), specs.len());
+        assert!(
+            query.contains("pullRequests(first: 20") && query.contains("issues(first: 10"),
+            "the retained PR/issue legs still ride the same single request"
+        );
+    }
+
+    /// #499: the emitted event (what the integrator and channel see) must not
+    /// carry the removed default-branch fact or the constant-zero counters.
+    #[test]
+    fn removed_repo_facts_stay_absent_from_the_emitted_state() {
+        let wire: RepoWire = serde_json::from_value(json!({
+            "name": "dotfiles",
+            "pullRequests": null,
+            "issues": null
+        }))
+        .unwrap();
+        let spec = fixture_specs()
+            .into_iter()
+            .find(|s| s.key == "dotfiles")
+            .expect("tracked");
+        let state = build_repo_state(&spec, &wire);
+        let emitted = serde_json::to_value(&state).expect("state serializes");
+        assert_eq!(emitted["repo"], "dotfiles");
+        for key in ["default_branch", "ahead", "behind"] {
+            assert!(
+                emitted.get(key).is_none(),
+                "removed repo fact `{key}` must stay out of the emitted state: {emitted}"
+            );
+        }
+        assert!(emitted["prs"].is_array() && emitted["issues"].is_array());
     }
 
     #[test]
@@ -1565,7 +1592,6 @@ mod tests {
     fn maps_repo_wire_into_contract_types() {
         let wire: RepoWire = serde_json::from_value(json!({
             "name": "herdr-board",
-            "defaultBranchRef": { "name": "main" },
             "pullRequests": { "nodes": [
                 {
                     "number": 7,
@@ -1631,9 +1657,6 @@ mod tests {
             .expect("tracked");
         let state = build_repo_state(&spec, &wire);
         assert_eq!(state.repo, "herdr-board");
-        assert_eq!(state.default_branch, "main");
-        assert_eq!(state.ahead, 0);
-        assert_eq!(state.behind, 0);
         assert_eq!(state.prs.len(), 2);
         // Wire order is 7,6 — decoded output is sorted by number (F7).
         assert_eq!(state.prs[0].pr_number, 6);
@@ -1739,7 +1762,6 @@ mod tests {
             .find(|s| s.key == "dotfiles")
             .expect("tracked");
         let state = build_repo_state(&spec, &wire);
-        assert_eq!(state.default_branch, "", "missing default branch -> empty");
         assert!(state.prs.is_empty());
         assert!(state.issues.is_empty());
     }

@@ -424,7 +424,10 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # manifest/app-tree membership in both directions independently of this
     # digest; the pin below is recomputed from THIS union checkout
     # (#451/#452/#453 merged, 71775c0); no parent pin applies.
-    "94172201c8d48f63579f1cb840b1181e9b45379c9a294d2deaabae3902f6afd9"
+    # #491: owner-adaptive Herd summary fit ladder (HerdView.swift) —
+    # re-pinned over the #459 integration tree; the test digest was
+    # recomputed unchanged (FleetNotifierTests.swift untouched).
+    "0dad5c34a82ca18c5e2deb4e6802e98b4400c1d0a21168cacb65e61ac218cbc1"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

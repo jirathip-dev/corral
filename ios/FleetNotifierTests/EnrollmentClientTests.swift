@@ -192,7 +192,7 @@ final class EnrollmentClientTests: XCTestCase {
     }
 
     func testServerErrorNeverRetainsEchoedCodeOrHostText() async throws {
-        script([redeemURL: (400, Data(#"{"error":"rejected \#(Self.syntheticCode)","code":"malformed_request"}"#.utf8))])
+        script([redeemURL: (400, Data(#"{"error":"host-said:\#(Self.syntheticCode)","code":"malformed_request"}"#.utf8))])
 
         do {
             _ = try await client().redeem(code: Self.syntheticCode, publicKeyB64: Self.syntheticPublicKey)
@@ -203,7 +203,7 @@ final class EnrollmentClientTests: XCTestCase {
                            "error text must never echo the redemption code: \(text)")
             XCTAssertFalse(text.contains(String(Self.syntheticCode.prefix(32))),
                            "not even a 32-char fragment: \(text)")
-            XCTAssertFalse(text.contains("rejected"),
+            XCTAssertFalse(text.contains("host-said"),
                            "host-supplied text is never retained: \(text)")
             guard case .server(_, let code, _) = error else {
                 return XCTFail("expected .server, got \(error)")

@@ -1,7 +1,7 @@
 {
-  "commit_sha": "d64746a6ffccc71467483d0957b2dddd549219d7",
-  "captured_at_utc": "2026-09-11T03:18:28Z",
-  "testflight_build": "23",
+  "commit_sha": "2cf7b93f7c4f6e16d0f920fb96cf5f8e3620912a",
+  "captured_at_utc": "2026-09-12T01:09:16Z",
+  "testflight_build": "24",
   "route_ownership": {
     "board": "DemoFleet.board",
     "detail": "DemoFleet.detail",

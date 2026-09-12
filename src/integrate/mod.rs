@@ -743,9 +743,6 @@ mod tests {
         GhPrState {
             repo: "herdr-board".to_string(),
             pr_number: number,
-            title: String::new(),
-            state: "OPEN".to_string(),
-            mergeable: "MERGEABLE".to_string(),
             ci_status: ci.to_string(),
             head_sha: sha.to_string(),
             head_branch: head_branch.to_string(),

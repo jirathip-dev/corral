@@ -424,6 +424,23 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # manifest/app-tree membership in both directions independently of this
     # digest; the pin below is recomputed from THIS union checkout
     # (#451/#452/#453 merged, 71775c0); no parent pin applies.
+    # #491: owner-adaptive Herd summary fit ladder (HerdView.swift) —
+    # re-pinned over the #459 integration tree; the test digest was
+    # recomputed unchanged (FleetNotifierTests.swift untouched).
+    # #487: notifications are explicit opt-in — AppModel (an absent opt-in
+    # key is never consent; the startLive automatic prompt/APNs registration
+    # is removed; explicit registration only through the injectable seam from
+    # applyNotificationsEnabled) and the FleetViews step-5 copy are Release
+    # app source.
+    # #487 ∪ #491 union refresh: both Release-source deltas now live in one
+    # checkout (#491's HerdView merge a6fa6dd unioned into the #487 branch
+    # 9f525af) — the pin below is recomputed from THIS union checkout by the
+    # canonical algorithm; neither parent pin (0dad5c34…, 778df7bc…) applies.
+    # #454 ∪ #487/#491 union: the lifecycle-owned, debounced network-path
+    # retry hint (AppModel.swift + HostStreamCoordinator.swift recovery slice)
+    # is merged with the PR509 integration head 9abfa897 — the pin below is
+    # recomputed from THIS union checkout by the canonical algorithm; neither
+    # parent pin (ab0e0234… from 9f525af nor 94172201… from 9d914f7) applies.
     # #428 ∪ #491 ∪ #487 union: the recents-sheet background unmask
     # (FleetViews.swift — #428), the owner-adaptive Herd summary fit ladder
     # (HerdView.swift — #491), and the explicit opt-in notifications
@@ -440,6 +457,13 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # THIS merged checkout (refresh486-qr-contract + f327dec7) by the
     # canonical algorithm; neither parent pin applies
     # (c9d4465f… = pre-#428 refresh, 165b282e… = #428∪#491∪#487 integration).
+    # #454 refresh ∪ #486/#428 integration: the lifecycle-owned, debounced
+    # network-path retry hint (AppModel.swift + HostStreamCoordinator.swift)
+    # now lives with the #486 enrollment Wire sources and the
+    # #428∪#491∪#487 Release-source set — the pin below is recomputed from
+    # THIS merged checkout (refresh454-union + 18089eb) by the canonical
+    # algorithm; neither parent pin applies
+    # (d729ce6d… = #454 lane stage, 56b71243… = integration refresh).
     # #460 final union: the sky-only RanchPainter drift
     # (RanchEnvironment.swift) joins the integration set (18089eb3) — the pin
     # below is recomputed by the canonical algorithm over THIS merged
@@ -447,7 +471,15 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # (70f1397e… = #460-only over b2e4ee23, 56b71243… = 18089eb3 without
     # #460). The #460 test delta touches only HerdWindTests.swift, so the test
     # pin above stays integration's canonical value.
-    "577c868c83608f71388fa42ba56622326208cc759be86cebee5a856f7f5c06ab"
+    # #454 ∪ #460 union: the refresh absorbs the sky-only RanchPainter drift
+    # (RanchEnvironment.swift — #460) — the release pin below is recomputed
+    # over THIS merged checkout (refresh454-union + 0c66a500) by the
+    # canonical algorithm; neither parent release pin applies
+    # (04bc0d2d… = #454 refresh 1bc37f3e, 577c868c… = #460 union 0c66a500).
+    # #460's test delta touches only HerdWindTests.swift, outside the test
+    # pin; the pinned file recomputes to the #454 lane value (39af3bb9…)
+    # over the merged checkout — integration's 5ca855db… does not apply.
+    "96c926e19de50a43eeb4cb79aece091e79ebcb84222fefebe44e7a72bf8c1a43"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -628,12 +660,24 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # first-live path; an explicit enable is the only APNs registration site)
     # and the F1 OS-boundary spies were appended to the pinned test file —
     # digest recomputed over the #487 head (648cfca).
+    # #454 ∪ #487 union: NetworkPathHintTests (the 11 path-hint runtime tests)
+    # plus the pre-review lifecycle repairs (real-adapter restart observation,
+    # retired-callback generation guard, ownership-scoped waiting state) are
+    # merged with #487's opt-in class + F1 spies in ONE pinned file — the
+    # digest below is recomputed over THIS union file (integration 9abfa897 ∪
+    # lane head 809341f); neither parent pin (5ca855db… from 648cfca nor
+    # 2b37a79a… from 9d914f7) applies.
     # #428∪#491∪#487 final union: canonical recompute over this merge equals
     # the #487 value (the pinned test file is byte-unchanged by #428/#491).
     # #486 refresh ∪ #428: the pinned test file is byte-unchanged by both
     # sides (the #486 module tests are separate files outside this pin);
     # canonical recompute over the merged checkout equals the same value.
-    "5ca855dba32315bcb77c9323e064e6e119d771b5a1e07e6f600fa961d69044a8"
+    # #454 refresh ∪ #486/#428 integration: the pinned test file is
+    # byte-unchanged by the incoming refresh (#486's tests are separate
+    # files outside this pin) — canonical recompute over the merged checkout
+    # equals the lane value (39af3bb9…); the integration parent pin
+    # (5ca855db…) does not apply.
+    "39af3bb94fbf8af44f7f426e9ae06a73ee1ba8e4aeabfb529c68c502280fb0ae"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

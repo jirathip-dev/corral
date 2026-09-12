@@ -255,6 +255,12 @@ final class HostStreamCoordinator: ObservableObject {
         /// clears the task handle it OWNS only — a background stop plus a
         /// foreground re-arm may already have installed a successor.
         var continuityGeneration = 0
+        /// #454: true while this host's preflight ladder is BETWEEN attempts
+        /// (a failure was published and the delay is being slept out) — the
+        /// one state a path-restoration hint may interrupt. An attempt still
+        /// in flight is never cancelled/restarted, so repeated hints cannot
+        /// become a hot retry loop.
+        var continuityWaiting = false
         /// The host's in-flight pull-refresh task (per-host task set; its
         /// outcome is a String? failure reason).
         var refreshTask: Task<String?, Never>?
@@ -390,14 +396,22 @@ final class HostStreamCoordinator: ObservableObject {
             // guard above must hold across its entire lifetime), and only
             // the ladder that still owns this session may clear it.
             defer {
+                // #454 pre-review fix 3: only the owning ladder clears its own
+                // waiting state — a retired ladder's cleanup must never erase
+                // its successor's wait.
                 if session.continuityGeneration == ladder {
                     session.continuityTask = nil
+                    session.continuityWaiting = false
                 }
             }
             var attempt = 1
             while true {
                 guard !Task.isCancelled,
                       self.sessions[profile.id] === session else { return }
+                // #454: an attempt is in flight — a path hint must not
+                // cancel/restart it; only the WAIT between attempts is
+                // interruptible.
+                session.continuityWaiting = false
                 do {
                     let response = try await client.fetchHostKey()
                     guard !Task.isCancelled,
@@ -429,6 +443,9 @@ final class HostStreamCoordinator: ObservableObject {
                         "host unreachable — retrying host-key verification (attempt \(attempt))")
                     self.objectWillChange.send()
                     do {
+                        // #454: the ladder is WAITING now — the one state a
+                        // path-restoration hint may interrupt.
+                        session.continuityWaiting = true
                         try await Task.sleep(
                             nanoseconds: self.preflightPolicy.delayNanoseconds(beforeAttempt: attempt))
                     } catch {
@@ -480,6 +497,41 @@ final class HostStreamCoordinator: ObservableObject {
         objectWillChange.send()
     }
 
+    /// #454: react to ONE debounced path-restoration hint. This is a RETRY
+    /// HINT ONLY: it never marks a store live (transport bytes stay the
+    /// health authority, #425) and never opens a stream past the trust
+    /// gate. Each host keeps its existing single owner:
+    /// - a healthy stream is a NOOP (the store's own `.connected` + fresh
+    ///   guard) and so is a host whose key mismatch is terminal;
+    /// - a pinned host whose preflight ladder is WAITING between attempts
+    ///   gets its ladder re-driven (cancel + fresh single owner — the
+    ///   existing #451 pattern, never a bypass: the ladder re-checks
+    ///   `/host-key` before any stream opens);
+    /// - every other host goes through the store's #425
+    ///   `reconnectIfNeeded` seam: exactly one replacement for a
+    ///   stale/disconnected stream, nothing stacked.
+    func hintPathRestored(profiles: [HostProfile]) {
+        for profile in profiles where profile.id != activeProfileID && profile.mayConnect {
+            guard let session = sessions[profile.id],
+                  let url = URL(string: profile.urlString) else { continue }
+            switch session.posture {
+            case .mismatch:
+                // Terminal (B4): a hint never re-polls or repairs a
+                // mismatched key.
+                continue
+            case .verifying:
+                guard session.continuityWaiting, session.continuityTask != nil else { continue }
+                session.continuityTask?.cancel()
+                session.continuityTask = nil
+                startSessionIfNeeded(profile)
+            case .unpinned, .verified:
+                let client = CorraldClient(host: url, session: urlSession)
+                session.store.reconnectIfNeeded(client: client)
+            }
+        }
+        objectWillChange.send()
+    }
+
     /// Stop every coordinator host (app background, C3: cancel all when
     /// the app backgrounds). Rows stay retained in each store for the
     /// next foreground resume.
@@ -487,6 +539,7 @@ final class HostStreamCoordinator: ObservableObject {
         for session in sessions.values {
             session.continuityTask?.cancel()
             session.continuityTask = nil
+            session.continuityWaiting = false
             session.refreshTask?.cancel()
             session.refreshTask = nil
             session.store.disconnect()
@@ -503,6 +556,7 @@ final class HostStreamCoordinator: ObservableObject {
         changeSinks.removeValue(forKey: profileID)
         session.continuityTask?.cancel()
         session.continuityTask = nil
+        session.continuityWaiting = false
         session.refreshTask?.cancel()
         session.refreshTask = nil
         session.store.disconnect()

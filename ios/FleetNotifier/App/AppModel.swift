@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import Network
 import SwiftUI
 import UIKit
 import os
@@ -169,6 +170,52 @@ private struct PendingNotificationTap: Sendable, Equatable {
     let agentId: String
     /// The payload's host identity (nil = legacy host-less payload).
     let hostKeyB64: String?
+}
+
+/// #454: the network-path signal seam. The lifecycle owner (AppModel) starts
+/// and stops exactly one monitor for the live session and receives one
+/// `satisfied` boolean per path update. It is deliberately THIN: the seam
+/// carries no host, no key, and no reconnect logic — a satisfied path is a
+/// RETRY HINT ONLY, never proof of host/Tailscale reachability and never a
+/// liveness claim (transport bytes stay the health authority, #425).
+/// Injectable so tests drive deterministic signals without the OS.
+protocol NetworkPathMonitoring: AnyObject {
+    /// Begin delivering path updates to `handler` (main-actor delivery is
+    /// the caller's contract; the adapter may hop).
+    func start(_ handler: @escaping @Sendable (Bool) -> Void)
+    /// Stop delivering updates. The monitor may be started again later.
+    func stop()
+}
+
+/// #454: production adapter over `NWPathMonitor` — the only Network-framework
+/// code in the path-hint feature. Updates are hopped to the main actor; the
+/// owner's guards (state, generation, episode) do all the deciding.
+final class SystemNetworkPathMonitor: NetworkPathMonitoring {
+    private let queue = DispatchQueue(label: "corral.network-path-monitor")
+    /// #454 pre-review fix 1: the underlying monitor is created FRESH on every
+    /// logical start. The lane's actual-adapter test OBSERVED, for this Swift
+    /// `NWPathMonitor` in-process on iOS, that a cancelled instance delivers NO
+    /// further path update — so reusing one would silently stop path
+    /// observation after the first background → foreground cycle.
+    private var monitor: NWPathMonitor?
+
+    func start(_ handler: @escaping @Sendable (Bool) -> Void) {
+        // A start while one is already live replaces it (the owner is
+        // idempotent, so this is not a normal path).
+        monitor?.cancel()
+        let monitor = NWPathMonitor()
+        self.monitor = monitor
+        monitor.pathUpdateHandler = { path in
+            let satisfied = path.status == .satisfied
+            Task { @MainActor in handler(satisfied) }
+        }
+        monitor.start(queue: queue)
+    }
+
+    func stop() {
+        monitor?.cancel()
+        monitor = nil
+    }
 }
 
 /// App-level orchestration for the READ-ONLY client (#354 L2): identity,
@@ -411,6 +458,39 @@ final class AppModel: ObservableObject {
     /// cancelled ladder's cleanup from clearing a newer one.
     private var keyContinuityTask: Task<Void, Never>?
     private var keyContinuityTaskId: UUID?
+    /// #454: true while the preflight ladder is BETWEEN attempts (it
+    /// published a failure and is sleeping out its delay). A path-restoration
+    /// hint may interrupt exactly this wait — never an attempt that is still
+    /// in flight, so repeated hints cannot become a cancel/restart hot loop.
+    private var keyContinuityWaiting = false
+
+    /// #454: the lifecycle-owned network-path monitor (one per model).
+    private let pathMonitor: NetworkPathMonitoring
+    /// #454: trailing debounce before a path-restoration hint acts — an
+    /// IMPLEMENTATION PARAMETER (a real handover emits a burst of path
+    /// updates), not a measured physical guarantee.
+    private let pathHintDebounce: TimeInterval
+    /// #454: the debounce wait, injectable so tests drive it deterministically.
+    private let pathHintSleep: @Sendable (TimeInterval) async throws -> Void
+    /// #454: the single pending debounce task (one owner; a burst of
+    /// signals cancels and restarts it, so N notifications coalesce into ONE
+    /// hint action).
+    private var pathHintTask: Task<Void, Never>?
+    private var pathHintTaskId: UUID?
+    /// #454: true only while the live session owns the monitor — every
+    /// callback is refused after stopLive (background/removal boundary).
+    private var pathMonitorStarted = false
+    /// #454 pre-review fix 2: monotonic generation of the logical monitor
+    /// session. A callback already QUEUED from a retired generation must never
+    /// be applied to its successor (start → stop → start would otherwise let a
+    /// stale update drive the restarted session's hint machinery).
+    private var pathMonitorGeneration = 0
+    /// #454: has an UNSATISFIED path been observed since the last actionable
+    /// hint? Only a satisfied observation AFTER one is a restoration, so
+    /// repeated satisfied updates (interface churn, a satisfied path with
+    /// the VPN/host still unreachable) are NOOPs and can never multiply
+    /// retries.
+    private var pathWasUnsatisfied = false
 
     private let defaults: UserDefaults
     private let identityLifecycle: IdentityLifecycle
@@ -566,7 +646,12 @@ final class AppModel: ObservableObject {
          registerForRemoteNotifications: @escaping @MainActor () -> Void = {
              UIApplication.shared.registerForRemoteNotifications()
          },
-         preflightRetryPolicy: HostPreflightRetryPolicy = .default) {
+         preflightRetryPolicy: HostPreflightRetryPolicy = .default,
+         networkPathMonitor: NetworkPathMonitoring = SystemNetworkPathMonitor(),
+         pathHintDebounce: TimeInterval = 0.5,
+         pathHintSleep: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
+             try await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
+         }) {
         self.fleetPresentation = FleetPresentation(
             rawValue: defaults.string(forKey: Self.fleetPresentationKey) ?? ""
         ) ?? .board
@@ -578,6 +663,9 @@ final class AppModel: ObservableObject {
         // #451: the same bounded preflight ladder paces the ACTIVE host's
         // /host-key re-check and every coordinator host's preflight.
         self.preflightRetryPolicy = preflightRetryPolicy
+        self.pathMonitor = networkPathMonitor
+        self.pathHintDebounce = max(0, pathHintDebounce)
+        self.pathHintSleep = pathHintSleep
         self.identityLoader = identityLoader
         self.loadMeta = loadMeta
         self.saveMeta = saveMeta
@@ -1158,14 +1246,23 @@ final class AppModel: ObservableObject {
         keyContinuityTask = Task { @MainActor [weak self] in
             guard let self else { return }
             defer {
+                // #454 pre-review fix 3: ONLY the ladder that still owns the
+                // handle may clear its own waiting state. A retired ladder's
+                // cancellation cleanup must never erase a successor's wait
+                // (the successor's re-drive would then silently not happen).
                 if self.keyContinuityTaskId == taskId {
                     self.keyContinuityTask = nil
                     self.keyContinuityTaskId = nil
+                    self.keyContinuityWaiting = false
                 }
             }
             var attempt = 1
             while true {
                 guard !Task.isCancelled, self.isCurrent(context) else { return }
+                // #454: an attempt is in flight — a path hint must not
+                // cancel/restart it; only the WAIT between attempts is
+                // interruptible.
+                self.keyContinuityWaiting = false
                 do {
                     let response = try await client.fetchHostKey()
                     guard !Task.isCancelled, self.isCurrent(context) else { return }
@@ -1196,6 +1293,9 @@ final class AppModel: ObservableObject {
                         "host_key_unverified",
                         "Could not verify \(profile.displayName)'s host key — retrying automatically (attempt \(attempt)); the board stays paused until the host is reachable.")
                     do {
+                        // #454: the ladder is WAITING now — this is the one
+                        // state a path-restoration hint may interrupt.
+                        self.keyContinuityWaiting = true
                         try await Task.sleep(nanoseconds: policy.delayNanoseconds(beforeAttempt: attempt))
                     } catch {
                         return  // cancelled (background/boundary): retries end
@@ -2108,6 +2208,12 @@ final class AppModel: ObservableObject {
         // (a paused or mismatched active host must never freeze the rest
         // of the board). Idempotent per host.
         syncCoordinator(startStreams: true)
+        // #454: the path monitor is lifecycle-owned — it runs exactly while
+        // the live session runs (started here, stopped by stopLive). Started
+        // BEFORE the trust gates: a pinned-but-unverified host's preflight
+        // ladder is the one surface a hint may re-drive, and it lives below
+        // these gates.
+        startPathMonitor()
         // #399 B6: a profile paused on fingerprint confirmation never
         // opens a stream — the board presents the confirmation sheet and
         // only confirmFingerprint() releases it.
@@ -2239,6 +2345,10 @@ final class AppModel: ObservableObject {
     }
 
     func stopLive() {
+        // #454: the path monitor and every queued hint belong to the live
+        // session — the background/removal boundary ends both, so no late
+        // path callback can act after teardown.
+        stopPathMonitor()
         // #400 C3: cancel every coordinator host's stream/tasks when the
         // app backgrounds; persist their per-host cursors + allowlisted
         // caches before the session ends (C5/C6).
@@ -2266,6 +2376,10 @@ final class AppModel: ObservableObject {
         keyContinuityTask?.cancel()
         keyContinuityTask = nil
         keyContinuityTaskId = nil
+        // #454 pre-review fix 3: the background boundary resets the ladder's
+        // waiting state explicitly (the retired ladder's own cleanup no longer
+        // clears it — see beginKeyContinuityCheck).
+        keyContinuityWaiting = false
         // #399: mirror the active profile's cursor into the profile store
         // and persist the allowlisted board metadata cache (background/
         // host-switch boundaries).
@@ -2323,6 +2437,122 @@ final class AppModel: ObservableObject {
             Task { await refreshNotificationPermission() }
         @unknown default:
             break
+        }
+    }
+
+    // MARK: - #454 network-path retry hint (lifecycle-owned)
+
+    /// #454: begin the live session's single path monitor. Idempotent —
+    /// startLive() legitimately runs more than once per launch.
+    private func startPathMonitor() {
+        guard !pathMonitorStarted else { return }
+        pathMonitorStarted = true
+        pathWasUnsatisfied = false
+        // #454 pre-review fix 2: this logical start is a NEW generation; the
+        // callback carries it so a retired monitor's queued updates are
+        // refused instead of driving the restarted session.
+        pathMonitorGeneration &+= 1
+        let generation = pathMonitorGeneration
+        pathMonitor.start { [weak self] satisfied in
+            Task { @MainActor in
+                guard let self, self.pathMonitorGeneration == generation else { return }
+                self.handlePathStatus(satisfied)
+            }
+        }
+    }
+
+    /// #454: end the monitor and every queued hint (background, host
+    /// removal, teardown). A callback racing the stop is refused by the
+    /// `pathMonitorStarted` guard, so nothing can act after teardown.
+    private func stopPathMonitor() {
+        pathHintTask?.cancel()
+        pathHintTask = nil
+        pathHintTaskId = nil
+        pathWasUnsatisfied = false
+        guard pathMonitorStarted else { return }
+        pathMonitorStarted = false
+        pathMonitor.stop()
+    }
+
+    /// #454: one path observation. ONLY a restoration — a SATISFIED path
+    /// observed after an UNSATISFIED one — is actionable:
+    /// - unsatisfied: no hint ever (no-network must not produce hot retries)
+    ///   and any queued hint is dropped (connectivity went away again);
+    /// - satisfied repeats (interface churn, a satisfied path with the
+    ///   VPN/host still unreachable) are NOOPs, so repeated notifications
+    ///   can never multiply retry attempts;
+    /// - a restoration schedules ONE trailing-debounced hint (a burst of
+    ///   signals inside the quiet window coalesces into a single action).
+    private func handlePathStatus(_ satisfied: Bool) {
+        guard mode == .live, pathMonitorStarted else { return }
+        guard satisfied else {
+            pathWasUnsatisfied = true
+            pathHintTask?.cancel()
+            pathHintTask = nil
+            pathHintTaskId = nil
+            return
+        }
+        guard pathWasUnsatisfied else { return }
+        pathWasUnsatisfied = false
+        schedulePathHint()
+    }
+
+    /// #454: the single pending debounce owner. A new restoration cancels
+    /// and restarts it, so N notifications in the window produce ONE hint.
+    private func schedulePathHint() {
+        pathHintTask?.cancel()
+        let context = lifecycleContext()
+        let debounce = pathHintDebounce
+        let sleep = pathHintSleep
+        let taskId = UUID()
+        pathHintTaskId = taskId
+        pathHintTask = Task { @MainActor [weak self] in
+            do {
+                try await sleep(debounce)
+            } catch {
+                return  // cancelled (teardown/boundary): no hint
+            }
+            guard let self, !Task.isCancelled, self.isCurrent(context),
+                  self.mode == .live, self.pathMonitorStarted else { return }
+            if self.pathHintTaskId == taskId {
+                self.pathHintTask = nil
+                self.pathHintTaskId = nil
+            }
+            self.performPathHint()
+        }
+    }
+
+    /// #454: the one bounded action of a restoration. It is a RETRY HINT:
+    /// it never marks liveness (`heartbeat`/`.connected` come from transport
+    /// bytes only, #425), never proves host reachability, and reuses the
+    /// EXISTING per-host single owners rather than starting a parallel
+    /// reconnect subsystem.
+    ///
+    /// The ACTIVE host:
+    /// - pinned but unverified: ONLY the single #451 preflight ladder owner
+    ///   may be re-driven, and only while it is WAITING between attempts —
+    ///   the trust gate is never bypassed (no stream may open unverified);
+    /// - otherwise: the #425 store seam (`reconnectIfNeeded`) — exactly one
+    ///   replacement for a stale/disconnected stream, NOOP for a
+    ///   `.connected`+fresh one.
+    /// Every coordinator host gets the same treatment through its own
+    /// session (per-host guards, healthy streams NOOP).
+    private func performPathHint() {
+        if let profile = activeProfile,
+           profile.connectionState != .awaitingFingerprintConfirmation,
+           profile.hostKeyB64 != nil, keyContinuityState != .verified {
+            if keyContinuityState == .pending, keyContinuityWaiting,
+               keyContinuityTask != nil {
+                keyContinuityTask?.cancel()
+                keyContinuityTask = nil
+                keyContinuityTaskId = nil
+                beginKeyContinuityCheck(for: profile)
+            }
+        } else if keyContinuityAllowsLiveWork, let hostURL {
+            fleet.reconnectIfNeeded(client: CorraldClient(host: hostURL, session: session))
+        }
+        if let store = profileStore {
+            coordinator?.hintPathRestored(profiles: store.orderedProfiles)
         }
     }
 
@@ -3180,6 +3410,12 @@ final class AppModel: ObservableObject {
         keyContinuityTask?.cancel()
         keyContinuityTask = nil
         keyContinuityTaskId = nil
+        keyContinuityWaiting = false
+        // #454: a boundary also drops any queued path hint — it must never
+        // fire against the next identity.
+        pathHintTask?.cancel()
+        pathHintTask = nil
+        pathHintTaskId = nil
         inFlightDriveKeys.removeAll()
         // Do not leave the shared delegate context live while reset/demo is
         // still clearing the model. A callback arriving on another queue must

@@ -11863,6 +11863,865 @@ final class LocalNotifierTapDeliveryTests: XCTestCase {
     }
 }
 
+// MARK: - #454 network-path retry hint (deterministic path-signal fixtures)
+
+/// #454 fixture: the deterministic path-signal double injected as
+/// `AppModel.networkPathMonitor`. It records the lifecycle calls (start/stop)
+/// and delivers scripted status updates on demand — no OS path state, no
+/// timing, no physical network involved.
+private final class FakeNetworkPathMonitor: NetworkPathMonitoring {
+    private var handler: (@Sendable (Bool) -> Void)?
+    private(set) var startCount = 0
+    private(set) var stopCount = 0
+
+    var isRunning: Bool { handler != nil }
+
+    func start(_ handler: @escaping @Sendable (Bool) -> Void) {
+        self.handler = handler
+        startCount += 1
+    }
+
+    func stop() {
+        handler = nil
+        stopCount += 1
+    }
+
+    /// One path update, exactly like NWPathMonitor's own callback.
+    func fire(satisfied: Bool) {
+        handler?(satisfied)
+    }
+}
+
+/// #454 fixture: a release-on-demand gate for the injectable debounce sleep,
+/// so a test can hold a hint QUEUED and act (remove a host, background the
+/// app) before the debounce elapses.
+private final class PathHintDeferralGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var opened = false
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if opened {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                waiters.append(continuation)
+                lock.unlock()
+            }
+        }
+    }
+
+    func open() {
+        lock.lock()
+        opened = true
+        let pending = waiters
+        waiters = []
+        lock.unlock()
+        for continuation in pending { continuation.resume() }
+    }
+}
+
+/// #454 fixture transport: per-URL scripted responses with the behaviours the
+/// path-hint tests need — a SILENTLY HELD request (a wedged attempt no ladder
+/// can replace), a releasable JSON/stream response, and SSE comment
+/// keep-alives — while counting every attempt per URL, so the tests observe
+/// real request/attempt effects instead of seam callback counts. The LAST
+/// scripted behaviour repeats for further attempts.
+private final class PathHintURLProtocol: URLProtocol {
+    enum Response {
+        case json(Int, Data)
+        case held
+        case releaseJSON
+        case releaseStream
+        case sseComments(TimeInterval)
+    }
+
+    private enum Releasable {
+        case json
+        case stream
+    }
+
+    private static let lock = NSLock()
+    private static var scriptsStorage: [URL: [Response]] = [:]
+    private static var countsStorage: [URL: Int] = [:]
+    private static var heldStorage: [PathHintURLProtocol] = []
+
+    private let queue = DispatchQueue(label: "corral.g454.pathhint.protocol")
+    private var timer: DispatchSourceTimer?
+    private var releasable: Releasable?
+    private var released = false
+    private var stopped = false
+
+    static func reset() {
+        lock.lock()
+        scriptsStorage = [:]
+        countsStorage = [:]
+        heldStorage = []
+        lock.unlock()
+    }
+
+    static func script(_ responses: [Response], for url: URL) {
+        lock.lock()
+        scriptsStorage[url] = responses
+        lock.unlock()
+    }
+
+    static func requestCount(for url: URL) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return countsStorage[url] ?? 0
+    }
+
+    /// Deliver the withheld response of every releasable held request.
+    static func releaseHeld() {
+        lock.lock()
+        let pending = heldStorage
+        heldStorage = []
+        lock.unlock()
+        for instance in pending { instance.release() }
+    }
+
+    private static func next(for url: URL) -> Response {
+        lock.lock()
+        defer { lock.unlock() }
+        let index = countsStorage[url] ?? 0
+        countsStorage[url] = index + 1
+        guard let script = scriptsStorage[url], !script.isEmpty else {
+            return .json(500, Data("unscripted".utf8))
+        }
+        return script[min(index, script.count - 1)]
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        // SAFETY: URLProtocol requests always carry a fixture URL.
+        guard let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        switch Self.next(for: url) {
+        case .json(let status, let body):
+            deliver(status: status, body: body,
+                    contentType: "application/json", finish: true)
+        case .held:
+            return
+        case .releaseJSON:
+            hold(releasable: .json)
+        case .releaseStream:
+            hold(releasable: .stream)
+        case .sseComments(let interval):
+            deliver(status: 200, body: nil,
+                    contentType: "text/event-stream", finish: false)
+            startComments(interval: interval)
+        }
+    }
+
+    override func stopLoading() {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.stopped = true
+            self.timer?.cancel()
+            self.timer = nil
+        }
+    }
+
+    private func hold(releasable: Releasable) {
+        Self.lock.lock()
+        self.releasable = releasable
+        Self.heldStorage.append(self)
+        Self.lock.unlock()
+    }
+
+    private func release() {
+        queue.async { [weak self] in
+            guard let self, let kind = self.releasable,
+                  !self.released, !self.stopped else { return }
+            self.released = true
+            switch kind {
+            case .json:
+                self.deliver(status: 200, body: Data(#"{"ok":true}"#.utf8),
+                             contentType: "application/json", finish: true)
+            case .stream:
+                self.deliver(status: 200, body: nil,
+                             contentType: "text/event-stream", finish: false)
+                self.startComments(interval: 0.2)
+            }
+        }
+    }
+
+    private func deliver(status: Int, body: Data?, contentType: String, finish: Bool) {
+        // SAFETY: fixed HTTPURLResponse construction from the request's own URL.
+        guard let url = request.url,
+              let response = HTTPURLResponse(url: url, statusCode: status,
+                                             httpVersion: "HTTP/1.1",
+                                             headerFields: ["Content-Type": contentType]) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        if let body, !body.isEmpty {
+            client?.urlProtocol(self, didLoad: body)
+        }
+        if finish {
+            client?.urlProtocolDidFinishLoading(self)
+        }
+    }
+
+    private func startComments(interval: TimeInterval) {
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        queue.async { [weak self] in
+            guard let self, self.timer == nil else { return }
+            self.timer = timer
+            timer.schedule(deadline: .now() + interval, repeating: interval)
+            timer.setEventHandler { [weak self] in
+                guard let self, !self.stopped else { return }
+                self.client?.urlProtocol(self, didLoad: Data(": keep-alive\n".utf8))
+            }
+            timer.resume()
+        }
+    }
+}
+
+/// Regression for #454. At the reviewed head the iOS source has NO
+/// `NWPathMonitor` integration: a stale/disconnected host waits out its own
+/// retry ladder even when connectivity has already returned, and there is no
+/// deterministic path seam at all. The fix is a lifecycle-owned, debounced
+/// path signal that ACCELERATES an existing stale wait through the existing
+/// per-host single owners — never a parallel reconnect subsystem, never a
+/// liveness claim (transport bytes stay the health authority, #425):
+/// - only a RESTORATION (a satisfied path observed after an unsatisfied one)
+///   is actionable; repeated satisfied updates coalesce and are NOOPs;
+/// - one trailing-debounced hint per episode: a burst produces one action;
+/// - a healthy (`.connected` + fresh) stream is untouched;
+/// - a pinned-but-unverified host only has its single #451 preflight ladder
+///   re-driven while that ladder is WAITING — the trust gate is never
+///   bypassed and an in-flight attempt is never cancelled/restarted;
+/// - background/removal stop the monitor and drop every queued hint.
+/// Every assertion observes REAL attempt counts on the transport fixture
+/// (per-URL `PathHintURLProtocol` request counts), not seam callback counts.
+@MainActor
+final class NetworkPathHintTests: XCTestCase {
+    private static let activeHost = "g454-active.example"
+    private static let healthyHost = "g454-healthy.example"
+    private static let wedgedHost = "g454-wedged.example"
+
+    private var suiteNames: [String] = []
+    private var cleanupDefaults: [UserDefaults] = []
+    private var sessions: [URLSession] = []
+    private var models: [AppModel] = []
+
+    private func url(_ host: String) -> URL {
+        // SAFETY: fixed fixture host literals.
+        URL(string: "https://\(host)")!
+    }
+
+    private func eventsURL(_ host: String) -> URL {
+        url(host).appendingPathComponent("/events")
+    }
+
+    private func hostKeyURL(_ host: String) -> URL {
+        url(host).appendingPathComponent("/host-key")
+    }
+
+    private static func pinnedKeyB64(_ index: Int) -> String {
+        Data(repeating: UInt8(index + 1), count: 32).base64EncodedString()
+    }
+
+    private static func hostKeyBody(_ index: Int) -> Data {
+        // SAFETY: fixed fixture JSON built from the deterministic key fill.
+        Data(#"{"algorithm":"X25519","public_key":"\#(pinnedKeyB64(index))"}"#.utf8)
+    }
+
+    private func makeSession() -> URLSession {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [PathHintURLProtocol.self]
+        let session = URLSession(configuration: config)
+        sessions.append(session)
+        return session
+    }
+
+    @discardableResult
+    private func scriptHostKey(_ host: String, keyIndex: Int,
+                               status: Int = 200) -> Data {
+        let body = status == 200 ? Self.hostKeyBody(keyIndex) : Data("down".utf8)
+        PathHintURLProtocol.script([.json(status, body)], for: hostKeyURL(host))
+        return body
+    }
+
+    /// The ACTIVE host only (no profile store): the legacy single-host
+    /// runtime, unpinned — the simplest real path into `FleetStore.connect`.
+    private func makeActiveModel(monitor: FakeNetworkPathMonitor,
+                                 session: URLSession,
+                                 debounce: TimeInterval = 0.05,
+                                 sleep: (@Sendable (TimeInterval) async throws -> Void)? = nil) -> AppModel {
+        let suiteName = "corral.g454.pathhint.active.\(UUID().uuidString)"
+        // SAFETY: a fresh UUID-based suite name is always a valid suite.
+        let defaults = UserDefaults(suiteName: suiteName)!
+        suiteNames.append(suiteName)
+        cleanupDefaults.append(defaults)
+        let model = AppModel(
+            session: session,
+            defaults: defaults,
+            identityLoader: {
+                (DeviceSigner(key: Curve25519.Signing.PrivateKey()), .insecureFallback)
+            },
+            loadMeta: { nil },
+            saveMeta: { _ in },
+            wipeIdentity: {},
+            networkPathMonitor: monitor,
+            pathHintDebounce: debounce,
+            pathHintSleep: sleep ?? { seconds in
+                _ = try? await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
+            })
+        models.append(model)
+        model.mode = .live
+        model.hostURL = url(Self.wedgedHost)
+        return model
+    }
+
+    /// Pinned multi-host fixture: `hosts[0]` is the ACTIVE host, every other
+    /// host is a coordinator host. All pinned (the profile store only admits
+    /// connectable pinned profiles); the caller scripts every URL first.
+    private struct PinnedFixture {
+        let model: AppModel
+        let store: HostProfileStore
+        let profiles: [HostProfile]
+    }
+
+    private func makePinnedFixture(hosts: [String],
+                                   policy: HostPreflightRetryPolicy = .default,
+                                   monitor: FakeNetworkPathMonitor,
+                                   session: URLSession,
+                                   debounce: TimeInterval = 0.05,
+                                   sleep: (@Sendable (TimeInterval) async throws -> Void)? = nil) -> PinnedFixture {
+        let suiteName = "corral.g454.pathhint.pinned.\(UUID().uuidString)"
+        // SAFETY: a fresh UUID-based suite name is always a valid suite.
+        let defaults = UserDefaults(suiteName: suiteName)!
+        suiteNames.append(suiteName)
+        cleanupDefaults.append(defaults)
+        let store = HostProfileStore(directory: nil, defaults: defaults)
+        var profiles: [HostProfile] = []
+        for (index, host) in hosts.enumerated() {
+            // SAFETY: fixture profiles are built from this test's own constants.
+            let profile = try! store.addProfile(
+                displayName: host,
+                urlString: "https://\(host)",
+                hostKeyB64: Self.pinnedKeyB64(index),
+                fingerprint: "FINGER",
+                keyId: "dev_g454_\(index)",
+                grants: ["read_tail"],
+                expiryTs: 1_800_000_000,
+                registeredAt: 1)
+            profiles.append(profile)
+        }
+        defaults.set(profiles[0].id.uuidString, forKey: "fleetnotifier.activeHostProfileID")
+        let model = AppModel(
+            session: session,
+            defaults: defaults,
+            identityLoader: {
+                (DeviceSigner(key: Curve25519.Signing.PrivateKey()), .insecureFallback)
+            },
+            loadMeta: { nil },
+            saveMeta: { _ in },
+            wipeIdentity: {},
+            profileStore: store,
+            preflightRetryPolicy: policy,
+            networkPathMonitor: monitor,
+            pathHintDebounce: debounce,
+            pathHintSleep: sleep ?? { seconds in
+                _ = try? await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
+            })
+        models.append(model)
+        return PinnedFixture(model: model, store: store, profiles: profiles)
+    }
+
+    private func cleanUp() {
+        for model in models { model.stopLive() }
+        models = []
+        for session in sessions { session.invalidateAndCancel() }
+        sessions = []
+        for (suiteName, defaults) in zip(suiteNames, cleanupDefaults) {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+        suiteNames = []
+        cleanupDefaults = []
+        PathHintURLProtocol.reset()
+    }
+
+    private func waitFor(_ condition: () -> Bool,
+                         timeout: TimeInterval = 5) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+        return condition()
+    }
+
+    private func settle(_ seconds: TimeInterval) async {
+        try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+    }
+
+    private func restoration(_ monitor: FakeNetworkPathMonitor) {
+        monitor.fire(satisfied: false)
+        monitor.fire(satisfied: true)
+    }
+
+    /// AC1 + AC3 (bounded under an unreachable host): a wedged ACTIVE stream
+    /// can ONLY be re-attempted by a path hint (no ladder can produce a
+    /// second attempt), so exactly one restoration must yield exactly ONE
+    /// new `/events` attempt — and none beyond it. Path satisfaction must
+    /// never mark the stream live; only the released transport 200 does.
+    func testSinglePathRestorationInterruptsAWedgedStreamWithOneBoundedAttempt() async {
+        let monitor = FakeNetworkPathMonitor()
+        let session = makeSession()
+        defer { cleanUp() }
+        let model = makeActiveModel(monitor: monitor, session: session)
+        let events = eventsURL(Self.wedgedHost)
+        PathHintURLProtocol.script([.held, .releaseStream], for: events)
+
+        model.startLive()
+        let firstAttempt = await waitFor { PathHintURLProtocol.requestCount(for: events) == 1 }
+        XCTAssertTrue(firstAttempt, "the live session must dispatch its first /events attempt")
+        XCTAssertEqual(monitor.startCount, 1,
+                       "the live session must own exactly one path monitor (#454)")
+
+        let detection = Date()
+        restoration(monitor)
+        let replaced = await waitFor { PathHintURLProtocol.requestCount(for: events) == 2 }
+        XCTAssertTrue(replaced,
+                      "a path restoration must interrupt the wedged wait with exactly ONE new attempt (#454 AC1)")
+        let attemptAt = Date()
+
+        // One bounded attempt per episode: nothing stacked afterwards.
+        await settle(0.6)
+        XCTAssertEqual(PathHintURLProtocol.requestCount(for: events), 2,
+                       "a single restoration must produce exactly one replacement — no duplicate owner (#454 AC1)")
+        XCTAssertTrue(model.fleet.isStreaming, "the replacement must be owned by the store")
+        XCTAssertNotEqual(model.fleet.connectionState, .connected,
+                          "a satisfied path must never mark the stream live — only transport bytes may (#454)")
+
+        // The released attempt's 200 is the first authoritative transport signal.
+        PathHintURLProtocol.releaseHeld()
+        let acked = await waitFor { model.fleet.connectionState == .connected }
+        let firstFrame = Date()
+        XCTAssertTrue(acked, "the released attempt's 200 must ack the stream live (#425 authority)")
+        print("#454 fixture measurement: detection->attempt="
+              + "\(Int(attemptAt.timeIntervalSince(detection) * 1000))ms "
+              + "attempt->first-authoritative-frame="
+              + "\(Int(firstFrame.timeIntervalSince(attemptAt) * 1000))ms")
+    }
+
+    /// AC1 (coalescing): a burst of path updates inside the quiet window —
+    /// including repeated restorations — must produce exactly ONE hint and
+    /// therefore ONE new attempt, and repeated satisfied updates after the
+    /// episode must be NOOPs (no hot retry).
+    func testBurstOfPathSignalsCoalescesIntoOneHintAndOneAttempt() async {
+        let monitor = FakeNetworkPathMonitor()
+        let gate = PathHintDeferralGate()
+        let session = makeSession()
+        defer { cleanUp() }
+        let model = makeActiveModel(monitor: monitor, session: session,
+                                    sleep: { _ in await gate.wait() })
+        let events = eventsURL(Self.wedgedHost)
+        PathHintURLProtocol.script([.held], for: events)
+
+        model.startLive()
+        let firstAttempt = await waitFor { PathHintURLProtocol.requestCount(for: events) == 1 }
+        XCTAssertTrue(firstAttempt, "the live session must dispatch its first /events attempt")
+
+        // A handover-style burst: down/up twice, then a final up — all inside
+        // the (held) quiet window.
+        monitor.fire(satisfied: false)
+        for _ in 0..<2 {
+            monitor.fire(satisfied: true)
+            monitor.fire(satisfied: false)
+        }
+        monitor.fire(satisfied: true)
+        await settle(0.25)
+        XCTAssertEqual(PathHintURLProtocol.requestCount(for: events), 1,
+                       "a burst must not act before the trailing quiet window elapses (#454)")
+
+        gate.open()
+        let replaced = await waitFor { PathHintURLProtocol.requestCount(for: events) == 2 }
+        XCTAssertTrue(replaced, "the coalesced burst must act exactly once (#454 AC1)")
+
+        // Repeated satisfied updates (no new unsatisfied observation) are NOOPs.
+        for _ in 0..<5 { monitor.fire(satisfied: true) }
+        await settle(0.4)
+        XCTAssertEqual(PathHintURLProtocol.requestCount(for: events), 2,
+                       "repeated satisfied notifications must coalesce — never hot retries (#454)")
+    }
+
+    /// AC3 (no-network): an unsatisfied path must produce NO retry hint at
+    /// all — silence is never evidence of recovery — while a real
+    /// restoration still acts. Also: a path signal must never fake a
+    /// connection state for a disconnected host.
+    func testUnsatisfiedPathProducesNoHotRetryAndRestorationStillActs() async {
+        let monitor = FakeNetworkPathMonitor()
+        let session = makeSession()
+        defer { cleanUp() }
+        let model = makeActiveModel(monitor: monitor, session: session)
+        let events = eventsURL(Self.wedgedHost)
+        PathHintURLProtocol.script([.held], for: events)
+
+        model.startLive()
+        let firstAttempt = await waitFor { PathHintURLProtocol.requestCount(for: events) == 1 }
+        XCTAssertTrue(firstAttempt, "the live session must dispatch its first /events attempt")
+
+        for _ in 0..<5 { monitor.fire(satisfied: false) }
+        await settle(0.5)
+        XCTAssertEqual(PathHintURLProtocol.requestCount(for: events), 1,
+                       "an unsatisfied path must never produce a retry hint (#454 AC3)")
+        XCTAssertNotEqual(model.fleet.connectionState, .connected,
+                          "no path signal may mark a disconnected host live (#454)")
+
+        restoration(monitor)
+        let replaced = await waitFor { PathHintURLProtocol.requestCount(for: events) == 2 }
+        XCTAssertTrue(replaced, "a real restoration after the outage must still act (#454 AC1)")
+        await settle(0.4)
+        XCTAssertEqual(PathHintURLProtocol.requestCount(for: events), 2,
+                       "exactly one attempt for the restoration episode (#454 AC1)")
+    }
+
+    /// AC3 (the crucial bound): a SATISFIED path with the host/VPN still
+    /// unreachable — repeated satisfied updates AND repeated restorations —
+    /// must not multiply attempts, and the host must stay honestly non-live.
+    /// The existing single-owner replacement guard is what bounds it.
+    func testRepeatedSatisfiedSignalsWithAnUnreachableHostStayBounded() async {
+        let monitor = FakeNetworkPathMonitor()
+        let session = makeSession()
+        defer { cleanUp() }
+        let model = makeActiveModel(monitor: monitor, session: session)
+        let events = eventsURL(Self.wedgedHost)
+        PathHintURLProtocol.script([.held], for: events)
+
+        model.startLive()
+        let firstAttempt = await waitFor { PathHintURLProtocol.requestCount(for: events) == 1 }
+        XCTAssertTrue(firstAttempt, "the live session must dispatch its first /events attempt")
+
+        restoration(monitor)
+        let replaced = await waitFor { PathHintURLProtocol.requestCount(for: events) == 2 }
+        XCTAssertTrue(replaced, "the first restoration must act once")
+
+        // Satisfied-but-VPN-down: repeated satisfied updates are NOOPs.
+        for _ in 0..<6 { monitor.fire(satisfied: true) }
+        // Repeated restorations in quick succession: each is one episode, but
+        // the in-flight replacement guard bounds the attempt count.
+        for _ in 0..<4 { restoration(monitor) }
+        await settle(0.8)
+        XCTAssertEqual(PathHintURLProtocol.requestCount(for: events), 2,
+                       "repeated satisfied signals with an unreachable host must stay bounded — the signals may not multiply attempts (#454)")
+        XCTAssertNotEqual(model.fleet.connectionState, .connected,
+                          "a satisfied path never proves host reachability (#454 AC3)")
+    }
+
+    /// AC2: a healthy `.connected` + fresh stream is untouched by benign path
+    /// notifications (and by restorations): no replacement, one owner.
+    func testHealthyStreamIsPreservedAcrossPathRestorations() async {
+        let monitor = FakeNetworkPathMonitor()
+        let session = makeSession()
+        defer { cleanUp() }
+        let model = makeActiveModel(monitor: monitor, session: session)
+        let events = eventsURL(Self.wedgedHost)
+        PathHintURLProtocol.script([.sseComments(TimeInterval(0.2))], for: events)
+
+        model.startLive()
+        let acked = await waitFor { model.fleet.connectionState == .connected }
+        XCTAssertTrue(acked, "the keep-alive stream must ack live")
+        XCTAssertEqual(PathHintURLProtocol.requestCount(for: events), 1)
+
+        for _ in 0..<3 { restoration(monitor) }
+        await settle(0.6)
+        XCTAssertEqual(PathHintURLProtocol.requestCount(for: events), 1,
+                       "a benign path notification must never tear down a healthy stream (#454 AC2)")
+        XCTAssertEqual(model.fleet.connectionState, .connected)
+        XCTAssertTrue(model.fleet.isStreaming)
+    }
+
+    /// AC4 (trust): a pinned-but-unverified ACTIVE host may only have its
+    /// single #451 preflight ladder re-driven — and only while that ladder is
+    /// WAITING. No stream may ever open unverified, and nothing may stack.
+    func testPinnedUnverifiedRestorationReDrivesTheWaitingPreflightLadderOnly() async {
+        let monitor = FakeNetworkPathMonitor()
+        let gate = PathHintDeferralGate()
+        let session = makeSession()
+        defer { cleanUp() }
+        // A 30 s ladder delay: without the hint no second /host-key attempt
+        // can appear inside the test window.
+        let fixture = makePinnedFixture(
+            hosts: [Self.wedgedHost],
+            policy: HostPreflightRetryPolicy(baseInterval: 30, maxInterval: 30),
+            monitor: monitor, session: session,
+            sleep: { _ in await gate.wait() })
+        let hostKey = hostKeyURL(Self.wedgedHost)
+        let events = eventsURL(Self.wedgedHost)
+        scriptHostKey(Self.wedgedHost, keyIndex: 0, status: 500)
+
+        fixture.model.startLive()
+        let attemptOne = await waitFor { PathHintURLProtocol.requestCount(for: hostKey) == 1 }
+        XCTAssertTrue(attemptOne, "the pinned host's single preflight ladder must run")
+        XCTAssertEqual(fixture.model.keyContinuityState, .pending)
+        await settle(0.3) // the 500 lands; the ladder is now waiting
+
+        restoration(monitor)
+        gate.open()
+        let redriven = await waitFor({ PathHintURLProtocol.requestCount(for: hostKey) == 2 },
+                                     timeout: 1.5)
+        XCTAssertTrue(redriven,
+                      "a path restoration must re-drive the WAITING preflight ladder exactly once (#454 AC4)")
+        XCTAssertEqual(PathHintURLProtocol.requestCount(for: events), 0,
+                       "an unverified pinned host must never open a stream — the hint may not bypass the trust gate (#454 AC4)")
+        await settle(0.5)
+        XCTAssertEqual(PathHintURLProtocol.requestCount(for: hostKey), 2,
+                       "one re-drive per waiting ladder — no restart loop (#454)")
+        XCTAssertEqual(fixture.model.keyContinuityState, .pending)
+    }
+
+    /// AC4 (terminal mismatch): a failed-closed key mismatch is never
+    /// re-polled or revived by a path restoration.
+    func testPathRestorationNeverRevivesAFailedClosedKeyMismatch() async {
+        let monitor = FakeNetworkPathMonitor()
+        let session = makeSession()
+        defer { cleanUp() }
+        let fixture = makePinnedFixture(hosts: [Self.wedgedHost],
+                                        monitor: monitor, session: session)
+        let hostKey = hostKeyURL(Self.wedgedHost)
+        let events = eventsURL(Self.wedgedHost)
+        // SAFETY: fixed fixture bytes (a wrong key is the point of this test).
+        let wrongKey = Data(repeating: 33, count: 32).base64EncodedString()
+        PathHintURLProtocol.script(
+            [.json(200, Data(#"{"algorithm":"X25519","public_key":"\#(wrongKey)"}"#.utf8))],
+            for: hostKey)
+
+        fixture.model.startLive()
+        let mismatched = await waitFor { fixture.model.keyContinuityState == .mismatch }
+        XCTAssertTrue(mismatched, "a different pinned key must fail closed")
+        XCTAssertEqual(PathHintURLProtocol.requestCount(for: hostKey), 1)
+
+        for _ in 0..<3 { restoration(monitor) }
+        await settle(0.6)
+        XCTAssertEqual(PathHintURLProtocol.requestCount(for: hostKey), 1,
+                       "a terminal mismatch must never be re-polled by a path hint (#454 AC4)")
+        XCTAssertEqual(PathHintURLProtocol.requestCount(for: events), 0,
+                       "no stream may reach a mismatched host (#454 AC4)")
+        XCTAssertEqual(fixture.model.keyContinuityState, .mismatch)
+    }
+
+    /// AC5 (multi-host partial reachability): one restoration hints the
+    /// ACTIVE host and every coordinator host; only the stale host gets a
+    /// replacement — the healthy ones are untouched.
+    func testCoordinatorPartialReachabilityHintReplacesOnlyTheStaleHost() async {
+        let monitor = FakeNetworkPathMonitor()
+        let session = makeSession()
+        defer { cleanUp() }
+        let fixture = makePinnedFixture(
+            hosts: [Self.activeHost, Self.healthyHost, Self.wedgedHost],
+            monitor: monitor, session: session)
+        // SAFETY: fixed fixture key indices match the pinned fixture order.
+        let activeEvents = eventsURL(Self.activeHost)
+        let healthyEvents = eventsURL(Self.healthyHost)
+        let wedgedEvents = eventsURL(Self.wedgedHost)
+        let activeStore = fixture.model.fleet
+        // SAFETY: fixture invariants (makePinnedFixture); failure is a harness bug.
+        let coordinator = try! XCTUnwrap(fixture.model.coordinator)
+        // SAFETY: the coordinator owns a session for every connectable profile.
+        let healthyStore = try! XCTUnwrap(coordinator.store(profileID: fixture.profiles[1].id))
+        // SAFETY: the coordinator owns a session for every connectable profile.
+        let wedgedStore = try! XCTUnwrap(coordinator.store(profileID: fixture.profiles[2].id))
+        for (index, host) in [Self.activeHost, Self.healthyHost, Self.wedgedHost].enumerated() {
+            scriptHostKey(host, keyIndex: index)
+        }
+        PathHintURLProtocol.script([.sseComments(TimeInterval(0.2))], for: activeEvents)
+        PathHintURLProtocol.script([.sseComments(TimeInterval(0.2))], for: healthyEvents)
+        PathHintURLProtocol.script([.held], for: wedgedEvents)
+
+        fixture.model.startLive()
+        let allLive = await waitFor {
+            activeStore.connectionState == .connected
+                && healthyStore.connectionState == .connected
+                && PathHintURLProtocol.requestCount(for: activeEvents) == 1
+                && PathHintURLProtocol.requestCount(for: healthyEvents) == 1
+                && PathHintURLProtocol.requestCount(for: wedgedEvents) == 1
+        }
+        XCTAssertTrue(allLive, "every host (active + coordinators) must open its stream")
+
+        restoration(monitor)
+        let replaced = await waitFor { PathHintURLProtocol.requestCount(for: wedgedEvents) == 2 }
+        XCTAssertTrue(replaced, "the stale coordinator host must get exactly one replacement (#454 AC5)")
+        await settle(0.5)
+        XCTAssertEqual(PathHintURLProtocol.requestCount(for: activeEvents), 1,
+                       "a healthy ACTIVE stream must be untouched (#454 AC2)")
+        XCTAssertEqual(PathHintURLProtocol.requestCount(for: healthyEvents), 1,
+                       "a healthy coordinator stream must be untouched (#454 AC2/AC5)")
+        XCTAssertEqual(PathHintURLProtocol.requestCount(for: wedgedEvents), 2,
+                       "exactly one replacement for the stale host (#454 AC5)")
+        XCTAssertEqual(activeStore.connectionState, .connected)
+        XCTAssertEqual(healthyStore.connectionState, .connected)
+        XCTAssertNotEqual(wedgedStore.connectionState, .connected,
+                          "the stale host must stay honestly non-live (#454 AC3)")
+    }
+
+    /// AC5 (removal): a hint QUEUED when a host is removed must never touch
+    /// the removed host — and must still serve the surviving ACTIVE host.
+    func testRemovingAHostWhileAHintIsQueuedNeverTouchesIt() async {
+        let monitor = FakeNetworkPathMonitor()
+        let gate = PathHintDeferralGate()
+        let session = makeSession()
+        defer { cleanUp() }
+        let fixture = makePinnedFixture(
+            hosts: [Self.activeHost, Self.wedgedHost],
+            monitor: monitor, session: session,
+            sleep: { _ in await gate.wait() })
+        let activeEvents = eventsURL(Self.activeHost)
+        let wedgedEvents = eventsURL(Self.wedgedHost)
+        // SAFETY: fixture invariants (makePinnedFixture); failure is a harness bug.
+        let coordinator = try! XCTUnwrap(fixture.model.coordinator)
+        // SAFETY: the coordinator owns a session for every connectable profile.
+        let wedgedStore = try! XCTUnwrap(coordinator.store(profileID: fixture.profiles[1].id))
+        scriptHostKey(Self.activeHost, keyIndex: 0)
+        scriptHostKey(Self.wedgedHost, keyIndex: 1)
+        PathHintURLProtocol.script([.held], for: activeEvents)
+        PathHintURLProtocol.script([.held], for: wedgedEvents)
+
+        fixture.model.startLive()
+        let bothLive = await waitFor {
+            PathHintURLProtocol.requestCount(for: activeEvents) == 1
+                && PathHintURLProtocol.requestCount(for: wedgedEvents) == 1
+        }
+        XCTAssertTrue(bothLive, "both hosts must dispatch their first attempt")
+
+        restoration(monitor)
+        await settle(0.25) // the hint is queued on the held debounce
+        fixture.model.removeHost(profileID: fixture.profiles[1].id)
+
+        gate.open()
+        let replaced = await waitFor { PathHintURLProtocol.requestCount(for: activeEvents) == 2 }
+        XCTAssertTrue(replaced,
+                      "the surviving ACTIVE host must still get its one replacement (#454)")
+        await settle(0.5)
+        XCTAssertEqual(PathHintURLProtocol.requestCount(for: wedgedEvents), 1,
+                       "a removed host must never be reconnected by a queued hint (#454 AC5)")
+        XCTAssertNil(coordinator.store(profileID: fixture.profiles[1].id),
+                     "E3: the removed host's session must stay torn down")
+        XCTAssertNotEqual(wedgedStore.connectionState, .connected)
+    }
+
+    /// AC4 (background): an actual background stops the lifecycle-owned
+    /// monitor, drops a queued hint, refuses late callbacks, and the return
+    /// to active starts exactly one fresh monitor + stream owner per host.
+    func testBackgroundStopsTheMonitorAndDropsAQueuedHint() async {
+        let monitor = FakeNetworkPathMonitor()
+        let gate = PathHintDeferralGate()
+        let session = makeSession()
+        defer { cleanUp() }
+        let fixture = makePinnedFixture(
+            hosts: [Self.activeHost, Self.healthyHost],
+            monitor: monitor, session: session,
+            sleep: { _ in await gate.wait() })
+        let activeEvents = eventsURL(Self.activeHost)
+        let healthyEvents = eventsURL(Self.healthyHost)
+        scriptHostKey(Self.activeHost, keyIndex: 0)
+        scriptHostKey(Self.healthyHost, keyIndex: 1)
+        PathHintURLProtocol.script([.held], for: activeEvents)
+        PathHintURLProtocol.script([.sseComments(TimeInterval(0.2))], for: healthyEvents)
+        // SAFETY: fixture invariants (makePinnedFixture); failure is a harness bug.
+        let coordinator = try! XCTUnwrap(fixture.model.coordinator)
+        // SAFETY: the coordinator owns a session for every connectable profile.
+        let healthyStore = try! XCTUnwrap(coordinator.store(profileID: fixture.profiles[1].id))
+
+        fixture.model.startLive()
+        let live = await waitFor {
+            PathHintURLProtocol.requestCount(for: activeEvents) == 1
+                && PathHintURLProtocol.requestCount(for: healthyEvents) == 1
+                && healthyStore.connectionState == .connected
+        }
+        XCTAssertTrue(live, "the live session must own a stream per host (the ACTIVE host is wedged, its coordinator is healthy)")
+        XCTAssertEqual(monitor.startCount, 1)
+
+        restoration(monitor)
+        await settle(0.25) // queued on the held debounce
+
+        fixture.model.handleScenePhaseChange(.background)
+        XCTAssertEqual(monitor.stopCount, 1,
+                       "background must stop the lifecycle-owned monitor (#454 AC4)")
+
+        gate.open()
+        await settle(0.5)
+        XCTAssertEqual(PathHintURLProtocol.requestCount(for: activeEvents), 1,
+                       "a hint queued before background must never act after it (#454 AC4)")
+        restoration(monitor) // a callback racing the stop
+        await settle(0.4)
+        XCTAssertEqual(PathHintURLProtocol.requestCount(for: activeEvents), 1,
+                       "callbacks after the stop must be refused (#454 AC4)")
+
+        fixture.model.handleScenePhaseChange(.active)
+        let resent = await waitFor {
+            PathHintURLProtocol.requestCount(for: activeEvents) == 2
+                && PathHintURLProtocol.requestCount(for: healthyEvents) == 2
+        }
+        XCTAssertTrue(resent, "the foreground must start one fresh stream owner per host")
+        XCTAssertEqual(monitor.startCount, 2,
+                       "the foreground must own exactly one (restarted) monitor (#454 AC4)")
+    }
+
+    /// AC4 (coordinator, trust): a pinned-but-unverified COORDINATOR host's
+    /// preflight ladder is re-driven ONLY while it is waiting — an in-flight
+    /// attempt is never cancelled/restarted into a hot retry.
+    func testCoordinatorPinnedUnverifiedRestorationReDrivesOnlyWaitingLadder() async {
+        let monitor = FakeNetworkPathMonitor()
+        let session = makeSession()
+        defer { cleanUp() }
+        let fixture = makePinnedFixture(
+            hosts: [Self.activeHost, Self.wedgedHost],
+            policy: HostPreflightRetryPolicy(baseInterval: 30, maxInterval: 30),
+            monitor: monitor, session: session)
+        let activeEvents = eventsURL(Self.activeHost)
+        let hostKey = hostKeyURL(Self.wedgedHost)
+        let wedgedEvents = eventsURL(Self.wedgedHost)
+        scriptHostKey(Self.activeHost, keyIndex: 0)
+        PathHintURLProtocol.script([.sseComments(TimeInterval(0.2))], for: activeEvents)
+        // The coordinator's first /host-key attempt hangs until released; the
+        // released 200 carries no valid key body, so verification fails and
+        // the ladder moves to its (30 s) wait.
+        PathHintURLProtocol.script([.releaseJSON], for: hostKey)
+
+        fixture.model.startLive()
+        let verifying = await waitFor {
+            PathHintURLProtocol.requestCount(for: hostKey) == 1
+                && PathHintURLProtocol.requestCount(for: activeEvents) == 1
+        }
+        XCTAssertTrue(verifying, "the coordinator's preflight must run while the active host streams")
+
+        // Episode 1: the attempt is IN FLIGHT — a hint must not touch it.
+        restoration(monitor)
+        await settle(0.4)
+        XCTAssertEqual(PathHintURLProtocol.requestCount(for: hostKey), 1,
+                       "an in-flight preflight attempt must never be cancelled/restarted by a hint (#454)")
+        XCTAssertEqual(PathHintURLProtocol.requestCount(for: wedgedEvents), 0,
+                       "the unverified coordinator host must not open a stream (#454 AC4)")
+
+        // Let the attempt complete and fail: the ladder is WAITING now.
+        PathHintURLProtocol.releaseHeld()
+        await settle(0.5)
+
+        // Episode 2: the waiting ladder is the one state a hint may re-drive.
+        restoration(monitor)
+        let redriven = await waitFor({ PathHintURLProtocol.requestCount(for: hostKey) == 2 },
+                                     timeout: 1.5)
+        XCTAssertTrue(redriven,
+                      "a waiting coordinator preflight ladder must be re-driven exactly once (#454 AC4)")
+        XCTAssertEqual(PathHintURLProtocol.requestCount(for: wedgedEvents), 0,
+                       "the trust gate must never be bypassed by a hint (#454 AC4)")
+        await settle(0.5)
+        XCTAssertEqual(PathHintURLProtocol.requestCount(for: hostKey), 2,
+                       "no restart loop: one re-drive for the waiting ladder (#454)")
+    }
+}
+
 // MARK: - #453 scene-phase lifecycle: transient inactive vs actual background
 
 /// Regression for #453. The scene handler at the unfixed head treats

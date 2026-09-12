@@ -432,7 +432,15 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # (release_source_manifest). Neither parent pin applies
     # (94172201… = 9d914f7 base, 54410cf4… = #428-only, 0dad5c34… = #491-only,
     # ab0e0234… = #487∪#491).
-    "165b282e9e20171d2adc21710e55503ba987c5b18ceb00a81791f61d2d9593dc"
+    # #486: enrollment QR privacy module — two Wire sources
+    # (EnrollmentClient/EnrollmentPayload) added to the Release source set;
+    # digest re-pinned by the canonical algorithm over this checkout.
+    # #486 refresh ∪ #428 integration: the two Wire sources now live with the
+    # #428∪#491∪#487 Release-source set — the pin below is recomputed from
+    # THIS merged checkout (refresh486-qr-contract + f327dec7) by the
+    # canonical algorithm; neither parent pin applies
+    # (c9d4465f… = pre-#428 refresh, 165b282e… = #428∪#491∪#487 integration).
+    "56b712435fb13ca15989ba8ce1457c2ae2d9ec7e61d456e4b789a06f7271798f"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -615,6 +623,9 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # digest recomputed over the #487 head (648cfca).
     # #428∪#491∪#487 final union: canonical recompute over this merge equals
     # the #487 value (the pinned test file is byte-unchanged by #428/#491).
+    # #486 refresh ∪ #428: the pinned test file is byte-unchanged by both
+    # sides (the #486 module tests are separate files outside this pin);
+    # canonical recompute over the merged checkout equals the same value.
     "5ca855dba32315bcb77c9323e064e6e119d771b5a1e07e6f600fa961d69044a8"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)

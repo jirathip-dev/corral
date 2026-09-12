@@ -78,7 +78,10 @@ targets:
     info:
       path: FleetNotifier/Info.plist
       properties:
-        CFBundleDisplayName: "Corral: Agent Fleet"
+        # #512: the installed Home Screen name is exactly `Corral`; the
+        # truncating `Corral: Agent Fleet` is pinned out by
+        # tools/herd-art/check-display-name.py (source and built product).
+        CFBundleDisplayName: "Corral"
         UIApplicationSupportsIndirectInputEvents: YES
         UILaunchScreen: {}
         ITSAppUsesNonExemptEncryption: false

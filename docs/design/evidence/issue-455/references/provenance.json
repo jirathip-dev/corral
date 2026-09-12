@@ -1,0 +1,19 @@
+{
+  "sourceCommit": "86d1287a9e5c611ec6bef677c95544c53e71b982",
+  "sha256": {
+    "ios/FleetNotifier/UI/Herd/HerdView.swift": "9c7441cca17facec664f50d3d9093c0a8d77d4cb3557d6e3f8239c51080d99b3",
+    "ios/FleetNotifier/UI/Herd/RanchEnvironment.swift": "8368d397a85dbac3ba68bf1275e557e12cad63ba5787e385b582bbd5165da14a",
+    "ios/FleetNotifier/UI/Herd/HerdModel.swift": "50a582a1ac2508e71f0ec6084d45f74f7213687f069f21918101b6c85410c586",
+    "ios/FleetNotifier/UI/Herd/HerdArt.swift": "4e041f299ea41958329d9f2e9ce576840cbcaeb28a40020e71ccff755924c4b7",
+    "ios/FleetNotifier/UI/FleetViews.swift": "5fd29dfe8795206b99cb286809880302a55e97676821e9a8c6f95585fa1c2b15",
+    "ios/FleetNotifier/UI/AppTheme.swift": "0d1ac934f30b1e1e2ae7ca12f4ca63ddc7dba198e34a8be3e84f59e981d86c6e",
+    "ios/FleetNotifier/App/AppModel.swift": "0ee1a05bb106917418809da8fed5f763a672fed70c060026717ff5e22cc9b266",
+    "442-herd-view/r2-v1-premium/art.py": "a3f81a1571bc233a3280fa64c8ce48f0b84e8cc56261d6c842ff035c060da827",
+    "442-herd-view/r2-v1-premium/fixtures.py": "8172fe141a297718a4736d503dfb985e6a2994d41100ec8ac28c3b2083d05e3d",
+    "442-herd-view/scripts/horsesvg.py": "a9c172de9aa42080daf987ca6919f827895c363903c16e1ec3fbdf865b6041ec",
+    "442-herd-view/scripts/fixtures.py": "8172fe141a297718a4736d503dfb985e6a2994d41100ec8ac28c3b2083d05e3d",
+    "442-herd-view/r2-v1-premium/v1-r2-day-390x844.png": "d9ac6571b5a3ce640c27c9f6d0f376171e4ff543a85ef89d1aff462c1bc9cb03",
+    "442-herd-view/r2-v1-premium/v1-r2-night-390x844.png": "44380520b8535afcb34b0fa0db9dbd5bd9ae241ffcb0adb512113c3a8a51cc96",
+    "442-herd-view/r2-v1-premium/manifest.sha256": "aa81e676aa2e6f7e4050f340cb6b68ec161a8f870828f72c8a4ddc69d8711fe6"
+  }
+}

@@ -559,7 +559,6 @@ mod tests {
         let task = tokio::spawn(integrator.run(receiver));
         sink.send(PlaneEvent::Gh(GhRepoState {
             repo: "synergy-costing".to_string(),
-            default_branch: "main".to_string(),
             issues: vec![GhIssueRef {
                 repo: "synergy-costing".to_string(),
                 number: 207,

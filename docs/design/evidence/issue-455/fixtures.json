@@ -1,0 +1,86 @@
+[
+  {
+    "id": "Orchard::birch-clearing",
+    "name": "birch-clearing",
+    "state": "blocked",
+    "repo": "atlas-vector",
+    "host": "Orchard"
+  },
+  {
+    "id": "Meadow::oak-before-dark",
+    "name": "oak-before-dark",
+    "state": "blocked",
+    "repo": "brook-notes",
+    "host": "Meadow"
+  },
+  {
+    "id": "Meadow::spruce-hollow",
+    "name": "spruce-hollow",
+    "state": "done",
+    "repo": "atlas-vector",
+    "host": "Meadow"
+  },
+  {
+    "id": "Orchard::willow-bend",
+    "name": "willow-bend",
+    "state": "idle",
+    "repo": "atlas-vector",
+    "host": "Orchard"
+  },
+  {
+    "id": "Meadow::cedar-ridge",
+    "name": "cedar-ridge",
+    "state": "working",
+    "repo": "brook-notes",
+    "host": "Meadow"
+  },
+  {
+    "id": "Meadow::aspen-grove",
+    "name": "aspen-grove",
+    "state": "working",
+    "repo": "brook-notes",
+    "host": "Meadow"
+  },
+  {
+    "id": "Orchard::maple-stand",
+    "name": "maple-stand",
+    "state": "idle",
+    "repo": "brook-notes",
+    "host": "Orchard"
+  },
+  {
+    "id": "Meadow::hazel-hollow",
+    "name": "hazel-hollow",
+    "state": "working",
+    "repo": "cedar-observatory-client",
+    "host": "Meadow"
+  },
+  {
+    "id": "Meadow::juniper-south",
+    "name": "juniper-south",
+    "state": "done",
+    "repo": "cedar-observatory-client",
+    "host": "Meadow"
+  },
+  {
+    "id": "Orchard::elder-flats",
+    "name": "elder-flats",
+    "state": "unknown",
+    "repo": "cedar-observatory-client",
+    "host": "Orchard"
+  },
+  {
+    "id": "Meadow::hawthorn-fork",
+    "name": "hawthorn-fork",
+    "state": "working",
+    "repo": "dune-tools",
+    "host": "Meadow"
+  },
+  {
+    "id": "Meadow::sumac-row",
+    "name": "sumac-row",
+    "state": "idle",
+    "repo": "dune-tools",
+    "host": "Meadow"
+  }
+]

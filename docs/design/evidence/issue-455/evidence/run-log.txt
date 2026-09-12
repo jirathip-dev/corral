@@ -1,0 +1,395 @@
+=== build.py | exit 0 ===
+Built A/B; V1 silhouettes, corrected grazing, R2 world. Fixtures: 12
+
+
+=== verify-layers.py | exit 0 ===
+[
+  {
+    "environment": "day",
+    "planes": [
+      "assets/layers/day/00-sky.svg",
+      "assets/layers/day/10-hills.svg",
+      "assets/layers/day/20-ground.svg",
+      "assets/layers/day/30-barn-trees.svg",
+      "assets/layers/day/40-rear-fences.svg",
+      "assets/layers/day/50-foreground.svg"
+    ],
+    "sameOrigin": true,
+    "pixelEqual": true,
+    "differenceBounds": null
+  },
+  {
+    "environment": "night",
+    "planes": [
+      "assets/layers/night/00-sky.svg",
+      "assets/layers/night/10-hills.svg",
+      "assets/layers/night/20-ground.svg",
+      "assets/layers/night/30-barn-trees.svg",
+      "assets/layers/night/40-rear-fences.svg",
+      "assets/layers/night/50-foreground.svg"
+    ],
+    "sameOrigin": true,
+    "pixelEqual": true,
+    "differenceBounds": null
+  }
+]
+
+
+=== verify-browser.py | exit 0 ===
+{
+  "checks": 329,
+  "screenshots": 42,
+  "contrastSamples": 118,
+  "minimumContrast": 4.788
+}
+
+
+=== verify-workflows.py | exit 0 ===
+PASS 56 shared-scope and keyboard checks
+
+
+=== verify-art-geometry.py | exit 0 ===
+[
+  {
+    "id": "Orchard::birch-clearing",
+    "button": {
+      "x": 12,
+      "y": 309.890625,
+      "right": 176,
+      "bottom": 476.125,
+      "width": 164,
+      "height": 166.234375
+    },
+    "art": {
+      "x": 28,
+      "y": 309.890625,
+      "right": 160,
+      "bottom": 409.890625,
+      "width": 132,
+      "height": 100
+    },
+    "caption": {
+      "x": 12,
+      "y": 417.890625,
+      "right": 176,
+      "bottom": 474.125,
+      "width": 164,
+      "height": 56.234375
+    },
+    "paint": {
+      "x": 48,
+      "y": 309.31231689453125,
+      "right": 156.1817626953125,
+      "bottom": 410.890625
+    },
+    "parent": {
+      "x": 12,
+      "y": 305.890625,
+      "right": 378,
+      "bottom": 476.125,
+      "width": 366,
+      "height": 170.234375
+    },
+    "header": {
+      "x": 12,
+      "y": 278.140625,
+      "right": 191.734375,
+      "bottom": 305.890625,
+      "width": 179.734375,
+      "height": 27.75
+    },
+    "paintInsideArt": false,
+    "paintAboveCaption": true,
+    "paintBelowHeader": true,
+    "paintInsideScrollViewport": true
+  },
+  {
+    "id": "Meadow::oak-before-dark",
+    "button": {
+      "x": 186,
+      "y": 309.890625,
+      "right": 350,
+      "bottom": 476.125,
+      "width": 164,
+      "height": 166.234375
+    },
+    "art": {
+      "x": 202,
+      "y": 309.890625,
+      "right": 334,
+      "bottom": 409.890625,
+      "width": 132,
+      "height": 100
+    },
+    "caption": {
+      "x": 186,
+      "y": 417.890625,
+      "right": 350,
+      "bottom": 474.125,
+      "width": 164,
+      "height": 56.234375
+    },
+    "paint": {
+      "x": 222,
+      "y": 309.31231689453125,
+      "right": 330.1817626953125,
+      "bottom": 410.890625
+    },
+    "parent": {
+      "x": 12,
+      "y": 305.890625,
+      "right": 378,
+      "bottom": 476.125,
+      "width": 366,
+      "height": 170.234375
+    },
+    "header": {
+      "x": 12,
+      "y": 278.140625,
+      "right": 191.734375,
+      "bottom": 305.890625,
+      "width": 179.734375,
+      "height": 27.75
+    },
+    "paintInsideArt": false,
+    "paintAboveCaption": true,
+    "paintBelowHeader": true,
+    "paintInsideScrollViewport": true
+  },
+  {
+    "id": "Meadow::spruce-hollow",
+    "button": {
+      "x": 12,
+      "y": 537.8125,
+      "right": 191,
+      "bottom": 702,
+      "width": 179,
+      "height": 164.1875
+    },
+    "art": {
+      "x": 35.5,
+      "y": 535.765625,
+      "right": 167.5,
+      "bottom": 635.765625,
+      "width": 132,
+      "height": 100
+    },
+    "caption": {
+      "x": 12,
+      "y": 643.765625,
+      "right": 191,
+      "bottom": 700,
+      "width": 179,
+      "height": 56.234375
+    },
+    "paint": {
+      "x": 55.5,
+      "y": 545.6118774414062,
+      "right": 169.1148681640625,
+      "bottom": 636.765625
+    },
+    "parent": {
+      "x": 12,
+      "y": 530.8125,
+      "right": 378,
+      "bottom": 702,
+      "width": 366,
+      "height": 171.1875
+    },
+    "header": {
+      "x": 23,
+      "y": 499.59375,
+      "right": 112.28125,
+      "bottom": 518.34375,
+      "width": 89.28125,
+      "height": 18.75
+    },
+    "paintInsideArt": false,
+    "paintAboveCaption": true,
+    "paintBelowHeader": true,
+    "paintInsideScrollViewport": true
+  },
+  {
+    "id": "Orchard::willow-bend",
+    "button": {
+      "x": 199,
+      "y": 537.8125,
+      "right": 378,
+      "bottom": 702,
+      "width": 179,
+      "height": 164.1875
+    },
+    "art": {
+      "x": 222.5,
+      "y": 535.765625,
+      "right": 354.5,
+      "bottom": 635.765625,
+      "width": 132,
+      "height": 100
+    },
+    "caption": {
+      "x": 199,
+      "y": 643.765625,
+      "right": 378,
+      "bottom": 700,
+      "width": 179,
+      "height": 56.234375
+    },
+    "paint": {
+      "x": 242.5,
+      "y": 571.015625,
+      "right": 347.5,
+      "bottom": 636.765625
+    },
+    "parent": {
+      "x": 12,
+      "y": 530.8125,
+      "right": 378,
+      "bottom": 702,
+      "width": 366,
+      "height": 171.1875
+    },
+    "header": {
+      "x": 23,
+      "y": 499.59375,
+      "right": 112.28125,
+      "bottom": 518.34375,
+      "width": 89.28125,
+      "height": 18.75
+    },
+    "paintInsideArt": false,
+    "paintAboveCaption": true,
+    "paintBelowHeader": true,
+    "paintInsideScrollViewport": true
+  }
+]
+
+
+=== record-motion.py | exit 0 ===
+[
+  {
+    "environment": "day",
+    "duration": 12.033333,
+    "wallSeconds": 12.03270712500671,
+    "capturedFrames": 100,
+    "captureHz": 8.31068179098095
+  },
+  {
+    "environment": "night",
+    "duration": 12.033333,
+    "wallSeconds": 12.036759500042535,
+    "capturedFrames": 83,
+    "captureHz": 6.895543605378731
+  }
+]
+
+
+=== contact-sheets.py | exit 0 ===
+Contact sheets built from verified image paths
+
+
+=== inspect-motion.py | exit 0 ===
+day start {'variant': 'b', 'mode': 'Herd', 'saved': None, 'recovery': False, 'environment': 'day', 'theme': 'mocha', 'host': '', 'repo': '', 'fixture': 'normal', 'counts': {'blocked': 2, 'working': 4, 'idle': 3, 'done': 2, 'unknown': 1}, 'rows': 12, 'paddock': 0, 'elapsed': 0, 'ticks': 4, 'running': True, 'reduced': False, 'documentHidden': False, 'lowPower': False, 'thermal': False} end {'variant': 'b', 'mode': 'Herd', 'saved': None, 'recovery': False, 'environment': 'day', 'theme': 'mocha', 'host': '', 'repo': '', 'fixture': 'normal', 'counts': {'blocked': 2, 'working': 4, 'idle': 3, 'done': 2, 'unknown': 1}, 'rows': 12, 'paddock': 0, 'elapsed': 12.016599999999979, 'ticks': 352, 'running': True, 'reduced': False, 'documentHidden': False, 'lowPower': False, 'thermal': False}
+sky changed >8: 852 of 102570 max: ((0, 37), (0, 50), (0, 121))
+tree-right changed >8: 516 of 6710 max: ((0, 42), (0, 49), (0, 84))
+grass changed >8: 183 of 71760 max: ((0, 29), (0, 24), (0, 21))
+night start {'variant': 'b', 'mode': 'Herd', 'saved': None, 'recovery': False, 'environment': 'night', 'theme': 'mocha', 'host': '', 'repo': '', 'fixture': 'normal', 'counts': {'blocked': 2, 'working': 4, 'idle': 3, 'done': 2, 'unknown': 1}, 'rows': 12, 'paddock': 0, 'elapsed': 0, 'ticks': 6, 'running': True, 'reduced': False, 'documentHidden': False, 'lowPower': False, 'thermal': False} end {'variant': 'b', 'mode': 'Herd', 'saved': None, 'recovery': False, 'environment': 'night', 'theme': 'mocha', 'host': '', 'repo': '', 'fixture': 'normal', 'counts': {'blocked': 2, 'working': 4, 'idle': 3, 'done': 2, 'unknown': 1}, 'rows': 12, 'paddock': 0, 'elapsed': 12.016299999999998, 'ticks': 339, 'running': True, 'reduced': False, 'documentHidden': False, 'lowPower': False, 'thermal': False}
+sky changed >8: 2642 of 102570 max: ((0, 182), (0, 173), (0, 156))
+tree-right changed >8: 344 of 6710 max: ((0, 34), (0, 27), (0, 40))
+grass changed >8: 180 of 71760 max: ((0, 25), (0, 23), (0, 16))
+
+/Users/jirathip/Projects/design-output/corral/455-immersive-herd/tools/inspect-motion.py:10: DeprecationWarning: Image.Image.getdata is deprecated and will be removed in Pillow 14 (2027-10-15). Use get_flattened_data instead.
+  crop=diff.crop(box);vals=list(crop.getdata());changed=sum(max(x)>8 for x in vals);print(name,'changed >8:',changed,'of',len(vals),'max:',crop.getextrema())
+
+=== check-reachability.py | exit 0 ===
+{
+  "checkedAt": "2026-09-09T11:33:11.006491+00:00",
+  "phoneDeviceTest": false,
+  "networkConfigurationChanged": false,
+  "targets": [
+    {
+      "url": "http://127.0.0.1:8777/corral/455-immersive-herd/index.html",
+      "status": 200,
+      "sha256": "5d562a97aad818a7934e425810bbd5aa3c9f2ec0274ebf1bb24f228ed167a6d8",
+      "bytes": 7124,
+      "matchesLocal": true
+    },
+    {
+      "url": "http://127.0.0.1:8777/corral/455-immersive-herd/variant-a.html",
+      "status": 200,
+      "sha256": "ca0a1a0991aa66364598eaacdac4d328de6a4ac1e57e03707aa708851791bf61",
+      "bytes": 1368951,
+      "matchesLocal": true
+    },
+    {
+      "url": "http://127.0.0.1:8777/corral/455-immersive-herd/variant-b.html",
+      "status": 200,
+      "sha256": "fa31421c9dcee0b5b1116627b404466f9009e78c3a970154326fca258d49b47c",
+      "bytes": 1368951,
+      "matchesLocal": true
+    },
+    {
+      "url": "http://127.0.0.1:8777/corral/455-immersive-herd/evidence/b-day-390x844.png",
+      "status": 200,
+      "sha256": "be5601d07ec00029c7f21f9e94d66de2348d2e78c37e2afc0e8df22204e5b4a5",
+      "bytes": 278162,
+      "matchesLocal": true
+    },
+    {
+      "url": "http://127.0.0.1:8777/corral/455-immersive-herd/evidence/day-realtime.mp4",
+      "status": 200,
+      "sha256": "606de7d2c9fc74570e2ef492be75c83ada9d02627e45d6f2adee1311bf8cbe9b",
+      "bytes": 167546,
+      "matchesLocal": true
+    },
+    {
+      "url": "http://127.0.0.1:8777/corral/455-immersive-herd/evidence/night-realtime.mp4",
+      "status": 200,
+      "sha256": "d16afe17a49cd15af23ab1612b247c019b0bebbcc210a076702d9857eb02eb1a",
+      "bytes": 177386,
+      "matchesLocal": true
+    },
+    {
+      "url": "https://jirathips-macbook-air.tail8c3301.ts.net:8444/corral/455-immersive-herd/index.html",
+      "status": 200,
+      "sha256": "5d562a97aad818a7934e425810bbd5aa3c9f2ec0274ebf1bb24f228ed167a6d8",
+      "bytes": 7124,
+      "matchesLocal": true
+    },
+    {
+      "url": "https://jirathips-macbook-air.tail8c3301.ts.net:8444/corral/455-immersive-herd/variant-a.html",
+      "status": 200,
+      "sha256": "ca0a1a0991aa66364598eaacdac4d328de6a4ac1e57e03707aa708851791bf61",
+      "bytes": 1368951,
+      "matchesLocal": true
+    },
+    {
+      "url": "https://jirathips-macbook-air.tail8c3301.ts.net:8444/corral/455-immersive-herd/variant-b.html",
+      "status": 200,
+      "sha256": "fa31421c9dcee0b5b1116627b404466f9009e78c3a970154326fca258d49b47c",
+      "bytes": 1368951,
+      "matchesLocal": true
+    },
+    {
+      "url": "https://jirathips-macbook-air.tail8c3301.ts.net:8444/corral/455-immersive-herd/evidence/b-day-390x844.png",
+      "status": 200,
+      "sha256": "be5601d07ec00029c7f21f9e94d66de2348d2e78c37e2afc0e8df22204e5b4a5",
+      "bytes": 278162,
+      "matchesLocal": true
+    },
+    {
+      "url": "https://jirathips-macbook-air.tail8c3301.ts.net:8444/corral/455-immersive-herd/evidence/day-realtime.mp4",
+      "status": 200,
+      "sha256": "606de7d2c9fc74570e2ef492be75c83ada9d02627e45d6f2adee1311bf8cbe9b",
+      "bytes": 167546,
+      "matchesLocal": true
+    },
+    {
+      "url": "https://jirathips-macbook-air.tail8c3301.ts.net:8444/corral/455-immersive-herd/evidence/night-realtime.mp4",
+      "status": 200,
+      "sha256": "d16afe17a49cd15af23ab1612b247c019b0bebbcc210a076702d9857eb02eb1a",
+      "bytes": 177386,
+      "matchesLocal": true
+    }
+  ]
+}

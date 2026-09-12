@@ -440,7 +440,14 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # THIS merged checkout (refresh486-qr-contract + f327dec7) by the
     # canonical algorithm; neither parent pin applies
     # (c9d4465f… = pre-#428 refresh, 165b282e… = #428∪#491∪#487 integration).
-    "56b712435fb13ca15989ba8ce1457c2ae2d9ec7e61d456e4b789a06f7271798f"
+    # #460 final union: the sky-only RanchPainter drift
+    # (RanchEnvironment.swift) joins the integration set (18089eb3) — the pin
+    # below is recomputed by the canonical algorithm over THIS merged
+    # checkout (g460-sky-drift × 18089eb3); neither parent pin applies
+    # (70f1397e… = #460-only over b2e4ee23, 56b71243… = 18089eb3 without
+    # #460). The #460 test delta touches only HerdWindTests.swift, so the test
+    # pin above stays integration's canonical value.
+    "577c868c83608f71388fa42ba56622326208cc759be86cebee5a856f7f5c06ab"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

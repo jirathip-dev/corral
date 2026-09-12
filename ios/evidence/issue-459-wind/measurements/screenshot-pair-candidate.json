@@ -1,0 +1,316 @@
+{
+  "changed_fraction": 0.00686,
+  "changed_pixels": 20675,
+  "label": "c3-cand",
+  "mode": "pair",
+  "of_pixels": 3013524,
+  "one": "/tmp/g459-c3-cand-1.png",
+  "resolution": {
+    "height": 2556,
+    "width": 1179
+  },
+  "row_profile": [
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        0,
+        60
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        60,
+        120
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        120,
+        180
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        180,
+        240
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        240,
+        300
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        300,
+        360
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        360,
+        420
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        420,
+        480
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        480,
+        540
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        540,
+        600
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        600,
+        660
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        660,
+        720
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        720,
+        780
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        780,
+        840
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        840,
+        900
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        900,
+        960
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        960,
+        1020
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        1020,
+        1080
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        1080,
+        1140
+      ]
+    },
+    {
+      "changed_fraction": 0.01012,
+      "rows": [
+        1140,
+        1200
+      ]
+    },
+    {
+      "changed_fraction": 0.05589,
+      "rows": [
+        1200,
+        1260
+      ]
+    },
+    {
+      "changed_fraction": 0.03752,
+      "rows": [
+        1260,
+        1320
+      ]
+    },
+    {
+      "changed_fraction": 0.012,
+      "rows": [
+        1320,
+        1380
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        1380,
+        1440
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        1440,
+        1500
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        1500,
+        1560
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        1560,
+        1620
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        1620,
+        1680
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        1680,
+        1740
+      ]
+    },
+    {
+      "changed_fraction": 0.00929,
+      "rows": [
+        1740,
+        1800
+      ]
+    },
+    {
+      "changed_fraction": 0.02956,
+      "rows": [
+        1800,
+        1860
+      ]
+    },
+    {
+      "changed_fraction": 0.02877,
+      "rows": [
+        1860,
+        1920
+      ]
+    },
+    {
+      "changed_fraction": 0.02748,
+      "rows": [
+        1920,
+        1980
+      ]
+    },
+    {
+      "changed_fraction": 0.05226,
+      "rows": [
+        1980,
+        2040
+      ]
+    },
+    {
+      "changed_fraction": 0.01351,
+      "rows": [
+        2040,
+        2100
+      ]
+    },
+    {
+      "changed_fraction": 0.00126,
+      "rows": [
+        2100,
+        2160
+      ]
+    },
+    {
+      "changed_fraction": 0.00199,
+      "rows": [
+        2160,
+        2220
+      ]
+    },
+    {
+      "changed_fraction": 0.00623,
+      "rows": [
+        2220,
+        2280
+      ]
+    },
+    {
+      "changed_fraction": 0.00638,
+      "rows": [
+        2280,
+        2340
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        2340,
+        2400
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        2400,
+        2460
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        2460,
+        2520
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        2520,
+        2556
+      ]
+    }
+  ],
+  "two": "/tmp/g459-c3-cand-2.png"
+}

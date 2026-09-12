@@ -61,6 +61,11 @@ RELEASE_SOURCE_FILES = (
     "ios/FleetNotifier/UI/Herd/HerdModel.swift",
     "ios/FleetNotifier/UI/Herd/HerdView.swift",
     "ios/FleetNotifier/UI/Herd/RanchEnvironment.swift",
+    # #459: the shared ambient wind contract + the ambient power/thermal
+    # policy helper (deterministic, timer-free foundations the ranch scene
+    # samples) are Release app source — added to the manifest.
+    "ios/FleetNotifier/UI/Herd/HerdAmbientPolicy.swift",
+    "ios/FleetNotifier/UI/Herd/RanchWind.swift",
     "ios/FleetNotifier/UI/RecentOutputModel.swift",
     "ios/FleetNotifier/UI/StateStyle.swift",
     "ios/FleetNotifier/UI/TimeInState.swift",

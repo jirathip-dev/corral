@@ -61,6 +61,10 @@ targets:
           - "$(SRCROOT)/FleetNotifier/UI/Herd/HerdModel.swift"
           - "$(SRCROOT)/FleetNotifier/UI/Herd/HerdView.swift"
           - "$(SRCROOT)/FleetNotifier/UI/Herd/RanchEnvironment.swift"
+          # #459: the shared ambient wind contract + ambient power/thermal
+          # policy helpers are Release app source.
+          - "$(SRCROOT)/FleetNotifier/UI/Herd/HerdAmbientPolicy.swift"
+          - "$(SRCROOT)/FleetNotifier/UI/Herd/RanchWind.swift"
           - "$(SRCROOT)/FleetNotifier/UI/RecentOutputModel.swift"
           - "$(SRCROOT)/FleetNotifier/UI/StateStyle.swift"
           - "$(SRCROOT)/FleetNotifier/UI/TimeInState.swift"
@@ -167,6 +171,9 @@ targets:
              "$TARGET_BUILD_DIR/$WRAPPER_NAME/FleetViews.swift.txt"
           cp "$SRCROOT/FleetNotifier/UI/Herd/HerdView.swift" \
              "$TARGET_BUILD_DIR/$WRAPPER_NAME/HerdView.swift.txt"
+          # #459: the wind tests pin the production scene gate (ambient
+          # policy consult, freeze wiring, single timing owner) against the
+          # real source.
           cp "$SRCROOT/FleetNotifier/UI/Herd/RanchEnvironment.swift" \
              "$TARGET_BUILD_DIR/$WRAPPER_NAME/RanchEnvironment.swift.txt"
           # #464: the App Icon picker seam/wiring tests read the real source.

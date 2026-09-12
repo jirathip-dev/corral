@@ -1,0 +1,16 @@
+[
+  {
+    "environment": "day",
+    "duration": 12.1,
+    "wallSeconds": 12.093146625091322,
+    "capturedFrames": 98,
+    "captureHz": 8.103763481761304
+  },
+  {
+    "environment": "night",
+    "duration": 12.066667,
+    "wallSeconds": 12.06501224997919,
+    "capturedFrames": 77,
+    "captureHz": 6.382090494780294
+  }
+]

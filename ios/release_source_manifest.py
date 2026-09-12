@@ -1,4 +1,12 @@
-"""Shared manifest and digest logic for the Release build workflow."""
+"""Shared manifest and digest logic for the Release build workflow.
+
+``RELEASE_SOURCE_FILES`` is the exact app-target Swift source set: every
+Swift file under ``ios/FleetNotifier/``, the app target's declared source
+directory, including files whose bodies are conditional-compilation gated
+(a DEBUG-only body is still app source).  ``ios/check-release-demo.py``
+enforces that membership in both directions independently of the
+conditional-compilation analysis.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +18,11 @@ RELEASE_SOURCE_FILES = (
     "ios/FleetNotifier/App/AppModel.swift",
     "ios/FleetNotifier/App/FleetNotifierApp.swift",
     "ios/FleetNotifier/App/FleetStore.swift",
+    # #471B: AddHostCommitEvidenceURLProtocol.swift (the DEBUG-gated #415
+    # Add-Host evidence transport) was the sole drift-omitted app source —
+    # DEBUG-gated bodies are still app source (DemoFleet/HerdEvidence
+    # precedent), so the manifest lists it.
+    "ios/FleetNotifier/Demo/AddHostCommitEvidenceURLProtocol.swift",
     "ios/FleetNotifier/Demo/DemoFleet.swift",
     "ios/FleetNotifier/Demo/HerdEvidence.swift",
     "ios/FleetNotifier/Keychain/DeviceKeyStore.swift",

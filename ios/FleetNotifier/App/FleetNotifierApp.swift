@@ -119,28 +119,14 @@ struct FleetNotifierApp: App {
 #endif
                 }
                 .onChange(of: scenePhase) { _, phase in
-                    switch phase {
-                    case .background, .inactive:
-                        // Backgrounded = no connection (D5): drop the SSE
-                        // stream; the cursor is persisted for resume.
-                        model.stopLive()
-                    case .active:
-                        if model.mode == .live {
-                            model.startLive()
-                            // #101: re-sync grants on foreground so a
-                            // host-side promotion appears without a device
-                            // reset (idempotent; never blocks the stream).
-                            Task { await model.refreshGrants() }
-                        }
-                        // #389: re-read the OS notification permission on
-                        // every foreground so the Settings Notifications
-                        // guidance reflects a grant/denial the user just
-                        // made in the system Settings app (the Settings
-                        // sheet stays up across that trip).
-                        Task { await model.refreshNotificationPermission() }
-                    @unknown default:
-                        break
-                    }
+                    // #453: ONE lifecycle routing point. Transient
+                    // `.inactive` (Control Center, banners, app switcher)
+                    // retains a healthy live session; only an actual
+                    // `.background` ends it with cursor persistence. The
+                    // split lives in the model seam so deterministic
+                    // lifecycle tests drive the exact production path —
+                    // never duplicate the decision here.
+                    model.handleScenePhaseChange(phase)
                 }
 #if DEBUG
                 // #427 evidence: Dynamic Type frames — run the WHOLE UI

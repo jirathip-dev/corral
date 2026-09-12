@@ -352,6 +352,15 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # the 8671cfc integration — the pin below is recomputed from THIS merged
     # checkout; no parent pin (4740de69…, 184c7a64…, 0cb9dc0c…, c17cfe9a…)
     # applies.
+    # #450 refresh2: #450 (epoch authority + fix r1) merged onto the
+    # #449/#458/#456/#464 integration source set (3c7203d, #456 full-screen
+    # shell) — union of ALL source sets; the pin below is recomputed from
+    # THIS merged checkout; neither parent pin (30e6fe4e…, 00cdc240…)
+    # applies.
+    # #425 addendum: FleetStore transport-liveness policy/heartbeat/watchdog
+    # (+ clean-EOF posture, stale-aware pull recovery) and CorraldClient
+    # onActivity/onStreamEnded byte-path signals — re-pinned over the #468
+    # merged source set.
     # #457 refresh2: #457 (contextual Herd controls: the ONE shared filter
     # sheet with an explicit Board/Herd presentation context, the sealed
     # ranch control palette + lighting report in HerdView, and the ranch
@@ -363,6 +372,23 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # (521e7cd9 → ba15563, PR474) — union of ALL source sets; the pin below
     # is recomputed from THIS merged checkout; neither parent pin (1827b419…,
     # a898ad7a…) applies.
+    # #451 (g451-preflight-retry): transient host-key preflight retry ladders
+    # — the shared bounded-RATE HostPreflightRetryPolicy (3s→30s steady
+    # cadence, no finite availability window), the coordinator's
+    # one-owner/cancellable per-host ladder (terminal mismatch, truthful
+    # retry reason, immediate pull preflight of a never-SSE host) and
+    # AppModel's active-host parity ladder (single owner, background/
+    # boundary cancellation, immediate pull preflight) — MERGED WITH #457;
+    # the pin is the union of ALL source sets recomputed from THIS merged
+    # checkout; neither parent pin (a5dee3e4…, 8bccaf68…) applies.
+    # #452: CorraldClient reconnect-loop retry contract — the /events ladder
+    # collapses only after a SUSTAINED healthy session (first-to-last
+    # received-line span ≥ StreamRetryPolicy.stableSessionThreshold; headers
+    # alone, single-line and silent-tail attempts keep escalating) with
+    # bounded equal-jitter waits and injectable clock/random/sleep seams,
+    # merged with origin/integration ee732625 (#457 contextual controls +
+    # #471 art/icon gate coverage) — the pin below is recomputed from THIS
+    # merged checkout; neither parent pin (8bccaf68…, b1994319…) applies.
     # #448 refresh: #448 (native coordinated gait phase in HerdModel/HerdArt
     # plus the horseButton runtime call site) merged onto the #457-refresh2
     # integration (ee73262, PR476) — union of ALL source sets; the pin below
@@ -374,7 +400,31 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # #448-refresh integration (82f9b8d, PR475) — union of ALL source sets;
     # the pin below is recomputed from THIS merged checkout; neither parent
     # pin (cd1422fc…, 8fc75d5e…) applies.
-    "a18cd5094e151a2da1ccffa1757e2ceadc4cd2fd88d9e5846464710ff8e9cd61"
+    # #451 refresh: #451 (transient host-key preflight retries) merged onto
+    # the #448-refresh integration (82f9b8d, PR475) — union of ALL source
+    # sets; the pin below is recomputed from THIS merged checkout; neither
+    # parent pin (4416bbc1…, 8fc75d5e…) applies.
+    # #452 refresh: bounded refresh after #448's PR475 (82f9b8d) delivered —
+    # the union now carries BOTH #452 (CorraldClient loop + StreamRetry-
+    # BackoffTests) and #448 (gait runtime + HerdGaitTests); the pin below is
+    # recomputed from THIS merged checkout by the canonical algorithm; neither
+    # parent pin (76443b88…, 8fc75d5e…) applies.
+    # #451 union refresh after #452 (c4acec2, PR479): the union now carries
+    # #451 (preflight retry ladders + PreflightRetryTests) AND #452
+    # (CorraldClient sustained-session ladder + StreamRetryBackoffTests);
+    # the pin below is recomputed from THIS merged checkout by the canonical
+    # algorithm; neither parent pin (660c7d32…, e60a274d…) applies.
+    # #453: scene-phase lifecycle split — AppModel.handleScenePhaseChange
+    # (transient `.inactive` retains the live session; only actual
+    # `.background` cancels/persists) and FleetNotifierApp routes every
+    # phase through that single seam; re-pinned over the #453 source set.
+    # #471B: the manifest gained its last omitted app source
+    # (Demo/AddHostCommitEvidenceURLProtocol.swift) under the exact
+    # compiled-app-source-set policy, and check-release-demo.py now enforces
+    # manifest/app-tree membership in both directions independently of this
+    # digest; the pin below is recomputed from THIS union checkout
+    # (#451/#452/#453 merged, 71775c0); no parent pin applies.
+    "94172201c8d48f63579f1cb840b1181e9b45379c9a294d2deaabae3902f6afd9"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -547,7 +597,11 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # #448 refresh: HerdGaitTests.swift is a SEPARATE file outside this pin,
     # so the #448 refresh leaves the pinned FleetNotifierTests.swift
     # byte-unchanged — digest recomputed over the merged checkout (same value).
-    "92631629765f5f67b6efba46aa13e84a6793cc460883d31c7f45623a4820d395"
+    # #453: ScenePhaseLifecycleTests (deterministic scene-phase sequences +
+    # the FleetNotifierApp wiring pin) appended to the pinned test file
+    # (plus the SwiftUI import for ScenePhase) — digest recomputed over the
+    # #453 head.
+    "2b37a79a7cf6211df646819d4cf0f998165a3f658c4f0fb39d886f150f1ac2bd"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(
@@ -1224,6 +1278,43 @@ def _check_release_build_phase_configuration() -> None:
             )
 
 
+def _app_target_sources(root: Path = ROOT) -> set[str]:
+    """Repo-relative paths of every Swift file in the app target's source dir."""
+
+    return {
+        path.relative_to(root).as_posix()
+        for path in (root / "ios/FleetNotifier").rglob("*.swift")
+        if path.is_file()
+    }
+
+
+def _check_release_manifest_completeness(
+    root: Path = ROOT, listed: tuple[str, ...] = RELEASE_SOURCE_FILES
+) -> None:
+    """Prove the manifest is exactly the app target's Swift source set.
+
+    Membership is decided from the file tree alone — deliberately not from
+    the conditional-compilation analysis — so a digest re-pin cannot excuse
+    an omitted app source and a stale entry cannot hide behind a pinned
+    file list.
+    """
+
+    on_disk = _app_target_sources(root)
+    listed_set = set(listed)
+    missing = sorted(on_disk - listed_set)
+    if missing:
+        raise CheckFailure(
+            "app target Swift source missing from RELEASE_SOURCE_FILES: "
+            + ", ".join(missing)
+        )
+    stale = sorted(listed_set - on_disk)
+    if stale:
+        raise CheckFailure(
+            "RELEASE_SOURCE_FILES entry is not an app target source: "
+            + ", ".join(stale)
+        )
+
+
 def _run_checked(command: list[str]) -> str:
     try:
         return subprocess.run(
@@ -1313,6 +1404,20 @@ def _expect_failure(action: Callable[[], None], label: str) -> None:
     try:
         action()
     except CheckFailure:
+        return
+    raise CheckFailure(f"self-test fixture was accepted: {label}")
+
+
+def _expect_failure_matching(
+    action: Callable[[], None], label: str, expected: str
+) -> None:
+    try:
+        action()
+    except CheckFailure as error:
+        if expected not in str(error):
+            raise CheckFailure(
+                f"self-test fixture {label!r} failed for the wrong reason: {error}"
+            ) from error
         return
     raise CheckFailure(f"self-test fixture was accepted: {label}")
 
@@ -1795,6 +1900,121 @@ suffix
             "unknown conditional expression",
         )
 
+        # #471B: the manifest must be EXACTLY the app target's Swift source
+        # set. These controls drive the membership check over a synthetic
+        # tree, independent of the digest and the conditional-compilation
+        # analysis: an omitted entry, a file added to the tree without an
+        # entry, a stale entry, and an entry outside the app tree each fail;
+        # the exact set passes with a test-tree file left unlisted.
+        membership_root = root / "membership checkout"
+        membership_sources = (
+            "ios/FleetNotifier/App/Member.swift",
+            "ios/FleetNotifier/Demo/Gated.swift",
+        )
+        for relative in (
+            *membership_sources,
+            "ios/FleetNotifierTests/NotAppSource.swift",
+        ):
+            fixture = membership_root / relative
+            fixture.parent.mkdir(parents=True, exist_ok=True)
+            fixture.write_text("let marker = 1\n", encoding="utf-8")
+
+        _check_release_manifest_completeness(membership_root, membership_sources)
+        _expect_failure_matching(
+            lambda: _check_release_manifest_completeness(
+                membership_root, membership_sources[:1]
+            ),
+            "manifest omitting an app target source",
+            "app target Swift source missing from RELEASE_SOURCE_FILES: "
+            "ios/FleetNotifier/Demo/Gated.swift",
+        )
+        _expect_failure_matching(
+            lambda: _check_release_manifest_completeness(
+                membership_root,
+                (*membership_sources, "ios/FleetNotifier/Demo/Deleted.swift"),
+            ),
+            "stale manifest entry missing from disk",
+            "RELEASE_SOURCE_FILES entry is not an app target source: "
+            "ios/FleetNotifier/Demo/Deleted.swift",
+        )
+        _expect_failure_matching(
+            lambda: _check_release_manifest_completeness(
+                membership_root,
+                (*membership_sources, "ios/FleetNotifierTests/NotAppSource.swift"),
+            ),
+            "manifest entry outside the app target",
+            "RELEASE_SOURCE_FILES entry is not an app target source: "
+            "ios/FleetNotifierTests/NotAppSource.swift",
+        )
+        added_source = membership_root / "ios/FleetNotifier/UI/Added.swift"
+        added_source.parent.mkdir(parents=True, exist_ok=True)
+        added_source.write_text("let marker = 1\n", encoding="utf-8")
+        _expect_failure_matching(
+            lambda: _check_release_manifest_completeness(
+                membership_root, membership_sources
+            ),
+            "app target source added without a manifest entry",
+            "app target Swift source missing from RELEASE_SOURCE_FILES: "
+            "ios/FleetNotifier/UI/Added.swift",
+        )
+
+        # #471B F1: the in-process controls above cannot detect the production
+        # wiring being removed (they call the helper directly). This control
+        # materializes an otherwise-valid scratch checkout whose app tree
+        # carries ONE unlisted Swift file and runs the REAL CLI — a byte copy
+        # of this checker — over it: the run must fail with the membership
+        # diagnostic naming that exact file. An unwired main() accepts the
+        # same checkout (exit 0); a digest mismatch or parser error cannot
+        # produce this diagnostic.
+        membership_cli_root = root / "membership cli checkout"
+        for relative in (
+            "ios/check-release-demo.py",
+            "ios/release_source_manifest.py",
+            "ios/project.yml",
+            "ios/FleetNotifier.xcodeproj/project.pbxproj",
+            "ios/FleetNotifierTests/FleetNotifierTests.swift",
+            "ios/tools/herd-art/check-native-art.py",
+            "ios/tools/herd-art/appicon-approval.json",
+            "ios/tools/herd-art/resource-allowlist.json",
+        ):
+            destination = membership_cli_root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes((ROOT / relative).read_bytes())
+        for app_file in sorted((ROOT / "ios/FleetNotifier").rglob("*")):
+            if not app_file.is_file():
+                continue
+            destination = membership_cli_root / app_file.relative_to(ROOT)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(app_file.read_bytes())
+        unlisted_source = (
+            membership_cli_root
+            / "ios/FleetNotifier/UI/UnlistedMembershipFixture.swift"
+        )
+        unlisted_source.write_text(
+            "let unlistedMembershipFixture = 1\n", encoding="utf-8"
+        )
+        cli_run = subprocess.run(
+            [sys.executable, str(membership_cli_root / "ios/check-release-demo.py")],
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=membership_cli_root,
+        )
+        if cli_run.returncode == 0:
+            raise CheckFailure(
+                "production entry path accepted an unlisted app target source "
+                f"(rc=0): {membership_cli_root}"
+            )
+        diagnostic = (
+            "release-demo check: FAIL: app target Swift source missing from "
+            "RELEASE_SOURCE_FILES: ios/FleetNotifier/UI/UnlistedMembershipFixture.swift"
+        )
+        if diagnostic not in cli_run.stderr:
+            raise CheckFailure(
+                "production entry path failed without the membership "
+                f"diagnostic (rc={cli_run.returncode}): {cli_run.stderr.strip()!r}"
+            )
+
         modified_source_root = root / "modified checkout with spaces"
         for relative in RELEASE_SOURCE_FILES:
             source = ROOT / relative
@@ -1969,6 +2189,7 @@ def main() -> int:
         if args.self_test:
             _self_test()
         _check_release_build_phase_configuration()
+        _check_release_manifest_completeness()
         _check_release_source_digest()
         _check_test_source_digest()
         for relative, markers in SOURCE_MARKERS.items():

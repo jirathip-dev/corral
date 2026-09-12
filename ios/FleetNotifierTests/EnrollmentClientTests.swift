@@ -132,7 +132,7 @@ final class EnrollmentClientTests: XCTestCase {
             _ = try await client().status(code: Self.syntheticCode)
             XCTFail("an unknown state must not decode")
         } catch let error as EnrollmentClientError {
-            XCTAssertEqual(error, .unexpectedState("weird"))
+            XCTAssertEqual(error, .unexpectedState)
         }
     }
 
@@ -143,7 +143,7 @@ final class EnrollmentClientTests: XCTestCase {
             _ = try await client().redeem(code: Self.syntheticCode, publicKeyB64: Self.syntheticPublicKey)
             XCTFail("redeem can never be authority")
         } catch let error as EnrollmentClientError {
-            XCTAssertEqual(error, .unexpectedState("approved"))
+            XCTAssertEqual(error, .unexpectedState)
         }
     }
 
@@ -178,14 +178,20 @@ final class EnrollmentClientTests: XCTestCase {
                 _ = try await client().redeem(code: Self.syntheticCode, publicKeyB64: Self.syntheticPublicKey)
                 XCTFail("expected \(entry.code)")
             } catch let error as EnrollmentClientError {
-                XCTAssertEqual(error, .server(status: entry.status,
-                                              code: entry.code,
-                                              message: "refused by host"))
+                guard case .server(let status, let code, let message) = error else {
+                    return XCTFail("expected .server, got \(error)")
+                }
+                XCTAssertEqual(status, entry.status)
+                XCTAssertEqual(code, entry.code,
+                               "frozen codes are allowlisted through verbatim")
+                XCTAssertFalse(message.contains("refused by host"),
+                               "host-supplied text is never retained: \(message)")
+                XCTAssertFalse(message.contains(Self.syntheticCode))
             }
         }
     }
 
-    func testServerErrorRedactsAnEchoedCode() async throws {
+    func testServerErrorNeverRetainsEchoedCodeOrHostText() async throws {
         script([redeemURL: (400, Data(#"{"error":"rejected \#(Self.syntheticCode)","code":"malformed_request"}"#.utf8))])
 
         do {
@@ -195,7 +201,14 @@ final class EnrollmentClientTests: XCTestCase {
             let text = String(describing: error) + " " + (error.errorDescription ?? "")
             XCTAssertFalse(text.contains(Self.syntheticCode),
                            "error text must never echo the redemption code: \(text)")
-            XCTAssertTrue(text.contains("<redacted>"), "an echoed code is redacted: \(text)")
+            XCTAssertFalse(text.contains(String(Self.syntheticCode.prefix(32))),
+                           "not even a 32-char fragment: \(text)")
+            XCTAssertFalse(text.contains("rejected"),
+                           "host-supplied text is never retained: \(text)")
+            guard case .server(_, let code, _) = error else {
+                return XCTFail("expected .server, got \(error)")
+            }
+            XCTAssertEqual(code, "malformed_request")
         }
     }
 
@@ -367,6 +380,58 @@ final class EnrollmentClientTests: XCTestCase {
             for channel in channels {
                 XCTAssertFalse(channel.contains(Self.syntheticCode),
                                "error channel must not echo the redemption code: \(channel)")
+            }
+        }
+    }
+
+    /// Privacy regression r2: the non-200 `code` FIELD is host-supplied. A
+    /// host that puts the redemption code (or a fragment) there must not have
+    /// it echoed; the refusal category is allowlisted instead.
+    func testServerErrorRefusalCodeFieldIsAllowlistedNotEchoed() async throws {
+        script([redeemURL: (400, Data(#"{"error":"nope","code":"\#(Self.syntheticCode)"}"#.utf8))])
+        do {
+            _ = try await client().redeem(code: Self.syntheticCode, publicKeyB64: Self.syntheticPublicKey)
+            XCTFail("a non-200 must not be a pending response")
+        } catch let error as EnrollmentClientError {
+            guard case .server(let status, let code, _) = error else {
+                return XCTFail("expected .server, got \(error)")
+            }
+            XCTAssertEqual(status, 400)
+            XCTAssertEqual(code, "unknown_code",
+                           "only allowlisted protocol codes are surfaced")
+            let fragment = String(Self.syntheticCode.prefix(32))
+            let channels = [error.localizedDescription,
+                            String(describing: error),
+                            String(reflecting: error)]
+            for channel in channels {
+                XCTAssertFalse(channel.contains(Self.syntheticCode),
+                               "the code field must never be echoed: \(channel)")
+                XCTAssertFalse(channel.contains(fragment),
+                               "not even a 32-char fragment of it: \(channel)")
+            }
+        }
+    }
+
+    /// Privacy regression r2: a host-supplied `state` carrying a 32-character
+    /// FRAGMENT of the code (not the exact full string) must not be echoed
+    /// either — string-replacement redaction cannot cover partial echoes.
+    func testStateFragmentEchoIsNotRetained() async throws {
+        let fragment = String(Self.syntheticCode.prefix(32))
+        script([statusURL: (200, Data(#"{"state":"\#(fragment)"}"#.utf8))])
+        do {
+            _ = try await client().status(code: Self.syntheticCode)
+            XCTFail("a state outside the vocabulary must not decode")
+        } catch {
+            guard let clientError = error as? EnrollmentClientError,
+                  case .unexpectedState = clientError else {
+                return XCTFail("expected the unexpectedState category, got \(error)")
+            }
+            let channels = [error.localizedDescription,
+                            String(describing: error),
+                            String(reflecting: error)]
+            for channel in channels {
+                XCTAssertFalse(channel.contains(fragment),
+                               "the state fragment must not be echoed: \(channel)")
             }
         }
     }

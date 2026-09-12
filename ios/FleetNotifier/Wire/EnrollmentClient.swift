@@ -70,21 +70,23 @@ extension EnrollmentStatusResponse {
     }
 }
 
-/// Typed enrollment-client failures. Messages are secret-free: the
-/// redemption code is redacted out of any daemon text before it is surfaced,
-/// so no error string can echo pairing material.
+/// Typed enrollment-client failures. Messages are secret-free: NO
+/// host-supplied text is retained — protocol codes are allowlisted (or
+/// composed locally) and the human text is composed here, so no error string
+/// can echo pairing material, full or partial.
 enum EnrollmentClientError: Error, Equatable, LocalizedError {
     /// The request never produced an HTTP response.
     case transport(String)
-    /// The host answered non-200 with the frozen `{error, code}` body (or a
-    /// proxy-shaped body, surfaced with an `http_<status>` code).
+    /// The host answered non-200. `code` is one of the frozen #485 device
+    /// codes, or the locally composed `unknown_code` / `http_<status>`; the
+    /// message is local text. The host's own `error`/`code` strings are never
+    /// carried into an error channel.
     case server(status: Int, code: String, message: String)
     /// 200 with a body that is not the v1 shape this route promises.
     case malformedResponse(String)
-    /// 200 with a state outside the frozen vocabulary. The state text is
-    /// host-supplied, so it is redacted (code removed, length capped) before
-    /// it is retained — never a raw echo.
-    case unexpectedState(String)
+    /// 200 with a state outside the frozen vocabulary. Deliberately carries
+    /// NO payload: the state text is host-supplied.
+    case unexpectedState
 
     var errorDescription: String? {
         switch self {
@@ -94,8 +96,8 @@ enum EnrollmentClientError: Error, Equatable, LocalizedError {
             return "HTTP \(status) \(code): \(message)"
         case .malformedResponse(let message):
             return message
-        case .unexpectedState(let state):
-            return "Unexpected enrollment state '\(state.prefix(32))'."
+        case .unexpectedState:
+            return "The host answered with an unrecognized enrollment state."
         }
     }
 }
@@ -108,8 +110,6 @@ enum EnrollmentClientError: Error, Equatable, LocalizedError {
 struct EnrollmentClient: Sendable {
     static let redeemPath = "/enroll/redeem"
     static let statusPath = "/enroll/status"
-    /// Bounded daemon-message echo; pairing material is redacted first.
-    private static let maxEchoedMessageCharacters = 300
 
     let host: URL
     let session: URLSession
@@ -131,13 +131,13 @@ struct EnrollmentClient: Sendable {
             : Self.redeemBodyNamed(code: code, publicKeyB64: publicKeyB64, name: trimmedName)
         let (status, data) = try await post(Self.redeemPath, body: body)
         guard status == 200 else {
-            throw Self.serverError(status: status, data: data, code: code)
+            throw Self.serverError(status: status, data: data)
         }
         guard let decoded = try? JSONDecoder().decode(EnrollmentRedeemResponse.self, from: data) else {
             throw EnrollmentClientError.malformedResponse("redeem response is not the v1 pending shape")
         }
         guard decoded.state == EnrollmentRedeemResponse.pendingState else {
-            throw EnrollmentClientError.unexpectedState(Self.redacted(decoded.state, code: code))
+            throw EnrollmentClientError.unexpectedState
         }
         return decoded
     }
@@ -146,7 +146,7 @@ struct EnrollmentClient: Sendable {
     func status(code: String) async throws -> EnrollmentStatusResponse {
         let (status, data) = try await post(Self.statusPath, body: Self.statusBody(code: code))
         guard status == 200 else {
-            throw Self.serverError(status: status, data: data, code: code)
+            throw Self.serverError(status: status, data: data)
         }
         guard let body = try? JSONDecoder().decode(EnrollmentStatusBody.self, from: data) else {
             throw EnrollmentClientError.malformedResponse("status response is not a v1 body")
@@ -168,7 +168,7 @@ struct EnrollmentClient: Sendable {
                              expiryTs: expiryTs,
                              revoked: body.revoked ?? false)
         default:
-            throw EnrollmentClientError.unexpectedState(Self.redacted(body.state, code: code))
+            throw EnrollmentClientError.unexpectedState
         }
     }
 
@@ -257,25 +257,46 @@ struct EnrollmentClient: Sendable {
         }
     }
 
-    /// Map a non-200 body onto the frozen vocabulary. The code is redacted
-    /// from any echoed text so a host/proxy that reflects it cannot leak
-    /// pairing material through an error string.
-    private static func serverError(status: Int, data: Data, code: String) -> EnrollmentClientError {
+    /// Map a non-200 body onto the frozen vocabulary WITHOUT retaining any
+    /// host-supplied text: the code is allowlisted (or composed locally) and
+    /// the message is composed locally, so an arbitrary echo — the full code
+    /// or a fragment, in the `code` field or the `error` field — can never
+    /// reach an error channel.
+    private static func serverError(status: Int, data: Data) -> EnrollmentClientError {
         let body = try? JSONDecoder().decode(EnrollmentErrorBody.self, from: data)
-        let rawMessage = body?.error ?? String(data: data, encoding: .utf8) ?? "HTTP \(status)"
-        return .server(status: status, code: body?.code ?? "http_\(status)",
-                       message: redacted(rawMessage, code: code))
+        let refusalCode: String
+        switch body?.code {
+        case let raw? where knownRefusalCodes.contains(raw):
+            refusalCode = raw
+        case .some:
+            refusalCode = "unknown_code"
+        case .none:
+            refusalCode = "http_\(status)"
+        }
+        return .server(status: status, code: refusalCode,
+                       message: refusalMessage(for: refusalCode, status: status))
     }
 
-    /// Secret-free echo of host-supplied text: the redemption code is
-    /// redacted and the result is capped, so a host that reflects the code
-    /// (in a message or a `state`) cannot leak it through any error channel.
-    private static func redacted(_ text: String, code: String) -> String {
-        var out = text.replacingOccurrences(of: code, with: "<redacted>")
-        if out.count > maxEchoedMessageCharacters {
-            out = String(out.prefix(maxEchoedMessageCharacters)) + "…"
+    /// The frozen #485 device-route machine codes. Only these are surfaced
+    /// verbatim; any other host-supplied code becomes `unknown_code`.
+    static let knownRefusalCodes: Set<String> = [
+        "malformed_request", "bad_public_key", "bad_name",
+        "enroll_unknown_code", "enroll_redeemed", "already_registered",
+        "enroll_expired",
+    ]
+
+    /// Fixed, locally composed human text for an allowlisted refusal code.
+    private static func refusalMessage(for code: String, status: Int) -> String {
+        switch code {
+        case "malformed_request": return "The host rejected the request as malformed."
+        case "bad_public_key": return "The host rejected this device's key."
+        case "bad_name": return "The host rejected the device label."
+        case "enroll_unknown_code": return "The host does not know this code."
+        case "enroll_redeemed": return "This code was already used."
+        case "already_registered": return "This device is already registered with the host."
+        case "enroll_expired": return "This code has expired."
+        default: return "The host refused the enrollment request (HTTP \(status))."
         }
-        return out
     }
 }
 

@@ -317,6 +317,211 @@ final class HerdWindTests: XCTestCase {
             "the ambient freeze must stay tied to the scene gate")
     }
 
+    // MARK: #460 sky drift — positional motion through the live scene view
+
+    /// Per-pixel luminance of a raster. The sky plane fills an opaque
+    /// gradient across the whole 390x640 world, so every sampled pixel in
+    /// the sky band has a defined color and no alpha weighting is needed.
+    private func luminance(_ raster: Raster) -> (pixels: [UInt8], width: Int, height: Int) {
+        var out = [UInt8](repeating: 0, count: raster.width * raster.height)
+        for index in 0..<out.count {
+            let base = index * 4
+            let r = Int(raster.bytes[base])
+            let g = Int(raster.bytes[base + 1])
+            let b = Int(raster.bytes[base + 2])
+            out[index] = UInt8((2126 * r + 7152 * g + 722 * b) / 10000)
+        }
+        return (out, raster.width, raster.height)
+    }
+
+    private func region(_ x: ClosedRange<Double>, _ y: ClosedRange<Double>,
+                        scale: Int) -> (x0: Int, x1: Int, y0: Int, y1: Int) {
+        (Int((x.lowerBound * Double(scale)).rounded()),
+         Int((x.upperBound * Double(scale)).rounded()),
+         Int((y.lowerBound * Double(scale)).rounded()),
+         Int((y.upperBound * Double(scale)).rounded()))
+    }
+
+    /// Sum of |base(x) − moved(x+dx)| over an art-space region: the later
+    /// frame equals the earlier one translated RIGHT by `dx` where this
+    /// reaches its minimum. Brightness-only changes leave the minimum at 0.
+    private func shiftDelta(_ base: [UInt8], _ moved: [UInt8], width: Int, dx: Int,
+                            x: ClosedRange<Double>, y: ClosedRange<Double>, scale: Int) -> Int {
+        let r = region(x, y, scale: scale)
+        var sum = 0
+        for row in r.y0..<r.y1 {
+            for column in r.x0..<r.x1 {
+                let other = column + dx
+                guard other >= 0, other < width else { continue }
+                sum += abs(Int(base[row * width + column]) - Int(moved[row * width + other]))
+            }
+        }
+        return sum
+    }
+
+    private func bestShift(_ base: [UInt8], _ moved: [UInt8], width: Int,
+                           search: ClosedRange<Int>, x: ClosedRange<Double>,
+                           y: ClosedRange<Double>, scale: Int) -> (shift: Int, delta: Int) {
+        var best = (shift: search.lowerBound, delta: Int.max)
+        for dx in search {
+            let delta = shiftDelta(base, moved, width: width, dx: dx, x: x, y: y, scale: scale)
+            if delta < best.delta { best = (dx, delta) }
+        }
+        return best
+    }
+
+    /// Day clouds are the only moving content in the sky band, so the
+    /// whole-band luminance is the cloud field; its best alignment across a
+    /// real-time gap is the measured drift, and the static overlay (dx 0)
+    /// must be worse — a brightness-only change would minimise at 0.
+    func testDayCloudsDriftPositionallyThroughTheProductionScene() throws {
+        let scale = 2
+        let gap = 12.0
+        let window = 0.0...390.0
+        let skyBand = 0.0...140.0
+        let first = luminance(try scene(elapsed: 0))
+        let later = luminance(try scene(elapsed: gap))
+        let expected = Int((RanchSky.cloudSpeed * gap * Double(scale)).rounded())
+        // The cloud field's real-time travel is the shared drift PLUS the
+        // bounded per-tile bob (≤ 1.5 pt amplitude, ≤ 3 pt peak-to-peak), so
+        // the sampled alignment lands within 4 pt of the nominal drift.
+        let best = bestShift(first.pixels, later.pixels, width: first.width,
+                             search: (expected - 30)...(expected + 30),
+                             x: window, y: skyBand, scale: scale)
+        let atZero = shiftDelta(first.pixels, later.pixels, width: first.width, dx: 0,
+                                x: window, y: skyBand, scale: scale)
+        let measuredRate = Double(best.shift) / (Double(scale) * gap)
+        XCTAssertLessThanOrEqual(abs(best.shift - expected), 8,
+            "day clouds must drift at ~\(RanchSky.cloudSpeed) pt/s: expected a \(expected) px shift after \(gap)s, best match \(best.shift) px")
+        XCTAssertGreaterThanOrEqual(measuredRate, 2.0,
+            "the measured cloud travel must stay clearly perceptible (measured \(measuredRate) pt/s)")
+        XCTAssertLessThanOrEqual(measuredRate, 3.0,
+            "the measured cloud travel must stay gentle (measured \(measuredRate) pt/s)")
+        XCTAssertLessThan(best.delta, atZero,
+            "the cloud change must be positional: the drifted match (\(best.delta)) must beat the static overlay (\(atZero))")
+        print("SKY clouds gap=\(gap)s bestShift=\(best.shift)px expected=\(expected) rate=\(measuredRate)pt/s delta=\(best.delta) identity=\(atZero)")
+    }
+
+    /// The night star field is measured as a luminance mask (the gradient,
+    /// clouds and Milky Way stay far below the threshold in the night
+    /// palette), so the assertion isolates star POSITIONS: the later mask
+    /// aligns with the earlier one shifted by the shared celestial drift,
+    /// while the brightness-only twinkle cannot produce that alignment.
+    func testNightStarFieldMovesPositionallyNotJustTwinkle() throws {
+        let scale = 2
+        let gap = 20.0
+        let window = 20.0...280.0
+        let skyBand = 0.0...145.0
+        let first = luminance(try scene(elapsed: 0, night: true))
+        let later = luminance(try scene(elapsed: gap, night: true))
+        let starA = first.pixels.map { $0 > 85 ? UInt8(1) : UInt8(0) }
+        let starB = later.pixels.map { $0 > 85 ? UInt8(1) : UInt8(0) }
+        let lit = region(window, skyBand, scale: scale)
+        var litCount = 0
+        for row in lit.y0..<lit.y1 {
+            for column in lit.x0..<lit.x1 where starA[row * first.width + column] == 1 { litCount += 1 }
+        }
+        XCTAssertGreaterThanOrEqual(litCount, 80,
+            "the night sky band must contain sampled stars (measured \(litCount) lit pixels)")
+        let expected = Int((RanchSky.celestialSpeed * gap * Double(scale)).rounded())
+        let best = bestShift(starA, starB, width: first.width,
+                             search: (expected - 25)...(expected + 25),
+                             x: window, y: skyBand, scale: scale)
+        let atZero = shiftDelta(starA, starB, width: first.width, dx: 0,
+                                x: window, y: skyBand, scale: scale)
+        XCTAssertLessThanOrEqual(abs(best.shift - expected), 3,
+            "the seeded star field must MOVE by the celestial drift: expected \(expected) px after \(gap)s, best match \(best.shift) px (stars=\(litCount))")
+        XCTAssertLessThan(best.delta * 2, atZero,
+            "star motion must be positional, not a brightness re-roll: drifted mismatch \(best.delta) vs static \(atZero)")
+        print("SKY stars gap=\(gap)s bestShift=\(best.shift)px expected=\(expected) lit=\(litCount) mismatch=\(best.delta) identity=\(atZero)")
+    }
+
+    /// The Milky Way band shares the celestial rate with the stars and
+    /// dominates this window, so the band window's best alignment is the
+    /// band's own measured positional drift (the night clouds move at a
+    /// different rate and cannot explain it).
+    func testNightMilkyWayBandMovesCoherentlyWithTheCelestialDrift() throws {
+        let scale = 2
+        let gap = 20.0
+        let window = 60.0...280.0
+        let skyBand = 0.0...145.0
+        let first = luminance(try scene(elapsed: 0, night: true))
+        let later = luminance(try scene(elapsed: gap, night: true))
+        let expected = Int((RanchSky.celestialSpeed * gap * Double(scale)).rounded())
+        let best = bestShift(first.pixels, later.pixels, width: first.width,
+                             search: max(1, expected - 20)...(expected + 20),
+                             x: window, y: skyBand, scale: scale)
+        let atZero = shiftDelta(first.pixels, later.pixels, width: first.width, dx: 0,
+                                x: window, y: skyBand, scale: scale)
+        XCTAssertLessThanOrEqual(abs(best.shift - expected), 5,
+            "the Milky Way must ride the shared celestial drift: expected \(expected) px after \(gap)s, best match \(best.shift) px")
+        XCTAssertLessThan(best.delta, atZero,
+            "the band change must be positional: drifted match \(best.delta) must beat the static overlay \(atZero)")
+        print("SKY band gap=\(gap)s bestShift=\(best.shift)px expected=\(expected) delta=\(best.delta) identity=\(atZero)")
+    }
+
+    /// One 100 ms scene tick must not teleport the sky, while 30 s of real
+    /// time must visibly move it; the night field stays byte-deterministic
+    /// across independent instances (same elapsed, same seeded identities).
+    func testSkyMotionIsBoundedPerTickAndDeterministic() throws {
+        let first = try scene(elapsed: 0)
+        let tick = try scene(elapsed: 0.1)
+        let jumped = changedPixels(first, tick, x: 0...390, y: 0...200, tolerance: 8)
+        XCTAssertLessThanOrEqual(jumped, 2000,
+            "one 100 ms tick must not jump the sky (measured \(jumped) changed pixels)")
+        let travelled = changedPixels(first, try scene(elapsed: 30),
+                                      x: 0...390, y: 0...140, tolerance: 8)
+        XCTAssertGreaterThanOrEqual(travelled, 20000,
+            "30 s of real time must move the sky visibly at phone scale (measured \(travelled) changed pixels)")
+        XCTAssertEqual(try scene(elapsed: 6.3, night: true).bytes,
+                       try scene(elapsed: 6.3, night: true).bytes,
+                       "the night sky must render byte-identically for one elapsed — no per-frame randomness")
+        print("SKY tick100ms=\(jumped) travel30s=\(travelled)")
+    }
+
+    /// Reduce Motion (and the Low Power / thermal fallback that feeds the
+    /// same gate) must render the scene's own intentional static
+    /// composition — the elapsed-0 frame — not an arbitrary frozen phase.
+    func testSkyFrozenCompositionIsTheIntentionalStaticScene() throws {
+        XCTAssertEqual(try scene(elapsed: 30, night: true, reduceMotion: true).bytes,
+                       try scene(elapsed: 0, night: true).bytes,
+                       "frozen night sky must equal the intentional elapsed-0 composition")
+        XCTAssertEqual(try scene(elapsed: 25, reduceMotion: true).bytes,
+                       try scene(elapsed: 0).bytes,
+                       "frozen day sky must equal the intentional elapsed-0 composition")
+    }
+
+    /// Production wiring pins for the sky drift: both fields sample the one
+    /// shared clock through the bounded sky math (no second timing owner),
+    /// the moon stays a fixed landmark, and the drift rates stay in the
+    /// perceptible-but-gentle band the issue requires.
+    func testSkyDriftWiringAndTimingOwnerPins() throws {
+        let environment = try pinnedSource("RanchEnvironment")
+        XCTAssertTrue(environment.contains("RanchSky.cloudDrift(elapsed)"),
+            "the clouds must sample the shared clock through RanchSky")
+        XCTAssertTrue(environment.contains("RanchSky.celestialDrift(elapsed)"),
+            "stars and the Milky Way must sample the shared celestial drift")
+        XCTAssertTrue(environment.contains("RanchSky.bandCopyRange(elapsed:elapsed,left:left)"),
+            "the Milky Way wrap must follow the drift and the visible window")
+        XCTAssertTrue(environment.contains("ellipse(306,56,16,16)"),
+            "the moon must stay a fixed landmark")
+        XCTAssertFalse(environment.contains("TimelineView"))
+        XCTAssertFalse(environment.contains("Timer"))
+        XCTAssertFalse(environment.contains("DispatchQueue"))
+        XCTAssertGreaterThanOrEqual(RanchSky.cloudSpeed, 2.0,
+            "cloud drift must stay clearly perceptible")
+        XCTAssertLessThanOrEqual(RanchSky.cloudSpeed, 4.0,
+            "cloud drift must stay gentle")
+        XCTAssertGreaterThanOrEqual(RanchSky.celestialSpeed, 0.5,
+            "night-sky drift must stay perceptible")
+        XCTAssertLessThanOrEqual(RanchSky.celestialSpeed, 1.2,
+            "night-sky drift must stay slow")
+        XCTAssertNotEqual(RanchSky.cloudSpeed, RanchSky.celestialSpeed,
+            "cloud and celestial drift must remain distinguishable")
+        XCTAssertEqual(RanchSky.cloudDrift(4), 4 * RanchSky.cloudSpeed)
+        XCTAssertEqual(RanchSky.celestialDrift(3), 3 * RanchSky.celestialSpeed)
+    }
+
     private func pinnedSource(_ name: String) throws -> String {
         let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: name + ".swift",
                                                            withExtension: "txt"))

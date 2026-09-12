@@ -323,11 +323,15 @@ final class EnrollmentClientTests: XCTestCase {
         var recovery = EnrollmentApprovalRecovery()
         recovery.noteRedeemed(keyId: Self.keyId)
         // The daemon refuses a revoked key's signed read with this shape.
+        // `DriveClient.fetchGrants` — the REAL signed path this recovery must
+        // reuse — maps a non-typed non-200 body onto its documented fallback
+        // kind/message, so the device surfaces the HTTP status plus that
+        // generic text. The refusal (never a silent success) is the contract.
         script([grantsReadURL: (403, Data(#"{"error":"device key revoked"}"#.utf8))])
 
         let outcome = await recovery.recoverAfterSessionLoss(drive: try driveClient(), signer: signer())
 
-        XCTAssertEqual(outcome, .denied(.refused(#"HTTP 403: {"error":"device key revoked"}"#)))
+        XCTAssertEqual(outcome, .denied(.refused("HTTP 403: grants-read failed")))
     }
 
     func testRecoveryTransportFailureIsDeniedAndStaysConsumed() async throws {

@@ -151,7 +151,9 @@ struct EnrollmentClient: Sendable {
         }
         switch body.state {
         case "pending":
-            guard let expiresTs = body.expiryTs else {
+            // Pending status carries `expires_ts` (frozen #485 §5.3); the
+            // approved shape carries `expiry_ts` — see EnrollmentStatusBody.
+            guard let expiresTs = body.expiresTs else {
                 throw EnrollmentClientError.malformedResponse("pending status body carries no expires_ts")
             }
             return .pending(expiresTs: expiresTs)
@@ -177,7 +179,18 @@ struct EnrollmentClient: Sendable {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = body
         try Task.checkCancellation()
-        let (data, response) = try await session.data(for: request)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch let error as URLError where error.code == .cancelled && Task.isCancelled {
+            // Owner cancellation stays a cancellation; everything else is a
+            // typed, secret-free transport failure (an unreachable host must
+            // never surface as a raw NSError to the caller).
+            throw CancellationError()
+        } catch {
+            throw EnrollmentClientError.transport(error.localizedDescription)
+        }
         try Task.checkCancellation()
         guard let http = response as? HTTPURLResponse else {
             throw EnrollmentClientError.transport("non-HTTP response")
@@ -225,6 +238,10 @@ struct EnrollmentClient: Sendable {
         var state: String
         var keyId: String?
         var grants: [String]?
+        /// The pending shape's deadline uses `expires_ts`; the approved
+        /// shape's registration TTL uses `expiry_ts` — both frozen #485
+        /// wire names, decoded side by side (see `status(code:)`).
+        var expiresTs: UInt64?
         var expiryTs: UInt64?
         var revoked: Bool?
 
@@ -232,6 +249,7 @@ struct EnrollmentClient: Sendable {
             case state
             case keyId = "key_id"
             case grants
+            case expiresTs = "expires_ts"
             case expiryTs = "expiry_ts"
             case revoked
         }

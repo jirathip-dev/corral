@@ -425,6 +425,123 @@ impl DeviceRegistry {
         }
     }
 
+    /// Find a record by its exact public key (#485 redeem path: tell a
+    /// fresh key from an existing live/revoked one). `None` = never seen.
+    pub fn find_by_public_key(&self, public_key: &[u8; 32]) -> Option<DeviceRecord> {
+        self.inner
+            .lock()
+            .expect("registry lock poisoned")
+            .devices
+            .values()
+            .find(|rec| rec.public_key == *public_key)
+            .cloned()
+    }
+
+    /// #485 owner-approved enrollment: create-or-restore the record for a
+    /// session-bound key with `grants: [read_tail]` exactly. Disk-first
+    /// (persist-then-commit): on a persist failure NOTHING changes in
+    /// memory and the caller reports `registry_persist_failed` — the
+    /// frozen contract's atomicity pin, deliberately stricter than the
+    /// legacy memory-first mutators above (F8 stays pinned for those).
+    ///
+    /// - fresh key → new record (`created_ts = now`,
+    ///   `expiry_ts = now + ttl`, grants `[read_tail]`, not revoked);
+    /// - existing REVOKED record → restored: `grants` replaced with
+    ///   `[read_tail]` exactly, `revoked = false`, `revoked_ts` cleared,
+    ///   `expiry_ts` re-stamped `now + ttl` (a restored device is a fresh
+    ///   90-day registration, per the review residue);
+    /// - existing LIVE record → `AlreadyLive` (nothing persisted): the
+    ///   owner-approved-enrollment path must never silently re-grant; the
+    ///   caller maps this to the typed `enroll_already_approved` conflict.
+    pub fn enroll_approve(
+        &self,
+        public_key: [u8; 32],
+        display_name: Option<&str>,
+        ttl: std::time::Duration,
+    ) -> Result<EnrollApprove, String> {
+        let name = match display_name {
+            Some(raw) => Some(normalize_display_name(raw).map_err(|e| e.to_string())?),
+            None => None,
+        };
+        let mut inner = self.inner.lock().expect("registry lock poisoned");
+        let existing = inner
+            .devices
+            .iter()
+            .find(|(_, rec)| rec.public_key == public_key)
+            .map(|(key, rec)| (key.clone(), rec.clone()));
+        let now = now_secs();
+        match existing {
+            Some((key, mut rec)) if rec.revoked => {
+                rec.grants = vec![Capability::ReadTail];
+                rec.revoked = false;
+                // #257 re-grant semantics: clearing the flag clears the
+                // stamp; a later revoke re-stamps the CURRENT revocation.
+                rec.revoked_ts = None;
+                rec.expiry_ts = now.saturating_add(ttl.as_secs());
+                let mut next = inner.devices.clone();
+                next.insert(key, rec.clone());
+                self.persist_next(&next)?;
+                inner.devices = next;
+                Ok(EnrollApprove::Restored(rec))
+            }
+            Some((_, rec)) => Ok(EnrollApprove::AlreadyLive(rec)),
+            None => {
+                let key_id = key_id_for(&public_key);
+                let rec = DeviceRecord {
+                    key_id: key_id.clone(),
+                    public_key,
+                    created_ts: now,
+                    expiry_ts: now.saturating_add(ttl.as_secs()),
+                    grants: vec![Capability::ReadTail],
+                    revoked: false,
+                    revoked_ts: None,
+                    device_token: None,
+                    name,
+                };
+                let mut next = inner.devices.clone();
+                next.insert(key_id, rec.clone());
+                self.persist_next(&next)?;
+                inner.devices = next;
+                Ok(EnrollApprove::Created(rec))
+            }
+        }
+    }
+
+    /// #485 owner revoke: disk-first single-key revocation. Revoke-only by
+    /// construction — it cannot set grants, cannot clear `revoked`
+    /// (restoration is the owner-approved enrollment path, never a revoke
+    /// modifier), and cannot touch any other key. Idempotent: re-revoking
+    /// a revoked key is still `200` and re-stamps `revoked_ts` (matching
+    /// [`Self::set_revoked`]'s last-revocation semantics).
+    pub fn revoke_committed(&self, key_id: &str) -> Result<DeviceRecord, RegistryMutationError> {
+        let mut inner = self.inner.lock().expect("registry lock poisoned");
+        let mut rec = inner
+            .devices
+            .get(key_id)
+            .ok_or_else(|| RegistryMutationError::UnknownKey(key_id.to_string()))?
+            .clone();
+        rec.revoked = true;
+        rec.revoked_ts = Some(now_secs());
+        let mut next = inner.devices.clone();
+        next.insert(key_id.to_string(), rec.clone());
+        self.persist_next(&next)
+            .map_err(RegistryMutationError::Persist)?;
+        inner.devices = next;
+        Ok(rec)
+    }
+
+    /// Persist a fully-built device map WITHOUT installing it (the #485
+    /// disk-first commit step). The caller swaps it into memory only after
+    /// this returns `Ok`.
+    fn persist_next(&self, next: &BTreeMap<String, DeviceRecord>) -> Result<(), String> {
+        let file = RegistryFile {
+            schema_version: SCHEMA_VERSION,
+            devices: next.clone(),
+        };
+        let json = serde_json::to_vec(&file).map_err(|e| format!("registry serializes: {e}"))?;
+        write_secret(&self.path, &json)
+    }
+
     /// Snapshot of all records (tests, admin display).
     pub fn records(&self) -> Vec<DeviceRecord> {
         self.inner
@@ -463,6 +580,20 @@ impl DeviceRegistry {
 pub enum RegistryMutationError {
     UnknownKey(String),
     Persist(String),
+}
+
+/// Outcome of an owner-approved enrollment commit (#485
+/// [`DeviceRegistry::enroll_approve`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnrollApprove {
+    /// Fresh key: a new record was created and committed to disk.
+    Created(DeviceRecord),
+    /// Known REVOKED key: the record was restored (read_tail only) and the
+    /// restore was committed to disk (explicit fresh owner approval only).
+    Restored(DeviceRecord),
+    /// Known LIVE key: nothing was persisted; the caller reports the typed
+    /// already-approved conflict instead of re-granting.
+    AlreadyLive(DeviceRecord),
 }
 
 impl fmt::Display for RegistryMutationError {

@@ -89,8 +89,10 @@
 
 pub mod audit;
 pub mod authorizer;
+pub mod enrollment;
 pub mod host_identity;
 pub mod http;
+pub mod owner;
 pub mod registry;
 
 pub use audit::HashChainAuditLog;
@@ -146,6 +148,10 @@ pub struct AuthPlane {
     pub authorizer: Arc<dyn DriveAuthorizer>,
     /// Implements the contract [`AuditLog`] trait (append-only, chained).
     pub audit: Arc<HashChainAuditLog>,
+    /// #485: in-memory enrollment sessions (single-use codes; no secret at
+    /// rest). Mutated ONLY through the local owner channel + the device
+    /// redeem/status routes.
+    pub enrollment: enrollment::EnrollmentStore,
     config_dir: PathBuf,
     admin_token: String,
 }
@@ -155,6 +161,22 @@ impl AuthPlane {
     /// (`CORRAL_CONFIG_DIR` or `~/.config/corral`). Fails fast on corrupt
     /// state — never silently re-keys.
     pub fn load_or_create(config_dir: PathBuf) -> Result<Self, String> {
+        Self::build(config_dir, enrollment::ENROLL_TTL)
+    }
+
+    /// [`Self::load_or_create`] with an injected enrollment TTL —
+    /// test / `test-utils` builds only: production fixes the single 300 s
+    /// mint→redeem→approve deadline (frozen §5.5).
+    #[cfg(any(test, feature = "test-utils"))]
+    #[doc(hidden)]
+    pub fn load_or_create_with_enroll_ttl(
+        config_dir: PathBuf,
+        enroll_ttl: std::time::Duration,
+    ) -> Result<Self, String> {
+        Self::build(config_dir, enroll_ttl)
+    }
+
+    fn build(config_dir: PathBuf, enroll_ttl: std::time::Duration) -> Result<Self, String> {
         let host = HostIdentity::load_or_create(&config_dir)?;
         let registry = Arc::new(DeviceRegistry::load_or_create(&config_dir)?);
         let authorizer: Arc<dyn DriveAuthorizer> =
@@ -166,6 +188,7 @@ impl AuthPlane {
             registry,
             authorizer,
             audit,
+            enrollment: enrollment::EnrollmentStore::new(enroll_ttl),
             config_dir,
             admin_token,
         })

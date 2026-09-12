@@ -67,11 +67,12 @@ final class EnrollmentPayloadTests: XCTestCase {
 
     func testRejectsExtraFields() {
         // The owner channel refuses a `grants` parameter; so does the device
-        // parser — extra fields are never tolerated.
+        // parser — extra fields are never tolerated (category only: the
+        // untrusted field name is deliberately not retained).
         let text = canonicalText()
             .replacingOccurrences(of: "\"scope\":\"read_tail\"}",
                                   with: "\"scope\":\"read_tail\",\"grants\":[\"read_diff\"]}")
-        assertParseFails(text, .extraField("grants"))
+        assertParseFails(text, .extraField)
     }
 
     func testRejectsReorderedFields() {
@@ -104,8 +105,8 @@ final class EnrollmentPayloadTests: XCTestCase {
     }
 
     func testRejectsScopeOtherThanReadTail() {
-        assertParseFails(canonicalText(scope: "read_diff"), .unsupportedScope("read_diff"))
-        assertParseFails(canonicalText(scope: ""), .unsupportedScope(""))
+        assertParseFails(canonicalText(scope: "read_diff"), .unsupportedScope)
+        assertParseFails(canonicalText(scope: ""), .unsupportedScope)
     }
 
     func testRejectsPastDeadlineAndTheExactExpiryEdge() throws {
@@ -151,6 +152,52 @@ final class EnrollmentPayloadTests: XCTestCase {
         XCTAssertFalse(payload.isExpired(now: payload.expiresTs - 1))
         XCTAssertTrue(payload.isExpired(now: payload.expiresTs))
         XCTAssertTrue(payload.isExpired(now: payload.expiresTs + 1))
+    }
+
+    /// Every channel a user, log, or crash report can read must be free of
+    /// pairing material: the localized description, the debug description,
+    /// and the reflection (the three channels this lane must check).
+    private func assertNoCodeEchoInAnyChannel(_ error: Error,
+                                              file: StaticString = #filePath,
+                                              line: UInt = #line) {
+        let channels = [error.localizedDescription,
+                        String(describing: error),
+                        String(reflecting: error)]
+        for channel in channels {
+            XCTAssertFalse(channel.contains(Self.syntheticCode),
+                           "error channel must not echo the redemption code: \(channel)",
+                           file: file, line: line)
+        }
+    }
+
+    /// Privacy regression: an attacker-controlled extra KEY can be a copy of
+    /// the redemption code. The error CATEGORY stays actionable, but no
+    /// channel may reflect the untrusted text.
+    func testExtraFieldErrorNeverReflectsUntrustedFieldText() {
+        let text = canonicalText().replacingOccurrences(
+            of: "\"scope\":\"read_tail\"}",
+            with: "\"scope\":\"read_tail\",\"\(Self.syntheticCode)\":\"x\"}")
+        XCTAssertThrowsError(try EnrollmentQRPayload.parse(text, now: Self.fixtureNow)) { error in
+            guard let payloadError = error as? EnrollmentPayloadError,
+                  case .extraField = payloadError else {
+                return XCTFail("expected the extraField category, got \(error)")
+            }
+            assertNoCodeEchoInAnyChannel(error)
+        }
+    }
+
+    /// Privacy regression: the scope VALUE is untrusted QR text and may be a
+    /// copy of the redemption code. The category stays actionable; the text
+    /// must not reflect it.
+    func testUnsupportedScopeErrorNeverReflectsUntrustedScopeText() {
+        let text = canonicalText(scope: Self.syntheticCode)
+        XCTAssertThrowsError(try EnrollmentQRPayload.parse(text, now: Self.fixtureNow)) { error in
+            guard let payloadError = error as? EnrollmentPayloadError,
+                  case .unsupportedScope = payloadError else {
+                return XCTFail("expected the unsupportedScope category, got \(error)")
+            }
+            assertNoCodeEchoInAnyChannel(error)
+        }
     }
 
     func testParseFailuresNeverEmbedTheRedemptionCode() {

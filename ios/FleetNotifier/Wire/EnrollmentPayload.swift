@@ -53,15 +53,20 @@ struct EnrollmentQRPayload: Equatable, Sendable {
 enum EnrollmentPayloadError: Error, Equatable, LocalizedError {
     /// The scanned text is not a JSON object at all.
     case malformedText
-    /// A required field is absent (named in canonical order).
+    /// A required field is absent (named from the frozen field list — never
+    /// from untrusted input).
     case missingField(String)
-    /// A field outside the frozen v1 set is present.
-    case extraField(String)
+    /// A field outside the frozen v1 set is present. Deliberately carries NO
+    /// payload: the field name is untrusted QR text and could be a copy of
+    /// the redemption code, so it is never retained or reflected.
+    case extraField
     /// Valid JSON object, but not the canonical producer text (field order,
     /// insignificant whitespace, duplicate keys, non-canonical numbers).
     case notCanonical
     case unsupportedVersion(Int)
-    case unsupportedScope(String)
+    /// The scope is not the frozen `read_tail`. Carries NO payload for the
+    /// same reason as `extraField`: the scope value is untrusted QR text.
+    case unsupportedScope
     /// The endpoint value itself is unusable (non-https, whitespace/control
     /// characters, unparseable, or over the producer's cap).
     case invalidEndpoint
@@ -76,14 +81,14 @@ enum EnrollmentPayloadError: Error, Equatable, LocalizedError {
             return "Not a Corral host code — the scanned text is not a JSON object."
         case .missingField(let field):
             return "Host code is missing the \(field) field."
-        case .extraField(let field):
-            return "Host code carries an unexpected \(field) field."
+        case .extraField:
+            return "Host code carries an unexpected field."
         case .notCanonical:
             return "Host code is not the canonical v1 enrollment payload."
         case .unsupportedVersion(let v):
             return "Unsupported host code version \(v)."
-        case .unsupportedScope(let scope):
-            return "Unsupported host code scope '\(scope.prefix(32))' — pairing is read-only."
+        case .unsupportedScope:
+            return "Unsupported host code scope — pairing is read-only."
         case .invalidEndpoint:
             return "Host code carries an unusable endpoint (https:// required)."
         case .invalidHostKey:
@@ -116,8 +121,8 @@ extension EnrollmentQRPayload {
         if let missing = canonicalFields.first(where: { !present.contains($0) }) {
             throw EnrollmentPayloadError.missingField(missing)
         }
-        if let extra = present.subtracting(Set(canonicalFields)).sorted().first {
-            throw EnrollmentPayloadError.extraField(extra)
+        if !present.subtracting(Set(canonicalFields)).isEmpty {
+            throw EnrollmentPayloadError.extraField
         }
         // Shape + order: the canonical producer text contains no whitespace
         // between tokens, no reordered fields, and no duplicate keys.
@@ -144,7 +149,7 @@ extension EnrollmentQRPayload {
             throw EnrollmentPayloadError.unsupportedVersion(version)
         }
         guard scope == readTailScope else {
-            throw EnrollmentPayloadError.unsupportedScope(scope)
+            throw EnrollmentPayloadError.unsupportedScope
         }
         guard isWellFormedEndpoint(endpoint) else {
             throw EnrollmentPayloadError.invalidEndpoint

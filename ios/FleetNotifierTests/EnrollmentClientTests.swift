@@ -348,6 +348,29 @@ final class EnrollmentClientTests: XCTestCase {
         XCTAssertEqual(EnrollmentFixtureURLProtocol.requests.count, 1)
     }
 
+    /// Privacy regression: the redeem/status `state` value is host-supplied
+    /// and could reflect the redemption code. The typed error keeps its
+    /// category but must redact the code on every channel.
+    func testUnexpectedStateNeverReflectsTheRedemptionCode() async throws {
+        script([statusURL: (200, Data(#"{"state":"\#(Self.syntheticCode)"}"#.utf8))])
+        do {
+            _ = try await client().status(code: Self.syntheticCode)
+            XCTFail("a state outside the frozen vocabulary must not decode")
+        } catch {
+            guard let clientError = error as? EnrollmentClientError,
+                  case .unexpectedState = clientError else {
+                return XCTFail("expected the unexpectedState category, got \(error)")
+            }
+            let channels = [error.localizedDescription,
+                            String(describing: error),
+                            String(reflecting: error)]
+            for channel in channels {
+                XCTAssertFalse(channel.contains(Self.syntheticCode),
+                               "error channel must not echo the redemption code: \(channel)")
+            }
+        }
+    }
+
     // MARK: - Source hygiene (no logging, clipboard, or persistence)
 
     func testEnrollmentSourcesCarryNoLoggingClipboardOrPersistenceCalls() throws {

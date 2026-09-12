@@ -81,7 +81,9 @@ enum EnrollmentClientError: Error, Equatable, LocalizedError {
     case server(status: Int, code: String, message: String)
     /// 200 with a body that is not the v1 shape this route promises.
     case malformedResponse(String)
-    /// 200 with a state outside the frozen vocabulary.
+    /// 200 with a state outside the frozen vocabulary. The state text is
+    /// host-supplied, so it is redacted (code removed, length capped) before
+    /// it is retained — never a raw echo.
     case unexpectedState(String)
 
     var errorDescription: String? {
@@ -135,7 +137,7 @@ struct EnrollmentClient: Sendable {
             throw EnrollmentClientError.malformedResponse("redeem response is not the v1 pending shape")
         }
         guard decoded.state == EnrollmentRedeemResponse.pendingState else {
-            throw EnrollmentClientError.unexpectedState(decoded.state)
+            throw EnrollmentClientError.unexpectedState(Self.redacted(decoded.state, code: code))
         }
         return decoded
     }
@@ -166,7 +168,7 @@ struct EnrollmentClient: Sendable {
                              expiryTs: expiryTs,
                              revoked: body.revoked ?? false)
         default:
-            throw EnrollmentClientError.unexpectedState(body.state)
+            throw EnrollmentClientError.unexpectedState(Self.redacted(body.state, code: code))
         }
     }
 
@@ -261,11 +263,19 @@ struct EnrollmentClient: Sendable {
     private static func serverError(status: Int, data: Data, code: String) -> EnrollmentClientError {
         let body = try? JSONDecoder().decode(EnrollmentErrorBody.self, from: data)
         let rawMessage = body?.error ?? String(data: data, encoding: .utf8) ?? "HTTP \(status)"
-        var message = rawMessage.replacingOccurrences(of: code, with: "<redacted>")
-        if message.count > maxEchoedMessageCharacters {
-            message = String(message.prefix(maxEchoedMessageCharacters)) + "…"
+        return .server(status: status, code: body?.code ?? "http_\(status)",
+                       message: redacted(rawMessage, code: code))
+    }
+
+    /// Secret-free echo of host-supplied text: the redemption code is
+    /// redacted and the result is capped, so a host that reflects the code
+    /// (in a message or a `state`) cannot leak it through any error channel.
+    private static func redacted(_ text: String, code: String) -> String {
+        var out = text.replacingOccurrences(of: code, with: "<redacted>")
+        if out.count > maxEchoedMessageCharacters {
+            out = String(out.prefix(maxEchoedMessageCharacters)) + "…"
         }
-        return .server(status: status, code: body?.code ?? "http_\(status)", message: message)
+        return out
     }
 }
 

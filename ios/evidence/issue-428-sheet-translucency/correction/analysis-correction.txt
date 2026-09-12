@@ -1,0 +1,46 @@
+# #428 correction — rendered-frame gate raw runs (transmission checks G5)
+# GREEN: candidate head frames (correction/ root) — RC 0
+[PASS] phase-416-5-settings-mocha-390x844.png form cells themed: dominant #1e1e2e ~= base (30, 30, 46)
+[PASS] phase-416-5-settings-mocha-390x844.png no system grouped surface: 0.3% (ceiling 3%)
+[PASS] phase-416-5-settings-mocha-390x844.png backdrop flavor cast: mean=(42,42,50) b-r=8.7 (floor 7)
+[SKIP] missing phase-416-6-settings-latte-390x844.png
+[SKIP] missing phase-416-6-settings-latte-390x844.png
+[PASS] phase-416-2-recents-mocha-390x844.png backdrop flavor cast: mean=(32,32,41) b-r=9.0 (floor 7)
+[PASS] phase-416-2-recents-mocha-390x844.png in-sheet background: mean=(32.0,32.0,41.0) vs base (30, 30, 46) max-delta=5.0 (expect translucent backdrop, not a paint fill)
+[PASS] phase-416-2-recents-mocha-390x844.png in-sheet background: mean=(32.0,32.0,41.0) vs base (30, 30, 46) max-delta=5.0 (expect translucent backdrop, not a paint fill)
+[PASS] phase-416-2-recents-mocha-390x844.png in-sheet background: mean=(31.6,31.7,40.1) vs base (30, 30, 46) max-delta=5.9 (expect translucent backdrop, not a paint fill)
+[PASS] phase-416-3-recents-latte-390x844.png backdrop latte lift: mean=(230,232,235) (floor 229, neutral hue)
+[PASS] phase-416-3-recents-latte-390x844.png in-sheet background: mean=(230.0,232.0,235.0) vs base (239, 241, 245) max-delta=10.0 (expect translucent backdrop, not a paint fill)
+[PASS] phase-416-3-recents-latte-390x844.png in-sheet background: mean=(230.0,231.7,236.0) vs base (239, 241, 245) max-delta=9.3 (expect translucent backdrop, not a paint fill)
+[PASS] phase-416-3-recents-latte-390x844.png in-sheet background: mean=(225.7,228.5,232.0) vs base (239, 241, 245) max-delta=13.3 (expect translucent backdrop, not a paint fill)
+[PASS] glass/fallback material A/B: backdrop delta=5.8 (floor 3)
+
+RESULT: 12/12 checks passed
+
+# CONTROL: masked frames via --mode=masked (correction/masked) — RC 0
+# (the same region checks must find the opaque base paint: the control bites)
+== masking-layer control (the same in-sheet transmission checks must find the opaque base paint) ==
+[PASS] phase-416-2-recents-mocha-390x844.png in-sheet background: mean=(30.0,30.0,46.0) vs base (30, 30, 46) max-delta=0.0 (expect opaque base paint (masking-layer control))
+[PASS] phase-416-2-recents-mocha-390x844.png in-sheet background: mean=(30.0,30.0,46.1) vs base (30, 30, 46) max-delta=0.1 (expect opaque base paint (masking-layer control))
+[PASS] phase-416-3-recents-latte-390x844.png in-sheet background: mean=(239.0,241.0,245.0) vs base (239, 241, 245) max-delta=0.0 (expect opaque base paint (masking-layer control))
+[PASS] phase-416-3-recents-latte-390x844.png in-sheet background: mean=(239.3,241.3,245.3) vs base (239, 241, 245) max-delta=0.3 (expect opaque base paint (masking-layer control))
+
+RESULT: 4/4 checks passed
+
+# RED: the masking-layer revert frames (correction/masked) under the
+# DEFAULT mode — RC 1. The SAME script and regions fail: the in-sheet
+# ring measures the base paint exactly (max-delta 0.0/0.1/0.3).
+[SKIP] missing phase-416-5-settings-mocha-390x844.png
+[SKIP] missing phase-416-5-settings-mocha-390x844.png
+[SKIP] missing phase-416-6-settings-latte-390x844.png
+[SKIP] missing phase-416-6-settings-latte-390x844.png
+[PASS] phase-416-2-recents-mocha-390x844.png backdrop flavor cast: mean=(32,32,42) b-r=10.6 (floor 7)
+[FAIL] phase-416-2-recents-mocha-390x844.png in-sheet background: mean=(31.5,31.5,42.2) vs base (30, 30, 46) max-delta=3.8 (expect translucent backdrop, not a paint fill)
+[FAIL] phase-416-2-recents-mocha-390x844.png in-sheet background: mean=(30.0,30.0,46.0) vs base (30, 30, 46) max-delta=0.0 (expect translucent backdrop, not a paint fill)
+[FAIL] phase-416-2-recents-mocha-390x844.png in-sheet background: mean=(30.0,30.0,46.1) vs base (30, 30, 46) max-delta=0.1 (expect translucent backdrop, not a paint fill)
+[PASS] phase-416-3-recents-latte-390x844.png backdrop latte lift: mean=(232,234,237) (floor 229, neutral hue)
+[PASS] phase-416-3-recents-latte-390x844.png in-sheet background: mean=(232.1,234.1,237.4) vs base (239, 241, 245) max-delta=7.6 (expect translucent backdrop, not a paint fill)
+[FAIL] phase-416-3-recents-latte-390x844.png in-sheet background: mean=(239.0,241.0,245.0) vs base (239, 241, 245) max-delta=0.0 (expect translucent backdrop, not a paint fill)
+[FAIL] phase-416-3-recents-latte-390x844.png in-sheet background: mean=(239.3,241.3,245.3) vs base (239, 241, 245) max-delta=0.3 (expect translucent backdrop, not a paint fill)
+
+RESULT: 3/8 checks passed

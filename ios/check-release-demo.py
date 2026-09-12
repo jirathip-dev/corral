@@ -424,14 +424,19 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # manifest/app-tree membership in both directions independently of this
     # digest; the pin below is recomputed from THIS union checkout
     # (#451/#452/#453 merged, 71775c0); no parent pin applies.
+    # #491: owner-adaptive Herd summary fit ladder (HerdView.swift) —
+    # re-pinned over the #459 integration tree; the test digest was
+    # recomputed unchanged (FleetNotifierTests.swift untouched).
     # #487: notifications are explicit opt-in — AppModel (an absent opt-in
     # key is never consent; the startLive automatic prompt/APNs registration
     # is removed; explicit registration only through the injectable seam from
     # applyNotificationsEnabled) and the FleetViews step-5 copy are Release
-    # app source. Re-pinned over THIS merged checkout (#487 merged with the
-    # #506/#478-lexer integration, 648cfca); the #471B parent pin (94172201…)
-    # does not apply.
-    "778df7bc2afe7341670f8793682ad7731c242820478b5ee003c0c20b3d50078d"
+    # app source.
+    # #487 ∪ #491 union refresh: both Release-source deltas now live in one
+    # checkout (#491's HerdView merge a6fa6dd unioned into the #487 branch
+    # 9f525af) — the pin below is recomputed from THIS union checkout by the
+    # canonical algorithm; neither parent pin (0dad5c34…, 778df7bc…) applies.
+    "ab0e0234e42a4182d145d0fb905b53b165ee6824c56862285cc6801d0420ce19"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

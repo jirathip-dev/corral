@@ -436,7 +436,10 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # checkout (#491's HerdView merge a6fa6dd unioned into the #487 branch
     # 9f525af) — the pin below is recomputed from THIS union checkout by the
     # canonical algorithm; neither parent pin (0dad5c34…, 778df7bc…) applies.
-    "ab0e0234e42a4182d145d0fb905b53b165ee6824c56862285cc6801d0420ce19"
+    # #486: enrollment QR privacy module — two Wire sources
+    # (EnrollmentClient/EnrollmentPayload) added to the Release source set;
+    # digest re-pinned by the canonical algorithm over this checkout.
+    "c9d4465fa7866078883dee68e8d36806ae30b3f2d8dd6693e3dfd13c49b91678"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

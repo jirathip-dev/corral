@@ -494,6 +494,8 @@
 				"$(SRCROOT)/FleetNotifier/UI/TimeInState.swift",
 				"$(SRCROOT)/FleetNotifier/Wire/CanonicalJSON.swift",
 				"$(SRCROOT)/FleetNotifier/Wire/DriveClient.swift",
+				"$(SRCROOT)/FleetNotifier/Wire/EnrollmentClient.swift",
+				"$(SRCROOT)/FleetNotifier/Wire/EnrollmentPayload.swift",
 				"$(SRCROOT)/embed-release-source-digest.py",
 				"$(SRCROOT)/release_source_manifest.py",
 			);

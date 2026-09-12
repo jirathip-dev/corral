@@ -1,5 +1,6 @@
 import CryptoKit
 import Combine
+import SwiftUI
 import XCTest
 @testable import FleetNotifier
 
@@ -4824,6 +4825,15 @@ private final class HostSwitchURLProtocol: URLProtocol {
         lock.lock()
         scriptStorage = script
         requestsStorage = []
+        lock.unlock()
+    }
+
+    /// #453: replace the script WITHOUT clearing the recorded request log —
+    /// a mid-test reachability flip must not wipe the counts assertions
+    /// already rely on.
+    static func updateScript(_ script: [URL: (statusCode: Int, body: Data, holdOpen: Bool)]) {
+        lock.lock()
+        scriptStorage = script
         lock.unlock()
     }
 
@@ -11850,5 +11860,463 @@ final class LocalNotifierTapDeliveryTests: XCTestCase {
         notifier.deliverTap(agentId: "b2", hostId: nil)
         XCTAssertEqual(recorder.taps.map(\.agentId), ["b1", "b2"])
         XCTAssertNil(recorder.taps[1].hostId)
+    }
+}
+
+// MARK: - #453 scene-phase lifecycle: transient inactive vs actual background
+
+/// Regression for #453. The scene handler at the unfixed head treats
+/// `.inactive` and `.background` identically (`model.stopLive()`), so a
+/// transient system interruption — Control Center, a notification banner,
+/// the app switcher, a system alert — tears down a healthy foreground SSE
+/// feed, and returning to the foreground pays a full reconnect (a new
+/// `/host-key` re-verification + a new `/events` attempt per host).
+/// The fix routes EVERY scene phase through one model seam
+/// (`AppModel.handleScenePhaseChange`): `.inactive` is inert — the live
+/// session, its SSE tasks, cursors and board state are retained — only an
+/// actual `.background` ends the session (cancelling the ACTIVE host's
+/// stream + preflight/retry ladder and every coordinator host's stream,
+/// persisting cursors/metadata for resume), and a return to `.active`
+/// re-verifies pinned hosts and starts EXACTLY one owner per host. These
+/// tests drive the production seam with deterministic phase sequences; the
+/// final wiring pin proves FleetNotifierApp routes through exactly it.
+@MainActor
+final class ScenePhaseLifecycleTests: XCTestCase {
+    private var suiteName = ""
+    private var model: AppModel?
+    private var session: URLSession?
+    private var store: HostProfileStore?
+
+    // SAFETY: fixed valid 32-byte X25519 public-key fixtures.
+    static let hostAKey = Data(repeating: 31, count: 32).base64EncodedString()
+    // SAFETY: fixed valid 32-byte X25519 public-key fixtures.
+    static let hostBKey = Data(repeating: 32, count: 32).base64EncodedString()
+    // SAFETY: fixed valid fixture URLs under distinct hostnames.
+    private let urlA = URL(string: "https://h453-scene-a.example")!
+    // SAFETY: fixed valid fixture URLs under distinct hostnames.
+    private let urlB = URL(string: "https://h453-scene-b.example")!
+    private var hostKeyA: URL { urlA.appendingPathComponent("/host-key") }
+    private var hostKeyB: URL { urlB.appendingPathComponent("/host-key") }
+    private var eventsA: URL { urlA.appendingPathComponent("/events") }
+    private var eventsB: URL { urlB.appendingPathComponent("/events") }
+
+    private func cleanup() {
+        model?.stopLive()
+        model = nil
+        store = nil
+        session?.invalidateAndCancel()
+        session = nil
+        AppDelegate.apnsRegistered = false
+        UserDefaults.standard.removeObject(forKey: AppDelegate.deviceTokenUploadedKey)
+        AppDelegate.shared?.clearRetainedDeviceToken()
+        KeyContinuityGate.reset()
+        HostSwitchURLProtocol.clearScript()
+        if !suiteName.isEmpty {
+            // SAFETY: suiteName was freshly minted per test.
+            UserDefaults(suiteName: suiteName)!.removePersistentDomain(forName: suiteName)
+            suiteName = ""
+        }
+    }
+
+    private func settle(_ seconds: TimeInterval) async {
+        try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+    }
+
+    private func waitUntil(_ condition: @autoclosure () -> Bool,
+                           timeout: TimeInterval = 5) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+    }
+
+    private func requestCount(_ url: URL) -> Int {
+        HostSwitchURLProtocol.requests.filter { $0.url?.absoluteString == url.absoluteString }.count
+    }
+
+    private func lastEventIDHeader(_ url: URL) -> String? {
+        HostSwitchURLProtocol.requests
+            .filter { $0.url?.absoluteString == url.absoluteString }
+            .last?.value(forHTTPHeaderField: "Last-Event-ID")
+    }
+
+    private func hostKeyBody(_ key: String) -> Data {
+        // SAFETY: fixed fixture JSON from the fixture key.
+        Data(#"{"algorithm":"X25519","public_key":"\#(key)"}"#.utf8)
+    }
+
+    private func agent453(_ id: String, state: AgentState, host: String, ts: UInt64) -> Agent {
+        Agent(agentId: id, state: state, ts: ts,
+              capabilities: ["read_tail"], host: host,
+              workspace: Workspace(repo: "corral", branch: "main"))
+    }
+
+    private func scriptedSession(_ script: [URL: (Int, Data, Bool)]) -> URLSession {
+        HostSwitchURLProtocol.setScript(script)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [HostSwitchURLProtocol.self]
+        return URLSession(configuration: config)
+    }
+
+    /// Two pinned live hosts: A = ACTIVE (Mac), B = coordinator (Bazzite).
+    /// Both answer `/host-key` with their own pinned key and hold `/events`
+    /// open like a real idle daemon; returns once both streams are live.
+    private func makeTwoHostModel() async -> (AppModel, HostProfile, HostProfile) {
+        suiteName = "corral.h453.scene.\(UUID().uuidString)"
+        // SAFETY: a fresh UUID suite name is always a valid suite.
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let store = HostProfileStore(directory: nil, defaults: defaults)
+        self.store = store
+        // SAFETY: fixed fixture profiles built from this test's own constants.
+        let profileA = try! store.addProfile(displayName: "Mac",
+                                             urlString: urlA.absoluteString,
+                                             hostKeyB64: Self.hostAKey,
+                                             fingerprint: "FINGER",
+                                             keyId: "dev_h453_a",
+                                             grants: ["read_tail"],
+                                             expiryTs: 1_800_000_000,
+                                             registeredAt: 1)
+        // SAFETY: fixed fixture profiles built from this test's own constants.
+        let profileB = try! store.addProfile(displayName: "Bazzite",
+                                             urlString: urlB.absoluteString,
+                                             hostKeyB64: Self.hostBKey,
+                                             fingerprint: "FINGER",
+                                             keyId: "dev_h453_b",
+                                             grants: ["read_tail"],
+                                             expiryTs: 1_800_000_000,
+                                             registeredAt: 1)
+        defaults.set(profileA.id.uuidString, forKey: "fleetnotifier.activeHostProfileID")
+        let session = scriptedSession([
+            hostKeyA: (200, hostKeyBody(Self.hostAKey), false),
+            hostKeyB: (200, hostKeyBody(Self.hostBKey), false),
+            eventsA: (200, Data(), true),
+            eventsB: (200, Data(), true),
+        ])
+        self.session = session
+        let model = AppModel(session: session, defaults: defaults,
+                             identityLoader: {
+                                 (DeviceSigner(key: Curve25519.Signing.PrivateKey()),
+                                  .insecureFallback)
+                             },
+                             loadMeta: { nil }, saveMeta: { _ in }, wipeIdentity: {},
+                             profileStore: store)
+        self.model = model
+        model.startLive()
+        await waitUntil(model.keyContinuityState == .verified)
+        // SAFETY: the coordinator exists for any profile-store fixture; failure is a harness bug.
+        let coordinator = try! XCTUnwrap(model.coordinator)
+        await waitUntil(coordinator.allowsLiveWork(profileID: profileB.id))
+        await waitUntil(requestCount(eventsA) >= 1 && requestCount(eventsB) >= 1)
+        return (model, profileA, profileB)
+    }
+
+    /// One pinned ACTIVE host with a caller-supplied script (mismatch /
+    /// unreachable ladder fixtures). Not started — the test drives it.
+    private func makeSingleHostModel(script: [URL: (Int, Data, Bool)],
+                                     policy: HostPreflightRetryPolicy = .default) -> (AppModel, HostProfile) {
+        suiteName = "corral.h453.scene-single.\(UUID().uuidString)"
+        // SAFETY: a fresh UUID suite name is always a valid suite.
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let store = HostProfileStore(directory: nil, defaults: defaults)
+        self.store = store
+        // SAFETY: fixed fixture profile built from this test's own constants.
+        let profileA = try! store.addProfile(displayName: "Mac",
+                                             urlString: urlA.absoluteString,
+                                             hostKeyB64: Self.hostAKey,
+                                             fingerprint: "FINGER",
+                                             keyId: "dev_h453_single",
+                                             grants: ["read_tail"],
+                                             expiryTs: 1_800_000_000,
+                                             registeredAt: 1)
+        defaults.set(profileA.id.uuidString, forKey: "fleetnotifier.activeHostProfileID")
+        let session = scriptedSession(script)
+        self.session = session
+        let model = AppModel(session: session, defaults: defaults,
+                             identityLoader: {
+                                 (DeviceSigner(key: Curve25519.Signing.PrivateKey()),
+                                  .insecureFallback)
+                             },
+                             loadMeta: { nil }, saveMeta: { _ in }, wipeIdentity: {},
+                             profileStore: store, preflightRetryPolicy: policy)
+        self.model = model
+        return (model, profileA)
+    }
+
+    /// AC1: a healthy live session (ACTIVE + coordinator hosts) survives a
+    /// deterministic active -> inactive -> active sequence, twice: the SSE
+    /// tasks are NOT replaced, the cursors and board state stay coherent.
+    /// At the unfixed head the first `.inactive` tears every stream down
+    /// (`stopLive()`), so the retained-stream/count assertions go RED.
+    func testTransientInactiveRetainsHealthyStreamsAndCursorAcrossInactiveActive() async {
+        defer { cleanup() }
+        let (model, profileA, profileB) = await makeTwoHostModel()
+        // SAFETY: fixture invariants (makeTwoHostModel); failure is a harness bug.
+        let coordinator = try! XCTUnwrap(model.coordinator)
+        // SAFETY: fixture invariants (makeTwoHostModel); failure is a harness bug.
+        let storeB = try! XCTUnwrap(coordinator.store(profileID: profileB.id))
+        // Seed coherent state on both read models: A rev 5, B rev 7.
+        model.fleet.apply(.snapshot(Snapshot(
+            schemaVersion: 5, rev: 5, generatedAt: 0,
+            agents: ["herdr:a": agent453("herdr:a", state: .working,
+                                         host: Self.hostAKey, ts: 5)])))
+        storeB.apply(.snapshot(Snapshot(
+            schemaVersion: 5, rev: 7, generatedAt: 0,
+            agents: ["herdr:a": agent453("herdr:a", state: .blocked,
+                                         host: Self.hostBKey, ts: 7)])))
+        XCTAssertTrue(model.fleet.isStreaming)
+        XCTAssertTrue(storeB.isStreaming)
+        XCTAssertEqual(requestCount(eventsA), 1)
+        XCTAssertEqual(requestCount(eventsB), 1)
+
+        for cycle in 0..<2 {
+            model.handleScenePhaseChange(.inactive)
+            // Give any wrong "reconnect" work a generous window to appear.
+            await settle(0.25)
+            XCTAssertTrue(model.fleet.isStreaming,
+                          "cycle \(cycle): a transient inactive scene must not tear down the ACTIVE host's healthy stream (#453)")
+            XCTAssertTrue(storeB.isStreaming,
+                          "cycle \(cycle): ... nor a coordinator host's stream (#453)")
+            XCTAssertEqual(model.fleet.connectionState, .connected)
+            XCTAssertEqual(storeB.connectionState, .connected)
+            XCTAssertEqual(requestCount(eventsA), 1,
+                           "cycle \(cycle): inactive must not replace the healthy SSE task (#453)")
+            XCTAssertEqual(requestCount(eventsB), 1)
+            XCTAssertEqual(model.fleet.lastEventId, 5,
+                           "cycle \(cycle): the ACTIVE host's cursor must stay coherent")
+            XCTAssertEqual(storeB.lastEventId, 7)
+
+            model.handleScenePhaseChange(.active)
+            await settle(0.25)
+            XCTAssertTrue(model.fleet.isStreaming)
+            XCTAssertEqual(requestCount(eventsA), 1,
+                           "cycle \(cycle): returning to active while healthy starts no replacement — exactly one owner (#453)")
+            XCTAssertEqual(requestCount(eventsB), 1)
+            XCTAssertEqual(model.fleet.lastEventId, 5)
+            XCTAssertEqual(storeB.lastEventId, 7)
+            XCTAssertEqual(model.fleet.connectionState, .connected)
+        }
+    }
+
+    /// AC2: an actual background promptly cancels EVERY host's stream (the
+    /// active host's and each coordinator host's), resets the pinned-host
+    /// continuity boundary (the preflight/retry owner is gone; the next
+    /// foreground must re-verify), and persists the cursors for resume.
+    func testActualBackgroundCancelsEveryHostStreamAndPersistsCursors() async {
+        defer { cleanup() }
+        let (model, profileA, profileB) = await makeTwoHostModel()
+        // SAFETY: fixture invariants (makeTwoHostModel); failure is a harness bug.
+        let store = try! XCTUnwrap(self.store)
+        // SAFETY: fixture invariants (makeTwoHostModel); failure is a harness bug.
+        let coordinator = try! XCTUnwrap(model.coordinator)
+        // SAFETY: fixture invariants (makeTwoHostModel); failure is a harness bug.
+        let storeB = try! XCTUnwrap(coordinator.store(profileID: profileB.id))
+        model.fleet.apply(.snapshot(Snapshot(
+            schemaVersion: 5, rev: 5, generatedAt: 0,
+            agents: ["herdr:a": agent453("herdr:a", state: .working,
+                                         host: Self.hostAKey, ts: 5)])))
+        storeB.apply(.snapshot(Snapshot(
+            schemaVersion: 5, rev: 7, generatedAt: 0,
+            agents: ["herdr:a": agent453("herdr:a", state: .blocked,
+                                         host: Self.hostBKey, ts: 7)])))
+
+        model.handleScenePhaseChange(.background)
+
+        XCTAssertFalse(model.fleet.isStreaming,
+                       "actual background must cancel the ACTIVE host's stream (#453)")
+        XCTAssertEqual(model.fleet.connectionState, .disconnected)
+        XCTAssertFalse(storeB.isStreaming,
+                       "actual background must cancel every coordinator host's stream (#453)")
+        XCTAssertEqual(storeB.connectionState, .disconnected)
+        XCTAssertEqual(model.keyContinuityState, .pending,
+                       "the pinned-host continuity boundary must re-arm for the next foreground")
+        XCTAssertEqual(store.cursor(for: profileA.id), 5,
+                       "the ACTIVE host's revision must persist for resume (#453)")
+        XCTAssertEqual(store.cursor(for: profileB.id), 7,
+                       "each coordinator host's revision must persist for resume (#453)")
+
+        // Nothing may replace a stream while backgrounded.
+        await settle(0.3)
+        XCTAssertEqual(requestCount(eventsA), 1)
+        XCTAssertEqual(requestCount(eventsB), 1)
+    }
+
+    /// AC3: returning to active starts EXACTLY one owner per eligible host —
+    /// a fresh `/host-key` re-verification for each pinned host, one
+    /// `/events` replacement per host, cursors resumed via `Last-Event-ID`,
+    /// and no stacking afterwards.
+    func testReturnToActiveReVerifiesPinnedKeysAndStartsExactlyOneOwnerPerHost() async {
+        defer { cleanup() }
+        let (model, profileA, profileB) = await makeTwoHostModel()
+        // SAFETY: fixture invariants (makeTwoHostModel); failure is a harness bug.
+        let coordinator = try! XCTUnwrap(model.coordinator)
+        // SAFETY: fixture invariants (makeTwoHostModel); failure is a harness bug.
+        let storeB = try! XCTUnwrap(coordinator.store(profileID: profileB.id))
+        model.fleet.apply(.snapshot(Snapshot(
+            schemaVersion: 5, rev: 5, generatedAt: 0,
+            agents: ["herdr:a": agent453("herdr:a", state: .working,
+                                         host: Self.hostAKey, ts: 5)])))
+        storeB.apply(.snapshot(Snapshot(
+            schemaVersion: 5, rev: 7, generatedAt: 0,
+            agents: ["herdr:a": agent453("herdr:a", state: .blocked,
+                                         host: Self.hostBKey, ts: 7)])))
+        await waitUntil(requestCount(hostKeyA) == 1 && requestCount(hostKeyB) == 1)
+
+        model.handleScenePhaseChange(.background)
+        XCTAssertFalse(model.fleet.isStreaming)
+        XCTAssertFalse(storeB.isStreaming)
+
+        model.handleScenePhaseChange(.active)
+
+        // Trust checks re-run for BOTH pinned hosts on the way back.
+        await waitUntil(requestCount(hostKeyA) == 2 && requestCount(hostKeyB) == 2, timeout: 8)
+        // Exactly one replacement stream per host, resuming from the
+        // persisted revisions.
+        await waitUntil(requestCount(eventsA) == 2 && requestCount(eventsB) == 2, timeout: 8)
+        await settle(0.5)
+        XCTAssertEqual(requestCount(eventsA), 2,
+                       "exactly one owner after the foreground — no stacked reconnect (#453)")
+        XCTAssertEqual(requestCount(eventsB), 2)
+        XCTAssertEqual(requestCount(hostKeyA), 2,
+                       "exactly one re-verification per host — no duplicate preflight ladder (#453)")
+        XCTAssertEqual(requestCount(hostKeyB), 2)
+        XCTAssertEqual(lastEventIDHeader(eventsA), "5",
+                       "the replacement stream must resume from the persisted ACTIVE cursor")
+        XCTAssertEqual(lastEventIDHeader(eventsB), "7",
+                       "the coordinator's replacement stream must resume from ITS OWN cursor")
+        XCTAssertEqual(model.keyContinuityState, .verified)
+        XCTAssertTrue(coordinator.allowsLiveWork(profileID: profileB.id))
+        XCTAssertTrue(model.fleet.isStreaming)
+        XCTAssertTrue(storeB.isStreaming)
+        XCTAssertEqual(model.fleet.connectionState, .connected)
+        XCTAssertEqual(storeB.connectionState, .connected)
+    }
+
+    /// AC2/AC3 (preflight owner): an unreachable pinned host retries on the
+    /// single bounded ladder; an actual background CANCELS that owner (no
+    /// further `/host-key` attempts), and the return to active restarts
+    /// EXACTLY one ladder — which verifies and opens exactly one stream.
+    func testBackgroundCancelsTheActivePreflightLadderAndReturnStartsOneOwner() async {
+        defer { cleanup() }
+        // Fast ladder so the retry cadence fits the test.
+        let policy = HostPreflightRetryPolicy(baseInterval: 0.2, maxInterval: 0.4)
+        let (model, _) = makeSingleHostModel(
+            script: [hostKeyA: (500, Data("down".utf8), false)],
+            policy: policy)
+        model.startLive()
+        // The pinned host cannot verify: NO stream may open while the
+        // ladder retries at its bounded rate.
+        await waitUntil(requestCount(hostKeyA) >= 2, timeout: 6)
+        XCTAssertEqual(requestCount(eventsA), 0,
+                       "an unverified pinned host must never open a stream (#451 B4)")
+
+        model.handleScenePhaseChange(.background)
+        await settle(0.5)  // drain any in-flight attempt; let the cancel land
+        let drainedAttempts = requestCount(hostKeyA)
+        await settle(1.2)  // > two retry windows at the 0.2–0.4 s cadence
+        XCTAssertEqual(requestCount(hostKeyA), drainedAttempts,
+                       "actual background must cancel the preflight/retry owner — no further attempts (#453/#451)")
+
+        // The host becomes reachable; the foreground restart re-verifies
+        // once and opens exactly one stream.
+        HostSwitchURLProtocol.updateScript([
+            hostKeyA: (200, hostKeyBody(Self.hostAKey), false),
+            eventsA: (200, Data(), true),
+        ])
+        model.handleScenePhaseChange(.active)
+        await waitUntil(model.keyContinuityState == .verified, timeout: 6)
+        await waitUntil(requestCount(eventsA) >= 1, timeout: 6)
+        await settle(0.5)
+        XCTAssertEqual(requestCount(eventsA), 1,
+                       "exactly one stream owner after the foreground re-verification (#453)")
+        XCTAssertEqual(requestCount(hostKeyA), drainedAttempts + 1,
+                       "exactly one re-verification ladder on return for the ACTIVE host (#453)")
+        XCTAssertTrue(model.fleet.isStreaming)
+        XCTAssertEqual(model.fleet.connectionState, .connected)
+    }
+
+    /// AC4: the scene lifecycle never bypasses a failed-closed key mismatch.
+    /// A pinned host presenting a DIFFERENT key stays terminal (no stream,
+    /// no further `/host-key` polls) across an inactive→active cycle.
+    func testSceneLifecycleNeverBypassesFailedClosedKeyMismatch() async {
+        defer { cleanup() }
+        // The host answers /host-key with a different X25519 key than the
+        // one this profile pinned — a mismatch that must fail closed.
+        // SAFETY: fixed fixture bytes (a wrong key is the point of this test).
+        let wrongKey = Data(repeating: 33, count: 32).base64EncodedString()
+        let (model, _) = makeSingleHostModel(
+            script: [hostKeyA: (200, hostKeyBody(wrongKey), false)])
+        model.startLive()
+        await waitUntil(model.keyContinuityState == .mismatch)
+        XCTAssertEqual(requestCount(eventsA), 0,
+                       "a mismatched pinned host must never open a stream (#399 B4)")
+        XCTAssertEqual(requestCount(hostKeyA), 1,
+                       "a key mismatch is terminal — never re-polled (#451)")
+
+        model.handleScenePhaseChange(.inactive)
+        model.handleScenePhaseChange(.active)
+        await settle(0.4)
+        XCTAssertEqual(model.keyContinuityState, .mismatch,
+                       "the fail-closed posture must survive the scene cycle (#453)")
+        XCTAssertEqual(model.banner?.kind, "host_key_mismatch",
+                       "the truthful mismatch guidance must stay up")
+        XCTAssertEqual(requestCount(eventsA), 0,
+                       "returning to active must never bypass the trust check (#453)")
+        XCTAssertEqual(requestCount(hostKeyA), 1,
+                       "a mismatch must not be re-polled by a scene change (#451 terminal)")
+        XCTAssertFalse(model.fleet.isStreaming)
+    }
+
+    /// AC4: tearing down while the scene is transiently inactive still
+    /// works — removing a host during `.inactive` cancels ONLY its session,
+    /// and a later `.active` never resurrects it.
+    func testHostRemovalDuringTransientInactiveStillTearsDownAndNeverResurrects() async {
+        defer { cleanup() }
+        let (model, profileA, profileB) = await makeTwoHostModel()
+        // SAFETY: fixture invariants (makeTwoHostModel); failure is a harness bug.
+        let store = try! XCTUnwrap(self.store)
+
+        model.handleScenePhaseChange(.inactive)
+        model.removeHost(profileID: profileB.id)
+        XCTAssertNil(store.profile(id: profileB.id), "the removed host's profile must be gone")
+        XCTAssertNil(model.coordinator?.store(profileID: profileB.id),
+                     "E3: the removed host's session must be torn down")
+
+        model.handleScenePhaseChange(.active)
+        await settle(0.5)
+        XCTAssertNil(store.profile(id: profileB.id))
+        XCTAssertEqual(requestCount(eventsB), 1,
+                       "a removed host must never be reconnected by a scene change (#453)")
+        XCTAssertNil(model.coordinator?.store(profileID: profileB.id))
+        XCTAssertTrue(model.fleet.isStreaming,
+                      "the surviving ACTIVE host keeps its healthy stream")
+        XCTAssertEqual(requestCount(eventsA), 1)
+        XCTAssertEqual(model.fleet.lastEventId, nil)
+    }
+
+    /// The wiring pin: the production scene handler in FleetNotifierApp must
+    /// route EVERY phase through the single model seam — a revert to the
+    /// unfixed split (`.inactive` tearing the session down in the view)
+    /// makes this test RED.
+    func testFleetNotifierAppRoutesScenePhaseThroughTheModelSeam() throws {
+        let bundle = Bundle(for: ScenePhaseLifecycleTests.self)
+        let url = try XCTUnwrap(bundle.url(forResource: "FleetNotifierApp",
+                                           withExtension: "swift.txt"),
+                                "FleetNotifierApp.swift must ride the test bundle for the wiring pin")
+        let source = try String(contentsOf: url, encoding: .utf8)
+
+        XCTAssertEqual(source.components(separatedBy: ".onChange(of: scenePhase)").count - 1, 1,
+                       "the scene owner must have exactly one scenePhase handler")
+        let handlerPattern = #"\.onChange\(of: scenePhase\)[^}]*}"#
+        let match = try XCTUnwrap(source.range(of: handlerPattern, options: .regularExpression),
+                                  "the scenePhase handler must be one closure block")
+        let handler = String(source[match])
+        XCTAssertTrue(handler.contains("model.handleScenePhaseChange(phase)"),
+                      "the scene handler must route EVERY phase through AppModel.handleScenePhaseChange")
+        XCTAssertEqual(source.components(separatedBy: "model.handleScenePhaseChange(phase)").count - 1, 1,
+                       "exactly one seam call site — no duplicate scene routing")
+        XCTAssertFalse(handler.contains("stopLive"),
+                       "the view must not own the inactive/background split (#453)")
+        XCTAssertFalse(source.contains("stopLive"),
+                       "no scene-phase teardown may live in the view — the split is model-owned (#453)")
     }
 }

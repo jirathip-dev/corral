@@ -162,6 +162,61 @@ enum HostBoardProjection {
     }
 }
 
+/// #451: bounded RATE policy for a host's `/host-key` preflight ladder.
+///
+/// One ladder runs per host and per path (never two — see
+/// `HostStreamCoordinator.startSessionIfNeeded` and
+/// `AppModel.beginKeyContinuityCheck`). The delay before each retry grows
+/// geometrically from `baseInterval` up to `maxInterval` and then SATURATES:
+/// while the ladder is owned (app in the foreground, host not removed), an
+/// unreachable host keeps being retried at the capped cadence — so an
+/// initially offline host becomes live automatically WHEN it becomes
+/// reachable, not merely inside a fixed attempt window. What is bounded is
+/// the RATE (at most one `/host-key` attempt per `baseInterval`, never
+/// further apart than `maxInterval`, saturating/overflow-free delay math),
+/// never a finite availability window. Cancellation (background, host
+/// removal) and a key MISMATCH stay terminal — a mismatch is never retried
+/// or repaired. Jitter and any stable-session reset policy belong to #452.
+struct HostPreflightRetryPolicy: Equatable, Sendable {
+    /// Delay before attempt 2; every following delay doubles up to
+    /// `maxInterval` and then stays there.
+    var baseInterval: TimeInterval
+    /// Ceiling for the retry spacing — the steady-state cadence of a host
+    /// that stays unreachable while the ladder is still owned.
+    var maxInterval: TimeInterval
+
+    /// Production ladder: 3 s, doubling to a 30 s steady-state cadence
+    /// (attempts at roughly 0 s, 3 s, 9 s, 21 s, 45 s, 75 s … then every
+    /// 30 s while the ladder stays owned). A host that becomes reachable at
+    /// ANY later point in the foreground session recovers with no
+    /// foreground/manual retry/restart; backgrounding or removing the host
+    /// ends the retries.
+    static let `default` = HostPreflightRetryPolicy(baseInterval: 3,
+                                                    maxInterval: 30)
+
+    /// Delay before attempt number `nextAttempt` (1-based — attempt 1 runs
+    /// immediately). Monotonically non-decreasing and saturated at
+    /// `maxInterval`; computed iteratively so an unbounded attempt number
+    /// can never overflow or busy-loop the computation.
+    func delay(beforeAttempt nextAttempt: Int) -> TimeInterval {
+        guard nextAttempt > 1 else { return 0 }
+        var delay = baseInterval
+        var attempt = 2
+        while attempt < nextAttempt, delay < maxInterval {
+            delay = min(delay * 2, maxInterval)
+            attempt += 1
+        }
+        return min(delay, maxInterval)
+    }
+
+    /// The sleep interval for one ladder step, clamped so the nanoseconds
+    /// conversion can never trap (`Task.sleep` takes `UInt64`).
+    func delayNanoseconds(beforeAttempt nextAttempt: Int) -> UInt64 {
+        let seconds = max(0, min(delay(beforeAttempt: nextAttempt), 86_400))
+        return UInt64(seconds * 1_000_000_000)
+    }
+}
+
 /// Per-host stream coordinator (C3/C4/C6/C7/E3): one independent revision,
 /// cursor, connection generation, retry ladder, error, and task set per
 /// host profile. Every profile owns a dedicated `FleetStore` whose raw
@@ -196,6 +251,10 @@ final class HostStreamCoordinator: ObservableObject {
         /// posture for #401/tests.
         fileprivate(set) var posture: KeyPosture = .unpinned
         var continuityTask: Task<Void, Never>?
+        /// #451: monotonic ladder identity. A finishing preflight ladder
+        /// clears the task handle it OWNS only — a background stop plus a
+        /// foreground re-arm may already have installed a successor.
+        var continuityGeneration = 0
         /// The host's in-flight pull-refresh task (per-host task set; its
         /// outcome is a String? failure reason).
         var refreshTask: Task<String?, Never>?
@@ -218,6 +277,9 @@ final class HostStreamCoordinator: ObservableObject {
     private let defaults: UserDefaults
     private let urlSession: URLSession
     private let profileStore: HostProfileStore?
+    /// #451: pacing/attempt bound for every per-host preflight ladder.
+    /// Injectable so tests run the SAME ladder semantics at tiny intervals.
+    private let preflightPolicy: HostPreflightRetryPolicy
     private let signerProvider: @MainActor () -> DeviceSigner?
     /// The profile whose stream AppModel owns directly (nil = this
     /// coordinator manages every profile — used by standalone tests).
@@ -244,10 +306,12 @@ final class HostStreamCoordinator: ObservableObject {
     init(defaults: UserDefaults = .standard,
          session: URLSession = .shared,
          profileStore: HostProfileStore? = nil,
+         preflightPolicy: HostPreflightRetryPolicy = .default,
          signerProvider: @escaping @MainActor () -> DeviceSigner? = { nil }) {
         self.defaults = defaults
         self.urlSession = session
         self.profileStore = profileStore
+        self.preflightPolicy = preflightPolicy
         self.signerProvider = signerProvider
     }
 
@@ -297,11 +361,19 @@ final class HostStreamCoordinator: ObservableObject {
     /// repeated startLive() calls are no-ops per host). A PINNED host must
     /// re-verify `/host-key` before its stream opens (B4 fail-closed); an
     /// unpinned legacy host opens directly (parity with the active flow).
+    /// #451: a transient preflight failure (unreachable/timeout/server
+    /// error) retries at a bounded RATE — a cancellable ladder that lives
+    /// inside THIS session's single continuity task, so ownership,
+    /// cancellation (background/removal) and re-verification all stay
+    /// one-per-host, and a host that becomes reachable at any later point
+    /// while the ladder is owned recovers automatically. A key MISMATCH
+    /// stays terminal — never re-polled, never repaired.
     func startSessionIfNeeded(_ profile: HostProfile) {
         guard profile.id != activeProfileID, profile.mayConnect,
               let session = sessions[profile.id] else { return }
         if session.store.isStreaming { return }
         if session.continuityTask != nil { return }
+        guard session.posture != .mismatch else { return }
         guard let url = URL(string: profile.urlString) else { return }
         let client = CorraldClient(host: url, session: urlSession)
         guard let pinned = profile.hostKeyB64 else {
@@ -310,31 +382,59 @@ final class HostStreamCoordinator: ObservableObject {
             return
         }
         session.posture = .verifying
+        session.continuityGeneration += 1
+        let ladder = session.continuityGeneration
         session.continuityTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            defer { session.continuityTask = nil }
-            guard let session = self.sessions[profile.id],
-                  !Task.isCancelled else { return }
-            do {
-                let response = try await client.fetchHostKey()
-                guard !Task.isCancelled,
-                      self.sessions[profile.id] === session else { return }
-                if HostKeyTrust.matches(response, pinnedKeyB64: pinned) {
-                    session.posture = .verified
-                    self.openStream(profile: profile, session: session, client: client)
-                } else {
-                    Self.log.error("host \(profile.displayName, privacy: .public): pinned key mismatch — stream stays closed")
-                    session.posture = .mismatch
-                    session.store.noteConnectionError("host key mismatch — pairing must be re-done")
-                    self.objectWillChange.send()
+            // The handle stays set for the WHOLE ladder (the one-owner
+            // guard above must hold across its entire lifetime), and only
+            // the ladder that still owns this session may clear it.
+            defer {
+                if session.continuityGeneration == ladder {
+                    session.continuityTask = nil
                 }
-            } catch {
+            }
+            var attempt = 1
+            while true {
                 guard !Task.isCancelled,
                       self.sessions[profile.id] === session else { return }
-                // Unreachable host: B4 keeps the stream closed (never
-                // unverified-open). The next startLive/foreground retries.
-                Self.log.error("host \(profile.displayName, privacy: .public): key verification failed — stream stays closed")
-                session.posture = .verifying
+                do {
+                    let response = try await client.fetchHostKey()
+                    guard !Task.isCancelled,
+                          self.sessions[profile.id] === session else { return }
+                    if HostKeyTrust.matches(response, pinnedKeyB64: pinned) {
+                        session.posture = .verified
+                        self.openStream(profile: profile, session: session, client: client)
+                    } else {
+                        Self.log.error("host \(profile.displayName, privacy: .public): pinned key mismatch — stream stays closed")
+                        session.posture = .mismatch
+                        session.store.noteConnectionError("host key mismatch — pairing must be re-done")
+                        self.objectWillChange.send()
+                    }
+                    return
+                } catch {
+                    guard !Task.isCancelled,
+                          self.sessions[profile.id] === session else { return }
+                    // Unreachable host: B4 keeps the stream closed (never
+                    // unverified-open). The ladder keeps its bounded RATE
+                    // for as long as this session owns it — a host that
+                    // becomes reachable LATER in the foreground session
+                    // still recovers automatically (cancellation at the
+                    // background/removal boundary is what ends retries, not
+                    // a fixed attempt window). The failing attempt's reason
+                    // is published on the host's store so Settings/the board
+                    // show a truthful reason instead of a silent verify.
+                    attempt += 1
+                    session.store.noteConnectionError(
+                        "host unreachable — retrying host-key verification (attempt \(attempt))")
+                    self.objectWillChange.send()
+                    do {
+                        try await Task.sleep(
+                            nanoseconds: self.preflightPolicy.delayNanoseconds(beforeAttempt: attempt))
+                    } catch {
+                        return  // cancelled (background/removal): retries end
+                    }
+                }
             }
         }
     }
@@ -472,6 +572,20 @@ final class HostStreamCoordinator: ObservableObject {
                     session.store.applyRefresh(snapshot)
                     session.noteRefreshFailure(nil)
                     self.persistMetadata(for: profile, session: session)
+                    // #451 (AC5 parity): a successful snapshot proves the
+                    // host reachable NOW — a session that never verified its
+                    // key gets an IMMEDIATE fresh preflight attempt instead
+                    // of waiting for the running ladder's next capped tick
+                    // (the pull is an explicit "try now"). Still one owner:
+                    // the previous ladder is cancelled and a fresh
+                    // generation takes over; a streaming or already-verified
+                    // host is untouched, and this never replaces a stream
+                    // (#425 owns active-host stream replacement).
+                    if session.posture == .verifying {
+                        session.continuityTask?.cancel()
+                        session.continuityTask = nil
+                        self.startSessionIfNeeded(profile)
+                    }
                     self.objectWillChange.send()
                     return nil
                 } catch {

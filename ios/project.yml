@@ -171,6 +171,11 @@ targets:
           # #464: the App Icon picker seam/wiring tests read the real source.
           cp "$SRCROOT/FleetNotifier/UI/AppIconPicker.swift" \
              "$TARGET_BUILD_DIR/$WRAPPER_NAME/AppIconPicker.swift.txt"
+          # #453: the scene-phase lifecycle wiring pin reads the REAL scene
+          # owner, so a revert to the unfixed `.inactive` teardown in the
+          # view (instead of the model seam) makes the focused suite RED.
+          cp "$SRCROOT/FleetNotifier/App/FleetNotifierApp.swift" \
+             "$TARGET_BUILD_DIR/$WRAPPER_NAME/FleetNotifierApp.swift.txt"
           # #464 review r1: the approved Treatment-A masters as base64 test
           # fixtures (the app-product art scan must never see extra loose
           # artwork, so the bytes ride encoded, exactly like the .swift.txt
@@ -185,6 +190,7 @@ targets:
           - "$(SRCROOT)/FleetNotifier/UI/Herd/HerdView.swift"
           - "$(SRCROOT)/FleetNotifier/UI/Herd/RanchEnvironment.swift"
           - "$(SRCROOT)/FleetNotifier/UI/AppIconPicker.swift"
+          - "$(SRCROOT)/FleetNotifier/App/FleetNotifierApp.swift"
           - "$(SRCROOT)/tools/herd-art/appicon-masters/treatment-a/bay-1024.png"
           - "$(SRCROOT)/tools/herd-art/appicon-masters/treatment-a/palomino-1024.png"
           - "$(SRCROOT)/tools/herd-art/appicon-masters/treatment-a/black-1024.png"
@@ -194,6 +200,7 @@ targets:
           - "$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/HerdView.swift.txt"
           - "$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/RanchEnvironment.swift.txt"
           - "$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/AppIconPicker.swift.txt"
+          - "$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/FleetNotifierApp.swift.txt"
           - "$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/master-bay.base64"
           - "$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/master-palomino.base64"
           - "$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/master-black.base64"

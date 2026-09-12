@@ -4395,11 +4395,11 @@ struct HowToConnectSheet: View {
                     stepHeader(number: 4, title: "Register with the pairing token")
                 }
                 Section {
-                    Text("Turn on State-change notifications in Settings so you get start / blocked / finished alerts.")
+                    Text("Optional: turn on State-change notifications in Settings whenever you like to get start / blocked / finished alerts. The board works without them.")
                         .font(.subheadline)
                         .foregroundStyle(theme.subtext1)
                 } header: {
-                    stepHeader(number: 5, title: "Enable state-change notifications")
+                    stepHeader(number: 5, title: "State-change notifications (optional)")
                 }
             }
             .navigationTitle("How to connect")

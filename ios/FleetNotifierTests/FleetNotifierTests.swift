@@ -4772,7 +4772,7 @@ final class SettingsConnectWiringTests: XCTestCase {
             (2, "Reach it from the phone"),
             (3, "Open Settings and paste the Host"),
             (4, "Register with the pairing token"),
-            (5, "Enable state-change notifications"),
+            (5, "State-change notifications (optional)"),
         ]
         for (number, title) in steps {
             XCTAssertTrue(slice.contains("stepHeader(number: \(number), title: \"\(title)\")"),
@@ -12318,5 +12318,358 @@ final class ScenePhaseLifecycleTests: XCTestCase {
                        "the view must not own the inactive/background split (#453)")
         XCTAssertFalse(source.contains("stopLive"),
                        "no scene-phase teardown may live in the view — the split is model-owned (#453)")
+    }
+}
+
+
+// MARK: - #487: explicit notification opt-in (runtime side effects)
+
+/// #487 AC1/AC3/AC5: notification permission requests and APNs registration
+/// are EXPLICIT-action side effects. These tests drive the REAL model paths —
+/// the first live board (through the production fingerprint-confirm seam, so
+/// no `/host-key` fetch is needed to reach it), the Settings toggle, an
+/// existing opted-in value, and the multi-host per-host restrictions — and
+/// observe runtime effects (permission-provider calls, the injectable
+/// registration seam, persisted values, per-host token requests). No
+/// source-string pins.
+@MainActor
+final class NotificationOptInRuntimeTests: XCTestCase {
+
+    private final class CountingPermissionProvider: NotificationPermissionProviding,
+                                                   @unchecked Sendable {
+        var status: NotificationPermissionState = .notDetermined
+        var promptResult = false
+        private(set) var currentCount = 0
+        private(set) var promptCount = 0
+
+        func currentPermission() async -> NotificationPermissionState {
+            currentCount += 1
+            return status
+        }
+
+        func requestAuthorization() async -> Bool {
+            promptCount += 1
+            return promptResult
+        }
+    }
+
+    /// Fixed synthetic host key (32-byte fill — never a real key).
+    private static let hostKey = Data(repeating: 7, count: 32).base64EncodedString()
+    /// Second host's synthetic key for the multi-host case.
+    private static let otherHostKey = Data(repeating: 9, count: 32).base64EncodedString()
+
+    private var suiteName = ""
+    private var session: URLSession?
+    private var model: AppModel?
+    private var registerCount = 0
+
+    private func makeDefaults() -> UserDefaults {
+        suiteName = "corral.487.optin.\(UUID().uuidString)"
+        // SAFETY: a fresh UUID-based suite name is always a valid suite.
+        return UserDefaults(suiteName: suiteName)!
+    }
+
+    private func cleanup() {
+        model?.stopLive()
+        model = nil
+        session?.invalidateAndCancel()
+        session = nil
+        AddHostFlowURLProtocol.clearScript()
+        AppDelegate.apnsRegistered = false
+        AppDelegate.shared?.clearRetainedDeviceToken()
+        UserDefaults.standard.removeObject(forKey: AppDelegate.deviceTokenUploadedKey)
+        KeyContinuityGate.reset()
+        if !suiteName.isEmpty {
+            // SAFETY: suiteName was freshly minted per test.
+            UserDefaults(suiteName: suiteName)!.removePersistentDomain(forName: suiteName)
+            suiteName = ""
+        }
+    }
+
+    private func waitUntil(_ condition: @autoclosure () -> Bool,
+                           timeout: TimeInterval = 6) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+    }
+
+    /// The persisted opt-in value: nil = absent (never written), false =
+    /// explicitly disabled, true = explicitly enabled.
+    private func persistedOptIn() -> Bool? {
+        UserDefaults(suiteName: suiteName)?.object(forKey: AppModel.notificationsKey) as? Bool
+    }
+
+    private func requests(to url: URL) -> [URLRequest] {
+        AddHostFlowURLProtocol.requests.filter { $0.url?.absoluteString == url.absoluteString }
+    }
+
+    /// Light fixture (no host): the opt-in toggle paths + an unpaired model.
+    private func makeModel(provider: CountingPermissionProvider,
+                           notificationsOn: Bool? = nil) -> AppModel {
+        let defaults = makeDefaults()
+        if let notificationsOn {
+            defaults.set(notificationsOn, forKey: AppModel.notificationsKey)
+        }
+        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        let model = AppModel(defaults: defaults,
+                             identityLoader: { (signer, .insecureFallback) },
+                             loadMeta: { nil }, saveMeta: { _ in },
+                             wipeIdentity: {},
+                             notificationPermissionProvider: provider,
+                             registerForRemoteNotifications: { [weak self] in
+                                 self?.registerCount += 1
+                             })
+        self.model = model
+        return model
+    }
+
+    /// One host PAUSED on fingerprint confirmation (the legacy-migration
+    /// state a fresh pairing also passes through) plus a held-open `/events`
+    /// stream script. `driveFirstLiveBoard` confirms the fingerprint — the
+    /// production single confirmation point, which pins the key, flips the
+    /// continuity gate to `.verified`, and re-enters `startLive()` exactly
+    /// like a first live board. No `/host-key` round trip is involved.
+    private func makeLiveModel(provider: CountingPermissionProvider,
+                               notificationsOn: Bool? = nil) -> (AppModel, HostProfile) {
+        let defaults = makeDefaults()
+        if let notificationsOn {
+            defaults.set(notificationsOn, forKey: AppModel.notificationsKey)
+        }
+        let store = HostProfileStore(directory: nil, defaults: defaults)
+        // SAFETY: fixed valid fixture URL.
+        let url = URL(string: "https://optin487.example")!
+        // SAFETY: fixed synthetic key id + fixture URL — never real secrets.
+        let profile = try! store.addProfile(displayName: "Host",
+                                            urlString: url.absoluteString,
+                                            hostKeyB64: nil,
+                                            fingerprint: nil,
+                                            keyId: "dev_487",
+                                            grants: ["read_tail"],
+                                            expiryTs: 1_800_000_000,
+                                            registeredAt: 1)
+        defaults.set(profile.id.uuidString, forKey: "fleetnotifier.activeHostProfileID")
+        var script: [URL: (Int, Data, Bool)] = [:]
+        script[url.appendingPathComponent("/events")] = (200, Data(), true)
+        AddHostFlowURLProtocol.setScript(script)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AddHostFlowURLProtocol.self]
+        let session = URLSession(configuration: config)
+        self.session = session
+        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        let model = AppModel(session: session, defaults: defaults,
+                             identityLoader: { (signer, .insecureFallback) },
+                             loadMeta: { nil }, saveMeta: { _ in },
+                             wipeIdentity: {},
+                             profileStore: store,
+                             notificationPermissionProvider: provider,
+                             registerForRemoteNotifications: { [weak self] in
+                                 self?.registerCount += 1
+                             })
+        self.model = model
+        return (model, profile)
+    }
+
+    /// Confirm the pending fingerprint (production single confirmation point)
+    /// — pins `Self.hostKey`, sets `.verified`, and re-enters `startLive()`,
+    /// which reaches the former notification block synchronously.
+    private func driveFirstLiveBoard(_ model: AppModel, profile: HostProfile) {
+        model.confirmFingerprint(profileID: profile.id,
+                                 hostKeyB64: Self.hostKey,
+                                 fingerprint: "FINGER-487")
+    }
+
+    func testFreshInstallAbsentOptInIsOffAndUnpairedStartLiveHasNoSideEffects() async {
+        defer { cleanup() }
+        let provider = CountingPermissionProvider()
+        let model = makeModel(provider: provider)
+
+        XCTAssertFalse(model.notificationsEnabled,
+                       "an absent opt-in key must not be treated as consent")
+        XCTAssertNil(persistedOptIn(), "construction alone must not write an opt-in value")
+
+        // Pairing / pre-board startLive (no host configured): no OS effects.
+        model.startLive()
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertFalse(model.notificationsEnabled)
+        XCTAssertEqual(provider.currentCount, 0)
+        XCTAssertEqual(provider.promptCount, 0)
+        XCTAssertEqual(registerCount, 0)
+    }
+
+    func testFirstLiveBoardWithAbsentOptInNeverPromptsOrRegisters() async {
+        defer { cleanup() }
+        let provider = CountingPermissionProvider()
+        let (model, profile) = makeLiveModel(provider: provider)
+
+        driveFirstLiveBoard(model, profile: profile)
+
+        XCTAssertEqual(model.keyContinuityState, .verified,
+                       "the first live board must actually have run")
+        XCTAssertFalse(model.notificationsEnabled)
+        XCTAssertEqual(provider.currentCount, 0,
+                       "no permission query without an explicit action")
+        XCTAssertEqual(provider.promptCount, 0,
+                       "the first live board must not request notification permission")
+        XCTAssertEqual(registerCount, 0,
+                       "the first live board must not register APNs")
+        XCTAssertNil(persistedOptIn(), "the live board must not write an opt-in value")
+    }
+
+    func testExplicitEnableWhileDeniedStaysOffAndNeverRegisters() async {
+        defer { cleanup() }
+        let provider = CountingPermissionProvider()
+        provider.status = .denied
+        let model = makeModel(provider: provider)
+
+        model.setNotificationsEnabled(true)
+        await waitUntil(model.notificationPermission == .denied)
+
+        XCTAssertFalse(model.notificationsEnabled,
+                       "a denied permission must not enable the opt-in")
+        XCTAssertEqual(registerCount, 0, "a denied enable must never register APNs")
+        XCTAssertNil(persistedOptIn(),
+                     "a denied enable must not persist an opt-in value")
+    }
+
+    func testExplicitEnableAfterPromptRegistersAPNsExactlyOnce() async {
+        defer { cleanup() }
+        let provider = CountingPermissionProvider()
+        provider.status = .notDetermined
+        provider.promptResult = true
+        let model = makeModel(provider: provider)
+
+        model.setNotificationsEnabled(true)
+        await waitUntil(model.notificationsEnabled)
+
+        XCTAssertEqual(provider.promptCount, 1, "the explicit enable prompts exactly once")
+        XCTAssertEqual(registerCount, 1, "the granted explicit opt-in registers APNs once")
+        XCTAssertEqual(persistedOptIn(), true, "the explicit opt-in persists")
+        XCTAssertEqual(model.notificationPermission, .granted)
+    }
+
+    func testExplicitEnableWhenAlreadyGrantedRegistersAPNsExactlyOnce() async {
+        defer { cleanup() }
+        let provider = CountingPermissionProvider()
+        provider.status = .granted
+        let model = makeModel(provider: provider)
+
+        model.setNotificationsEnabled(true)
+        await waitUntil(model.notificationsEnabled)
+
+        XCTAssertEqual(provider.promptCount, 0, "an already-granted permission never prompts")
+        XCTAssertEqual(registerCount, 1, "the explicit opt-in registers APNs once")
+        XCTAssertEqual(persistedOptIn(), true)
+    }
+
+    func testExistingOptInIsPreservedAndNeverRegistersImplicitly() async {
+        defer { cleanup() }
+        let provider = CountingPermissionProvider()
+        provider.status = .granted
+        let (model, profile) = makeLiveModel(provider: provider, notificationsOn: true)
+
+        XCTAssertTrue(model.notificationsEnabled,
+                      "an explicitly persisted opt-in is preserved from birth")
+
+        driveFirstLiveBoard(model, profile: profile)
+
+        XCTAssertEqual(model.keyContinuityState, .verified)
+        XCTAssertTrue(model.notificationsEnabled,
+                      "the live board must not clear the persisted opt-in")
+        XCTAssertEqual(persistedOptIn(), true)
+        XCTAssertEqual(provider.currentCount, 0)
+        XCTAssertEqual(provider.promptCount, 0)
+        XCTAssertEqual(registerCount, 0,
+                       "an existing opt-in value alone is not an explicit action — no implicit registration")
+    }
+
+    func testMultiHostPerHostPreferencesAndGlobalOptInStayIntact() async {
+        defer { cleanup() }
+        let provider = CountingPermissionProvider()
+        let defaults = makeDefaults()
+        let store = HostProfileStore(directory: nil, defaults: defaults)
+        // SAFETY: fixed valid fixture URLs (distinct hostnames).
+        let urlA = URL(string: "https://optin487-a.example")!
+        // SAFETY: fixed valid fixture URL (distinct hostname).
+        let urlB = URL(string: "https://optin487-b.example")!
+        // SAFETY: fixed synthetic key fills — never real keys.
+        let profileA = try! store.addProfile(displayName: "Host A",
+                                             urlString: urlA.absoluteString,
+                                             hostKeyB64: nil,
+                                             fingerprint: nil,
+                                             keyId: "dev_push_a",
+                                             grants: ["read_tail"],
+                                             expiryTs: 1_800_000_000,
+                                             registeredAt: 1)
+        let profileB = try! store.addProfile(displayName: "Host B",
+                                             urlString: urlB.absoluteString,
+                                             hostKeyB64: Self.otherHostKey,
+                                             fingerprint: "FINGER-B",
+                                             keyId: "dev_push_b",
+                                             grants: ["read_tail"],
+                                             expiryTs: 1_800_000_000,
+                                             registeredAt: 1)
+        defaults.set(profileA.id.uuidString, forKey: "fleetnotifier.activeHostProfileID")
+        var script: [URL: (Int, Data, Bool)] = [:]
+        script[urlA.appendingPathComponent("/events")] = (200, Data(), true)
+        script[urlB.appendingPathComponent("/events")] = (200, Data(), true)
+        script[urlB.appendingPathComponent("/device-token")] = (
+            200, Data(#"{"ok":true,"key_id":"k","push_registered":false}"#.utf8), false)
+        AddHostFlowURLProtocol.setScript(script)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AddHostFlowURLProtocol.self]
+        let session = URLSession(configuration: config)
+        self.session = session
+        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        let model = AppModel(session: session, defaults: defaults,
+                             identityLoader: { (signer, .insecureFallback) },
+                             loadMeta: { nil }, saveMeta: { _ in },
+                             wipeIdentity: {},
+                             profileStore: store,
+                             notificationPermissionProvider: provider,
+                             registerForRemoteNotifications: { [weak self] in
+                                 self?.registerCount += 1
+                             })
+        self.model = model
+
+        driveFirstLiveBoard(model, profile: profileA)
+
+        // Per-host preferences persist independently; the GLOBAL opt-in
+        // (absent here) is never implicitly written by the multi-host flow.
+        XCTAssertEqual(model.profiles.first { $0.id == profileA.id }?.notificationsEnabled,
+                       true, "the active host keeps its default per-host preference")
+        XCTAssertEqual(model.profiles.first { $0.id == profileB.id }?.notificationsEnabled,
+                       true, "the coordinator host keeps its default per-host preference")
+        XCTAssertFalse(model.notificationsEnabled,
+                       "the global opt-in must stay off without an explicit action")
+        XCTAssertNil(persistedOptIn(), "no implicit global opt-in write")
+
+        // Disabling ONE host keeps the restriction host-scoped: only that
+        // host's token clear is attempted; the other host is untouched.
+        let tokenURLA = urlA.appendingPathComponent("/device-token")
+        let tokenURLB = urlB.appendingPathComponent("/device-token")
+        model.setHostNotificationsEnabled(profileID: profileB.id, enabled: false)
+        await waitUntil(!requests(to: tokenURLB).isEmpty)
+        XCTAssertTrue(requests(to: tokenURLA).isEmpty,
+                      "host A's enrollment must never be touched by host B's disable")
+        XCTAssertEqual(model.profiles.first { $0.id == profileB.id }?.notificationsEnabled,
+                       false, "the per-host preference must persist")
+        XCTAssertEqual(model.profiles.first { $0.id == profileA.id }?.notificationsEnabled,
+                       true, "the other host's preference must be untouched")
+        XCTAssertFalse(model.notificationsEnabled,
+                       "the per-host disable must not flip the GLOBAL opt-in")
+        XCTAssertNil(persistedOptIn(), "no implicit global opt-in write")
+
+        // Re-enabling restores ONLY that host's preference.
+        model.setHostNotificationsEnabled(profileID: profileB.id, enabled: true)
+        XCTAssertEqual(model.profiles.first { $0.id == profileB.id }?.notificationsEnabled,
+                       true)
+        XCTAssertEqual(model.profiles.first { $0.id == profileA.id }?.notificationsEnabled,
+                       true)
+        XCTAssertEqual(provider.promptCount, 0,
+                       "the multi-host flow must not prompt on its own")
+        XCTAssertEqual(registerCount, 0,
+                       "the multi-host flow must not call the global registration seam")
     }
 }

@@ -214,10 +214,22 @@ does not claim physical-device or TestFlight verification.
 
 Notifications are optional in normal setup: the board and recents work
 without granting notification permission and without any APNs credentials.
-The app itself raises the OS notification-permission prompt on the first
-live board today — explicit opt-in, no-prompt behavior is follow-up
-[#487](https://github.com/jirathip-dev/corral/issues/487); host-approved QR
-pairing is follow-up [#486](https://github.com/jirathip-dev/corral/issues/486).
+The app never prompts on its own — fresh install, pairing, and the first
+live board request nothing and register no APNs token. Enabling
+**State-change notifications** in Settings is the only trigger: the OS
+permission prompt appears then, a denial or a not-determined state leaves
+the board fully usable, and onboarding completes without visiting Settings.
+The behavior is covered by the iOS unit suite. From a checkout with a
+booted simulator:
+
+```sh
+xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier \
+  -destination 'platform=iOS Simulator,id=<udid>' -derivedDataPath /tmp/fn-dd \
+  -only-testing:FleetNotifierTests/NotificationOptInRuntimeTests
+```
+
+Host-approved QR pairing is follow-up
+[#486](https://github.com/jirathip-dev/corral/issues/486).
 
 Registering from the phone is steps 4 and 5 above, with two phone-specific
 rules:

@@ -436,7 +436,12 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # checkout (#491's HerdView merge a6fa6dd unioned into the #487 branch
     # 9f525af) — the pin below is recomputed from THIS union checkout by the
     # canonical algorithm; neither parent pin (0dad5c34…, 778df7bc…) applies.
-    "ab0e0234e42a4182d145d0fb905b53b165ee6824c56862285cc6801d0420ce19"
+    # #454 ∪ #487/#491 union: the lifecycle-owned, debounced network-path
+    # retry hint (AppModel.swift + HostStreamCoordinator.swift recovery slice)
+    # is merged with the PR509 integration head 9abfa897 — the pin below is
+    # recomputed from THIS union checkout by the canonical algorithm; neither
+    # parent pin (ab0e0234… from 9f525af nor 94172201… from 9d914f7) applies.
+    "d729ce6d9eef920f9dd767c5d27b9db7941c2cf5ee6d2c06d1a51c4b31c37d69"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -617,7 +622,14 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # first-live path; an explicit enable is the only APNs registration site)
     # and the F1 OS-boundary spies were appended to the pinned test file —
     # digest recomputed over the #487 head (648cfca).
-    "5ca855dba32315bcb77c9323e064e6e119d771b5a1e07e6f600fa961d69044a8"
+    # #454 ∪ #487 union: NetworkPathHintTests (the 11 path-hint runtime tests)
+    # plus the pre-review lifecycle repairs (real-adapter restart observation,
+    # retired-callback generation guard, ownership-scoped waiting state) are
+    # merged with #487's opt-in class + F1 spies in ONE pinned file — the
+    # digest below is recomputed over THIS union file (integration 9abfa897 ∪
+    # lane head 809341f); neither parent pin (5ca855db… from 648cfca nor
+    # 2b37a79a… from 9d914f7) applies.
+    "39af3bb94fbf8af44f7f426e9ae06a73ee1ba8e4aeabfb529c68c502280fb0ae"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

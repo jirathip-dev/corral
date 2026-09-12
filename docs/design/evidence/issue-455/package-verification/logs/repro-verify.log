@@ -1,0 +1,17 @@
+{
+  "status": "PASS",
+  "manifestFiles": 147,
+  "rawFilesIncludingManifest": 148,
+  "bytesIncludingManifest": 20376980,
+  "pngFiles": 57,
+  "svgFiles": 32,
+  "mp4Files": 2,
+  "browser": {
+    "checks": 329,
+    "screenshots": 42,
+    "contrastSamples": 118,
+    "minimumContrast": 4.788
+  },
+  "manifestIncludesItself": false,
+  "transientFiles": 0
+}

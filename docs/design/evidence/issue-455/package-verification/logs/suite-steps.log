@@ -1,0 +1,10 @@
+floor: 44 GiB free disk; load=139.79 84.86 95.18
+smoke EXIT=0 SECS=2 CMD=python3 -B tools/probe-visibility.py
+verify-browser EXIT=0 SECS=56 CMD=python3 -B tools/verify-browser.py
+verify-workflows EXIT=0 SECS=9 CMD=python3 -B tools/verify-workflows.py
+verify-art-geometry EXIT=0 SECS=0 CMD=python3 -B tools/verify-art-geometry.py
+verify-layers EXIT=0 SECS=2 CMD=python3 -B tools/verify-layers.py
+record-motion EXIT=0 SECS=26 CMD=python3 -B tools/record-motion.py
+contact-sheets EXIT=0 SECS=0 CMD=python3 -B tools/contact-sheets.py
+inspect-motion EXIT=0 SECS=0 CMD=python3 -B tools/inspect-motion.py
+SUITE-END 2026-09-12T08:36:53Z

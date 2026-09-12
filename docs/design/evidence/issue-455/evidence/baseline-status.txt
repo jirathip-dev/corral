@@ -1,0 +1,47 @@
+ M morsel/147-onigiri-mascot/evidence/issue-147-comparison-2048.png
+ M morsel/147-onigiri-mascot/evidence/issue-147-comparison.svg
+ M morsel/147-onigiri-mascot/evidence/manifest.sha256
+ M morsel/147-onigiri-mascot/evidence/v1-spec-exact-1024.png
+ M morsel/147-onigiri-mascot/evidence/v1-spec-exact-120.png
+ M morsel/147-onigiri-mascot/evidence/v1-spec-exact-180.png
+ M morsel/147-onigiri-mascot/evidence/v1-spec-exact-60.png
+ M morsel/147-onigiri-mascot/evidence/v1-spec-exact.svg
+ M morsel/147-onigiri-mascot/evidence/v2-bolder-bite-1024.png
+ M morsel/147-onigiri-mascot/evidence/v2-bolder-bite-120.png
+ M morsel/147-onigiri-mascot/evidence/v2-bolder-bite-180.png
+ M morsel/147-onigiri-mascot/evidence/v2-bolder-bite-60.png
+ M morsel/147-onigiri-mascot/evidence/v2-bolder-bite.svg
+ M morsel/147-onigiri-mascot/evidence/v3-night-field-stamp-1024.png
+ M morsel/147-onigiri-mascot/evidence/v3-night-field-stamp-120.png
+ M morsel/147-onigiri-mascot/evidence/v3-night-field-stamp-180.png
+ M morsel/147-onigiri-mascot/evidence/v3-night-field-stamp-60.png
+ M morsel/147-onigiri-mascot/evidence/v3-night-field-stamp.svg
+?? corral/284-icon-logo-redesign/.brief-r6ns.md
+?? corral/311-tofu-native-proof/
+?? corral/455-immersive-herd/
+?? morsel/90-journal-redesign/
+?? sendmeter/868-design-evidence-archive/
+?? sendmeter/868-kangaroo-symbols/blender-mascot-r1/
+?? sendmeter/868-kangaroo-symbols/blender-mascot-r2-1-head-climb-correction/
+?? sendmeter/868-kangaroo-symbols/blender-mascot-r2-plush-actions/
+?? sendmeter/868-kangaroo-symbols/revision-10-sol-xhigh-ear-smile/
+?? sendmeter/868-kangaroo-symbols/revision-11-sol-xhigh-rounded-ears/
+?? sendmeter/868-kangaroo-symbols/revision-12-1-sol-xhigh-continuous-overhang/
+?? sendmeter/868-kangaroo-symbols/revision-12-sol-xhigh-workout-overhang-contact/
+?? sendmeter/868-kangaroo-symbols/revision-13-sol-xhigh-workout-straight-line/
+?? sendmeter/868-kangaroo-symbols/revision-14-sol-xhigh-small-mouth-handtip-line/
+?? sendmeter/868-kangaroo-symbols/revision-15-sol-xhigh-one-mouth-two-hand-line/
+?? sendmeter/868-kangaroo-symbols/revision-16-sol-xhigh-r10-face-two-hand-line/
+?? sendmeter/868-kangaroo-symbols/revision-2d-kangaroo-plush/
+?? sendmeter/868-kangaroo-symbols/revision-3-sol-xhigh-roughs/
+?? sendmeter/868-kangaroo-symbols/revision-4-sol-xhigh-icon-cutout-deadlift/
+?? sendmeter/868-kangaroo-symbols/revision-5-sol-xhigh-literal-trace-deadlift/
+?? sendmeter/868-kangaroo-symbols/revision-6-sol-xhigh-force-refinement/
+?? sendmeter/868-kangaroo-symbols/revision-7-sol-xhigh-front-barbell/
+?? sendmeter/868-kangaroo-symbols/revision-8-sol-xhigh-slim-anatomy/
+?? sendmeter/868-kangaroo-symbols/revision-9-sol-xhigh-smooth-curves/
+?? sendmeter/903-recording-context-redesign/logs/
+?? synergy-apps/670-manpower-pwa-three-tab-redesign/
+?? synergy-apps/775-pr-tab/
+?? synergy-apps/776-inbox-management-nav/
+?? synergy-apps/814-approvals-manpower/

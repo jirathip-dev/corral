@@ -496,6 +496,11 @@ final class AppModel: ObservableObject {
     private let identityLifecycle: IdentityLifecycle
     /// #389: permission queries/prompts for the notification enable flow.
     private let notificationPermissionProvider: NotificationPermissionProviding
+    /// #487: APNs registration is an EXPLICIT-action side effect — the
+    /// Settings opt-in toggle is the only production caller. Injectable so
+    /// the fresh/denied tests observe registration without touching the OS;
+    /// the default is the production UIKit call.
+    private let registerForRemoteNotifications: @MainActor () -> Void
     private let identityLoader: @Sendable () throws -> (DeviceSigner, DeviceKeyStore.Storage)
     private let loadMeta: @Sendable () -> DeviceKeyStore.DeviceMeta?
     private let saveMeta: @Sendable (DeviceKeyStore.DeviceMeta) -> Void
@@ -638,6 +643,9 @@ final class AppModel: ObservableObject {
          profileStore: HostProfileStore? = nil,
          haptics: @escaping () -> Void = Haptics.selection,
          notificationPermissionProvider: NotificationPermissionProviding = SystemNotificationPermissionProvider(),
+         registerForRemoteNotifications: @escaping @MainActor () -> Void = {
+             UIApplication.shared.registerForRemoteNotifications()
+         },
          preflightRetryPolicy: HostPreflightRetryPolicy = .default,
          networkPathMonitor: NetworkPathMonitoring = SystemNetworkPathMonitor(),
          pathHintDebounce: TimeInterval = 0.5,
@@ -651,6 +659,7 @@ final class AppModel: ObservableObject {
         self.identityLifecycle = identityLifecycle
         self.defaults = defaults
         self.notificationPermissionProvider = notificationPermissionProvider
+        self.registerForRemoteNotifications = registerForRemoteNotifications
         // #451: the same bounded preflight ladder paces the ACTIVE host's
         // /host-key re-check and every coordinator host's preflight.
         self.preflightRetryPolicy = preflightRetryPolicy
@@ -664,7 +673,10 @@ final class AppModel: ObservableObject {
         self.removeMeta = removeMeta
         self.profileStore = profileStore
         self.hapticTick = haptics
-        self.notificationsEnabled = defaults.object(forKey: Self.notificationsKey) as? Bool ?? true
+        // #487 (Q1a): opt-in is ONLY ever an explicit, persisted choice —
+        // an absent key means NOT opted in, so a fresh install starts OFF
+        // and no path may treat absence as consent.
+        self.notificationsEnabled = defaults.object(forKey: Self.notificationsKey) as? Bool ?? false
         self.fleet = FleetStore(defaults: defaults)
         fleetChanges = fleet.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
@@ -2316,34 +2328,20 @@ final class AppModel: ObservableObject {
             }
         }
         uploadRetainedTokenToHosts()
-        // #79 review F4: only connect() is idempotent by itself (its
-        // streamTask guard). The notification/APNs setup below is NOT —
-        // re-running it re-fires APNs registration + a signed
-        // /device-token post — and startLive() now legitimately runs
-        // more than once per launch (RootView task, .active transition,
-        // register()). Guard it to once per process. The notifier itself
-        // (delegate + tap handler) is created in `init` so a launch-time
-        // notification response is never delivered to a nil delegate;
-        // this block only repeats the OS side effects.
+        // #79 review F4: startLive() legitimately runs more than once per
+        // launch (RootView task, .active transition, register()); keep the
+        // one-shot boundary for the notifier mirror below. The notifier
+        // itself (delegate + tap handler) is created in `init` so a
+        // launch-time notification response is never delivered to a nil
+        // delegate.
         guard !notificationsConfigured else { return }
         notificationsConfigured = true
         notifier?.isEnabled = notificationsEnabled
-        // This OS permission request captures no host, key, fleet, or mode;
-        // it cannot apply stale lifecycle state after a boundary. The
-        // notifier is copied into a LOCAL first: a Task closure must not
-        // capture `self` through the property (the authorization call can
-        // stay pending indefinitely on the simulator and would otherwise
-        // retain the whole model past its teardown).
-        let notifierForAuthorization = notifier
-        Task { await notifierForAuthorization?.requestAuthorization() }
-        // APNs registration (D16): the token is sent to the daemon by the
-        // AppDelegate; on the simulator this fails and the DEBUG local
-        // bridge (PushBridge) stays active.
-        // APNs registration is likewise an OS side effect with no captured
-        // model identity or state mutation to re-apply after a boundary.
-        Task { @MainActor in
-            UIApplication.shared.registerForRemoteNotifications()
-        }
+        // #487: the OS side effects that used to live here are GONE. The
+        // permission request and APNs registration are EXPLICIT-action
+        // only (the Settings opt-in toggle — setNotificationsEnabled), so
+        // a fresh install, pairing, first live board, or relaunch never
+        // prompts, registers APNs, or needs push secrets.
     }
 
     func stopLive() {
@@ -2730,6 +2728,13 @@ final class AppModel: ObservableObject {
         notificationsEnabled = enabled
         defaults.set(enabled, forKey: Self.notificationsKey)
         notifier?.isEnabled = enabled
+        if enabled {
+            // #487: APNs registration rides the EXPLICIT opt-in — this is
+            // the only production caller of the registration seam, so a
+            // fresh/absent state never registers while an explicit enable
+            // (already-granted or just-granted) does.
+            registerForRemoteNotifications()
+        }
     }
 
     // MARK: - #397 follow-up: notification-tap lifecycle (deferred deep link)

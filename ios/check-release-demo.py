@@ -427,7 +427,11 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # #491: owner-adaptive Herd summary fit ladder (HerdView.swift) —
     # re-pinned over the #459 integration tree; the test digest was
     # recomputed unchanged (FleetNotifierTests.swift untouched).
-    "0dad5c34a82ca18c5e2deb4e6802e98b4400c1d0a21168cacb65e61ac218cbc1"
+    # #460: RanchPainter.sky sky-only drift (RanchEnvironment.swift) —
+    # re-pinned canonically at the explicit #460 checker handoff over the
+    # #491/#485-integrated tree (base b2e4ee23); the test digest stays
+    # unchanged (FleetNotifierTests.swift untouched).
+    "70f1397eaf54675bf2be133de0be83ee4b33771259592550a1716c33fe388a53"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

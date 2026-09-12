@@ -412,7 +412,13 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # (transient `.inactive` retains the live session; only actual
     # `.background` cancels/persists) and FleetNotifierApp routes every
     # phase through that single seam; re-pinned over the #453 source set.
-    "f7793dc046ab2f464ff1197532ea1f46a7db9ba634cc1c990d9aaa647ef1e6e7"
+    # #471B: the manifest gained its last omitted app source
+    # (Demo/AddHostCommitEvidenceURLProtocol.swift) under the exact
+    # compiled-app-source-set policy, and check-release-demo.py now enforces
+    # manifest/app-tree membership in both directions independently of this
+    # digest; the pin below is recomputed from THIS union checkout
+    # (#451/#452/#453 merged, 71775c0); no parent pin applies.
+    "90ac658bb2bc1263a33f18d913a73891554701ac574559c6c2fbbba43c5763a4"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -1260,6 +1266,43 @@ def _check_release_build_phase_configuration() -> None:
             )
 
 
+def _app_target_sources(root: Path = ROOT) -> set[str]:
+    """Repo-relative paths of every Swift file in the app target's source dir."""
+
+    return {
+        path.relative_to(root).as_posix()
+        for path in (root / "ios/FleetNotifier").rglob("*.swift")
+        if path.is_file()
+    }
+
+
+def _check_release_manifest_completeness(
+    root: Path = ROOT, listed: tuple[str, ...] = RELEASE_SOURCE_FILES
+) -> None:
+    """Prove the manifest is exactly the app target's Swift source set.
+
+    Membership is decided from the file tree alone — deliberately not from
+    the conditional-compilation analysis — so a digest re-pin cannot excuse
+    an omitted app source and a stale entry cannot hide behind a pinned
+    file list.
+    """
+
+    on_disk = _app_target_sources(root)
+    listed_set = set(listed)
+    missing = sorted(on_disk - listed_set)
+    if missing:
+        raise CheckFailure(
+            "app target Swift source missing from RELEASE_SOURCE_FILES: "
+            + ", ".join(missing)
+        )
+    stale = sorted(listed_set - on_disk)
+    if stale:
+        raise CheckFailure(
+            "RELEASE_SOURCE_FILES entry is not an app target source: "
+            + ", ".join(stale)
+        )
+
+
 def _run_checked(command: list[str]) -> str:
     try:
         return subprocess.run(
@@ -1349,6 +1392,20 @@ def _expect_failure(action: Callable[[], None], label: str) -> None:
     try:
         action()
     except CheckFailure:
+        return
+    raise CheckFailure(f"self-test fixture was accepted: {label}")
+
+
+def _expect_failure_matching(
+    action: Callable[[], None], label: str, expected: str
+) -> None:
+    try:
+        action()
+    except CheckFailure as error:
+        if expected not in str(error):
+            raise CheckFailure(
+                f"self-test fixture {label!r} failed for the wrong reason: {error}"
+            ) from error
         return
     raise CheckFailure(f"self-test fixture was accepted: {label}")
 
@@ -1831,6 +1888,121 @@ suffix
             "unknown conditional expression",
         )
 
+        # #471B: the manifest must be EXACTLY the app target's Swift source
+        # set. These controls drive the membership check over a synthetic
+        # tree, independent of the digest and the conditional-compilation
+        # analysis: an omitted entry, a file added to the tree without an
+        # entry, a stale entry, and an entry outside the app tree each fail;
+        # the exact set passes with a test-tree file left unlisted.
+        membership_root = root / "membership checkout"
+        membership_sources = (
+            "ios/FleetNotifier/App/Member.swift",
+            "ios/FleetNotifier/Demo/Gated.swift",
+        )
+        for relative in (
+            *membership_sources,
+            "ios/FleetNotifierTests/NotAppSource.swift",
+        ):
+            fixture = membership_root / relative
+            fixture.parent.mkdir(parents=True, exist_ok=True)
+            fixture.write_text("let marker = 1\n", encoding="utf-8")
+
+        _check_release_manifest_completeness(membership_root, membership_sources)
+        _expect_failure_matching(
+            lambda: _check_release_manifest_completeness(
+                membership_root, membership_sources[:1]
+            ),
+            "manifest omitting an app target source",
+            "app target Swift source missing from RELEASE_SOURCE_FILES: "
+            "ios/FleetNotifier/Demo/Gated.swift",
+        )
+        _expect_failure_matching(
+            lambda: _check_release_manifest_completeness(
+                membership_root,
+                (*membership_sources, "ios/FleetNotifier/Demo/Deleted.swift"),
+            ),
+            "stale manifest entry missing from disk",
+            "RELEASE_SOURCE_FILES entry is not an app target source: "
+            "ios/FleetNotifier/Demo/Deleted.swift",
+        )
+        _expect_failure_matching(
+            lambda: _check_release_manifest_completeness(
+                membership_root,
+                (*membership_sources, "ios/FleetNotifierTests/NotAppSource.swift"),
+            ),
+            "manifest entry outside the app target",
+            "RELEASE_SOURCE_FILES entry is not an app target source: "
+            "ios/FleetNotifierTests/NotAppSource.swift",
+        )
+        added_source = membership_root / "ios/FleetNotifier/UI/Added.swift"
+        added_source.parent.mkdir(parents=True, exist_ok=True)
+        added_source.write_text("let marker = 1\n", encoding="utf-8")
+        _expect_failure_matching(
+            lambda: _check_release_manifest_completeness(
+                membership_root, membership_sources
+            ),
+            "app target source added without a manifest entry",
+            "app target Swift source missing from RELEASE_SOURCE_FILES: "
+            "ios/FleetNotifier/UI/Added.swift",
+        )
+
+        # #471B F1: the in-process controls above cannot detect the production
+        # wiring being removed (they call the helper directly). This control
+        # materializes an otherwise-valid scratch checkout whose app tree
+        # carries ONE unlisted Swift file and runs the REAL CLI — a byte copy
+        # of this checker — over it: the run must fail with the membership
+        # diagnostic naming that exact file. An unwired main() accepts the
+        # same checkout (exit 0); a digest mismatch or parser error cannot
+        # produce this diagnostic.
+        membership_cli_root = root / "membership cli checkout"
+        for relative in (
+            "ios/check-release-demo.py",
+            "ios/release_source_manifest.py",
+            "ios/project.yml",
+            "ios/FleetNotifier.xcodeproj/project.pbxproj",
+            "ios/FleetNotifierTests/FleetNotifierTests.swift",
+            "ios/tools/herd-art/check-native-art.py",
+            "ios/tools/herd-art/appicon-approval.json",
+            "ios/tools/herd-art/resource-allowlist.json",
+        ):
+            destination = membership_cli_root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes((ROOT / relative).read_bytes())
+        for app_file in sorted((ROOT / "ios/FleetNotifier").rglob("*")):
+            if not app_file.is_file():
+                continue
+            destination = membership_cli_root / app_file.relative_to(ROOT)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(app_file.read_bytes())
+        unlisted_source = (
+            membership_cli_root
+            / "ios/FleetNotifier/UI/UnlistedMembershipFixture.swift"
+        )
+        unlisted_source.write_text(
+            "let unlistedMembershipFixture = 1\n", encoding="utf-8"
+        )
+        cli_run = subprocess.run(
+            [sys.executable, str(membership_cli_root / "ios/check-release-demo.py")],
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=membership_cli_root,
+        )
+        if cli_run.returncode == 0:
+            raise CheckFailure(
+                "production entry path accepted an unlisted app target source "
+                f"(rc=0): {membership_cli_root}"
+            )
+        diagnostic = (
+            "release-demo check: FAIL: app target Swift source missing from "
+            "RELEASE_SOURCE_FILES: ios/FleetNotifier/UI/UnlistedMembershipFixture.swift"
+        )
+        if diagnostic not in cli_run.stderr:
+            raise CheckFailure(
+                "production entry path failed without the membership "
+                f"diagnostic (rc={cli_run.returncode}): {cli_run.stderr.strip()!r}"
+            )
+
         modified_source_root = root / "modified checkout with spaces"
         for relative in RELEASE_SOURCE_FILES:
             source = ROOT / relative
@@ -2005,6 +2177,7 @@ def main() -> int:
         if args.self_test:
             _self_test()
         _check_release_build_phase_configuration()
+        _check_release_manifest_completeness()
         _check_release_source_digest()
         _check_test_source_digest()
         for relative, markers in SOURCE_MARKERS.items():

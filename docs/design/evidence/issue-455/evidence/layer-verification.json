@@ -1,0 +1,30 @@
+[
+  {
+    "environment": "day",
+    "planes": [
+      "assets/layers/day/00-sky.svg",
+      "assets/layers/day/10-hills.svg",
+      "assets/layers/day/20-ground.svg",
+      "assets/layers/day/30-barn-trees.svg",
+      "assets/layers/day/40-rear-fences.svg",
+      "assets/layers/day/50-foreground.svg"
+    ],
+    "sameOrigin": true,
+    "pixelEqual": true,
+    "differenceBounds": null
+  },
+  {
+    "environment": "night",
+    "planes": [
+      "assets/layers/night/00-sky.svg",
+      "assets/layers/night/10-hills.svg",
+      "assets/layers/night/20-ground.svg",
+      "assets/layers/night/30-barn-trees.svg",
+      "assets/layers/night/40-rear-fences.svg",
+      "assets/layers/night/50-foreground.svg"
+    ],
+    "sameOrigin": true,
+    "pixelEqual": true,
+    "differenceBounds": null
+  }
+]

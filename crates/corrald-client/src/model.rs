@@ -141,17 +141,11 @@ pub struct Attachment {
 
 /// The canonical drive capabilities (D7). Never hardcoded per tool —
 /// clients render buttons from `Agent.capabilities`; mirror of the
-/// daemon's `core::model::CAPABILITIES` (must stay in sync, #232 adds
-/// `read_diff`).
-pub const CAPABILITIES: [&str; 7] = [
-    "prompt",
-    "interrupt",
-    "approve",
-    "read_tail",
-    "read_diff",
-    "kill",
-    "attach",
-];
+/// daemon's `core::model::CAPABILITIES` (must stay in sync). Since the
+/// #354 read-only cut only the two signed reads are advertised: every
+/// mutating capability was removed from the daemon, so advertising one
+/// would show a button the daemon can never dispatch (#501).
+pub const CAPABILITIES: [&str; 2] = ["read_tail", "read_diff"];
 
 /// Canonical agent record. Flat keyed record in snapshot/delta payloads.
 /// `agent_id` is opaque and source-stable (never a pane id).

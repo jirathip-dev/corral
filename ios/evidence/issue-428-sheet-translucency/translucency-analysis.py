@@ -14,9 +14,15 @@ acceptance surface regresses:
      backdrop-owned regions (the material response survived);
   G4 the recents sheet's backdrop slivers (gaps + bottom strip) carry
      the flavor cast too.
+  G5 (#428 correction) the recents sheet's background regions INSIDE the
+     card rect (left/right margins + the strip under the last block) are
+     the shared TRANSLUCENT backdrop — measurably NOT the opaque base
+     paint (the masking-layer revert the #428 control flag paints fails
+     here; run --mode=masked against those frames to prove it bites).
 
 Usage:
   python3 translucency-analysis.py <frames-dir> [--flavor-pairs]
+  python3 translucency-analysis.py <frames-dir> --mode=masked
 The frames-dir must hold the standard phase files
   phase-416-2-recents-mocha / -3-recents-latte / -5-settings-mocha /
   -6-settings-latte [-390x844.png], plus optional phase-1-mh-add-* files.
@@ -52,6 +58,18 @@ SETTINGS_MEDIUM = {
 RECENTS_MEDIUM = {
     "bottom": (90, 796, 300, 828),     # backdrop strip under the last block
 }
+# #428 correction: the in-card background ring (the card's ~8-20 pt side
+# margins; no card ever covers these columns).
+RECENTS_RING = [
+    (10, 560, 17, 780),    # left in-card margin
+    (374, 560, 381, 780),  # right in-card margin
+]
+
+# The masking-layer control run (--mode=masked): the frames are captured
+# with `-corral428MaskSheetBackground`, which paints the recents sheet's
+# background regions with the opaque base fill. The transmission check
+# then inverts: the region must measure AS the base paint (< threshold).
+EXPECT_MASKED = False
 ADD_HOST_MEDIUM = {
     "cells": (60, 560, 330, 800),
     "backdrop": (60, 430, 330, 540),
@@ -134,6 +152,31 @@ def check_backdrop_cast(name, frame_path, flavor, region, floor=220):
     return ok
 
 
+def check_transmission(name, frame_path, flavor, region):
+    """G5 (#428 correction): a sheet-background region INSIDE the card rect
+    must be the shared TRANSLUCENT backdrop — measurably NOT the opaque
+    base paint. The pre-#428 coverage (and the
+    `-corral428MaskSheetBackground` control) paints the region with base,
+    which reads as the base color exactly; the translucent surface carries
+    the material/frost contribution on top of the tint, so it measurably
+    differs from the paint. Threshold 4 sRGB channels ~ between the
+    measured candidates (>= 5) and the paint (<= 1)."""
+    img = load(frame_path, name)
+    mean = mean_tone(img, region)
+    base = BASE[flavor]
+    delta = max(abs(mean[i] - base[i]) for i in range(3))
+    if EXPECT_MASKED:
+        ok = delta < 4.5
+        expectation = "opaque base paint (masking-layer control)"
+    else:
+        ok = delta >= 4.5
+        expectation = "translucent backdrop, not a paint fill"
+    print(f"[{'PASS' if ok else 'FAIL'}] {name} in-sheet background: "
+          f"mean=({mean[0]:.1f},{mean[1]:.1f},{mean[2]:.1f}) vs base {base} "
+          f"max-delta={delta:.1f} (expect {expectation})")
+    return ok
+
+
 def check_system_leak(name, frame_path, region):
     img = load(frame_path, name)
     share = near_system(img, region)
@@ -151,6 +194,7 @@ def load(path, name):
 
 
 def main(argv):
+    global EXPECT_MASKED
     if len(argv) < 2:
         print(__doc__)
         return 2
@@ -161,8 +205,21 @@ def main(argv):
             mode = a.split("=", 1)[1]
     # mode: medium (Mocha/Latte driver phases), spots (Frappe/Macchiato
     # run of the same phases), large (release presentation, no medium
-    # detents). Fallback pairs ride the same dir as *-fallback-* files.
-    if mode == "spots":
+    # detents), masked (masking-layer control run of the recents phases:
+    # the transmission check inverts and must FAIL as the paint).
+    # Fallback pairs ride the same dir as *-fallback-* files.
+    if mode == "masked":
+        EXPECT_MASKED = True
+        print("== masking-layer control (the same in-sheet transmission checks "
+              "must find the opaque base paint) ==")
+        # The control's paint covers the card content bounds; the
+        # bottom-strip sliver under the sheet's bottom padding is out of
+        # its reach in both runs, so the control exercises the ring.
+        frame_checks = [
+            ("phase-416-2-recents-mocha-390x844.png", "mocha", "ring"),
+            ("phase-416-3-recents-latte-390x844.png", "latte", "ring"),
+        ]
+    elif mode == "spots":
         frame_checks = [
             # (frame, flavor, region-key) — the spot runs keep the driver's
             # phase markers but render Frappe/Macchiato (launch arg).
@@ -197,7 +254,9 @@ def main(argv):
             ("phase-416-6-settings-latte-390x844.png", "latte", "cells"),
             ("phase-416-6-settings-latte-390x844.png", "latte", "backdrop"),
             ("phase-416-2-recents-mocha-390x844.png", "mocha", "bottom"),
+            ("phase-416-2-recents-mocha-390x844.png", "mocha", "ring"),
             ("phase-416-3-recents-latte-390x844.png", "latte", "bottom"),
+            ("phase-416-3-recents-latte-390x844.png", "latte", "ring"),
         ]
     results = []
     for fname, flavor, rk in frame_checks:
@@ -222,6 +281,10 @@ def main(argv):
             results.append(check_backdrop_cast(fname, path, flavor, SETTINGS_MEDIUM["backdrop"], floor=219))
         elif rk == "bottom":
             results.append(check_backdrop_cast(fname, path, flavor, RECENTS_MEDIUM["bottom"], floor=229))
+            results.append(check_transmission(fname, path, flavor, RECENTS_MEDIUM["bottom"]))
+        elif rk == "ring":
+            for region in RECENTS_RING:
+                results.append(check_transmission(fname, path, flavor, region))
     # A/B material response: the glass and forced-fallback settings frames
     # must differ in the backdrop region (both at the fixed head carry the
     # material, the glass branch adds the native glass layer).

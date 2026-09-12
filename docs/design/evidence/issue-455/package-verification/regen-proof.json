@@ -1,0 +1,11 @@
+{
+  "command": "python3 -B tools/build.py (in a scratch copy), then sha256 of regenerated files vs retained source manifest",
+  "regeneratedFiles": 35,
+  "byteIdenticalToSourceManifest": 35,
+  "mismatches": [],
+  "approvedArtifactRegeneratedSha256": "ca0a1a0991aa66364598eaacdac4d328de6a4ac1e57e03707aa708851791bf61",
+  "approvedArtifactExpectedSha256": "ca0a1a0991aa66364598eaacdac4d328de6a4ac1e57e03707aa708851791bf61",
+  "approvedArtifactRegenerationByteIdentical": true,
+  "historicalVariantRegeneratedSha256": "fa31421c9dcee0b5b1116627b404466f9009e78c3a970154326fca258d49b47c",
+  "status": "PASS"
+}

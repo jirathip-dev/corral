@@ -26,6 +26,19 @@ struct PushPayload: Sendable, Equatable {
         case started
         case blocked
         case finished
+
+        /// Wire vocabulary: the daemon emits `done` for the completion push
+        /// (src/push/payload.rs `done_payload`); `finished` is the Swift-side
+        /// (and DEBUG local-bridge) spelling of the same transition. Any
+        /// other value is rejected exactly as before.
+        init?(rawValue: String) {
+            switch rawValue {
+            case "started": self = .started
+            case "blocked": self = .blocked
+            case "finished", "done": self = .finished
+            default: return nil
+            }
+        }
     }
 
     var type: PushType

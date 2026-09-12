@@ -93,6 +93,12 @@ AppIcon catalog:
   vend appiconset renditions to `UIImage`. They are the only non-symbol image
   loaders `check-native-art.py` allows in app source; regenerate them with
   `python3 ios/tools/herd-art/app-icons.py --write` / `--check`.
+- The installed app's Home Screen name is exactly `Corral` (#512), not the
+  truncating `Corral: Agent Fleet`. XcodeGen owns the generated
+  `ios/FleetNotifier/Info.plist`, so that generated plist carries the shipped
+  value; `python3 ios/tools/herd-art/check-display-name.py` fails closed when
+  the spec or the generated plist drifts, and with `--bundle` when the BUILT
+  product's `Info.plist` does.
 
 When the approved source PNG is available, regenerate the historical
 repository outputs with:
@@ -179,6 +185,8 @@ secrets. The same commands run locally:
 python3 ios/check-release-demo.py                       # Release boundary + source digest + native-art source checks
 python3 ios/tools/herd-art/app-icons.py --check         # four-icon catalog + preview imagesets
 python3 ios/tools/herd-art/test-app-icons.py --output /tmp/app-icon-proofs   # guard mutation battery
+python3 ios/tools/herd-art/check-display-name.py        # #512 installed display name (generated plist and spec)
+python3 ios/tools/herd-art/test-display-name.py --output /tmp/display-name-proofs   # guard mutation battery
 ```
 
 `check-release-demo.py` also invokes `check-native-art.py` in source mode. The
@@ -186,6 +194,8 @@ built-product and simulator sides stay off CI, as before:
 `check-native-art.py --bundle`, `test-native-art.py --app` and the
 probe/capture drivers need a prior build or a booted simulator, and the
 FleetNotifier XCTest suite runs only when `ios.yml` is dispatched.
+`check-display-name.py --bundle` extends the same display-name guard to the
+built product locally.
 
 Historical verified results on main:
 

@@ -32,6 +32,13 @@ pub fn auth_routes() -> Router<Arc<AppState>> {
         .route("/host-key", get(host_key))
         .route("/register", post(register))
         .route("/audit", get(audit))
+        // #485 device half of host-approved enrollment. OWNER operations
+        // (mint/pending/approve/revoke) deliberately have NO route here —
+        // they live on the local-only unix owner channel
+        // (`crate::auth::owner`); the network listener must never gain a
+        // grant mutation (#354 line, O1 owner pin).
+        .route("/enroll/redeem", post(enroll_redeem))
+        .route("/enroll/status", post(enroll_status))
 }
 
 /// GET /host-key — host identity is a curve25519 key, not a hostname.
@@ -46,6 +53,96 @@ async fn host_key(State(state): State<Arc<AppState>>) -> Json<serde_json::Value>
 
 fn json_err(status: StatusCode, error: &str) -> (StatusCode, Json<serde_json::Value>) {
     (status, Json(serde_json::json!({ "error": error })))
+}
+
+/// Error shape for the new #485 endpoints: additive `code` field next to
+/// the existing `error` string (frozen §5.3 vocabulary).
+fn enroll_err(
+    status: StatusCode,
+    error: &str,
+    code: &str,
+) -> (StatusCode, Json<serde_json::Value>) {
+    (
+        status,
+        Json(serde_json::json!({ "error": error, "code": code })),
+    )
+}
+
+/// POST /enroll/redeem — the device half of host-approved enrollment: the
+/// single-use code is the only credential and success yields a *pending*
+/// request, never authority. Redeem consumes the code under the session
+/// lock (one winner among racing requests); a known REVOKED key re-enters
+/// as a pending restore request (approval restores, redeem never does).
+async fn enroll_redeem(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if body.get("v").and_then(|v| v.as_u64()) != Some(1) {
+        return enroll_err(
+            StatusCode::BAD_REQUEST,
+            "unsupported or missing v (expected 1)",
+            "malformed_request",
+        );
+    }
+    let Some(code_b64) = body.get("code").and_then(|v| v.as_str()) else {
+        return enroll_err(StatusCode::BAD_REQUEST, "missing code", "malformed_request");
+    };
+    let Some(public_key) = body
+        .get("public_key")
+        .and_then(|v| v.as_str())
+        .and_then(super::b64_decode_array_32)
+    else {
+        return enroll_err(
+            StatusCode::BAD_REQUEST,
+            "public_key must be base64 of 32 bytes",
+            "bad_public_key",
+        );
+    };
+    let name = match body.get("name") {
+        None => None,
+        Some(serde_json::Value::String(s)) => Some(s.as_str()),
+        Some(_) => {
+            return enroll_err(
+                StatusCode::BAD_REQUEST,
+                "name must be a string",
+                "malformed_request",
+            );
+        }
+    };
+    let (status, value) = super::owner::redeem_outcome(state.auth.enrollment.redeem(
+        code_b64,
+        public_key,
+        name,
+        super::registry::now_secs(),
+        &state.auth.registry,
+    ));
+    (status, Json(value))
+}
+
+/// POST /enroll/status — read-only polling for a code the caller already
+/// holds. NEVER 409 for a consumed code (frozen C2: a lost redeem response
+/// must not brick polling); precedence is unknown → 404, expired → 410,
+/// then state.
+async fn enroll_status(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if body.get("v").and_then(|v| v.as_u64()) != Some(1) {
+        return enroll_err(
+            StatusCode::BAD_REQUEST,
+            "unsupported or missing v (expected 1)",
+            "malformed_request",
+        );
+    }
+    let Some(code_b64) = body.get("code").and_then(|v| v.as_str()) else {
+        return enroll_err(StatusCode::BAD_REQUEST, "missing code", "malformed_request");
+    };
+    let (status, value) = super::owner::status_outcome(state.auth.enrollment.status(
+        code_b64,
+        super::registry::now_secs(),
+        &state.auth.registry,
+    ));
+    (status, Json(value))
 }
 
 /// POST /register {token, public_key, name?} -> {key_id, grants, expiry_ts}.

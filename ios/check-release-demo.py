@@ -464,7 +464,22 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # THIS merged checkout (refresh454-union + 18089eb) by the canonical
     # algorithm; neither parent pin applies
     # (d729ce6d… = #454 lane stage, 56b71243… = integration refresh).
-    "04bc0d2d9d97548c5dab4b25e9b1a19c6abffeb4af5a7e558afbed5e9e367a40"
+    # #460 final union: the sky-only RanchPainter drift
+    # (RanchEnvironment.swift) joins the integration set (18089eb3) — the pin
+    # below is recomputed by the canonical algorithm over THIS merged
+    # checkout (g460-sky-drift × 18089eb3); neither parent pin applies
+    # (70f1397e… = #460-only over b2e4ee23, 56b71243… = 18089eb3 without
+    # #460). The #460 test delta touches only HerdWindTests.swift, so the test
+    # pin above stays integration's canonical value.
+    # #454 ∪ #460 union: the refresh absorbs the sky-only RanchPainter drift
+    # (RanchEnvironment.swift — #460) — the release pin below is recomputed
+    # over THIS merged checkout (refresh454-union + 0c66a500) by the
+    # canonical algorithm; neither parent release pin applies
+    # (04bc0d2d… = #454 refresh 1bc37f3e, 577c868c… = #460 union 0c66a500).
+    # #460's test delta touches only HerdWindTests.swift, outside the test
+    # pin; the pinned file recomputes to the #454 lane value (39af3bb9…)
+    # over the merged checkout — integration's 5ca855db… does not apply.
+    "96c926e19de50a43eeb4cb79aece091e79ebcb84222fefebe44e7a72bf8c1a43"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

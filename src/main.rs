@@ -287,6 +287,27 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr, cors_origins: Vec<St
             .unwrap_or_else(|e| panic!("auth plane init failed in {:?}: {e}", config_dir())),
     );
 
+    // #485: the local owner channel is a unix socket — never an HTTP route.
+    // Owner mutations (mint/pending/approve/revoke) are reachable only from
+    // this host, authenticated by OS identity (0600 socket in the 0700
+    // config dir + accept-time peer-credential check); the network listener
+    // gains no grant/enrollment mutation surface (#354 line held; O1 owner
+    // pin).
+    let owner_socket = corrald::auth::owner::socket_path(&config_dir());
+    let owner_listener = corrald::auth::owner::bind(&owner_socket)
+        .await
+        .unwrap_or_else(|e| {
+            panic!(
+                "owner socket init failed at {}: {e}",
+                owner_socket.display()
+            )
+        });
+    tracing::info!(
+        path = %owner_socket.display(),
+        "owner channel listening (local-only unix socket)"
+    );
+    tokio::spawn(corrald::auth::owner::serve(owner_listener, auth.clone()));
+
     // The two P2 data planes + the integrator that folds their facts onto
     // the agent records. `CORRAL_REPO_ROOT`/`CORRAL_WORKTREES_ROOT` override
     // the HOME-derived defaults. The planes keep their push-only contract;

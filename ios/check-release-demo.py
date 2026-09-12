@@ -1946,6 +1946,63 @@ suffix
             "ios/FleetNotifier/UI/Added.swift",
         )
 
+        # #471B F1: the in-process controls above cannot detect the production
+        # wiring being removed (they call the helper directly). This control
+        # materializes an otherwise-valid scratch checkout whose app tree
+        # carries ONE unlisted Swift file and runs the REAL CLI — a byte copy
+        # of this checker — over it: the run must fail with the membership
+        # diagnostic naming that exact file. An unwired main() accepts the
+        # same checkout (exit 0); a digest mismatch or parser error cannot
+        # produce this diagnostic.
+        membership_cli_root = root / "membership cli checkout"
+        for relative in (
+            "ios/check-release-demo.py",
+            "ios/release_source_manifest.py",
+            "ios/project.yml",
+            "ios/FleetNotifier.xcodeproj/project.pbxproj",
+            "ios/FleetNotifierTests/FleetNotifierTests.swift",
+            "ios/tools/herd-art/check-native-art.py",
+            "ios/tools/herd-art/appicon-approval.json",
+            "ios/tools/herd-art/resource-allowlist.json",
+        ):
+            destination = membership_cli_root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes((ROOT / relative).read_bytes())
+        for app_file in sorted((ROOT / "ios/FleetNotifier").rglob("*")):
+            if not app_file.is_file():
+                continue
+            destination = membership_cli_root / app_file.relative_to(ROOT)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(app_file.read_bytes())
+        unlisted_source = (
+            membership_cli_root
+            / "ios/FleetNotifier/UI/UnlistedMembershipFixture.swift"
+        )
+        unlisted_source.write_text(
+            "let unlistedMembershipFixture = 1\n", encoding="utf-8"
+        )
+        cli_run = subprocess.run(
+            [sys.executable, str(membership_cli_root / "ios/check-release-demo.py")],
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=membership_cli_root,
+        )
+        if cli_run.returncode == 0:
+            raise CheckFailure(
+                "production entry path accepted an unlisted app target source "
+                f"(rc=0): {membership_cli_root}"
+            )
+        diagnostic = (
+            "release-demo check: FAIL: app target Swift source missing from "
+            "RELEASE_SOURCE_FILES: ios/FleetNotifier/UI/UnlistedMembershipFixture.swift"
+        )
+        if diagnostic not in cli_run.stderr:
+            raise CheckFailure(
+                "production entry path failed without the membership "
+                f"diagnostic (rc={cli_run.returncode}): {cli_run.stderr.strip()!r}"
+            )
+
         modified_source_root = root / "modified checkout with spaces"
         for relative in RELEASE_SOURCE_FILES:
             source = ROOT / relative

@@ -101,6 +101,16 @@ those declarations and quotes its `SRCROOT`/`DERIVED_FILE_DIR` paths. This
 keeps the user-script sandbox inputs explicit and supports build paths with
 spaces.
 
+`release_source_manifest.py` pins the exact app-target Swift source set:
+every `.swift` file under `FleetNotifier/`, the app target's source
+directory, including files whose bodies are conditional-compilation gated —
+a DEBUG-only body is still app source, so it is listed and digest-pinned
+too. `check-release-demo.py` enforces that membership in both directions,
+independently of the conditional-compilation analysis: an app source
+present on disk without a manifest entry fails, and a manifest entry that
+is not an app-target source (stale, or outside `FleetNotifier/`) fails as
+well.
+
 ## Swift lint (advisory)
 
 `tools/anti-slop-swift` is a checked-in snapshot of

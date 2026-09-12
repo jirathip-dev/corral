@@ -440,6 +440,7 @@
 				"$(SRCROOT)/FleetNotifier/App/AppModel.swift",
 				"$(SRCROOT)/FleetNotifier/App/FleetNotifierApp.swift",
 				"$(SRCROOT)/FleetNotifier/App/FleetStore.swift",
+				"$(SRCROOT)/FleetNotifier/Demo/AddHostCommitEvidenceURLProtocol.swift",
 				"$(SRCROOT)/FleetNotifier/Demo/DemoFleet.swift",
 				"$(SRCROOT)/FleetNotifier/Demo/HerdEvidence.swift",
 				"$(SRCROOT)/FleetNotifier/Keychain/DeviceKeyStore.swift",

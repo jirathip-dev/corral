@@ -424,7 +424,10 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # manifest/app-tree membership in both directions independently of this
     # digest; the pin below is recomputed from THIS union checkout
     # (#451/#452/#453 merged, 71775c0); no parent pin applies.
-    "94172201c8d48f63579f1cb840b1181e9b45379c9a294d2deaabae3902f6afd9"
+    # #491: owner-adaptive Herd summary fit ladder (HerdView.swift) —
+    # re-pinned over the #459 integration tree; the test digest was
+    # recomputed unchanged (FleetNotifierTests.swift untouched).
+    "0dad5c34a82ca18c5e2deb4e6802e98b4400c1d0a21168cacb65e61ac218cbc1"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -734,8 +737,13 @@ SUPPORTED_CONDITIONS = {"true", "false", "DEBUG", "!DEBUG"}
 # view: that would shift source-line alignment with the syntax view.  Keep a
 # canonical escaped spelling instead.  It is deliberately not equivalent to
 # the decoded character for marker matching, so a malformed or split literal
-# cannot accidentally satisfy a marker.
-UNICODE_LINE_SEPARATOR_SCALARS = frozenset({0x000A, 0x000D, 0x0085, 0x2028, 0x2029})
+# cannot accidentally satisfy a marker.  #478: the set must be exactly the
+# scalars Python's ``str.splitlines()`` treats as line boundaries (the
+# self-test derives that inventory independently); every other scalar keeps
+# its decoded character.
+UNICODE_LINE_SEPARATOR_SCALARS = frozenset(
+    {0x000A, 0x000B, 0x000C, 0x000D, 0x001C, 0x001D, 0x001E, 0x0085, 0x2028, 0x2029}
+)
 
 # These are intentionally limited to user-facing/argument literals.  Syntax
 # markers such as ``enterDemo`` and ``func register(`` must only be found in
@@ -1848,6 +1856,33 @@ suffix
             _expect_failure(
                 lambda fixture=fixture: _check_source(fixture, (r"\(demo\)",)),
                 f"Unicode-escaped user-facing literal in {name}",
+            )
+
+        # #478: derive Python's actual str.splitlines() boundary inventory
+        # independently of the production normalization set (and of the
+        # set-driven loop below): dropping a boundary from the set must fail
+        # here instead of silently shrinking the separator fixtures, and a
+        # non-boundary member must not change that scalar's decode.
+        boundary_candidates = list(range(0x00, 0x100)) + [0x2028, 0x2029]
+        python_boundaries = {
+            scalar
+            for scalar in boundary_candidates
+            if len(("a" + chr(scalar) + "b").splitlines()) > 1
+        }
+        uncovered = python_boundaries - UNICODE_LINE_SEPARATOR_SCALARS
+        if uncovered:
+            raise CheckFailure(
+                "normalize set must cover every Python splitlines boundary "
+                "scalar: "
+                + ", ".join(f"U+{scalar:04X}" for scalar in sorted(uncovered))
+            )
+        non_boundary_members = UNICODE_LINE_SEPARATOR_SCALARS - python_boundaries
+        if non_boundary_members:
+            raise CheckFailure(
+                "normalize set must not contain non-boundary scalars: "
+                + ", ".join(
+                    f"U+{scalar:04X}" for scalar in sorted(non_boundary_members)
+                )
             )
 
         for scalar in sorted(UNICODE_LINE_SEPARATOR_SCALARS):

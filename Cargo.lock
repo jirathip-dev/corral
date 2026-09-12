@@ -498,6 +498,7 @@ dependencies = [
  "git2",
  "http-body-util",
  "keyring",
+ "libc",
  "notify",
  "p256",
  "reqwest",

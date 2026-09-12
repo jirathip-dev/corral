@@ -396,11 +396,13 @@ final class HostStreamCoordinator: ObservableObject {
             // guard above must hold across its entire lifetime), and only
             // the ladder that still owns this session may clear it.
             defer {
+                // #454 pre-review fix 3: only the owning ladder clears its own
+                // waiting state — a retired ladder's cleanup must never erase
+                // its successor's wait.
                 if session.continuityGeneration == ladder {
                     session.continuityTask = nil
+                    session.continuityWaiting = false
                 }
-                // #454: a finished/cancelled ladder is never "waiting".
-                session.continuityWaiting = false
             }
             var attempt = 1
             while true {

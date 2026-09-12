@@ -191,10 +191,20 @@ protocol NetworkPathMonitoring: AnyObject {
 /// code in the path-hint feature. Updates are hopped to the main actor; the
 /// owner's guards (state, generation, episode) do all the deciding.
 final class SystemNetworkPathMonitor: NetworkPathMonitoring {
-    private let monitor = NWPathMonitor()
     private let queue = DispatchQueue(label: "corral.network-path-monitor")
+    /// #454 pre-review fix 1: the underlying monitor is created FRESH on every
+    /// logical start. The lane's actual-adapter test OBSERVED, for this Swift
+    /// `NWPathMonitor` in-process on iOS, that a cancelled instance delivers NO
+    /// further path update — so reusing one would silently stop path
+    /// observation after the first background → foreground cycle.
+    private var monitor: NWPathMonitor?
 
     func start(_ handler: @escaping @Sendable (Bool) -> Void) {
+        // A start while one is already live replaces it (the owner is
+        // idempotent, so this is not a normal path).
+        monitor?.cancel()
+        let monitor = NWPathMonitor()
+        self.monitor = monitor
         monitor.pathUpdateHandler = { path in
             let satisfied = path.status == .satisfied
             Task { @MainActor in handler(satisfied) }
@@ -203,7 +213,8 @@ final class SystemNetworkPathMonitor: NetworkPathMonitoring {
     }
 
     func stop() {
-        monitor.cancel()
+        monitor?.cancel()
+        monitor = nil
     }
 }
 
@@ -469,6 +480,11 @@ final class AppModel: ObservableObject {
     /// #454: true only while the live session owns the monitor — every
     /// callback is refused after stopLive (background/removal boundary).
     private var pathMonitorStarted = false
+    /// #454 pre-review fix 2: monotonic generation of the logical monitor
+    /// session. A callback already QUEUED from a retired generation must never
+    /// be applied to its successor (start → stop → start would otherwise let a
+    /// stale update drive the restarted session's hint machinery).
+    private var pathMonitorGeneration = 0
     /// #454: has an UNSATISFIED path been observed since the last actionable
     /// hint? Only a satisfied observation AFTER one is a restoration, so
     /// repeated satisfied updates (interface churn, a satisfied path with
@@ -1218,12 +1234,15 @@ final class AppModel: ObservableObject {
         keyContinuityTask = Task { @MainActor [weak self] in
             guard let self else { return }
             defer {
+                // #454 pre-review fix 3: ONLY the ladder that still owns the
+                // handle may clear its own waiting state. A retired ladder's
+                // cancellation cleanup must never erase a successor's wait
+                // (the successor's re-drive would then silently not happen).
                 if self.keyContinuityTaskId == taskId {
                     self.keyContinuityTask = nil
                     self.keyContinuityTaskId = nil
+                    self.keyContinuityWaiting = false
                 }
-                // #454: a finished/cancelled ladder is never "waiting".
-                self.keyContinuityWaiting = false
             }
             var attempt = 1
             while true {
@@ -2359,6 +2378,10 @@ final class AppModel: ObservableObject {
         keyContinuityTask?.cancel()
         keyContinuityTask = nil
         keyContinuityTaskId = nil
+        // #454 pre-review fix 3: the background boundary resets the ladder's
+        // waiting state explicitly (the retired ladder's own cleanup no longer
+        // clears it — see beginKeyContinuityCheck).
+        keyContinuityWaiting = false
         // #399: mirror the active profile's cursor into the profile store
         // and persist the allowlisted board metadata cache (background/
         // host-switch boundaries).
@@ -2427,8 +2450,16 @@ final class AppModel: ObservableObject {
         guard !pathMonitorStarted else { return }
         pathMonitorStarted = true
         pathWasUnsatisfied = false
+        // #454 pre-review fix 2: this logical start is a NEW generation; the
+        // callback carries it so a retired monitor's queued updates are
+        // refused instead of driving the restarted session.
+        pathMonitorGeneration &+= 1
+        let generation = pathMonitorGeneration
         pathMonitor.start { [weak self] satisfied in
-            Task { @MainActor in self?.handlePathStatus(satisfied) }
+            Task { @MainActor in
+                guard let self, self.pathMonitorGeneration == generation else { return }
+                self.handlePathStatus(satisfied)
+            }
         }
     }
 

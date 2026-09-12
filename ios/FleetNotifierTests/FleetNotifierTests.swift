@@ -11876,6 +11876,10 @@ private final class FakeNetworkPathMonitor: NetworkPathMonitoring {
 
     var isRunning: Bool { handler != nil }
 
+    /// The handler captured by the most recent `start(_:)`, retained so a test
+    /// can emit from a RETIRED generation after a restart.
+    var capturedHandler: (@Sendable (Bool) -> Void)? { handler }
+
     func start(_ handler: @escaping @Sendable (Bool) -> Void) {
         self.handler = handler
         startCount += 1
@@ -11947,6 +11951,7 @@ private final class PathHintURLProtocol: URLProtocol {
     private static var scriptsStorage: [URL: [Response]] = [:]
     private static var countsStorage: [URL: Int] = [:]
     private static var heldStorage: [PathHintURLProtocol] = []
+    private static var stopLoadingHoldsStorage: [URL: TimeInterval] = [:]
 
     private let queue = DispatchQueue(label: "corral.g454.pathhint.protocol")
     private var timer: DispatchSourceTimer?
@@ -11959,7 +11964,24 @@ private final class PathHintURLProtocol: URLProtocol {
         scriptsStorage = [:]
         countsStorage = [:]
         heldStorage = []
+        stopLoadingHoldsStorage = [:]
         lock.unlock()
+    }
+
+    /// #454 pre-review fixture: delay the protocol-side unwind of a CANCELLED
+    /// request, so a retired owner's cancellation cleanup can be landed after a
+    /// successor entered its wait (a controlled, deterministic overlap).
+    static func setStopLoadingHold(_ seconds: TimeInterval, for url: URL) {
+        lock.lock()
+        stopLoadingHoldsStorage[url] = seconds
+        lock.unlock()
+    }
+
+    private static func stopLoadingHold(for url: URL?) -> TimeInterval {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let url else { return 0 }
+        return stopLoadingHoldsStorage[url] ?? 0
     }
 
     static func script(_ responses: [Response], for url: URL) {
@@ -12021,6 +12043,12 @@ private final class PathHintURLProtocol: URLProtocol {
     }
 
     override func stopLoading() {
+        // #454 pre-review fixture: a per-URL hold delays this cancelled
+        // request's unwind (see setStopLoadingHold).
+        let hold = Self.stopLoadingHold(for: request.url)
+        if hold > 0 {
+            Thread.sleep(forTimeInterval: hold)
+        }
         queue.async { [weak self] in
             guard let self else { return }
             self.stopped = true
@@ -12125,6 +12153,10 @@ final class NetworkPathHintTests: XCTestCase {
 
     private func hostKeyURL(_ host: String) -> URL {
         url(host).appendingPathComponent("/host-key")
+    }
+
+    private func snapshotURL(_ host: String) -> URL {
+        url(host).appendingPathComponent("/snapshot")
     }
 
     private static func pinnedKeyB64(_ index: Int) -> String {
@@ -12719,6 +12751,170 @@ final class NetworkPathHintTests: XCTestCase {
         await settle(0.5)
         XCTAssertEqual(PathHintURLProtocol.requestCount(for: hostKey), 2,
                        "no restart loop: one re-drive for the waiting ladder (#454)")
+    }
+
+    // MARK: #454 pre-review lifecycle repairs (1: real adapter restart, 2: retired callbacks, 3: retired cleanup)
+
+    /// #454 pre-review fix 1: the PRODUCTION adapter's logical restart
+    /// (background → foreground) must observe paths AGAIN. This drives the
+    /// REAL adapter — the SWIFT `NWPathMonitor` in-process on the iOS
+    /// Simulator — through start → first path update → stop → start: a SECOND
+    /// update must arrive. The OBSERVED iOS/Swift behavior is the authority
+    /// here; it is not interchangeable with the ORCH passive C
+    /// `nw_path_monitor_*` probe on macOS (API layer AND runtime both differ).
+    func testSystemPathMonitorRestartObservesPathsAgain() async {
+        let adapter = SystemNetworkPathMonitor()
+
+        let firstUpdate = expectation(description: "first path update")
+        firstUpdate.assertForOverFulfill = false
+        adapter.start { _ in firstUpdate.fulfill() }
+        await fulfillment(of: [firstUpdate], timeout: 5)
+        adapter.stop()
+
+        let secondUpdate = expectation(description: "path update after the logical restart")
+        secondUpdate.assertForOverFulfill = false
+        adapter.start { _ in secondUpdate.fulfill() }
+        await fulfillment(of: [secondUpdate], timeout: 5)
+        adapter.stop()
+    }
+
+    /// #454 pre-review fix 2: a callback ALREADY QUEUED from a RETIRED monitor
+    /// generation must never drive the restarted session. The test retains the
+    /// generation-1 handler across a real background/foreground cycle, then
+    /// emits an old unsatisfied/satisfied pair — no hint may fire — while the
+    /// CURRENT generation's restoration still acts exactly once.
+    func testRetiredMonitorCallbackCannotDriveTheRestartedSession() async {
+        let monitor = FakeNetworkPathMonitor()
+        let session = makeSession()
+        defer { cleanUp() }
+        let fixture = makePinnedFixture(hosts: [Self.activeHost],
+                                        monitor: monitor, session: session)
+        let events = eventsURL(Self.activeHost)
+        scriptHostKey(Self.activeHost, keyIndex: 0)
+        PathHintURLProtocol.script([.held], for: events)
+
+        fixture.model.startLive()
+        let firstAttempt = await waitFor { PathHintURLProtocol.requestCount(for: events) == 1 }
+        XCTAssertTrue(firstAttempt, "the live session must dispatch its first /events attempt")
+        // Retain the CURRENT generation's handler BEFORE the restart retires it.
+        let retiredHandler = monitor.capturedHandler
+        XCTAssertNotNil(retiredHandler, "the monitor must have been started")
+
+        fixture.model.handleScenePhaseChange(.background)
+        fixture.model.handleScenePhaseChange(.active)
+        let restarted = await waitFor { PathHintURLProtocol.requestCount(for: events) == 2 }
+        XCTAssertTrue(restarted, "the foreground must open exactly one fresh stream owner")
+
+        // The retired generation's queued pair must be refused.
+        retiredHandler?(false)
+        retiredHandler?(true)
+        await settle(0.6)
+        XCTAssertEqual(PathHintURLProtocol.requestCount(for: events), 2,
+                       "a callback from a RETIRED monitor generation must never drive the restarted session (#454 pre-review fix 2)")
+
+        // The CURRENT generation's restoration still acts, exactly once.
+        monitor.fire(satisfied: false)
+        monitor.fire(satisfied: true)
+        let replaced = await waitFor { PathHintURLProtocol.requestCount(for: events) == 3 }
+        XCTAssertTrue(replaced, "the current generation's restoration must still act")
+        await settle(0.4)
+        XCTAssertEqual(PathHintURLProtocol.requestCount(for: events), 3,
+                       "exactly one replacement for the current generation's episode (#454)")
+    }
+
+    /// #454 pre-review fix 3 (ACTIVE path): a RETIRED preflight ladder's
+    /// cancellation cleanup must not erase its successor's waiting state. The
+    /// old ladder is cancelled IN FLIGHT (a pull re-drives it) and its unwind is
+    /// deliberately slowed, so it lands after the fast-failure successor
+    /// entered its wait; the successor must still be re-drivable by a
+    /// restoration.
+    func testRetiredPreflightCleanupCannotClobberTheSuccessorWait() async {
+        let monitor = FakeNetworkPathMonitor()
+        let session = makeSession()
+        defer { cleanUp() }
+        let fixture = makePinnedFixture(
+            hosts: [Self.activeHost],
+            policy: HostPreflightRetryPolicy(baseInterval: 30, maxInterval: 30),
+            monitor: monitor, session: session)
+        let hostKey = hostKeyURL(Self.activeHost)
+        // Attempt 1 hangs (the OLD ladder is cancelled IN FLIGHT); the
+        // successor's attempt 2 fails fast and enters the 30 s wait.
+        PathHintURLProtocol.script([.held, .json(500, Data("down".utf8))], for: hostKey)
+        PathHintURLProtocol.setStopLoadingHold(0.6, for: hostKey)
+
+        fixture.model.startLive()
+        let inFlight = await waitFor { PathHintURLProtocol.requestCount(for: hostKey) == 1 }
+        XCTAssertTrue(inFlight, "the old preflight ladder must be in flight")
+
+        // A pull on a pinned-unverified host re-drives the single ladder:
+        // cancel the in-flight owner, start the fast-failure successor.
+        await fixture.model.refreshFleet()
+        let successor = await waitFor { PathHintURLProtocol.requestCount(for: hostKey) == 2 }
+        XCTAssertTrue(successor, "the successor ladder must run its first attempt")
+        XCTAssertEqual(fixture.model.keyContinuityState, .pending)
+        // Land the retired ladder's (deliberately slowed) unwind after the
+        // successor entered its wait.
+        await settle(0.9)
+
+        restoration(monitor)
+        let redriven = await waitFor({ PathHintURLProtocol.requestCount(for: hostKey) == 3 },
+                                     timeout: 1.5)
+        XCTAssertTrue(redriven,
+                      "the successor's wait must survive the retired ladder's cleanup — only the current owner may clear it (#454 pre-review fix 3)")
+        await settle(0.5)
+        XCTAssertEqual(PathHintURLProtocol.requestCount(for: hostKey), 3,
+                       "no restart loop: one re-drive for the surviving wait (#454)")
+    }
+
+    /// #454 pre-review fix 3 (COORDINATOR path): the same ownership-sensitive
+    /// cleanup for a coordinator host's preflight ladder, re-driven through the
+    /// existing pull (AC5 parity) path while the old attempt is in flight.
+    func testCoordinatorRetiredPreflightCleanupCannotClobberTheSuccessorWait() async {
+        let monitor = FakeNetworkPathMonitor()
+        let session = makeSession()
+        defer { cleanUp() }
+        let fixture = makePinnedFixture(
+            hosts: [Self.healthyHost, Self.activeHost],
+            policy: HostPreflightRetryPolicy(baseInterval: 30, maxInterval: 30),
+            monitor: monitor, session: session)
+        let activeEvents = eventsURL(Self.healthyHost)
+        let hostKey = hostKeyURL(Self.activeHost)
+        let snapshot = snapshotURL(Self.activeHost)
+        scriptHostKey(Self.healthyHost, keyIndex: 0)
+        PathHintURLProtocol.script([.sseComments(TimeInterval(0.3))], for: activeEvents)
+        // The coordinator's first /host-key attempt hangs; the successor's
+        // attempt fails fast into the 30 s wait.
+        PathHintURLProtocol.script([.held, .json(500, Data("down".utf8))], for: hostKey)
+        PathHintURLProtocol.setStopLoadingHold(0.6, for: hostKey)
+        // SAFETY: fixture snapshots encode through the same Codable the wire uses.
+        let snapshotBody = try! JSONEncoder().encode(
+            Snapshot(schemaVersion: 5, rev: 3, generatedAt: 0, agents: [:]))
+        PathHintURLProtocol.script([.json(200, snapshotBody)], for: snapshot)
+        // SAFETY: fixture invariants (makePinnedFixture); failure is a harness bug.
+        let coordinator = try! XCTUnwrap(fixture.model.coordinator)
+
+        fixture.model.startLive()
+        let verifying = await waitFor {
+            PathHintURLProtocol.requestCount(for: hostKey) == 1
+                && PathHintURLProtocol.requestCount(for: activeEvents) == 1
+        }
+        XCTAssertTrue(verifying, "the coordinator preflight must be in flight")
+
+        // The pull's AC5-parity re-drive: cancel the in-flight owner, start the
+        // fast-failure successor.
+        _ = await coordinator.refreshAll(profiles: fixture.store.orderedProfiles)
+        let successor = await waitFor { PathHintURLProtocol.requestCount(for: hostKey) == 2 }
+        XCTAssertTrue(successor, "the successor ladder must run its first attempt")
+        await settle(0.9)
+
+        restoration(monitor)
+        let redriven = await waitFor({ PathHintURLProtocol.requestCount(for: hostKey) == 3 },
+                                     timeout: 1.5)
+        XCTAssertTrue(redriven,
+                      "the coordinator successor's wait must survive the retired ladder's cleanup (#454 pre-review fix 3)")
+        await settle(0.5)
+        XCTAssertEqual(PathHintURLProtocol.requestCount(for: hostKey), 3,
+                       "no restart loop: one re-drive for the surviving coordinator wait (#454)")
     }
 }
 

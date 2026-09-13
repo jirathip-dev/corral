@@ -85,7 +85,10 @@ def main():
                             if status == 'MISALIGNED' else ''))
     print('\n'.join(table))
     out = Path(sys.argv[1]) if len(sys.argv) > 1 else Path('.')
-    (out / 'audit-gait-hoof.txt').write_text('\n'.join(table) + '\n')
+    # The text rendering is stripped of trailing whitespace so the committed
+    # table never trips `git diff --check`; the JSON keeps the raw field
+    # values it was generated from.
+    (out / 'audit-gait-hoof.txt').write_text('\n'.join(line.rstrip() for line in table) + '\n')
     (out / 'audit-gait-hoof.json').write_text(json.dumps(
         {'breeds': {k: v for k, v in BREEDS.items()}, 'poses': POSES, 'gaits': GAITS,
          'leg_x': LEG_X, 'table': table}, indent=2) + '\n')

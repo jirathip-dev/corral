@@ -4508,10 +4508,10 @@ struct AddHostSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                if let enrollment = model.addHostDraft.enrollment {
-                    enrollmentSection(enrollment)
-                } else if let prepared = model.addHostDraft.prepared {
+                if let prepared = model.addHostDraft.prepared {
                     confirmationSection(prepared)
+                } else if let enrollment = model.addHostDraft.enrollment {
+                    enrollmentSection(enrollment)
                 } else {
                     entrySection
                 }
@@ -4523,9 +4523,7 @@ struct AddHostSheet: View {
                     Button("Cancel") {
                         // #415: Cancel abandons the pairing — the
                         // scene-scoped draft (incl. the transient token)
-                        // is cleared. Failure never dismisses here.
-                        // #486: an in-flight QR pairing is torn down and
-                        // its transient code dropped by the same call.
+                        // is cleared (#486: any QR pairing too).
                         model.clearAddHostDraft()
                         dismiss()
                     }

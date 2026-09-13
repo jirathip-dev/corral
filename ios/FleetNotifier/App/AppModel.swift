@@ -2096,7 +2096,9 @@ final class AppModel: ObservableObject {
                                                       phase: .reviewing)
         } catch is CancellationError {
             // The scanner/sheet went away mid-scan: nothing was verified
-            // here and there is nothing to report.
+            // here and there is nothing to report. Logged (never any
+            // pairing material) so the cancellation stays observable.
+            Self.log.info("Enrollment scan cancelled")
         } catch let rejection as EnrollmentScanRejection {
             addHostDraft.errorMessage = rejection.message
         } catch let payloadError as EnrollmentPayloadError {

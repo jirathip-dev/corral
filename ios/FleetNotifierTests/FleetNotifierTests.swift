@@ -5492,12 +5492,14 @@ final class SheetTranslucencyWiringTests: XCTestCase {
                                  endMarker: "\nprivate struct FlavorSwatchStrip")
         XCTAssertEqual(settings.components(separatedBy: ".themedRowSurface(theme)").count - 1, 6,
                        "every Settings section must theme its rows (#428)")
-        // Add Host: entry + identity-confirmation + token/pair sections.
+        // Add Host: QR-code entry (#486) + entry + identity-confirmation +
+        // token/pair sections, and the #486 enrollment section's identity +
+        // four phase surfaces (reviewing/waiting/failed/interrupted).
         let addHost = try slice(from: source,
                                 startMarker: "struct AddHostSheet: View {",
                                 endMarker: "/// #399 B6: the launch-time fingerprint confirmation")
-        XCTAssertEqual(addHost.components(separatedBy: ".themedRowSurface(theme)").count - 1, 3,
-                       "every Add Host section must theme its rows (#428)")
+        XCTAssertEqual(addHost.components(separatedBy: ".themedRowSurface(theme)").count - 1, 9,
+                       "every Add Host section must theme its rows (#428; #486 moved 3 → 9 with the scan + enrollment sections)")
         // Fingerprint confirmation: intro/loading/failed/ready/malformed.
         let fingerprint = try slice(from: source,
                                     startMarker: "struct FingerprintConfirmationSheet: View {",

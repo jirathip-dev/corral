@@ -491,7 +491,7 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # now 40/40 app sources and the pin below is recomputed over THIS
     # checkout by the canonical algorithm
     # (python3 -c "…release_source_digest(Path('.'))"; old fdbcc720…).
-    "654a79e13ee7be26e76d65c873acd173dc1749e38b87302f2d91c1483b761bdf"
+    "c2a0a181efb6cddf20aa28a5130be47c5a18df153dd155f116fbff627855a8b2"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -694,7 +694,13 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # .finished, the `blocked` body is the control) was added to the pinned
     # test source over integration 7dd7603c — recomputed over THIS checkout
     # by the canonical algorithm (32d70d13…).
-    "32d70d131b5bef490a63eb658772f15a5dad6e6975dd83cd0226949b0cb16f50"
+    # #486 scanner+confirmation flow: the pinned test source's Add Host
+    # section pin moved 3 → 9 themed row surfaces (the sheet gained the
+    # scan-entry section and the enrollment section's identity + four phase
+    # surfaces) — recomputed over THIS checkout by the canonical algorithm
+    # (plain sha256, 32d70d13… → 8bd983e2…); the #486 flow tests themselves
+    # are a separate file outside this pin.
+    "8bd983e2e376be3105e58fc8d56caf0268fb3cc6d65a8ca1cc1ffd8a20ffa371"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

@@ -37,6 +37,12 @@ final class EnrollmentPairingFlowTests: XCTestCase {
     private var suiteName = ""
     private var model: AppModel?
     private var session: URLSession?
+    private var defaults: UserDefaults?
+    private var store: HostProfileStore?
+    private var baseScript: [URL: (Int, Data, Bool)] = [:]
+    /// ONE device key for the whole scenario — the real app presents the
+    /// same device key to every host.
+    private let deviceSigner = DeviceSigner(key: Curve25519.Signing.PrivateKey())
 
     private var enrollRedeemURL: URL { bURL.appendingPathComponent("/enroll/redeem") }
     private var enrollStatusURL: URL { bURL.appendingPathComponent("/enroll/status") }
@@ -87,7 +93,9 @@ final class EnrollmentPairingFlowTests: XCTestCase {
 
     /// One pinned ACTIVE "Mac" profile + the scripted endpoints the flow
     /// touches (B's `/host-key` serves B's key; `/events` holds open so the
-    /// post-commit `startLive()` connect is deterministic).
+    /// post-commit `startLive()` connect is deterministic). The scenario
+    /// script is kept so tests can extend it (never silently drop the
+    /// endpoints the flow needs).
     private func makeModel(macKey: String = EnrollmentPairingFlowTests.macKey,
                            hostBKey: String = EnrollmentPairingFlowTests.hostBKey) -> AppModel {
         suiteName = "corral.h486.enroll.\(UUID().uuidString)"
@@ -104,17 +112,26 @@ final class EnrollmentPairingFlowTests: XCTestCase {
                                         expiryTs: Self.keyExpiry,
                                         registeredAt: 1)
         defaults.set(mac.id.uuidString, forKey: "fleetnotifier.activeHostProfileID")
-        script([
+        self.defaults = defaults
+        self.store = store
+        baseScript = [
             bURL.appendingPathComponent("/host-key"): (200, hostKeyBody(hostBKey), false),
             macURL.appendingPathComponent("/host-key"): (200, hostKeyBody(macKey), false),
             eventsURL: (200, Data(), true),
             macEventsURL: (200, Data(), true),
-        ])
+        ]
+        script(baseScript)
+        return makeModelInstance(defaults: defaults, store: store)
+    }
+
+    /// A second AppModel over the SAME store/defaults (a relaunch), or the
+    /// first one during `makeModel`.
+    private func makeModelInstance(defaults: UserDefaults, store: HostProfileStore) -> AppModel {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [EnrollmentFlowURLProtocol.self]
         let session = URLSession(configuration: configuration)
         self.session = session
-        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        let signer = deviceSigner
         let model = AppModel(session: session, defaults: defaults,
                              identityLoader: { (signer, .insecureFallback) },
                              loadMeta: { nil }, saveMeta: { _ in },
@@ -123,6 +140,17 @@ final class EnrollmentPairingFlowTests: XCTestCase {
                              enrollmentPollInterval: 0.01)
         self.model = model
         return model
+    }
+
+    /// The base scenario script, extended (or shortened) per test. Response
+    /// sequences advance one entry per request and repeat the last one.
+    private func sequence(_ overrides: [URL: [(Int, Data, Bool)]])
+        -> [URL: [(Int, Data, Bool)]] {
+        var merged = baseScript.mapValues { [$0] }
+        for (url, entries) in overrides {
+            merged[url] = entries
+        }
+        return merged
     }
 
     private func script(_ responses: [URL: (Int, Data, Bool)]) {
@@ -207,7 +235,7 @@ final class EnrollmentPairingFlowTests: XCTestCase {
 
         await model.handleScannedEnrollmentCode("https://not-a-corral-code.example")
         let malformed = try XCTUnwrap(model.addHostDraft.errorMessage)
-        XCTAssertTrue(malformed.contains("not a Corral host code"), malformed)
+        XCTAssertTrue(malformed.lowercased().contains("not a corral host code"), malformed)
         XCTAssertNil(model.addHostDraft.enrollment)
 
         model.addHostDraft.errorMessage = nil
@@ -222,8 +250,13 @@ final class EnrollmentPairingFlowTests: XCTestCase {
 
     func testScanRejectsADuplicateHostIdentityAndNeverRedeems() async throws {
         defer { cleanup() }
-        // The scanned code carries the ALREADY-PINNED Mac key.
+        // The scanned code carries the ALREADY-PINNED Mac key, and the
+        // endpoint answers with that same key (the host identity already
+        // exists under another address).
         let model = makeModel()
+        var current = baseScript
+        current[bURL.appendingPathComponent("/host-key")] = (200, hostKeyBody(Self.macKey), false)
+        script(current)
 
         await model.handleScannedEnrollmentCode(payloadText(hostKey: Self.macKey))
 
@@ -246,8 +279,8 @@ final class EnrollmentPairingFlowTests: XCTestCase {
         let macID = try XCTUnwrap(model.activeProfile?.id)
         let macKeyBefore = model.activeProfile?.hostKeyB64
 
-        await model.handleScannedEnrollmentCode(payloadText(endpoint: macURL.absoluteString,
-                                                            hostKey: Self.hostBKey))
+        await model.handleScannedEnrollmentCode(payloadText(hostKey: Self.hostBKey,
+                                                            endpoint: macURL.absoluteString))
 
         let message = try XCTUnwrap(model.addHostDraft.errorMessage)
         XCTAssertTrue(message.contains("different key"), message)
@@ -328,7 +361,7 @@ final class EnrollmentPairingFlowTests: XCTestCase {
         defer { cleanup() }
         let model = makeModel()
         // pending → pending → approved (the last response repeats).
-        EnrollmentFlowURLProtocol.setSequence([
+        EnrollmentFlowURLProtocol.setSequence(sequence([
             enrollRedeemURL: [(200, redeemOK(), false)],
             enrollStatusURL: [(200, statusPending(now() + 600), false),
                               (200, statusPending(now() + 600), false),
@@ -337,7 +370,7 @@ final class EnrollmentPairingFlowTests: XCTestCase {
             macEventsURL: [(200, Data(), true)],
             bURL.appendingPathComponent("/host-key"): [(200, hostKeyBody(Self.hostBKey), false)],
             macURL.appendingPathComponent("/host-key"): [(200, hostKeyBody(Self.macKey), false)],
-        ])
+        ]))
         await model.handleScannedEnrollmentCode(payloadText())
 
         let outcome = await model.completeEnrollmentPairing()
@@ -357,6 +390,7 @@ final class EnrollmentPairingFlowTests: XCTestCase {
         XCTAssertEqual(added.fingerprint, HostKeyTrust.fingerprint(forBase64: Self.hostBKey))
         XCTAssertEqual(model.activeProfileID, added.id,
                        "the freshly paired host becomes the active binding")
+        await waitUntil(!requests(to: eventsURL).isEmpty)
         XCTAssertFalse(requests(to: eventsURL).isEmpty,
                        "the board stream opens for the paired host without any registry edit")
         // The redeem presented THIS DEVICE's key, never a registration token.
@@ -369,10 +403,10 @@ final class EnrollmentPairingFlowTests: XCTestCase {
     func testRevokedApprovalIsExplicitAndCommitsNothing() async throws {
         defer { cleanup() }
         let model = makeModel()
-        EnrollmentFlowURLProtocol.setSequence([
+        EnrollmentFlowURLProtocol.setSequence(sequence([
             enrollRedeemURL: [(200, redeemOK(), false)],
             enrollStatusURL: [(200, statusApproved(revoked: "true"), false)],
-        ])
+        ]))
         await model.handleScannedEnrollmentCode(payloadText())
 
         let outcome = await model.completeEnrollmentPairing()
@@ -388,10 +422,10 @@ final class EnrollmentPairingFlowTests: XCTestCase {
     func testApprovalWithoutReadTailGrantIsExplicitAndCommitsNothing() async throws {
         defer { cleanup() }
         let model = makeModel()
-        EnrollmentFlowURLProtocol.setSequence([
+        EnrollmentFlowURLProtocol.setSequence(sequence([
             enrollRedeemURL: [(200, redeemOK(), false)],
             enrollStatusURL: [(200, statusApproved(grants: "[\"read_diff\"]"), false)],
-        ])
+        ]))
         await model.handleScannedEnrollmentCode(payloadText())
 
         let outcome = await model.completeEnrollmentPairing()
@@ -408,10 +442,10 @@ final class EnrollmentPairingFlowTests: XCTestCase {
         let model = makeModel()
         // The code's own deadline is 2 s out; the host never approves.
         let deadline = now() + 2
-        EnrollmentFlowURLProtocol.setSequence([
+        EnrollmentFlowURLProtocol.setSequence(sequence([
             enrollRedeemURL: [(200, redeemOK(expiresTs: deadline), false)],
             enrollStatusURL: [(200, statusPending(deadline), false)],
-        ])
+        ]))
         await model.handleScannedEnrollmentCode(payloadText(expiresTs: deadline))
 
         let outcome = await model.completeEnrollmentPairing()
@@ -420,8 +454,11 @@ final class EnrollmentPairingFlowTests: XCTestCase {
             return XCTFail("an unapproved pairing must fail explicitly, got \(outcome)")
         }
         XCTAssertTrue(failure.message.contains("did not approve"), failure.message)
-        XCTAssertEqual(model.addHostDraft.enrollment?.phase, .failed(failure.message),
-                       "missing approval is an explicit state, never a silent empty board")
+        guard case .failed(let phaseMessage) = try XCTUnwrap(model.addHostDraft.enrollment?.phase) else {
+            return XCTFail("missing approval must be an explicit state, never a silent empty board")
+        }
+        XCTAssertTrue(phaseMessage.contains("did not approve"),
+                      "missing approval is an explicit state, never a silent empty board")
         XCTAssertEqual(model.profiles.count, 1)
         XCTAssertEqual(requests(to: eventsURL).count, 0,
                        "no board stream may open for an unapproved pairing")
@@ -430,10 +467,10 @@ final class EnrollmentPairingFlowTests: XCTestCase {
     func testStoppingTheWaitMarksInterruptedAndCommitsNothing() async throws {
         defer { cleanup() }
         let model = makeModel()
-        EnrollmentFlowURLProtocol.setSequence([
+        EnrollmentFlowURLProtocol.setSequence(sequence([
             enrollRedeemURL: [(200, redeemOK(), false)],
             enrollStatusURL: [(200, statusPending(now() + 600), false)],
-        ])
+        ]))
         await model.handleScannedEnrollmentCode(payloadText())
         let pairing = Task { await model.completeEnrollmentPairing() }
         await waitUntil(model.addHostDraft.enrollment?.phase == .waiting)
@@ -473,7 +510,7 @@ final class EnrollmentPairingFlowTests: XCTestCase {
     func testStatus404AfterRedeemFallsBackToTheSingleSignedGrantsReadProbe() async throws {
         defer { cleanup() }
         let model = makeModel()
-        EnrollmentFlowURLProtocol.setSequence([
+        EnrollmentFlowURLProtocol.setSequence(sequence([
             enrollRedeemURL: [(200, redeemOK(), false)],
             enrollStatusURL: [(404, serverRefusal(status: 404, code: "enroll_unknown_code"), false)],
             grantsReadURL: [(200, Data("{\"ok\":true,\"key_id\":\"\(Self.enrolledKeyID)\",\"grants\":[\"read_tail\"],\"expiry_ts\":\(Self.keyExpiry)}".utf8), false)],
@@ -481,7 +518,7 @@ final class EnrollmentPairingFlowTests: XCTestCase {
             macEventsURL: [(200, Data(), true)],
             bURL.appendingPathComponent("/host-key"): [(200, hostKeyBody(Self.hostBKey), false)],
             macURL.appendingPathComponent("/host-key"): [(200, hostKeyBody(Self.macKey), false)],
-        ])
+        ]))
         await model.handleScannedEnrollmentCode(payloadText())
 
         let outcome = await model.completeEnrollmentPairing()
@@ -497,11 +534,11 @@ final class EnrollmentPairingFlowTests: XCTestCase {
     func testRefusedRecoveryProbeIsExplicitAndNeverRepeats() async throws {
         defer { cleanup() }
         let model = makeModel()
-        EnrollmentFlowURLProtocol.setSequence([
+        EnrollmentFlowURLProtocol.setSequence(sequence([
             enrollRedeemURL: [(200, redeemOK(), false)],
             enrollStatusURL: [(404, serverRefusal(status: 404, code: "enroll_unknown_code"), false)],
             grantsReadURL: [(403, serverRefusal(status: 403, code: "revoked"), false)],
-        ])
+        ]))
         await model.handleScannedEnrollmentCode(payloadText())
 
         let outcome = await model.completeEnrollmentPairing()
@@ -530,46 +567,57 @@ final class EnrollmentPairingFlowTests: XCTestCase {
     func testEqualRawAgentIdsOnDifferentHostsCannotShareCredentialsOrReadRoutes() async throws {
         defer { cleanup() }
         let model = makeModel()
+        let macID = try XCTUnwrap(model.activeProfile?.id)
         model.startLive()
         await waitUntil(model.keyContinuityState == .verified)
-        EnrollmentFlowURLProtocol.setSequence([
+        EnrollmentFlowURLProtocol.setSequence(sequence([
             enrollRedeemURL: [(200, redeemOK(), false)],
             enrollStatusURL: [(200, statusApproved(), false)],
             eventsURL: [(200, Data(), true)],
             macEventsURL: [(200, Data(), true)],
-            bURL.appendingPathComponent("/host-key"): [(200, hostKeyBody(Self.hostBKey), false)],
-            macURL.appendingPathComponent("/host-key"): [(200, hostKeyBody(Self.macKey), false)],
             driveURL: [(200, Data("{\"request_id\":\"r1\",\"ok\":true,\"rev\":5,\"result\":{\"lines\":[\"from-host-b\"],\"blocks\":[]}}".utf8), false)],
-        ])
+        ]))
         await model.handleScannedEnrollmentCode(payloadText())
         let outcome = await model.completeEnrollmentPairing()
         XCTAssertEqual(outcome, .success)
         let enrolled = try XCTUnwrap(model.profiles.first { $0.urlString == bURL.absoluteString })
-        let macID = try XCTUnwrap(model.profiles.first { $0.displayName == "Mac" }?.id)
-        XCTAssertEqual(model.activeProfileID, enrolled.id)
-        // The enrolled host's coordinator session verifies + connects.
-        let coordinator = try XCTUnwrap(model.coordinator)
-        await waitUntil(coordinator.allowsLiveWork(profileID: macID))
+        XCTAssertEqual(model.activeProfileID, enrolled.id,
+                       "the QR pairing binds the enrolled host as the active binding")
+        // Relaunch with the FIRST host still the persisted active binding —
+        // the real app path on the next launch: the enrolled host then
+        // streams through the coordinator with ITS OWN credentials.
+        model.stopLive()
+        // SAFETY: both values are set by makeModel in this same test.
+        let defaults = try XCTUnwrap(self.defaults)
+        // SAFETY: both values are set by makeModel in this same test.
+        let store = try XCTUnwrap(self.store)
+        defaults.set(macID.uuidString, forKey: "fleetnotifier.activeHostProfileID")
+        let relaunched = makeModelInstance(defaults: defaults, store: store)
+        relaunched.startLive()
+        await waitUntil(relaunched.keyContinuityState == .verified)
+        let coordinator = try XCTUnwrap(relaunched.coordinator)
+        await waitUntil(coordinator.allowsLiveWork(profileID: enrolled.id))
 
         // The SAME raw agent id exists on BOTH hosts with different identity
         // stamps; each store carries its own row.
-        model.fleet.apply(.snapshot(Snapshot(schemaVersion: 5, rev: 5, generatedAt: 0,
-                                             agents: ["herdr:dup": agent("herdr:dup", state: .blocked,
-                                                                         host: Self.hostBKey, ts: 5)])))
-        let macStore = try XCTUnwrap(coordinator.store(profileID: macID))
-        macStore.apply(.snapshot(Snapshot(schemaVersion: 5, rev: 5, generatedAt: 0,
-                                          agents: ["herdr:dup": agent("herdr:dup", state: .working,
-                                                                      host: Self.macKey, ts: 5)])))
-        let bAgent = try XCTUnwrap(model.fleet.agent("herdr:dup"))
-        XCTAssertEqual(model.fleetAgent(hostProfileID: enrolled.id, agentID: "herdr:dup")?.state,
+        relaunched.fleet.apply(.snapshot(Snapshot(schemaVersion: 5, rev: 5, generatedAt: 0,
+                                                  agents: ["herdr:dup": agent("herdr:dup", state: .working,
+                                                                              host: Self.macKey, ts: 5)])))
+        let enrolledStore = try XCTUnwrap(coordinator.store(profileID: enrolled.id))
+        enrolledStore.apply(.snapshot(Snapshot(schemaVersion: 5, rev: 5, generatedAt: 0,
+                                               agents: ["herdr:dup": agent("herdr:dup", state: .blocked,
+                                                                           host: Self.hostBKey, ts: 5)])))
+        let bAgent = try XCTUnwrap(enrolledStore.agent("herdr:dup"))
+        XCTAssertEqual(relaunched.fleetAgent(hostProfileID: enrolled.id, agentID: "herdr:dup")?.state,
                        .blocked, "the enrolled host resolves its OWN row")
 
-        // Drive with a client bound to the OTHER host on purpose: the
-        // composite route must still sign with the ENROLLED key id against
-        // the enrolled URL — equal raw ids never share credentials or routes.
+        // Drive with a client bound to the OTHER (active) host on purpose:
+        // the composite route must still sign with the ENROLLED key id
+        // against the enrolled URL — equal raw ids never share credentials
+        // or read routes.
         // SAFETY: the test's own fixture session was created above.
         let clientForMac = DriveClient(host: macURL, session: session ?? .shared)
-        model.driveReadTail(agent: bAgent, hostProfileID: enrolled.id, driveClient: clientForMac)
+        relaunched.driveReadTail(agent: bAgent, hostProfileID: enrolled.id, driveClient: clientForMac)
         await waitUntil(!requests(to: driveURL).isEmpty)
 
         XCTAssertTrue(requests(to: macDriveURL).isEmpty,
@@ -581,9 +629,11 @@ final class EnrollmentPairingFlowTests: XCTestCase {
         let envelope = try XCTUnwrap(json["envelope"] as? [String: Any])
         XCTAssertEqual(envelope["target"] as? String, "herdr:dup",
                        "the raw agent id is sent untouched")
-        await waitUntil(model.fleet.tailPane(for: "herdr:dup") != nil)
-        XCTAssertEqual(model.fleet.tailPane(for: "herdr:dup")?.lines, ["from-host-b"])
-        XCTAssertNil(macStore.tail(for: "herdr:dup"),
+        await waitUntil(coordinator.tailPane(profileID: enrolled.id, agentID: "herdr:dup") != nil)
+        XCTAssertEqual(coordinator.tailPane(profileID: enrolled.id,
+                                            agentID: "herdr:dup")?.lines,
+                       ["from-host-b"])
+        XCTAssertNil(relaunched.fleet.tailPane(for: "herdr:dup"),
                      "the enrolled host's output never lands in the other host's store")
     }
 

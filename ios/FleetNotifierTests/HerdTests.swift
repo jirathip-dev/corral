@@ -18,13 +18,18 @@ final class HerdTests: XCTestCase {
         XCTAssertTrue(herd.contains("paddockID=HerdProjection.reconciledPaddockID(paddockID,in:ids)"))
         let board = try source("FleetViews")
         let start = try XCTUnwrap(board.range(of:"HerdView(horses:"))
-        let end = try XCTUnwrap(board.range(of:"retry:",range:start.upperBound..<board.endIndex))
+        let end = try XCTUnwrap(board.range(of:"}else{",range:start.upperBound..<board.endIndex),
+                                "the Herd route must close before the board branch")
         let route = String(board[start.lowerBound..<end.lowerBound])
         XCTAssertTrue(route.contains("HerdProjection.multiple(hostSections"))
         XCTAssertTrue(route.contains("HerdProjection.single(sections"))
         XCTAssertTrue(route.contains("model.requestRecents(for:horse.agent.agentId,hostProfileID:horse.hostProfileID,haptic:false)"))
-        XCTAssertTrue(route.contains("openBoard:{model.openBoard()}"),
-                      "Herd's Open Board recovery must route through the temporary-override API")
+        XCTAssertTrue(route.contains("connection:connectionIndicator"),
+                      "Herd renders the SAME compact connection indicator state the board chrome uses (#528)")
+        XCTAssertFalse(route.contains("openBoard"),
+                       "the removed disconnected-panel Open Board recovery entry must not route from Herd (#528)")
+        XCTAssertFalse(route.contains("retry:"),
+                       "the removed disconnected-panel Retry must not route from Herd (#528)")
     }
 
     func testIdentityMatchesOriginalV1AndSurvivesEveryPresentationInput() {
@@ -209,7 +214,7 @@ final class HerdTests: XCTestCase {
         let horse = HerdHorse(agent: Agent(agentId: "lifecycle", state: .idle),
                               hostProfileID: nil, hostName: nil, disconnected: false)
         let scene = HerdView(horses: [horse], obscured: false, select: { _ in },
-                             openBoard: {}, retry: {}, clock: clock)
+                             clock: clock)
         let controller = UIHostingController(rootView: AnyView(scene.environmentObject(ThemeStore())))
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 393, height: 852))
         window.rootViewController = controller
@@ -367,14 +372,16 @@ final class FullScreenHerdShellWiringTests: XCTestCase {
                       "the floating navigation keeps a safe-area margin on both axes")
     }
 
-    func testHerdPreservesOutageRecoveryCountsLongNamesAndEmptyScope() throws {
+    func testHerdPreservesCountsLongNamesAndEmptyScopeWithTheCompactIndicator() throws {
         let herd = try compact(source("HerdView"))
         XCTAssertTrue(herd.contains("ForEach([AgentState.blocked,.working,.idle,.done,.unknown],id:\\.self)"),
                       "all five truthful scoped counts stay rendered")
-        XCTAssertTrue(herd.contains("Button(\"OpenBoard\",action:openBoard).frame(minWidth:44,minHeight:44)"),
-                      "the outage keeps the Open Board recovery action")
-        XCTAssertTrue(herd.contains("Button(\"Retry\"){Task{awaitretry()}}.frame(minWidth:44,minHeight:44)"),
-                      "the outage keeps the Retry action")
+        XCTAssertFalse(herd.contains("Open Board"),
+                       "the disconnected-panel Open Board recovery action is removed (#528)")
+        XCTAssertFalse(herd.contains("Button(\"Retry\")"),
+                       "the routine outage Retry action is removed (#528)")
+        XCTAssertTrue(herd.contains("ConnectionStatusIndicator(model:connection,"),
+                      "the ONE compact connection indicator rides the floating top row (#528)")
         XCTAssertTrue(herd.contains("ContentUnavailableView(\"Noagentsinthisscope\""),
                       "an empty scope keeps its explicit empty state")
         XCTAssertTrue(herd.contains("Text(scopeSummary).font(.caption2).foregroundStyle(ranchTokens.mutedColor).lineLimit(1).truncationMode(.tail)"),
@@ -394,8 +401,8 @@ final class FullScreenHerdShellWiringTests: XCTestCase {
         XCTAssertFalse(herd.contains("Text(lighting.explanation)"),
                        "no mode may render the Day/Night explanation in the summary")
         let start = try XCTUnwrap(herd.range(of: "privatevarstatusSummary"))
-        let end = try XCTUnwrap(herd.range(of: "privatevaroutage", range: start.upperBound..<herd.endIndex),
-                                "the summary slice must close at the outage surface")
+        let end = try XCTUnwrap(herd.range(of: "privatevarcounts", range: start.upperBound..<herd.endIndex),
+                                "the summary slice must close at the counts surface")
         let summary = String(herd[start.lowerBound..<end.lowerBound])
         XCTAssertTrue(summary.contains("ViewThatFits(in:.horizontal)"),
                       "the summary is a horizontal fit ladder")
@@ -650,26 +657,23 @@ final class PresentationPreferenceTests: XCTestCase {
                        "a cold model must restore Board")
     }
 
-    func testOpenBoardIsATemporaryOverrideThatNeverRewritesTheSavedPreference() throws {
-        let defaults = try suite("open-board")
+    func testSavedPresentationIsTheOnlyWriterAndColdRelaunchRestoresIt() throws {
+        // #528: the old Open Board recovery override is GONE with the Herd
+        // disconnect panel — the Settings selection is the only writer of
+        // the presentation, and a cold model restores it.
+        let defaults = try suite("saved-only-writer")
         let model = AppModel(defaults: defaults)
         model.selectFleetPresentation(.herd)
         XCTAssertEqual(model.fleetPresentation, .herd)
         XCTAssertEqual(model.savedFleetPresentation, .herd)
-
-        model.openBoard()
-        XCTAssertEqual(model.fleetPresentation, .board,
-                       "Open Board applies immediately as a temporary override")
-        XCTAssertEqual(model.savedFleetPresentation, .herd,
-                       "the recovery override must not rewrite the saved preference")
         XCTAssertEqual(defaults.string(forKey: AppModel.fleetPresentationKey),
-                       FleetPresentation.herd.rawValue,
-                       "UserDefaults must keep the saved Herd choice untouched")
-
-        model.selectFleetPresentation(.herd)
-        XCTAssertEqual(model.fleetPresentation, .herd,
-                       "a later explicit Settings selection wins immediately")
-        XCTAssertEqual(model.savedFleetPresentation, .herd)
+                       FleetPresentation.herd.rawValue)
+        XCTAssertEqual(AppModel(defaults: defaults).fleetPresentation, .herd,
+                       "a cold model must restore the saved Herd choice")
+        model.selectFleetPresentation(.board)
+        XCTAssertEqual(model.fleetPresentation, .board)
+        XCTAssertEqual(defaults.string(forKey: AppModel.fleetPresentationKey),
+                       FleetPresentation.board.rawValue)
     }
 
     func testPresentationChangesPreserveTheLiveFleetStream() async throws {
@@ -690,7 +694,6 @@ final class PresentationPreferenceTests: XCTestCase {
         let snapshot = model.fleet.agents
 
         model.selectFleetPresentation(.herd)
-        model.openBoard()
         model.selectFleetPresentation(.board)
 
         try await Task.sleep(for: .milliseconds(300))
@@ -730,27 +733,46 @@ final class PresentationPreferenceTests: XCTestCase {
         XCTAssertEqual(reloaded.mode, .needsSetup)
     }
 
-    func testToolbarKeepsOnlyTheSettingsGearAndNeverRegrowsTheTopSwitch() throws {
+    /// #365/#427/#528: the board toolbar keeps NO principal Board/Herd
+    /// switch and NO Settings gear — the gear moved DOWN into the pinned
+    /// chrome row (one row with Filters + the compact connection indicator).
+    /// Settings stays reachable from the top area through that row.
+    func testToolbarKeepsNoTopSwitchAndTheGearMovedIntoTheChromeRow() throws {
         let bundle = Bundle(for: HerdTests.self)
         let url = try XCTUnwrap(bundle.url(forResource: "FleetViews",
                                            withExtension: "swift.txt"))
         let source = try String(contentsOf: url, encoding: .utf8)
+        // The board toolbar is the FIRST toolbar in the file; its own
+        // modifier chain ends at the filters sheet binding, so the slice
+        // covers the Settings sheet it presents.
         let fromToolbar = try XCTUnwrap(source.range(of: ".toolbar {"))
-        // The board toolbar is the FIRST toolbar in the file and ends at
-        // the second .sheet modifier chain; Settings' own toolbar
-        // (navigationTitle "Settings") comes later and is out of scope.
-        let settingsTitle = try XCTUnwrap(source.range(of: "struct SettingsView: View {"))
-        let boardToolbar = source[fromToolbar.lowerBound..<settingsTitle.lowerBound]
+        let sheet = try XCTUnwrap(source.range(of: ".sheet(isPresented: $showFilters)",
+                                               range: fromToolbar.upperBound..<source.endIndex))
+        let boardToolbar = source[fromToolbar.lowerBound..<sheet.lowerBound]
         XCTAssertFalse(boardToolbar.contains("ToolbarItem(placement: .principal)"),
                        "the principal top Board/Herd switch is removed")
         XCTAssertFalse(boardToolbar.contains("Text(mode.rawValue)"),
                        "no segment-styled mode switch may regrow in the toolbar")
         XCTAssertFalse(boardToolbar.contains("model.fleetPresentation = mode"),
                        "the toolbar must never write the presentation directly")
-        XCTAssertTrue(boardToolbar.contains("Image(systemName: \"gearshape\")"),
-                      "the Settings gear stays in the toolbar")
+        XCTAssertFalse(boardToolbar.contains("gearshape"),
+                       "#528: the Settings gear moved OUT of the toolbar")
+        XCTAssertFalse(boardToolbar.contains("showSettings = true"),
+                       "#528: no release-active settings opener may remain in the toolbar")
         XCTAssertTrue(boardToolbar.contains("SettingsView(model: model)"),
-                      "Settings remains reachable from the top bar")
+                      "Settings remains reachable from the top area")
+        // #528: the gear + Filters + indicator share the ONE pinned chrome
+        // row (the Herd-aligned layout).
+        let chromeStart = try XCTUnwrap(source.range(of: "private func boardChrome("))
+        let chromeEnd = try XCTUnwrap(source.range(of: "private func filterHeaderControl(",
+                                                   range: chromeStart.upperBound..<source.endIndex))
+        let chrome = source[chromeStart.lowerBound..<chromeEnd.lowerBound]
+        XCTAssertTrue(chrome.contains("settingsGearControl"),
+                      "the one chrome row renders the Settings gear")
+        XCTAssertTrue(chrome.contains("ConnectionStatusIndicator(model: connectionIndicator,"),
+                      "the one chrome row renders the compact connection indicator")
+        XCTAssertTrue(chrome.contains("filterHeaderControl(filterButtonLabel:"),
+                      "the one chrome row renders the Filters control")
     }
 
     func testAppearanceSectionOwnsTheCanonicalPersistedPicker() throws {
@@ -987,8 +1009,14 @@ final class FullScreenHerdShellAccessibilityLayoutTests: XCTestCase {
                         environment: HerdEnvironmentChoice = .day,
                         horses: [HerdHorse]? = nil) async throws -> Snapshot {
         UserDefaults.standard.set(environment.rawValue, forKey: "herdEnvironment")
-        let scene = HerdView(horses: horses ?? fleet(), obscured: false, select: { _ in },
-                             openBoard: {}, retry: {})
+        // #528: the real composition renders the compact connection
+        // indicator too (a single live host — the widest chrome row).
+        let scene = HerdView(horses: horses ?? fleet(), obscured: false,
+                             connection: BoardModel.connectionIndicator(hosts: [
+                                BoardModel.ConnectionHostStatus(id: "fixture", name: "Host",
+                                                                health: .live),
+                             ]),
+                             select: { _ in })
             .environmentObject(ThemeStore())
             .environment(\.dynamicTypeSize, dynamicType)
         let controller = UIHostingController(rootView: AnyView(scene))
@@ -1572,7 +1600,7 @@ final class ContextualFilterSheetTests: XCTestCase {
         let board = try source("FleetViews")
         let header = try slice(board,
                                from: "private func filterHeaderControl(",
-                               to: "/// Connection indicator line")
+                               to: "/// #379: auto-present the How-to-connect sheet")
         XCTAssertFalse(header.contains("RanchControl"),
                        "the board Filters control must not consume ranch tokens")
         XCTAssertFalse(header.contains("ranchChromeSurface"),
@@ -1595,9 +1623,9 @@ final class ContextualFilterSheetTests: XCTestCase {
         let herd = try compact(source("HerdView"))
         XCTAssertTrue(herd.contains("ranchTokens:RanchControlTokens{.resolve(night:lighting.night)}"),
                       "the chrome palette resolves from the SAME lighting the ranch renders")
-        // The trigger/count cluster only (the outage banner below it is a
-        // separate #456 surface and keeps its treatment).
-        let chrome = try slice(herd, from: "privatevartopChrome", to: "privatevaroutage")
+        // The trigger/indicator/count cluster only (the ranch field below is
+        // a separate #456 surface and keeps its treatment).
+        let chrome = try slice(herd, from: "privatevartopChrome", to: "@ViewBuilderprivatevarcounts")
         for needle in ["HerdFilterGlyph(color:ranchTokens.accentColor)",
                        "foregroundStyle(ranchTokens.inkColor).lineLimit(1)",
                        "foregroundStyle(ranchTokens.mutedColor)",
@@ -1605,8 +1633,8 @@ final class ContextualFilterSheetTests: XCTestCase {
             XCTAssertTrue(chrome.contains(needle),
                           "the trigger/count chrome must take the ranch tokens: \(needle)")
         }
-        XCTAssertEqual(chrome.components(separatedBy: ".ranchChromeSurface(ranchTokens)").count - 1, 3,
-                       "scope pill, Settings control and counts card ride the ranch chrome surface")
+        XCTAssertEqual(chrome.components(separatedBy: ".ranchChromeSurface(ranchTokens)").count - 1, 4,
+                       "scope pill, #528 connection indicator, Settings control and counts card ride the ranch chrome surface")
         XCTAssertFalse(chrome.contains(".regularMaterial"),
                        "no trigger/count surface may keep the flavor material (#457 AC1)")
         XCTAssertFalse(chrome.contains("theme.text") || chrome.contains("theme.subtext1"),
@@ -1676,7 +1704,7 @@ final class ContextualFilterSheetTests: XCTestCase {
         let scene = HerdView(horses: [], obscured: false,
                              showFilters: .constant(false), showSettings: .constant(false),
                              onLightingNight: { box.values.append($0) },
-                             select: { _ in }, openBoard: {}, retry: {})
+                             select: { _ in })
             .environmentObject(ThemeStore())
         let controller = UIHostingController(rootView: AnyView(scene))
         let windowScene = UIApplication.shared.connectedScenes

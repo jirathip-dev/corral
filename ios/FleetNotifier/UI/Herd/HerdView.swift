@@ -7,9 +7,14 @@ struct HerdView: View {
     /// board's Filters control uses) rendered by the floating top chrome.
     let scopeLabel: String
     let scopeSummary: String
+    /// #528: the ONE compact connection indicator state — the SAME model the
+    /// Board chrome renders, so both modes report the identical fleet
+    /// connection truth (no outage panel, no duplicated copy).
+    let connection: BoardModel.ConnectionIndicatorModel
     /// #456: the floating chrome drives the SAME sheets the board chrome
     /// does — the bindings are FleetView's own presentation state, so Herd
     /// never owns a parallel sheet or a duplicated toolbar.
+    @Binding var showConnectionDetail: Bool
     @Binding var showFilters: Bool
     @Binding var showSettings: Bool
     /// #457: the ranch lighting (night flag) the floating chrome resolved.
@@ -19,8 +24,6 @@ struct HerdView: View {
     /// standalone hosts (tests/previews).
     let onLightingNight: (Bool) -> Void
     let select: (HerdHorse) -> Void
-    let openBoard: () -> Void
-    let retry: () async -> Void
     @EnvironmentObject private var theme: ThemeStore
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
@@ -36,22 +39,24 @@ struct HerdView: View {
     @State private var dragging = false
     init(horses: [HerdHorse], obscured: Bool,
          scopeLabel: String = "Filters", scopeSummary: String = "All repositories",
+         connection: BoardModel.ConnectionIndicatorModel
+             = BoardModel.connectionIndicator(hosts: []),
+         showConnectionDetail: Binding<Bool> = .constant(false),
          showFilters: Binding<Bool> = .constant(false),
          showSettings: Binding<Bool> = .constant(false),
          onLightingNight: @escaping (Bool) -> Void = { _ in },
          select: @escaping (HerdHorse) -> Void,
-         openBoard: @escaping () -> Void, retry: @escaping () async -> Void,
          clock: HerdClock? = nil) {
         self.horses = horses
         self.obscured = obscured
         self.scopeLabel = scopeLabel
         self.scopeSummary = scopeSummary
+        self.connection = connection
+        _showConnectionDetail = showConnectionDetail
         _showFilters = showFilters
         _showSettings = showSettings
         self.onLightingNight = onLightingNight
         self.select = select
-        self.openBoard = openBoard
-        self.retry = retry
         _clock = StateObject(wrappedValue: clock ?? HerdClock())
     }
 #if DEBUG
@@ -122,7 +127,6 @@ struct HerdView: View {
                     // Dynamic-Type ideal and the pager region below absorbs the
                     // difference instead.
                     .layoutPriority(1)
-                if horses.contains(where: \.disconnected) { outage }
                 GeometryReader { geometry in
                     VStack(spacing:0) {
                         if paddocks.isEmpty {
@@ -190,11 +194,18 @@ struct HerdView: View {
     /// chrome (glass where available, opaque Reduce Transparency /
     /// high-contrast fallback) so no light/dark text is inherited blindly
     /// from the app flavor. Targets stay >= 44 pt with a safe-area-aware
-    /// top margin.
+    /// top margin. #528: the ONE compact connection indicator rides this
+    /// SAME row, between the scope pill and the gear — the removed
+    /// disconnect panel's recovery actions + verbose copy are gone.
     private var topChrome: some View {
         VStack(spacing:6) {
             HStack(spacing:8) {
                 scopeControl
+                ConnectionStatusIndicator(model: connection,
+                                          palette: ConnectionIndicatorPalette(ranch: ranchTokens,
+                                                                              theme: theme),
+                                          showDetail: $showConnectionDetail)
+                    .ranchChromeSurface(ranchTokens)
                 settingsControl
             }
             statusSummary
@@ -280,19 +291,12 @@ struct HerdView: View {
                 .font(.system(.caption2,design:.monospaced))
         }
     }
-    private var outage: some View {
-        VStack(spacing:2) {
-            Text("Source disconnected · last-known agents").font(.caption.weight(.semibold))
-            Text("Unknown · blocked status cannot be confirmed").font(.caption2)
-            HStack {
-                Button("Open Board",action:openBoard).frame(minWidth:44,minHeight:44)
-                Button("Retry") { Task { await retry() } }.frame(minWidth:44,minHeight:44)
-            }
-        }.foregroundStyle(theme.text)
-            .padding(.vertical,6).padding(.horizontal,12).frame(maxWidth:.infinity)
-            .background(.regularMaterial,in:RoundedRectangle(cornerRadius:15))
-            .padding(.horizontal,12).padding(.top,6)
-    }
+    /// #528: the old disconnect panel (the source-disconnected copy plus
+    /// its recovery actions) is REMOVED — the compact connection indicator
+    /// in the floating chrome carries the state, and the stream/model
+    /// recover on their own (the board uses the same source, so switching
+    /// view was never network recovery). Disconnected horses still render
+    /// their last-known truth (`unknown · last known …`) via HerdHorse.
     private var frontRail: some View {
         VStack(alignment:.leading,spacing:4) {
             Text("! FRONT RAIL · \(rail.count)\(rail.contains(where:\.disconnected) ? " LAST KNOWN" : " BLOCKED")")

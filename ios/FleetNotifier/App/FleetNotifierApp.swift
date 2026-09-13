@@ -86,6 +86,10 @@ struct FleetNotifierApp: App {
                                 || CorralDemoLaunch.wantsAddHostBgReturnEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsAddHostFailedEvidence(arguments: CommandLine.arguments)
                                 || CorralDemoLaunch.wantsAddHostCommitEvidence(arguments: CommandLine.arguments)
+                                // #528: the compact connection-chrome matrix
+                                // rides the three-profile seed (Host B
+                                // offline + Host C connecting).
+                                || Corral528Connection.wantsAnyEvidence(arguments: CommandLine.arguments)
                                 || CommandLine.arguments.contains("-demoMode") {
                         // #401: the multi-host evidence drivers seed three
                         // synthetic profiles (live/offline/key-mismatch)
@@ -97,10 +101,13 @@ struct FleetNotifierApp: App {
                             // three-profile seed (Host B connecting for the
                             // connecting evidence launch).
                             || CorralDemoLaunch.wantsFilterHeaderEvidence(arguments: CommandLine.arguments)
-                            || CorralDemoLaunch.wantsFilterHeaderConnectingEvidence(arguments: CommandLine.arguments) {
+                            || CorralDemoLaunch.wantsFilterHeaderConnectingEvidence(arguments: CommandLine.arguments)
+                            || Corral528Connection.wantsAnyEvidence(arguments: CommandLine.arguments) {
                             model.enterMultiHostDemo(
                                 hostBConnecting: CorralDemoLaunch
-                                    .wantsFilterHeaderConnectingEvidence(arguments: CommandLine.arguments))
+                                    .wantsFilterHeaderConnectingEvidence(arguments: CommandLine.arguments),
+                                hostCConnecting: Corral528Connection
+                                    .wantsAnyEvidence(arguments: CommandLine.arguments))
                         } else if CorralDemoLaunch.wantsAddHostBgReturnEvidence(arguments: CommandLine.arguments)
                                     || CorralDemoLaunch.wantsAddHostFailedEvidence(arguments: CommandLine.arguments)
                                     || CorralDemoLaunch.wantsAddHostCommitEvidence(arguments: CommandLine.arguments) {
@@ -149,7 +156,8 @@ struct FleetNotifierApp: App {
 struct DebugAccessibilitySizeModifier: ViewModifier {
     func body(content: Content) -> some View {
         if CorralDemoLaunch.wantsFilterHeaderAccessibilitySizes(arguments: CommandLine.arguments)
-            || Corral458Presentation.wantsAccessibilitySizes(arguments: CommandLine.arguments) {
+            || Corral458Presentation.wantsAccessibilitySizes(arguments: CommandLine.arguments)
+            || Corral528Connection.wantsAccessibilitySizes(arguments: CommandLine.arguments) {
             content.environment(\.sizeCategory, .accessibilityLarge)
         } else {
             content
@@ -368,22 +376,51 @@ enum CorralDemoLaunch {
     }
 }
 
+/// #528 evidence: the compact connection chrome matrix — partial (one
+/// offline + one connecting host), the revealed per-host detail, total
+/// disconnection, recovery and the empty/loading state over the
+/// three-profile seed, in BOTH modes. `-corral528AccessibilitySizes`
+/// renders the whole UI at the accessibility content size for the
+/// large-text frames (same mechanism as `-corral427AccessibilitySizes`).
+enum Corral528Connection {
+    static let evidenceArgument = "-corral528ConnectionEvidence"
+    static let herdEvidenceArgument = "-corral528HerdEvidence"
+    static let accessibilitySizesArgument = "-corral528AccessibilitySizes"
+
+    static func wantsEvidence(arguments: [String]) -> Bool {
+        arguments.contains(evidenceArgument)
+    }
+
+    static func wantsHerdEvidence(arguments: [String]) -> Bool {
+        arguments.contains(herdEvidenceArgument)
+    }
+
+    /// Any #528 connection-chrome evidence launch (the Board or Herd run) —
+    /// the app seeds the same three-profile demo for both.
+    static func wantsAnyEvidence(arguments: [String]) -> Bool {
+        wantsEvidence(arguments: arguments) || wantsHerdEvidence(arguments: arguments)
+    }
+
+    static func wantsAccessibilitySizes(arguments: [String]) -> Bool {
+        arguments.contains(accessibilitySizesArgument)
+    }
+}
+
 /// #458 evidence: deterministic Settings → Board/Herd → relaunch scenarios.
 /// The launch argument seeds the STARTING presentation in demo mode (the
 /// picker's Binding and the driver then write the REAL persisted
 /// preference), so every frame stays inside the actual Settings/root path
 /// and a cold relaunch is the same `simctl terminate` + `launch` cycle a
-/// user's relaunch takes.
+/// user's relaunch takes. (#528: the old D scenario — the Herd Open Board
+/// recovery override — is REMOVED with the disconnect panel it served.)
 enum Corral458Presentation {
     /// A: start Herd → Settings (Herd selected) → select Board → Board.
     static let herdScenarioArgument = "-corral458HerdScenario"
     /// B: relaunch that only proves the persisted value restored (Board
-    /// after A; also used for the final Herd-restored relaunch after C/D).
+    /// after A; also used for the final Herd-restored relaunch after C).
     static let boardReloadScenarioArgument = "-corral458BoardReloadScenario"
     /// C: start Board → Settings (Board selected) → select Herd → Herd.
     static let boardScenarioArgument = "-corral458BoardScenario"
-    /// D: restored Herd + Open Board temporary override (never persisted).
-    static let openBoardScenarioArgument = "-corral458OpenBoardScenario"
     /// Dynamic Type evidence: render the whole UI at the accessibility
     /// content size (same convention as -corral427AccessibilitySizes).
     static let accessibilitySizesArgument = "-corral458AccessibilitySizes"
@@ -400,17 +437,12 @@ enum Corral458Presentation {
         arguments.contains(boardReloadScenarioArgument)
     }
 
-    static func wantsOpenBoardScenario(arguments: [String]) -> Bool {
-        arguments.contains(openBoardScenarioArgument)
-    }
-
     static func wantsAccessibilitySizes(arguments: [String]) -> Bool {
         arguments.contains(accessibilitySizesArgument)
     }
 
     /// Applies the scenario's starting presentation AFTER the demo seed so
-    /// the marker frames start from the intended mode. Open Board (D) must
-    /// start on the RESTORED saved value, so it never seeds here.
+    /// the marker frames start from the intended mode.
     /// The #458 evidence launches are demo-mode runs on a simulator whose
     /// notification authorization was never answered (simctl cannot tap the
     /// OS alert), so the one-shot OS prompt is suppressed exactly like the
@@ -421,7 +453,6 @@ enum Corral458Presentation {
         let arguments = CommandLine.arguments
         guard wantsHerdScenario(arguments: arguments)
                 || wantsBoardScenario(arguments: arguments)
-                || wantsOpenBoardScenario(arguments: arguments)
                 || wantsBoardReloadScenario(arguments: arguments) else { return }
         if wantsHerdScenario(arguments: arguments) {
             model.fleetPresentation = .herd

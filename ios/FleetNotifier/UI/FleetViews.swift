@@ -641,6 +641,165 @@ struct PinnedHeader<Content: View>: View {
     }
 }
 
+// MARK: - #528 compact connection chrome (ONE indicator for Board + Herd)
+
+/// #528: the resolved palette the shared compact connection indicator
+/// renders with. The Board chrome resolves the active flavor's tokens; the
+/// Herd floating chrome resolves the ranch Day/Night ink + muted text with
+/// the SAME semantic status hues the host-health vocabulary uses (the
+/// `hostHealthToken` family), so the dot can never diverge from the filter
+/// sheet's health text.
+struct ConnectionIndicatorPalette: Equatable {
+    let ink: Color
+    let muted: Color
+    let live: Color
+    let connecting: Color
+    let offline: Color
+    let keyMismatch: Color
+    let awaitingFingerprint: Color
+
+    func color(for health: BoardModel.HostChipHealth) -> Color {
+        switch health {
+        case .live: return live
+        case .connecting: return connecting
+        case .offline: return offline
+        case .keyMismatch: return keyMismatch
+        case .awaitingFingerprint: return awaitingFingerprint
+        }
+    }
+
+    /// The Board chrome: the active flavor's pinned-chrome text tiers.
+    @MainActor
+    init(theme: ThemeStore) {
+        ink = theme.text
+        muted = theme.subtext1
+        live = theme.green
+        connecting = theme.yellow
+        offline = theme.peach
+        keyMismatch = theme.red
+        awaitingFingerprint = theme.surface2
+    }
+
+    /// The Herd floating chrome (#457): ranch Day/Night ink + muted (the
+    /// flavor-independent chrome text), semantic status hues for the dot.
+    @MainActor
+    init(ranch: RanchControlTokens, theme: ThemeStore) {
+        ink = ranch.inkColor
+        muted = ranch.mutedColor
+        live = theme.green
+        connecting = theme.yellow
+        offline = theme.peach
+        keyMismatch = theme.red
+        awaitingFingerprint = theme.surface2
+    }
+}
+
+/// #528: the ONE compact connection indicator — the Board pinned chrome and
+/// the Herd floating chrome render this same view. The dot carries the
+/// aggregate posture (worst host wins); connecting pulses SUBTLY (Reduce
+/// Motion renders it static), every other state — disconnected included —
+/// is static. The visible label names the state in text, so color is never
+/// the only channel. Tapping reveals the per-host connection details; the
+/// whole control is one >= 44 pt button whose VoiceOver label is the full
+/// status description (no separate helper copy exists anywhere).
+struct ConnectionStatusIndicator: View {
+    let model: BoardModel.ConnectionIndicatorModel
+    let palette: ConnectionIndicatorPalette
+    @Binding var showDetail: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var pulse = false
+
+    var body: some View {
+        Button {
+            showDetail = true
+        } label: {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(palette.color(for: model.dotHealth))
+                    .frame(width: 9, height: 9)
+                    .opacity(model.isAnimated && pulse ? 0.3 : 1)
+                    .accessibilityHidden(true)
+                Text(model.label)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(palette.ink)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .padding(.horizontal, 8)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(model.accessibilityDescription)
+        .accessibilityHint("Shows which hosts are offline or connecting")
+        .onAppear { updatePulse() }
+        .onChange(of: model.isAnimated) { _, _ in updatePulse() }
+        // #528: the indicator lives at the TOP of the chrome, so the reveal
+        // popover opens BELOW it (arrow on the popover's top edge) — the
+        // above-the-anchor placement clips off-screen.
+        .popover(isPresented: $showDetail, arrowEdge: .top) {
+            ConnectionDetailList(model: model, palette: palette)
+                .presentationCompactAdaptation(.popover)
+        }
+    }
+
+    /// The connecting pulse: a subtle, bounded ease (never a hard blink) —
+    /// and NOTHING at all under Reduce Motion or for any static state.
+    private func updatePulse() {
+        guard model.isAnimated, !reduceMotion else {
+            pulse = false
+            return
+        }
+        withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
+            pulse = true
+        }
+    }
+}
+
+/// The indicator's revealed per-host details: which hosts are offline /
+/// connecting / awaiting attention. Shown in a popover anchored on the
+/// indicator; the popover lists every configured host with its textual
+/// health and, while the board is showing retained rows, the last-known
+/// provenance line (AC6 without a large banner).
+private struct ConnectionDetailList: View {
+    let model: BoardModel.ConnectionIndicatorModel
+    let palette: ConnectionIndicatorPalette
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Connections")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(palette.ink)
+            ForEach(model.hosts) { host in
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(palette.color(for: host.health))
+                        .frame(width: 8, height: 8)
+                        .accessibilityHidden(true)
+                    Text(host.name)
+                        .font(.footnote)
+                        .foregroundStyle(palette.ink)
+                        .lineLimit(1)
+                    Spacer(minLength: 12)
+                    Text(host.health.label)
+                        .font(.caption2)
+                        .foregroundStyle(palette.muted)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("\(host.name): \(host.health.label)")
+            }
+            if model.showsLastKnown, model.status != .connected {
+                Text("Showing last-known fleet data.")
+                    .font(.caption2)
+                    .foregroundStyle(palette.muted)
+            }
+        }
+        .padding(16)
+        .frame(minWidth: 240)
+    }
+}
+
 // MARK: - Fleet board (home)
 
 struct FleetView: View {
@@ -651,6 +810,11 @@ struct FleetView: View {
     /// binding is flipped by the top-left Filters control and the DEBUG
     /// recorded-evidence driver; dismissal preserves the current selection.
     @State private var showFilters = false
+    /// #528: the compact connection indicator's revealed per-host details.
+    /// FleetView owns the binding so the Board chrome and the Herd floating
+    /// chrome share ONE reveal (and the DEBUG evidence driver can open it —
+    /// simctl cannot tap).
+    @State private var showConnectionDetail = false
     /// #457: the ranch lighting the floating Herd chrome resolved (reported
     /// by HerdView, the single `HerdSun` resolver site). The shared filter
     /// sheet's Herd context is styled from this SAME value, so the trigger,
@@ -674,6 +838,10 @@ struct FleetView: View {
     @State private var contextFilterEvidenceRan = false
     /// #457: single-fire guard for the separate Board no-regression shot.
     @State private var contextBoardShotRan = false
+    /// #528: single-fire guards for the compact connection-chrome matrix
+    /// (Board and Herd runs; same #427 double-fire convention).
+    @State private var connectionChromeBoardRan = false
+    @State private var connectionChromeHerdRan = false
 #endif
     /// #386: which status sections are collapsed. View-owned so the state
     /// lives for the board session ONLY — never persisted, never restored
@@ -744,17 +912,6 @@ struct FleetView: View {
         // from #400) into status sections → merged repo subgroups.
         let hostSections = BoardModel.hostSections(
             BoardModel.rows(hostRows, in: activeHostRepoFilter))
-        // D3/D7: host chips in user-controlled order, counts from the
-        // UNFILTERED aggregate (repo-independent).
-        let hostChipInputs = model.profiles.map { profile in
-            BoardModel.HostFilterChip(
-                profileID: profile.id,
-                displayName: profile.displayName,
-                laneCount: BoardModel.laneCounts(aggregateRows)[profile.id] ?? 0,
-                health: BoardModel.hostChipHealth(
-                    for: model.hostRuntimeFacts(for: profile)))
-        }
-        let hostOutageSummary = BoardModel.hostOutageSummary(hosts: hostChipInputs)
         // D6: badges only in All Hosts with 2+ profiles.
         let showRowHostBadges = multiHost && hostFilter == nil
         // #427 Direction A: the compact top-left Filters control and the
@@ -799,31 +956,41 @@ struct FleetView: View {
                         // #456: no opaque board header strip and no board
                         // toolbar in Herd — the floating scope + Settings
                         // controls live in HerdView's own full-screen shell
-                        // and drive these SAME sheets/bindings.
+                        // and drive these SAME sheets/bindings. #528: the
+                        // compact connection indicator rides the same
+                        // floating row in both modes, and the old outage
+                        // panel (Open Board + Retry) is GONE — the model +
+                        // stream recover on their own.
                         HerdView(horses: multiHost
                             ? HerdProjection.multiple(hostSections, names: Dictionary(uniqueKeysWithValues:
                                 model.profiles.map { ($0.id, $0.displayName) }))
                             : HerdProjection.single(sections, host: model.activeProfile?.id,
                                 disconnected: herdDisconnected),
                             obscured: showSettings || showFilters || showConnectHelp
-                                || model.recentsRequest != nil || model.fingerprintConfirmation != nil,
+                                || model.recentsRequest != nil || model.fingerprintConfirmation != nil
+                                || showConnectionDetail,
                             scopeLabel: filterButtonLabel,
                             scopeSummary: filterSummaryText,
+                            connection: connectionIndicator,
+                            showConnectionDetail: $showConnectionDetail,
                             showFilters: $showFilters,
                             showSettings: $showSettings,
                             onLightingNight: { herdChromeNight = $0 },
                             select: { horse in
                                 model.requestRecents(for: horse.agent.agentId,
                                                      hostProfileID: horse.hostProfileID, haptic: false)
-                            },
-                            openBoard: { model.openBoard() },
-                            retry: { await model.refreshFleet() })
+                            })
                     } else {
                 List {
                     // Issue #219: the board chrome is the FIRST section of the same
                     // physical scroll surface (a pinned header) instead of a
-                    // `.safeAreaInset` outside the list. During the pull gesture
-                    // the chrome, section headers, and rows translate as one unit.
+                    // `.safeAreaInset` outside the list. While scrolling the
+                    // chrome, section headers, and rows translate as one unit.
+                    // #528: the pull-to-refresh gesture is REMOVED from this
+                    // surface — ordinary refresh/reconnect rides the SSE
+                    // stream's own retry ladder, the per-host staleness
+                    // watchdog, the foreground resume and the path-restore
+                    // hint (audited in .report-528-connection.md).
                     if model.mode != .needsSetup {
                         Section {
                             if model.fleet.agents.isEmpty {
@@ -842,14 +1009,12 @@ struct FleetView: View {
                         // #427 Direction A: the horizontal chip rows moved
                         // into the top-left Filters control + the filter
                         // sheet — NO chip row renders on the board in any
-                        // mode (the two-unexplained-All defect is gone). The
-                        // compact D7 outage summary stays as the board's
-                        // textual host-health line under the pinned chrome
-                        // (2+ profiles; AC5 — connecting/offline/stale stay
-                        // textual on the board, never color alone).
-                        if model.multiHostConfigured, let hostOutageSummary {
-                            hostOutageSummaryRow(hostOutageSummary)
-                        }
+                        // mode (the two-unexplained-All defect is gone).
+                        // #528: the old D7 outage strip is gone too — the
+                        // compact connection indicator (boardChrome, same
+                        // row as Filters + Settings) carries the aggregate
+                        // host health with the SAME summary copy, and its
+                        // revealed detail names each unreachable host.
                     }
                     if let banner = model.banner {
                         BannerView(banner: banner) {
@@ -945,36 +1110,33 @@ struct FleetView: View {
                 .scrollContentBackground(.hidden)
                 .background(theme.base)
                 .listRowBackground(theme.base)
-                // Issue #219: native pull-to-refresh on the one physical scroll
-                // surface. `refreshFleet` is coalesced and never touches the SSE
-                // stream task.
-                .refreshable {
-                    await model.refreshFleet()
-                }
                 // #387: the board header is chrome-only — NO 'Fleet' title
                 // text in the large-title state or the scrolled inline state
-                // (app identity is the gear, top-right). An EMPTY title with
-                // INLINE display mode reserves no large-title band at rest and
-                // the collapsed bar shows no text when scrolled either — the
-                // freed space belongs to the board (content starts naturally
-                // higher; no extra insets forced).
+                // (#528: app identity is the chrome row's Settings gear). An
+                // EMPTY title with INLINE display mode reserves no large-title
+                // band at rest and the collapsed bar shows no text when
+                // scrolled either — the freed space belongs to the board
+                // (content starts naturally higher; no extra insets forced).
                     }
                 }
                 .navigationTitle("")
                 .background(theme.base)
                 .navigationBarTitleDisplayMode(.inline)
                 // #456: Herd owns its floating scope + Settings chrome, so
-                // the navigation bar (and its gear) is hidden there — the
-                // mode never shows a duplicated toolbar over the ranch.
-                // Board keeps the bar exactly as #365/#387 pinned it.
+                // the navigation bar is hidden there — the mode never shows
+                // a duplicated toolbar over the ranch. #528: the Board's
+                // Settings gear moved into the pinned chrome row (one row
+                // with Filters, aligned like Herd), so the board bar now
+                // carries ONLY the DEBUG demo overflow menu; the bar itself
+                // stays exactly as #365/#387 pinned it.
                 .toolbar(model.fleetPresentation == .herd && model.mode != .needsSetup
                             ? .hidden : .visible, for: .navigationBar)
-                // #365: Settings is an ALWAYS-VISIBLE top-bar control — a plain
-                // gear Button (system gear shape, >=44 pt target, VoiceOver
-                // label) opening the Settings sheet. The DEBUG demo toggle is
-                // NOT on the main path: it lives in a secondary overflow menu
-                // that exists only in Debug builds (Release shows the gear
-                // alone).
+                // #365/#528: Settings lives in the board's ONE chrome row
+                // (see `settingsGearControl` — plain gear Button, release-
+                // active, >= 44 pt, VoiceOver label). The DEBUG demo toggle
+                // is NOT on the main path: it lives in a secondary overflow
+                // menu that exists only in Debug builds (Release renders no
+                // top-bar items at all).
                 .toolbar {
                     ToolbarItemGroup(placement: .topBarTrailing) {
 #if DEBUG
@@ -992,14 +1154,6 @@ struct FleetView: View {
                         }
                         .accessibilityLabel("Developer menu")
 #endif
-                        Button {
-                            showSettings = true
-                        } label: {
-                            Image(systemName: "gearshape")
-                        }
-                        .accessibilityLabel("Settings")
-                        .accessibilityHint("Opens connection and notification settings")
-                        .frame(minWidth: 44, minHeight: 44)
                     }
                 }
                 .sheet(isPresented: $showSettings) {
@@ -1060,7 +1214,7 @@ struct FleetView: View {
                 // #458 evidence: presentation preference scenarios ride the
                 // same deterministic marker pipeline (A: herd → Settings →
                 // Board; B: cold relaunch restores; C: Board → Settings →
-                // Herd; D: Open Board override + relaunch-restored Herd).
+                // Herd). #528 removed the old D recovery-override scenario.
                 .task(id: model.mode) {
                     await runPresentationEvidenceIfNeeded()
                 }
@@ -1110,31 +1264,65 @@ struct FleetView: View {
             && BoardModel.connectionStatus(for: model.fleet.connectionState) != .connected
     }
 
-    /// #401 D7: the ONE compact board-level outage summary row ("1 host
-    /// offline · …"), rendered under the host chips when any host is not
-    /// live. Never a full-width reconnect banner per retry.
-    @ViewBuilder
-    private func hostOutageSummaryRow(_ text: String) -> some View {
-        Section {
-            HStack(spacing: 6) {
-                Image(systemName: "wifi.slash")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(theme.peach)
-                    .accessibilityHidden(true)
-                Text(text)
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(theme.peach)
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 3)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityElement(children: .combine)
-            .listRowInsets(EdgeInsets())
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
+    /// #528: the per-host connection postures the compact indicator covers —
+    /// the SAME #401/#427 health vocabulary the host chips and the filter
+    /// sheet render (never re-derived). With no configured profile (a
+    /// single-host demo seed) the ACTIVE store's own transport truth is the
+    /// one host; the DEBUG `-corralHerdOffline` evidence flag forces the
+    /// disconnected posture exactly like `herdDisconnected` does for the
+    /// ranch horses.
+    private var connectionHostStatuses: [BoardModel.ConnectionHostStatus] {
+#if DEBUG
+        if CommandLine.arguments.contains("-corralHerdOffline") {
+            return [BoardModel.ConnectionHostStatus(id: "evidence-offline",
+                                                    name: "This host",
+                                                    health: .offline)]
         }
+#endif
+        if !model.profiles.isEmpty {
+            return model.profiles.map { profile in
+                BoardModel.ConnectionHostStatus(
+                    id: profile.id.uuidString,
+                    name: profile.displayName,
+                    health: BoardModel.hostChipHealth(
+                        for: model.hostRuntimeFacts(for: profile)))
+            }
+        }
+        let health: BoardModel.HostChipHealth
+        switch model.fleet.connectionState {
+        case .connected: health = .live
+        case .connecting: health = .connecting
+        default: health = .offline
+        }
+        return [BoardModel.ConnectionHostStatus(
+            id: "active-host",
+            name: model.activeProfile?.displayName ?? "This host",
+            health: health)]
+    }
+
+    /// #528: the ONE compact connection indicator state both surfaces render
+    /// (Board pinned chrome + Herd floating chrome). `showsLastKnown` rides
+    /// the retained rows: a non-live indicator over a populated board says so
+    /// (AC6 — stale data is never silently relabelled live).
+    private var connectionIndicator: BoardModel.ConnectionIndicatorModel {
+        BoardModel.connectionIndicator(hosts: connectionHostStatuses,
+                                       showsLastKnown: !model.fleet.agents.isEmpty)
+    }
+
+    /// #528: the Board's Settings gear — the trailing control of the ONE
+    /// chrome row (no longer a separate toolbar row). Still an
+    /// ALWAYS-VISIBLE plain button (system gear shape, >= 44 pt target,
+    /// VoiceOver label) opening the Settings sheet (#365 contract, new
+    /// position aligned with Herd).
+    private var settingsGearControl: some View {
+        Button {
+            showSettings = true
+        } label: {
+            Image(systemName: "gearshape")
+        }
+        .accessibilityLabel("Settings")
+        .accessibilityHint("Opens connection and notification settings")
+        .frame(minWidth: 44, minHeight: 44)
     }
 
     /// #371/#386 board renderer: one section per raw herdr status in
@@ -1480,46 +1668,37 @@ struct FleetView: View {
         return parts.joined(separator: ", ")
     }
 
-    /// Board chrome: the top-left #427 Filters control (count label +
-    /// selected-scope summary, opening the filter sheet), the connection
-    /// status line (live), and the pull-to-refresh hint. The control lives
-    /// in the pinned chrome — the board's own header strip — so it can
-    /// never compete with the Settings gear, which stays alone on the
-    /// top-right toolbar. The labels come from the body's reconciled
-    /// projections so the trigger can never drift from the board content.
+    /// #528: the Board pinned chrome — ONE horizontal row, aligned like the
+    /// Herd floating chrome: the #427 Filters control (count label +
+    /// selected-scope summary, opening the filter sheet), the ONE compact
+    /// connection indicator, and the Settings gear. The old routine
+    /// connecting/offline line, the pull-to-refresh instruction and the
+    /// separate D7 outage strip are GONE (spec: one compact indicator, no
+    /// duplicate banners or helper copy). The labels come from the body's
+    /// reconciled projections so the trigger can never drift from the board
+    /// content; the connection state comes from the SAME per-host health
+    /// vocabulary the filter sheet renders.
     @ViewBuilder
     private func boardChrome(filterButtonLabel: String,
                              filterSummaryText: String) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
+        HStack(spacing: 8) {
             filterHeaderControl(filterButtonLabel: filterButtonLabel,
                                 filterSummaryText: filterSummaryText)
-            if model.mode == .live {
-                connectionStatusLine
-            }
-            HStack(spacing: 4) {
-                Image(systemName: "arrow.down")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(theme.accent)
-                    .accessibilityHidden(true)
-                Text("pull to refresh · updates stream in automatically")
-                    .font(.caption2)
-                    .foregroundStyle(theme.subtext1)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 20)
-            .padding(.top, 2)
-            .padding(.bottom, 3)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("Pull to refresh. Updates stream in automatically.")
+            ConnectionStatusIndicator(model: connectionIndicator,
+                                      palette: ConnectionIndicatorPalette(theme: theme),
+                                      showDetail: $showConnectionDetail)
+            settingsGearControl
         }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 2)
     }
 
-    /// #427 Direction A: the top-left `Filters` control — compact count
-    /// label (`Filters` / `Filters · N`) above the concise selected
-    /// summary (`Bazzite · corral`), opening the filter sheet. The whole
-    /// control is one >= 44 pt button whose VoiceOver label repeats the
-    /// full visible text so the scope is never color or position
-    /// dependent.
+    /// #427 Direction A (#528: the leading control of the Board's ONE chrome
+    /// row): the compact count label (`Filters` / `Filters · N`) above the
+    /// concise selected summary (`Bazzite · corral`), opening the filter
+    /// sheet. The whole control is one >= 44 pt button whose VoiceOver label
+    /// repeats the full visible text so the scope is never color or position
+    /// dependent; the summary truncates (never clips) at large text.
     @ViewBuilder
     private func filterHeaderControl(filterButtonLabel: String,
                                      filterSummaryText: String) -> some View {
@@ -1545,51 +1724,12 @@ struct FleetView: View {
             }
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             .contentShape(Rectangle())
-            .padding(.horizontal, 20)
             .padding(.vertical, 2)
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(filterButtonLabel + ", " + filterSummaryText)
         .accessibilityHint("Opens host and repository filters")
-    }
-
-    /// Connection indicator line, modeled by `BoardModel.connectionStatus`
-    /// so the label/spinner is a testable pure projection. When offline the
-    /// board keeps showing the LAST-KNOWN fleet with the daemon-offline
-    /// banner (spec: last-known board + offline banner).
-    @ViewBuilder
-    private var connectionStatusLine: some View {
-        let status = BoardModel.connectionStatus(for: model.fleet.connectionState)
-        switch status {
-        case .connected:
-            EmptyView()
-        case .connecting:
-            HStack(spacing: 4) {
-                ProgressView().controlSize(.mini)
-                Text("connecting")
-                    .font(.caption2)
-                    .foregroundStyle(theme.subtext1)
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 4)
-        case .offline:
-            Label("daemon offline — showing last-known board", systemImage: "wifi.slash")
-                .font(.caption2)
-                .foregroundStyle(theme.peach)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 20)
-                .padding(.top, 4)
-                .accessibilityLabel("daemon offline — showing last known board")
-        case .error(let message):
-            Text("⚠ \(message)")
-                .font(.caption2)
-                .foregroundStyle(theme.peach)
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 20)
-                .padding(.top, 4)
-        }
     }
 
     /// #379: auto-present the How-to-connect sheet when the board first
@@ -1628,7 +1768,11 @@ struct FleetView: View {
     /// phase writes a marker file that the host-side screenshot script
     /// observes, so the recorded sequence is deterministic.
     private func runDemoEvidenceIfNeeded() async {
-        if Corral457Evidence.wantsBoardShot(arguments: CommandLine.arguments) {
+        if Corral528Connection.wantsEvidence(arguments: CommandLine.arguments) {
+            await runConnectionChromeBoardSequence()
+        } else if Corral528Connection.wantsHerdEvidence(arguments: CommandLine.arguments) {
+            await runConnectionChromeHerdSequence()
+        } else if Corral457Evidence.wantsBoardShot(arguments: CommandLine.arguments) {
             await runContextBoardShot()
         } else if Corral457Evidence.wantsContextSequence(arguments: CommandLine.arguments) {
             await runContextFilterSheetSequence()
@@ -2511,18 +2655,145 @@ struct FleetView: View {
         _ = await themePause(1500)
     }
 
-    /// #458 evidence: Settings → Board/Herd → dismiss → relaunch, plus the
-    /// Open Board temporary override. simctl cannot tap, so the driver
-    /// flips the same `showSettings` state the gear button sets and calls
-    /// the same `selectFleetPresentation` the Appearance picker's Binding
-    /// calls. Markers are unique per scenario; the host capture script
-    /// screenshots each marker on its first appearance.
+    /// #528 evidence: the compact connection-chrome matrix on the BOARD over
+    /// the three-profile seed (Host A live, Host B OFFLINE with retained
+    /// stale rows, Host C CONNECTING) — the partial state (one offline +
+    /// one connecting host), the revealed per-host detail, total
+    /// disconnection, recovery (the fleet returns live and the rows are
+    /// re-applied) and the empty/loading state, plus a Latte spot frame.
+    /// simctl cannot tap, so the driver flips the same `showConnectionDetail`
+    /// binding the indicator sets and drives every host posture through the
+    /// model's own store seams (`setDemoHostPosture`).
+    private func runConnectionChromeBoardSequence() async {
+        guard model.mode == .demo else { return }
+        guard await themePause(0) else { return }
+        guard !connectionChromeBoardRan else { return }
+        model.suppressOSNotificationPromptForDemoEvidence()
+        model.fleetPresentation = .board
+        theme.setFlavor(.mocha)
+        model.enterMultiHostDemo(hostBConnecting: false, hostCConnecting: true)
+        guard await themePause(4000) else { return }
+        EvidenceMarkers.write("528-1-board-partial")
+        guard await themePause(9000) else { return }
+        if Corral528Connection.wantsAccessibilitySizes(arguments: CommandLine.arguments) {
+            showConnectionDetail = true
+            guard await themePause(2500) else { return }
+            EvidenceMarkers.write("528-ax-1-board-partial-detail")
+            guard await themePause(9000) else { return }
+            showConnectionDetail = false
+            connectionChromeBoardRan = true
+            EvidenceMarkers.write("528-ax-2-board-done")
+            _ = await themePause(1500)
+            return
+        }
+        showConnectionDetail = true
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("528-2-board-detail")
+        guard await themePause(9000) else { return }
+        showConnectionDetail = false
+        // Total disconnection: every host unreachable, no attempt in flight.
+        model.setDemoHostPosture(.offline, hostName: "Host A")
+        model.setDemoHostPosture(.offline, hostName: "Host C")
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("528-3-board-disconnected")
+        guard await themePause(9000) else { return }
+        // Recovery: the fleet returns live AND a state change lands on a
+        // retained row (the ordinary data path, no gesture involved).
+        var recovered = DemoFleet.multiHostSeedA(now: UInt64(Date().timeIntervalSince1970 * 1000))
+        recovered["herdr:demo-orbit-blocked"]?.state = .working
+        recovered["herdr:demo-orbit-blocked"]?.seq = 11
+        model.fleet.seedDemo(agents: recovered, rev: 4)
+        model.setDemoHostPosture(.live, hostName: "Host A")
+        model.setDemoHostPosture(.live, hostName: "Host B")
+        model.setDemoHostPosture(.live, hostName: "Host C")
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("528-4-board-recovered")
+        guard await themePause(9000) else { return }
+        // Empty/loading: a zero-row board while one host is still
+        // connecting (the last-known note correctly disappears).
+        model.fleet.seedDemo(agents: [:], rev: 9)
+        model.setDemoHostPosture(.connecting, hostName: "Host A")
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("528-5-board-empty-connecting")
+        guard await themePause(9000) else { return }
+        theme.setFlavor(.latte)
+        model.fleet.seedDemo(agents: DemoFleet.multiHostSeedA(now: UInt64(Date().timeIntervalSince1970 * 1000)), rev: 12)
+        model.setDemoHostPosture(.live, hostName: "Host A")
+        model.setDemoHostPosture(.offline, hostName: "Host B")
+        model.setDemoHostPosture(.connecting, hostName: "Host C")
+        guard await themePause(3000) else { return }
+        EvidenceMarkers.write("528-6-board-partial-latte")
+        guard await themePause(9000) else { return }
+        connectionChromeBoardRan = true
+        EvidenceMarkers.write("528-7-board-done")
+        _ = await themePause(1500)
+    }
+
+    /// #528 evidence: the same matrix on the HERD surface — the floating
+    /// chrome's compact indicator must cover the identical states without
+    /// the removed outage panel (Open Board / Retry) and without duplicated
+    /// copy. One launch, markers per phase.
+    private func runConnectionChromeHerdSequence() async {
+        guard model.mode == .demo else { return }
+        guard await themePause(0) else { return }
+        guard !connectionChromeHerdRan else { return }
+        model.suppressOSNotificationPromptForDemoEvidence()
+        model.enterMultiHostDemo(hostBConnecting: false, hostCConnecting: true)
+        model.fleetPresentation = .herd
+        theme.setFlavor(.mocha)
+        guard await themePause(4000) else { return }
+        EvidenceMarkers.write("528-8-herd-partial")
+        guard await themePause(9000) else { return }
+        if Corral528Connection.wantsAccessibilitySizes(arguments: CommandLine.arguments) {
+            showConnectionDetail = true
+            guard await themePause(2500) else { return }
+            EvidenceMarkers.write("528-ax-4-herd-partial-detail")
+            guard await themePause(9000) else { return }
+            showConnectionDetail = false
+            connectionChromeHerdRan = true
+            EvidenceMarkers.write("528-ax-5-herd-done")
+            _ = await themePause(1500)
+            return
+        }
+        showConnectionDetail = true
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("528-9-herd-detail")
+        guard await themePause(9000) else { return }
+        showConnectionDetail = false
+        model.setDemoHostPosture(.offline, hostName: "Host A")
+        model.setDemoHostPosture(.offline, hostName: "Host C")
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("528-10-herd-disconnected")
+        guard await themePause(9000) else { return }
+        model.setDemoHostPosture(.live, hostName: "Host A")
+        model.setDemoHostPosture(.live, hostName: "Host B")
+        model.setDemoHostPosture(.live, hostName: "Host C")
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("528-11-herd-recovered")
+        guard await themePause(9000) else { return }
+        model.fleet.seedDemo(agents: [:], rev: 20)
+        model.setDemoHostPosture(.connecting, hostName: "Host A")
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("528-12-herd-empty-connecting")
+        guard await themePause(9000) else { return }
+        connectionChromeHerdRan = true
+        EvidenceMarkers.write("528-13-herd-done")
+        _ = await themePause(1500)
+    }
+
+    /// #458 evidence: Settings → Board/Herd → dismiss → relaunch. simctl
+    /// cannot tap, so the driver flips the same `showSettings` state the
+    /// gear button sets and calls the same `selectFleetPresentation` the
+    /// Appearance picker's Binding calls. Markers are unique per scenario;
+    /// the host capture script screenshots each marker on its first
+    /// appearance. (#528: the old D scenario — the Herd Open Board recovery
+    /// override — is REMOVED with the disconnect panel it belonged to; the
+    /// saved presentation preference is the only writer left.)
     private func runPresentationEvidenceIfNeeded() async {
         let arguments = CommandLine.arguments
         guard Corral458Presentation.wantsHerdScenario(arguments: arguments)
                 || Corral458Presentation.wantsBoardScenario(arguments: arguments)
-                || Corral458Presentation.wantsBoardReloadScenario(arguments: arguments)
-                || Corral458Presentation.wantsOpenBoardScenario(arguments: arguments) else { return }
+                || Corral458Presentation.wantsBoardReloadScenario(arguments: arguments) else { return }
         guard model.mode == .demo else { return }
         guard await themePause(0) else { return }
         if Corral458Presentation.wantsHerdScenario(arguments: arguments) {
@@ -2557,18 +2828,9 @@ struct FleetView: View {
             guard await themePause(4000) else { return }
             EvidenceMarkers.write("458-c-4-herd-after-dismissal")
             _ = await themePause(5000)
-        } else if Corral458Presentation.wantsBoardReloadScenario(arguments: arguments) {
+        } else {
             // B: cold relaunch restores the persisted Board from scenario A.
             EvidenceMarkers.write("458-b-1-board-restored")
-            _ = await themePause(6000)
-        } else {
-            // D: saved Herd restored, Open Board recovery is temporary, and
-            // the Open Board entry stays reachable inside Herd.
-            EvidenceMarkers.write("458-d-1-herd-restored")
-            guard await themePause(4000) else { return }
-            model.openBoard()
-            guard await themePause(4000) else { return }
-            EvidenceMarkers.write("458-d-2-board-recovery")
             _ = await themePause(6000)
         }
     }

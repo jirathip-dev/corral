@@ -1,0 +1,47 @@
+# #528 evidence capture log
+
+Simulator: Apple iPhone 16, iOS 26.5, UDID 46C711A9-E5FC-4147-82F2-7553D33E9B1B
+           (`xcrun simctl create Corral528 "iPhone 16" com.apple.CoreSimulator.SimRuntime.iOS-26-5`)
+Build:     Debug, /tmp/i528-dd (scheme FleetNotifier; the app the tests/gates built)
+Driver:    one launch per matrix; `-corral528ConnectionEvidence` / `-corral528HerdEvidence`
+           (+ `-corral528AccessibilitySizes -UIPreferredContentSizeCategoryName
+           UICTContentSizeCategoryAccessibilityLarge` for the large-text pair)
+Phases:    marker files written by the driver in Documents/ux-evidence AFTER each state
+           settles; >= 9 s hold per phase; the host polls and screenshots each NEW
+           marker >= 2 s after detection (capture always inside the phase it names).
+Size:      `xcrun simctl io <udid> screenshot <raw>` (1179x2556 @3x) then
+           `sips -z 844 390 <raw> --out <name>-390x844.png` (0.18 % aspect distortion).
+
+## Runs (host commands, in order)
+
+    bash /tmp/i528-capture.sh <UDID> <EVDIR> 528-7-board-done  -corral528ConnectionEvidence
+    bash /tmp/i528-capture.sh <UDID> <EVDIR> 528-13-herd-done  -corral528HerdEvidence
+    bash /tmp/i528-capture.sh <UDID> <EVDIR> 528-ax-2-board-done -corral528ConnectionEvidence \
+         -corral528AccessibilitySizes -UIPreferredContentSizeCategoryName UICTContentSizeCategoryAccessibilityLarge
+    bash /tmp/i528-capture.sh <UDID> <EVDIR> 528-ax-5-herd-done  -corral528HerdEvidence \
+         -corral528AccessibilitySizes -UIPreferredContentSizeCategoryName UICTContentSizeCategoryAccessibilityLarge
+    # the two standard runs are repeated LAST so the a11y runs' shared phase-1
+    # markers (528-1/528-8) cannot leave the AX composition under a standard name
+
+Raw run exits: BOARD_RUN_EXIT=0 HERD_RUN_EXIT=0 AX_BOARD_RUN_EXIT=0 AX_HERD_RUN_EXIT=0
+(see the closeout session log; every marker below was printed as `captured`).
+
+## Frames (sha256 + pixel dims)
+
+- 528-1-board-partial-390x844.png  390x844  b1df2e8b301d5aec893bf3cc8678f1fb124a5865af4b0f2e6292b5a16d57ed19
+- 528-10-herd-disconnected-390x844.png  390x844  ce01418f52915ef148c31dcc70b5c6c9acaffd055f99625a428c0c5e654c3f09
+- 528-11-herd-recovered-390x844.png  390x844  50c73be1fb85b0354587b156a1bf3af0470a84a074d1dde354d763bd11203a48
+- 528-12-herd-empty-connecting-390x844.png  390x844  43640d017abfd40830b3a2da4f19240e0e350852ab03338346e003400432990e
+- 528-13-herd-done-390x844.png  390x844  79838f02f0d33a6cba752de725f5d182684a702c3c6bc62f3f57ee94354f321c
+- 528-2-board-detail-390x844.png  390x844  909b30d029d67b39f537b86484e7c93fe0b32715bfef1d2f41638e5b1848fa78
+- 528-3-board-disconnected-390x844.png  390x844  ad2c4436e4c192ff53f54d4cc5800c5035a1d2e40668e2f3154513fa744620cb
+- 528-4-board-recovered-390x844.png  390x844  822ceb3f30676b77f539cd3b51eb27d903ca97021add326938387803997f8afc
+- 528-5-board-empty-connecting-390x844.png  390x844  9ae5dde7e8d2e22f97d75f375140348b11b2058bc683795c93afcfe70c469b82
+- 528-6-board-partial-latte-390x844.png  390x844  27ebe3f17a70ddc2ace39a94ef4a55d7863e7f5fc1630c525863621e3fbbf104
+- 528-7-board-done-390x844.png  390x844  97b407c0a3d61b93c7da7125a31ff68c2e93dd8f052f42ac81bfdc9c2bae9486
+- 528-8-herd-partial-390x844.png  390x844  a56904d31285ceea711f3f5115e780d88e6481bbcd1bb4ac7e641264c9d4e8f7
+- 528-9-herd-detail-390x844.png  390x844  ccafbc80feb5d1c54ea20cebe531168edd4f803340d1b3a2e2a552fba69b7dae
+- 528-ax-1-board-partial-detail-390x844.png  390x844  6f6cde9d516726e15f5775e29af5af241c5a595feb069ed5494bdccc44014a7b
+- 528-ax-2-board-done-390x844.png  390x844  62dabcabfdab82382f93e7452b01249180162238346cde90916deac7e3dc41be
+- 528-ax-4-herd-partial-detail-390x844.png  390x844  9a4241a09a08d35557166e1f56f7da5040e827b7cd4dce0a8a53a7f85d0d6e54
+- 528-ax-5-herd-done-390x844.png  390x844  b71850080c955e0c620c0859070e70094b0331363bf6597bb752f78f39ffa21e

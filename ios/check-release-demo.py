@@ -484,7 +484,14 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # the pin below is recomputed over THIS merged checkout (fix397 lane,
     # integration 7dd7603c) by the canonical algorithm; the integration
     # value (96c926e1…) does not apply.
-    "fdbcc720c658e54252b738ee804d3c552ff3fae253684b4e505227c8da51afa2"
+    # #486 scanner+confirmation flow: App/EnrollmentPairing.swift (the
+    # enrollment flow state + failure vocabulary) and UI/EnrollmentScannerView.swift
+    # (the camera scanner) are new app sources, and AppModel.swift /
+    # UI/FleetViews.swift carry the Add Host wiring; RELEASE_SOURCE_FILES is
+    # now 40/40 app sources and the pin below is recomputed over THIS
+    # checkout by the canonical algorithm
+    # (python3 -c "…release_source_digest(Path('.'))"; old fdbcc720…).
+    "654a79e13ee7be26e76d65c873acd173dc1749e38b87302f2d91c1483b761bdf"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

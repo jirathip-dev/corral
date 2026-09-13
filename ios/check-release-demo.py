@@ -491,13 +491,35 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # now 40/40 app sources and the pin below is recomputed over THIS
     # checkout by the canonical algorithm
     # (python3 -c "…release_source_digest(Path('.'))"; old fdbcc720…).
+    # #528 compact connection chrome: FleetViews.swift (the ONE compact
+    # connection indicator + the one-row Filters/indicator/Settings chrome +
+    # the removed pull gesture / status line / D7 strip), BoardModel.swift
+    # (the pure indicator projection + shared outage-summary core),
+    # HerdView.swift (indicator in the floating chrome; the outage panel
+    # removed), AppModel.swift (the removed Open Board override + the demo
+    # posture seam), FleetNotifierApp.swift / Demo/HerdEvidence.swift (the
+    # #528 evidence + the #458 D-scenario removal). No new app source was
+    # added — RELEASE_SOURCE_FILES stays 40/40 and the pin below is
+    # recomputed over THIS checkout by the canonical algorithm
+    # (python3 -c "…release_source_digest(Path('.'))"; re-pinned a second
+    # time after the #528 evidence-seam + popover-edge follow-up edits).
+    # #528 fix round r2 (review conditions): the driver now empties EVERY
+    # host's rows for the empty/loading phases (`emptyDemoHostRows`) and the
+    # Herd connection-detail popover rides the AA-pinned ranch chrome surface
+    # (review condition 2) — re-pinned over THIS checkout by the canonical
+    # algorithm (no new app source; the manifest stays 40/40).
     # #530 hoof-to-leg correspondence: UI/Herd/HerdArt.swift rotates each
     # draft fetlock tuft by its own leg's whole gait angle (pose rest +
     # diagonal swing) instead of the swing alone — no new app source, a
     # membership check confirms RELEASE_SOURCE_FILES still lists every
     # app-target *.swift (40/40), and the pin below is recomputed over THIS
     # checkout by the canonical algorithm (old c2a0a181…).
-    "16b044e21a7867993548ade781ddda51c85c47bfc907c13b7a5ae37a3f3099f4"
+    # #530 x #528 union absorb: both lanes re-pinned this constant
+    # independently (16b044e2… / d290af67…), so the merged tree carries a
+    # THIRD value, recomputed here over the merged working tree — the union of
+    # both app-source deltas, manifest still 40/40. The test-source pin below
+    # is unchanged by this merge and matches its own recomputation.
+    "c6bd2ac63e86456c9dd1560a3f3ab4a7526b652dfe817984ca2fda318c3c6e49"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -706,7 +728,17 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # surfaces) — recomputed over THIS checkout by the canonical algorithm
     # (plain sha256, 32d70d13… → 8bd983e2…); the #486 flow tests themselves
     # are a separate file outside this pin.
-    "8bd983e2e376be3105e58fc8d56caf0268fb3cc6d65a8ca1cc1ffd8a20ffa371"
+    # #528 compact connection chrome: the pinned test source gained the
+    # ConnectionChromeModelTests / ConnectionChromeWiringTests /
+    # ConnectionAutoResumeTests classes, and the #365/#387/#427 chrome pins
+    # followed the gear + indicator into the one-row chrome — recomputed
+    # over THIS checkout by the canonical algorithm (plain sha256,
+    # 8bd983e2… → 25424ba1… → d3cedf44…).
+    # #528 fix round r2 (review conditions): ConnectionChromeWiringTests gained
+    # the Herd detail-popover ranch-chrome pin and the #457 ranch-site count
+    # went 1 -> 2 for the condition-2 surface — re-pinned over THIS checkout
+    # (plain sha256 of the pinned test file).
+    "0d9897fc53377d8db3c31fbce0fea359e4c9d1ea97361e6cf83ec38b544d087d"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

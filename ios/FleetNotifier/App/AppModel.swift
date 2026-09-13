@@ -542,9 +542,9 @@ final class AppModel: ObservableObject {
     static let notificationsKey = "fleetnotifier.notificationsEnabled"
     private static let log = Logger(subsystem: "com.corral.fleetnotifier", category: "host-profiles")
 
-    /// #458: the persisted Board/Herd preference (the value a cold relaunch
-    /// restores). `fleetPresentation` may temporarily diverge from it while
-    /// an Open Board recovery override is active.
+    /// #458/#528: the persisted Board/Herd preference (the value a cold
+    /// relaunch restores). `fleetPresentation` mirrors it — the removed
+    /// recovery override left the Settings selection as the only writer.
     var savedFleetPresentation: FleetPresentation {
         FleetPresentation(rawValue: defaults.string(forKey: Self.fleetPresentationKey) ?? "")
             ?? .board
@@ -555,13 +555,6 @@ final class AppModel: ObservableObject {
     func selectFleetPresentation(_ presentation: FleetPresentation) {
         defaults.set(presentation.rawValue, forKey: Self.fleetPresentationKey)
         fleetPresentation = presentation
-    }
-
-    /// #458: Open Board recovery — a TEMPORARY override of the current
-    /// presentation. It never touches the saved preference, so a cold
-    /// relaunch still restores the Settings selection.
-    func openBoard() {
-        fleetPresentation = .board
     }
 
 #if DEBUG
@@ -3965,7 +3958,12 @@ final class AppModel: ObservableObject {
     /// CONNECTING posture instead of the offline error, so the filter-header
     /// frames can capture the textual `connecting` health inside the filter
     /// sheet and the board banner.
-    func enterMultiHostDemo(hostBConnecting: Bool = false) {
+    /// `hostCConnecting` (#528 evidence): seed Host C's session store in the
+    /// connecting posture instead of the terminal key mismatch — the partial
+    /// shape (one live + one offline + one connecting host) the compact
+    /// connection indicator must distinguish.
+    func enterMultiHostDemo(hostBConnecting: Bool = false,
+                            hostCConnecting: Bool = false) {
         guard let store = profileStore, coordinator != nil else {
             enterDemo()
             return
@@ -4003,7 +4001,7 @@ final class AppModel: ObservableObject {
             grants: ["read_tail"],
             expiryTs: nil,
             registeredAt: 1)
-        if let profileC {
+        if let profileC, !hostCConnecting {
             // B4: C presents a different key — paused, fails closed.
             store.noteConnectionState(id: profileC.id, .keyMismatch)
         }
@@ -4031,6 +4029,13 @@ final class AppModel: ObservableObject {
                 storeB.noteConnectionError("host unreachable")
             }
         }
+        // #528 evidence: C mid-connect instead of the terminal key mismatch.
+        // The coordinator session exists only after the reloadProfiles
+        // above, so the posture is stamped HERE (the same seam B uses).
+        if hostCConnecting, let profileC,
+           let storeC = coordinator?.store(profileID: profileC.id) {
+            storeC.noteConnecting()
+        }
         store.noteLastSuccessfulConnection(id: profileA.id,
                                            at: now - 2 * 60 * 1000)
         store.noteLastSuccessfulConnection(id: profileB.id,
@@ -4044,6 +4049,49 @@ final class AppModel: ObservableObject {
         identityLifecycle.setCurrent(mode: .demo, hostURL: nil,
                                     keyId: nil,
                                     signerPublicKeyB64: signer?.publicKeyB64)
+    }
+
+    /// #528 evidence: the connection posture the driver seeds on one demo
+    /// host — the same three postures the indicator distinguishes.
+    enum DemoHostPosture {
+        case live
+        case connecting
+        case offline
+    }
+
+    /// #528 evidence: flip ONE seeded demo host's connection posture through
+    /// the SAME store seam the stream callbacks use (`noteConnected` /
+    /// `noteConnecting` / `noteConnectionError`). The ACTIVE host addresses
+    /// the live fleet store; every other host its coordinator session. No
+    /// stream is started, restarted, or touched.
+    func setDemoHostPosture(_ posture: DemoHostPosture, hostName: String) {
+        guard mode == .demo,
+              let profile = profiles.first(where: { $0.displayName == hostName }) else { return }
+        let store = profile.id == activeProfileID
+            ? fleet
+            : coordinator?.store(profileID: profile.id)
+        guard let store else { return }
+        switch posture {
+        case .live: store.noteConnected()
+        case .connecting: store.noteConnecting()
+        case .offline: store.noteConnectionError("host unreachable")
+        }
+    }
+
+    /// #528 evidence (review condition 1): empty EVERY demo host's rows so
+    /// the multi-host AGGREGATE is genuinely empty. `fleet.seedDemo(agents:
+    /// [:])` alone empties only the ACTIVE host's store — the coordinator's
+    /// sessions keep rendering the other hosts' retained rows, which made the
+    /// captured "empty" frames show Host B rows. The ACTIVE host addresses
+    /// the live fleet store; every other host its coordinator session, the
+    /// same seam `setDemoHostPosture` uses. No stream is started, restarted
+    /// or touched.
+    func emptyDemoHostRows(rev: UInt64) {
+        guard mode == .demo else { return }
+        fleet.seedDemo(agents: [:], rev: rev)
+        for profile in profiles where profile.id != activeProfileID {
+            coordinator?.store(profileID: profile.id)?.seedDemo(agents: [:], rev: rev)
+        }
     }
 
     /// #415 evidence: seeds the Add Host lifecycle evidence state — ONE

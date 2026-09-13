@@ -4298,12 +4298,15 @@ final class StatusSectionCollapseWiringTests: XCTestCase {
 
 // MARK: - #365 Settings gear (source wiring: always-visible top-bar control)
 
-/// #365: Settings must be an ALWAYS-VISIBLE top-bar gear Button (plain
-/// Button, system gear shape, >=44 pt, VoiceOver label) that opens the
-/// Settings sheet with the connection pairing surface — NOT a second-class
-/// entry hidden inside the DEBUG demo overflow menu. Pins the bundled
+/// #365 (#528: position update): Settings must be an ALWAYS-VISIBLE gear
+/// Button (plain Button, system gear shape, >=44 pt, VoiceOver label) that
+/// opens the Settings sheet with the connection pairing surface — NOT a
+/// second-class entry hidden inside the DEBUG demo overflow menu. #528
+/// moved it out of the nav-bar toolbar into the board's ONE pinned chrome
+/// row (Filters + compact connection indicator + gear, aligned like Herd);
+/// these pins follow it to the new position. Pins the bundled
 /// FleetViews.swift.txt exactly like the #316/#364 wiring tests; a gear
-/// moved back into the menu, made DEBUG-only, or losing its label/target
+/// removed from the chrome row, made DEBUG-only, or losing its label/target
 /// size goes RED here.
 final class SettingsAccessWiringTests: XCTestCase {
 
@@ -4341,7 +4344,7 @@ final class SettingsAccessWiringTests: XCTestCase {
             .map { $0.offset + 1 }
     }
 
-    func testSettingsGearIsAReleaseActiveTopBarButton() throws {
+    func testSettingsGearIsAReleaseActiveChromeRowButton() throws {
         let source = try bundledSource()
         let debug = debugActiveLines(source)
 
@@ -4360,11 +4363,11 @@ final class SettingsAccessWiringTests: XCTestCase {
                              + "(a 'Button(\"Settings\", systemImage: \"gearshape\") { showSettings = true }' "
                              + "menu-item spelling is the removed surface)")
 
-        // >=44 pt target + VoiceOver label on the gear. (#427: the board's
-        // other top-bar control — the leading Filters trigger — and the
-        // filter sheet controls carry their own >= 44 pt targets, so the
-        // gear's frame is pinned AFTER its own shape line, not by
-        // whole-source uniqueness.)
+        // >=44 pt target + VoiceOver label on the gear. (#427/#528: the
+        // board's other chrome-row controls — the leading Filters trigger
+        // and the compact connection indicator — carry their own >= 44 pt
+        // targets, so the gear's frame is pinned AFTER its own shape line,
+        // not by whole-source uniqueness.)
         let gearLabelLine = try XCTUnwrap(
             lineNumbers(of: ".accessibilityLabel(\"Settings\")", in: source).first,
             "the gear must carry a VoiceOver label")
@@ -4586,35 +4589,49 @@ final class NavigationHeaderWiringTests: XCTestCase {
                       "the board toolbar chrome must ride the active flavor's accent (#372/#387)")
     }
 
-    func testToolbarGearChromeSurvivesTheTitleFreeHeader() throws {
+    /// #365/#387/#528: the title-free board header still ends in a toolbar +
+    /// the Settings sheet binding; the Settings gear itself lives in the ONE
+    /// pinned chrome row (Filters + compact connection indicator + gear),
+    /// NOT in the toolbar — the #528 Herd-aligned row.
+    func testSettingsGearSurvivesTheTitleFreeHeaderFromTheChromeRow() throws {
         let source = try bundledSource()
         let slice = try boardSlice(from: source)
         let titleLine = try XCTUnwrap(lineNumbers(of: ".navigationTitle(\"\")", in: slice).first)
         let toolbarLine = try XCTUnwrap(lineNumbers(of: ".toolbar {", in: slice).first)
-        let gearLine = try XCTUnwrap(lineNumbers(of: "gearshape", in: slice).first)
-        let labelLine = try XCTUnwrap(lineNumbers(of: ".accessibilityLabel(\"Settings\")", in: slice).first)
-        // #427: the leading Filters trigger carries its own >= 44 pt frame
-        // BEFORE the gear's chain, so the gear's target is the FIRST frame
-        // line after its own shape line.
-        let frameLine = try XCTUnwrap(
-            lineNumbers(of: ".frame(minWidth: 44, minHeight: 44)", in: slice)
-                .filter { $0 > gearLine }.first,
-            "the gear must keep its own >=44 pt frame after its shape")
         let sheetLine = try XCTUnwrap(lineNumbers(of: ".sheet(isPresented: $showSettings)", in: slice).first)
         // Chrome order is unchanged from #365: empty title → inline lock →
-        // gear toolbar → settings sheet, with the gear's >=44 pt target +
-        // VoiceOver label still release-active (pinned by the sibling #365
-        // tests; here we prove it sits AFTER the title-free chrome).
+        // toolbar → settings sheet.
         XCTAssertLessThan(titleLine, toolbarLine,
-                          "the gear toolbar must follow the title-free header chrome")
-        XCTAssertLessThan(toolbarLine, gearLine,
-                          "the gear must live inside the board toolbar")
-        XCTAssertLessThan(gearLine, labelLine,
-                          "the gear keeps its VoiceOver label right after the shape")
-        XCTAssertLessThan(labelLine, frameLine,
-                          "the gear keeps its >=44 pt hit target in the same label chain")
+                          "the toolbar must follow the title-free header chrome")
         XCTAssertLessThan(toolbarLine, sheetLine,
                           "the settings sheet binding must follow the toolbar")
+        // #528: the gear moved OUT of the toolbar block...
+        let toolbarStart = try XCTUnwrap(slice.range(of: ".toolbar {"))
+        let toolbarEnd = try XCTUnwrap(slice.range(of: ".sheet(isPresented: $showSettings)",
+                                                    range: toolbarStart.upperBound..<slice.endIndex))
+        let toolbar = slice[toolbarStart.lowerBound..<toolbarEnd.lowerBound]
+        XCTAssertFalse(toolbar.contains("gearshape"),
+                       "#528: no gear remains in the toolbar")
+        // ...and INTO the pinned chrome row, keeping its VoiceOver label +
+        // >=44 pt target in the same label chain.
+        let chromeStart = try XCTUnwrap(slice.range(of: "private func boardChrome("))
+        let chromeEnd = try XCTUnwrap(slice.range(of: "private func filterHeaderControl(",
+                                                   range: chromeStart.upperBound..<slice.endIndex))
+        let chrome = String(slice[chromeStart.lowerBound..<chromeEnd.lowerBound])
+        XCTAssertTrue(chrome.contains("settingsGearControl"),
+                      "the gear is the chrome row's trailing control")
+        // The control definition (its own property, #528): system gear shape,
+        // VoiceOver label and the >= 44 pt target in one label chain.
+        let controlStart = try XCTUnwrap(slice.range(of: "private var settingsGearControl: some View {"))
+        let controlEnd = try XCTUnwrap(slice.range(of: "/// #371/#386 board renderer",
+                                                   range: controlStart.upperBound..<slice.endIndex))
+        let control = String(slice[controlStart.lowerBound..<controlEnd.lowerBound])
+        XCTAssertTrue(control.contains("Image(systemName: \"gearshape\")"),
+                      "the gear control keeps the system gear shape")
+        XCTAssertTrue(control.contains(".accessibilityLabel(\"Settings\")"),
+                      "the gear keeps its VoiceOver label")
+        XCTAssertTrue(control.contains(".frame(minWidth: 44, minHeight: 44)"),
+                      "the gear keeps its >= 44 pt target")
     }
 }
 
@@ -5568,7 +5585,7 @@ final class RepoRowLabelWiringTests: XCTestCase {
         // builder) and AgentRow passes it into WorkspaceLine — two call
         // sites file-wide share the same spelling.
         let row = try slice(from: "private func agentRow(_ agent: Agent",
-                            to: "/// Board chrome: the top-left #427 Filters control",
+                            to: "/// #528: the Board pinned chrome — ONE horizontal row",
                             in: source)
         XCTAssertEqual(row.components(separatedBy: "hideRepoLabel: hideRepoLabel)").count - 1, 1,
                        "agentRow must pass the flag into AgentRow")
@@ -9696,6 +9713,313 @@ final class MultiHostBoardProjectionTests: XCTestCase {
     }
 }
 
+// MARK: - #528 compact connection chrome (pure projection + resume/stale truth)
+
+/// #528: the ONE compact connection indicator both modes render — pure
+/// projection over the per-host health list. Pins every covered state
+/// (connected / connecting / disconnected / partial multi-host), the
+/// compact label copy, the full VoiceOver description naming every host,
+/// the per-host detail rows, and the stale-as-unknown truth (a retained
+/// board that is not live never reads "Connected" and says so explicitly).
+final class ConnectionChromeModelTests: XCTestCase {
+    private func host(_ id: String, _ name: String,
+                      _ health: BoardModel.HostChipHealth) -> BoardModel.ConnectionHostStatus {
+        BoardModel.ConnectionHostStatus(id: id, name: name, health: health)
+    }
+
+    private func indicator(_ healths: [BoardModel.HostChipHealth],
+                           showsLastKnown: Bool = false)
+        -> BoardModel.ConnectionIndicatorModel {
+        let hosts = healths.enumerated().map { index, health in
+            BoardModel.ConnectionHostStatus(
+                id: "h\(index)",
+                name: "Host \(Character(UnicodeScalar(UInt8(65 + index))))",
+                health: health)
+        }
+        return BoardModel.connectionIndicator(hosts: hosts, showsLastKnown: showsLastKnown)
+    }
+
+    func testSingleHostStatesCoverTheFourCoveredStatuses() {
+        let live = indicator([.live])
+        XCTAssertEqual(live.status, .connected)
+        XCTAssertEqual(live.label, "Live")
+        XCTAssertFalse(live.isAnimated, "connected is static")
+        XCTAssertEqual(live.dotHealth, .live)
+
+        let connecting = indicator([.connecting])
+        XCTAssertEqual(connecting.status, .connecting)
+        XCTAssertEqual(connecting.label, "Connecting")
+        XCTAssertTrue(connecting.isAnimated, "connecting is the ONE animated state")
+
+        for health in [BoardModel.HostChipHealth.offline, .keyMismatch, .awaitingFingerprint] {
+            let disconnected = indicator([health])
+            XCTAssertEqual(disconnected.status, .disconnected,
+                           "\(health) is not a live host")
+            XCTAssertEqual(disconnected.label, "Offline")
+            XCTAssertFalse(disconnected.isAnimated, "disconnected is static")
+        }
+        XCTAssertEqual(indicator([.keyMismatch]).dotHealth, .keyMismatch,
+                       "the aggregate dot keeps the actionable auth posture")
+    }
+
+    func testMultiHostPartialDisconnectsAndConnectingStates() {
+        let partial = indicator([.live, .offline, .connecting])
+        XCTAssertEqual(partial.status, .partial)
+        XCTAssertEqual(partial.label, "1 host offline · 1 host connecting",
+                       "partial reuses the D7 aggregate copy")
+        XCTAssertEqual(partial.dotHealth, .offline)
+
+        let allLive = indicator([.live, .live])
+        XCTAssertEqual(allLive.status, .connected)
+        XCTAssertEqual(allLive.label, "Live")
+
+        let disconnected = indicator([.offline, .offline])
+        XCTAssertEqual(disconnected.status, .disconnected,
+                       "no live host and no attempt in flight = disconnected")
+        XCTAssertEqual(disconnected.label, "2 hosts offline")
+
+        let connecting = indicator([.connecting, .offline])
+        XCTAssertEqual(connecting.status, .connecting,
+                       "an in-flight attempt with nothing live reads connecting")
+        XCTAssertEqual(connecting.label, "1 host offline · 1 host connecting")
+        XCTAssertEqual(connecting.dotHealth, .offline)
+
+        let mismatch = indicator([.live, .keyMismatch])
+        XCTAssertEqual(mismatch.status, .partial)
+        XCTAssertEqual(mismatch.label, "1 host key mismatch",
+                       "actionable auth errors stay distinguishable in the summary")
+        XCTAssertEqual(mismatch.dotHealth, .keyMismatch)
+    }
+
+    func testEmptyHostListFailsClosedToDisconnected() {
+        let empty = BoardModel.connectionIndicator(hosts: [])
+        XCTAssertEqual(empty.status, .disconnected,
+                       "chrome with no host evidence must never read connected")
+        XCTAssertEqual(empty.label, "Offline")
+        XCTAssertEqual(empty.dotHealth, .offline)
+        XCTAssertTrue(empty.hosts.isEmpty)
+    }
+
+    func testAccessibilityDescriptionNamesEveryHostAndTheLastKnownTruth() {
+        let live = BoardModel.connectionIndicator(hosts: [
+            host("a", "Host A", .live),
+        ])
+        XCTAssertEqual(live.accessibilityDescription, "Connection status: Connected. Host A: live.")
+
+        let partial = BoardModel.connectionIndicator(hosts: [
+            host("a", "Host A", .live),
+            host("b", "Host B", .offline),
+            host("c", "Host C", .connecting),
+        ], showsLastKnown: true)
+        XCTAssertEqual(partial.accessibilityDescription,
+                       "Connection status: Partially connected. "
+                       + "Host A: live, Host B: offline, Host C: connecting. "
+                       + "Showing last-known fleet data.",
+                       "the compact chrome says the retained board is last-known, never confirmed live")
+        XCTAssertTrue(partial.showsLastKnown)
+        XCTAssertEqual(partial.hosts.map(\.name), ["Host A", "Host B", "Host C"],
+                       "the revealed detail carries every host")
+
+        let mismatch = BoardModel.connectionIndicator(hosts: [
+            host("a", "Host A", .live),
+            host("c", "Host C", .keyMismatch),
+        ])
+        XCTAssertTrue(mismatch.accessibilityDescription.contains("Host C: key mismatch"),
+                      "auth remediation stays distinguishable per host")
+
+        let empty = BoardModel.connectionIndicator(hosts: [], showsLastKnown: false)
+        XCTAssertEqual(empty.accessibilityDescription, "Connection status: Offline.",
+                       "no hidden host list is invented for an empty fleet")
+    }
+
+    /// The stale/unknown contract: `seedDemo` never claims liveness, and a
+    /// retained (last-known) fleet must NOT read as confirmed live — the
+    /// exact transition the compact chrome consumes from #425's stores.
+    @MainActor
+    func testRetainedRowsOnANonLiveStoreNeverReadConnected() {
+        let store = FleetStore()
+        store.seedDemo(agents: DemoFleet.seed(), rev: 1)
+        XCTAssertEqual(store.connectionState, .disconnected,
+                       "seeding retained rows is not a liveness claim")
+        XCTAssertFalse(store.agents.isEmpty)
+
+        func statuses() -> [BoardModel.ConnectionHostStatus] {
+            let health: BoardModel.HostChipHealth
+            switch store.connectionState {
+            case .connected: health = .live
+            case .connecting: health = .connecting
+            default: health = .offline
+            }
+            return [BoardModel.ConnectionHostStatus(id: "active", name: "This host",
+                                                    health: health)]
+        }
+
+        let offline = BoardModel.connectionIndicator(hosts: statuses(),
+                                                     showsLastKnown: !store.agents.isEmpty)
+        XCTAssertEqual(offline.status, .disconnected)
+        XCTAssertNotEqual(offline.label, "Live")
+        XCTAssertTrue(offline.accessibilityDescription.contains("Showing last-known fleet data"))
+
+        store.noteConnecting()
+        XCTAssertEqual(BoardModel.connectionIndicator(hosts: statuses()).status, .connecting)
+
+        store.noteConnected()
+        XCTAssertEqual(BoardModel.connectionIndicator(hosts: statuses()).status, .connected,
+                       "only the transport ack (noteConnected) may paint Live")
+        XCTAssertEqual(BoardModel.connectionIndicator(hosts: statuses()).label, "Live")
+
+        store.noteConnectionError("host unreachable")
+        XCTAssertEqual(BoardModel.connectionIndicator(hosts: statuses()).status, .disconnected,
+                       "a failure after a live episode returns to the honest offline state")
+    }
+}
+
+// MARK: - #528 connection-chrome wiring (bundled FleetViews + HerdView source)
+
+/// Source-wiring pins over the bundled sources: the ONE compact indicator is
+/// wired into BOTH chrome surfaces, the one-row Filters/Settings layout
+/// holds, the removed surfaces stay removed (Herd outage panel, Board
+/// refresh instruction + gesture, routine status line), and the reveal
+/// binding + accessibility description ride the real views.
+final class ConnectionChromeWiringTests: XCTestCase {
+    private func source(_ name: String) throws -> String {
+        let bundle = Bundle(for: ConnectionChromeWiringTests.self)
+        let url = try XCTUnwrap(bundle.url(forResource: name + ".swift",
+                                           withExtension: "txt"))
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    private func slice(_ source: String, from: String, to: String) throws -> String {
+        let start = try XCTUnwrap(source.range(of: from), "start marker missing: \(from)")
+        let end = try XCTUnwrap(source.range(of: to, range: start.upperBound..<source.endIndex),
+                                "end marker missing after \(from): \(to)")
+        return String(source[start.lowerBound..<end.lowerBound])
+    }
+
+    func testTheIndicatorIsWiredIntoBothChromeSurfacesWithTheSharedModel() throws {
+        let board = try source("FleetViews")
+        let chrome = try slice(board, from: "private func boardChrome(",
+                               to: "private func filterHeaderControl(")
+        XCTAssertTrue(chrome.contains("ConnectionStatusIndicator(model: connectionIndicator,"),
+                      "the board chrome renders the shared indicator view")
+        XCTAssertTrue(chrome.contains("showDetail: $showConnectionDetail"),
+                      "the board chrome wires the reveal binding")
+        let herdRoute = try slice(board, from: "HerdView(horses:", to: "} else {")
+        XCTAssertTrue(herdRoute.contains("connection: connectionIndicator"),
+                      "Herd renders the SAME model FleetView computed")
+        XCTAssertTrue(herdRoute.contains("showConnectionDetail: $showConnectionDetail"),
+                      "both surfaces share ONE reveal binding")
+        let herd = try source("HerdView")
+        XCTAssertTrue(herd.contains("ConnectionStatusIndicator(model: connection,"),
+                      "the Herd floating chrome renders the shared indicator view")
+    }
+
+    func testIndicatorCarriesStatusDotLabelAccessibilityAndThePerHostReveal() throws {
+        let board = try source("FleetViews")
+        let view = try slice(board, from: "struct ConnectionStatusIndicator: View {",
+                             to: "private struct ConnectionDetailList: View {")
+        XCTAssertTrue(view.contains("Circle()"),
+                      "the status dot is a procedural shape (no artwork loader)")
+        XCTAssertTrue(view.contains(".fill(palette.color(for: model.dotHealth))"),
+                      "the dot renders the aggregate posture")
+        XCTAssertTrue(view.contains("Text(model.label)"),
+                      "the compact label always rides with the dot (color is never the only channel)")
+        XCTAssertTrue(view.contains(".frame(minHeight: 44)"),
+                      "the indicator keeps a >= 44 pt target")
+        XCTAssertTrue(view.contains(".accessibilityElement(children: .ignore)"))
+        XCTAssertTrue(view.contains(".accessibilityLabel(model.accessibilityDescription)"),
+                      "the accessible status description is the model's full text")
+        XCTAssertTrue(view.contains(".popover(isPresented: $showDetail"),
+                      "tapping reveals the per-host details")
+        XCTAssertTrue(view.contains("updatePulse()"),
+                      "connecting animates subtly")
+        XCTAssertTrue(view.contains("!reduceMotion"),
+                      "Reduce Motion renders every state static")
+        let detail = try slice(board, from: "private struct ConnectionDetailList: View {",
+                               to: "// MARK: - Fleet board (home)")
+        XCTAssertTrue(detail.contains("ForEach(model.hosts)"),
+                      "the reveal lists every host")
+        XCTAssertTrue(detail.contains("Text(host.health.label)"),
+                      "each revealed host carries its textual health")
+        XCTAssertTrue(detail.contains("Showing last-known fleet data."),
+                      "the reveal repeats the stale provenance in visible text")
+    }
+
+    /// #528 review condition 2: on Herd the revealed connection detail must
+    /// ride the repo's existing AA-pinned ranch chrome surface (the #457
+    /// treatment the floating chrome's bars use) instead of the translucent
+    /// popover material that washed out over the bright sky; the Board keeps
+    /// the plain popover surface.
+    func testHerdDetailPopoverRidesTheRanchChromeSurface() throws {
+        let board = try source("FleetViews")
+        let view = try slice(board, from: "struct ConnectionStatusIndicator: View {",
+                             to: "private struct ConnectionDetailList: View {")
+        XCTAssertTrue(view.contains("let detailChrome: RanchControlTokens?"),
+                      "the indicator carries its caller's chrome context")
+        XCTAssertTrue(view.contains("if let detailChrome {"),
+                      "only the Herd context takes the chrome surface")
+        XCTAssertTrue(view.contains(".ranchChromeSurface(detailChrome)"),
+                      "the Herd detail reuses the AA-pinned ranch chrome treatment")
+        XCTAssertTrue(view.contains("presentationCompactAdaptation(.popover)"),
+                      "the reveal stays a popover")
+        let herd = try source("HerdView")
+        XCTAssertTrue(herd.contains("detailChrome: ranchTokens"),
+                      "the Herd floating chrome passes the ranch tokens it already resolved")
+        XCTAssertTrue(board.contains("detailChrome: nil"),
+                      "the Board chrome passes no detail chrome (its backdrop needs none)")
+    }
+
+    func testTheOneRowLayoutAndRemovedSurfaces() throws {
+        let board = try source("FleetViews")
+        // The one-row chrome: Filters + indicator + gear in ONE HStack.
+        let chrome = try slice(board, from: "private func boardChrome(",
+                               to: "private func filterHeaderControl(")
+        XCTAssertTrue(chrome.contains("HStack(spacing: 8) {"),
+                      "Filters, the indicator and Settings share ONE horizontal row")
+        let filterIndex = try XCTUnwrap(chrome.range(of: "filterHeaderControl(filterButtonLabel:"))
+        let indicatorIndex = try XCTUnwrap(chrome.range(of: "ConnectionStatusIndicator(model: connectionIndicator,"))
+        let gearIndex = try XCTUnwrap(chrome.range(of: "settingsGearControl"))
+        XCTAssertLessThan(filterIndex.lowerBound, indicatorIndex.lowerBound)
+        XCTAssertLessThan(indicatorIndex.lowerBound, gearIndex.lowerBound,
+                          "the gear is the row's trailing control (Herd-aligned order)")
+        // Removed: routine status line, pull-to-refresh copy + gesture, the
+        // separate D7 strip.
+        for removed in ["connectionStatusLine",
+                        "pull to refresh · updates stream in automatically",
+                        "Pull to refresh. Updates stream in automatically.",
+                        "daemon offline — showing last-known board",
+                        "hostOutageSummaryRow",
+                        ".refreshable {"] {
+            XCTAssertEqual(board.components(separatedBy: removed).count - 1, 0,
+                           "#528 removed surface must not come back: \(removed)")
+        }
+        // Herd's removed outage panel copy.
+        let herd = try source("HerdView")
+        for removed in ["Open Board", "Source disconnected · last-known agents",
+                        "blocked status cannot be confirmed"] {
+            XCTAssertEqual(herd.components(separatedBy: removed).count - 1, 0,
+                           "#528 removed Herd surface must not come back: \(removed)")
+        }
+    }
+
+    /// The refresh-handler audit companion pin: no view site may call
+    /// `refreshFleet` any more — the pull gesture and the Herd Retry are
+    /// both removed, so ordinary refresh/reconnect rides the automatic
+    /// stream/watchdog/foreground/path restoration paths (see the model
+    /// tests in FleetNotifierTests.swift). The model seam itself stays
+    /// (coalesced; test-covered) for programmatic refresh.
+    func testNoViewSiteCallsRefreshFleetAfterTheGestureRemoval() throws {
+        let board = try source("FleetViews")
+        XCTAssertEqual(board.components(separatedBy: "refreshFleet").count - 1, 0,
+                       "the board refresh gesture and the Herd Retry are removed (#528)")
+        let herd = try source("HerdView")
+        XCTAssertEqual(herd.components(separatedBy: "refreshFleet").count - 1, 0,
+                       "Herd must not call the refresh handler either")
+        XCTAssertEqual(herd.components(separatedBy: "retry").count - 1, 0,
+                       "Herd's removed outage Retry must not leave a retry closure behind")
+    }
+}
+
 // MARK: - #401/#430/#427 multi-host surface wiring (FleetViews source bundle)
 
 /// Source-wiring pins over the bundled FleetViews source: #427 Direction A
@@ -9713,19 +10037,20 @@ final class MultiHostSurfaceWiringTests: XCTestCase {
         return try String(contentsOf: url, encoding: .utf8)
     }
 
-    func testFilterChromeLivesInTheHeaderSheetWhileTheBannerStaysUnderTheMultiHostGuard() throws {
+    func testFilterChromeLivesInTheHeaderSheetAndTheConnectionStripIsGone() throws {
         let source = try bundledSource()
-        // The board list region (chrome section → the model banner) renders
-        // NO chip rows in any mode (the #427 duplicate-unexplained-All
-        // defect); the compact D7 outage line stays INSIDE the 2+ profile
-        // guard as the board's textual host health.
+        // #427: the board list region (chrome section → the model banner)
+        // renders NO chip rows in any mode (the #427 duplicate-unexplained-
+        // All defect). #528: the separate D7 outage strip is REMOVED too —
+        // the ONE compact connection indicator in the pinned chrome row
+        // carries the aggregate host health with the SAME summary copy.
         let start = try XCTUnwrap(source.range(of: "// #427 Direction A: the horizontal chip rows moved"))
         let end = try XCTUnwrap(source.range(of: "if let banner = model.banner"))
         let slice = String(source[start.lowerBound..<end.lowerBound])
-        XCTAssertTrue(slice.contains("if model.multiHostConfigured, let hostOutageSummary {"),
-                      "the D7 textual host-health line must stay inside the 2+ profile guard")
-        XCTAssertEqual(slice.components(separatedBy: "hostOutageSummaryRow(hostOutageSummary)").count - 1, 1,
-                       "exactly one D7 outage row call site on the board")
+        XCTAssertFalse(slice.contains("hostOutageSummaryRow"),
+                       "#528: the separate D7 outage strip must not render on the board")
+        XCTAssertEqual(source.components(separatedBy: "hostOutageSummaryRow").count - 1, 0,
+                       "#528: the D7 strip view is removed entirely (no decoy definition)")
         XCTAssertEqual(source.components(separatedBy: "hostChipsRow(").count - 1, 0,
                        "the host chip row must not return to the board (#427)")
         XCTAssertEqual(source.components(separatedBy: "repoChipsRow(").count - 1, 0,
@@ -11158,6 +11483,140 @@ final class HeartbeatRecoveryTests: XCTestCase {
         XCTAssertTrue(redialed, "a fresh connect after teardown must be able to open a stream")
         XCTAssertNotEqual(storeA.connectionState, .disconnected,
                           "the reopened stream must own a live attempt")
+    }
+}
+
+// MARK: - #528 refresh-handler audit: automatic updates resume (no gesture)
+
+/// #528 removed the Board pull-to-refresh gesture and the Herd outage Retry
+/// only after auditing `refreshFleet`. This proves the audit's core claim on
+/// the REAL transport path: a stream that ends (clean server EOF) is
+/// reconnected by the transport's own retry ladder, resumes from the
+/// accepted cursor, and the NEXT delta lands in the store — all without any
+/// pull, Refresh call, or forced view switch. RED at a head where updates
+/// depended on the removed gesture (nothing delivers the second frame).
+@MainActor
+final class ConnectionAutoResumeTests: XCTestCase {
+    /// Serves one scripted `/events` body per attempt, then finishes the
+    /// load (clean server EOF) so the transport's retry ladder reconnects.
+    private final class AttemptBodyURLProtocol: URLProtocol {
+        private static let lock = NSLock()
+        private static var bodiesStorage: [Data] = []
+        private static var requestsStorage: [URLRequest] = []
+        private static var holdOpenStorage = false
+
+        /// `holdOpen` keeps the LAST scripted attempt from finishing, so the
+        /// store reaches a stable live posture after its body is applied.
+        static func script(_ bodies: [Data], holdOpen: Bool = false) {
+            lock.lock()
+            bodiesStorage = bodies
+            requestsStorage = []
+            holdOpenStorage = holdOpen
+            lock.unlock()
+        }
+
+        static func reset() {
+            lock.lock()
+            bodiesStorage = []
+            requestsStorage = []
+            holdOpenStorage = false
+            lock.unlock()
+        }
+
+        static var requests: [URLRequest] {
+            lock.lock()
+            defer { lock.unlock() }
+            return requestsStorage
+        }
+
+        override class func canInit(with request: URLRequest) -> Bool {
+            request.url?.path == "/events"
+        }
+
+        override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+        override func startLoading() {
+            Self.lock.lock()
+            let index = Self.requestsStorage.count
+            Self.requestsStorage.append(request)
+            let body = index < Self.bodiesStorage.count ? Self.bodiesStorage[index] : Data()
+            let holdThisAttempt = Self.holdOpenStorage && index == Self.bodiesStorage.count - 1
+            Self.lock.unlock()
+            guard let url = request.url else {
+                client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+                return
+            }
+            // SAFETY: fixed literal 200 SSE response for the fixture URL.
+            let response = HTTPURLResponse(url: url, statusCode: 200,
+                                           httpVersion: "HTTP/1.1",
+                                           headerFields: ["Content-Type": "text/event-stream"])!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: body)
+            if !holdThisAttempt {
+                client?.urlProtocolDidFinishLoading(self)
+            }
+        }
+
+        override func stopLoading() {}
+    }
+
+    /// The EXACT daemon SSE shape (frames closed by an empty line).
+    private static let snapshotFrame: Data = {
+        let json = #"{"schema_version":5,"rev":1,"generated_at":0,"agents":{"herdr:x":{"agent_id":"herdr:x","source":"herdr","tool":"claude","state":"idle","seq":1,"ts":1700000000000}}}"#
+        return Data(("event: snapshot\nid: 1\ndata: " + json + "\n\n").utf8)
+    }()
+
+    private static let deltaFrame: Data = {
+        let json = #"{"rev":2,"upd":[{"agent_id":"herdr:x","source":"herdr","tool":"claude","state":"blocked","reason":"waiting","seq":2,"ts":1700000001000}],"del":[]}"#
+        return Data(("event: delta\nid: 2\ndata: " + json + "\n\n").utf8)
+    }()
+
+    private func waitFor(_ condition: () -> Bool, timeout: TimeInterval = 10) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+        return condition()
+    }
+
+    func testUpdatesResumeThroughTheAutomaticStreamWithoutTheGesture() async throws {
+        // Attempt 1 ends (clean EOF) → the transport reconnects; attempt 2's
+        // delta lands on a HELD-OPEN stream so the live posture is stable.
+        AttemptBodyURLProtocol.script([Self.snapshotFrame, Self.deltaFrame],
+                                      holdOpen: true)
+        defer { AttemptBodyURLProtocol.reset() }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [AttemptBodyURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let store = FleetStore()
+        defer {
+            if let task = store.disconnect() { _ = task }
+            session.invalidateAndCancel()
+        }
+        // SAFETY: fixed literal fixture host URL.
+        let client = CorraldClient(host: URL(string: "https://resume.test")!, session: session)
+        store.onConnectionError = { _ in }
+        store.connect(client: client)
+
+        // Attempt 1's snapshot lands; its clean EOF then ends the live
+        // posture while the transport's own ladder reconnects.
+        let first = await waitFor({ store.agents["herdr:x"]?.state == .idle }, timeout: 8)
+        XCTAssertTrue(first, "the first attempt's snapshot must land")
+
+        // NO gesture, NO refresh call, NO view switch: the retry's delta
+        // must apply itself.
+        let resumed = await waitFor({ store.agents["herdr:x"]?.state == .blocked }, timeout: 10)
+        XCTAssertTrue(resumed,
+                      "updates must resume through the automatic stream reconnect (#528 audit)")
+        XCTAssertEqual(store.agents["herdr:x"]?.reason, "waiting")
+        XCTAssertGreaterThanOrEqual(AttemptBodyURLProtocol.requests.count, 2,
+                                    "the transport must reconnect on its own")
+        XCTAssertEqual(AttemptBodyURLProtocol.requests.last?
+                        .value(forHTTPHeaderField: "Last-Event-ID"), "1",
+                       "the automatic resume must carry the accepted cursor")
+        XCTAssertEqual(store.connectionState, .connected,
+                       "the applied delta rode a live stream ack")
+        XCTAssertEqual(store.lastEventId, 2)
     }
 }
 

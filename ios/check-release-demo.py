@@ -539,7 +539,10 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # #397 = 9be9bacf…, integration = 1978fc18…); recomputed by the
     # canonical algorithm over THIS merged working tree — membership check
     # still 40/40.
-    "62e3592585b5c06dcbccbec753317e658df7b287dd2092b0ba9dad918e88475f"
+    # #533: scoped the ThemeStore defaults observer to its own suite
+    # instance (AppTheme.swift: `object: nil` → `object: defaults`) —
+    # re-pinned over the #533 source set; membership check still 40/40.
+    "c7b869bf75e669667b0fa2025802942ce1ac065dbab46dc6ce271e632dfbc2cc"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

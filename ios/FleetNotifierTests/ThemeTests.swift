@@ -393,6 +393,100 @@ final class ThemeStoreTests: XCTestCase {
     }
 }
 
+// MARK: - #533 observer scoping (own-suite only)
+
+/// A `UserDefaults` that counts reads of the store's refresh keys. The #533
+/// observer scope has NO value-visible consequence: a spurious wake re-reads
+/// the SAME suite, so the resolved palette is identical and any `flavor` /
+/// `palette` assertion passes with and without the fix. The observer's
+/// RE-READ is the wake's only observable trace, so the tests count that
+/// instead of asserting on values.
+private final class ReadCountingDefaults: UserDefaults {
+    private(set) var ownKeyReads = 0
+    var onOwnKeyRead: (() -> Void)?
+    private var watchedKeys: Set<String> = []
+
+    /// Called from the (main-actor) test with ThemeStore's refresh keys, so
+    /// this nonisolated override touches no MainActor state of its own.
+    func watch(keys: Set<String>) { watchedKeys = keys }
+
+    override func string(forKey defaultName: String) -> String? {
+        if watchedKeys.contains(defaultName) {
+            ownKeyReads += 1
+            onOwnKeyRead?()
+        }
+        return super.string(forKey: defaultName)
+    }
+}
+
+/// #533: the store observed `UserDefaults.didChangeNotification` with
+/// `object: nil`, so ANY suite's write woke it. These legs pin the scope to
+/// the store's OWN suite instance: the negative leg fails while `object: nil`
+/// is in place, and the same-suite leg is the positive control proving the
+/// mechanism still observes a real write (#526's behaviour).
+@MainActor
+final class ThemeStoreObserverScopeTests: XCTestCase {
+
+    private func countingSuite(_ name: String) -> ReadCountingDefaults {
+        let suiteName = "theme-store-observer-\(name)-\(UUID().uuidString)"
+        // SAFETY: a fresh UUID-based suite name is always a valid suite.
+        let defaults = ReadCountingDefaults(suiteName: suiteName)!
+        defaults.watch(keys: [ThemeStore.herdEnvironmentKey, ThemeStore.flavorKey])
+        // The removal itself posts a defaults notification: it runs BEFORE
+        // the store exists, so the observer cannot inherit a pending wake
+        // from test setup.
+        defaults.removePersistentDomain(forName: suiteName)
+        return defaults
+    }
+
+    /// Negative leg: a write to a DIFFERENT suite must not reach the store
+    /// at all — no re-read and no publish within a bounded window — while
+    /// every value the store holds stays byte-identical either way.
+    func testUnrelatedSuiteWriteDoesNotWakeTheStore() async {
+        let defaults = countingSuite("unrelated")
+        let store = ThemeStore(defaults: defaults, reduceMotionProvider: { false })
+        store.setPresentation(.herd)                     // no defaults write
+
+        let unrelatedName = "theme-store-unrelated-\(UUID().uuidString)"
+        // SAFETY: a fresh UUID-based suite name is always a valid suite.
+        let unrelated = UserDefaults(suiteName: unrelatedName)!
+        unrelated.removePersistentDomain(forName: unrelatedName)
+
+        let baseline = defaults.ownKeyReads
+        let noWake = expectation(description: "an unrelated-suite write must not re-read the store's keys")
+        noWake.assertForOverFulfill = false
+        noWake.isInverted = true
+        defaults.onOwnKeyRead = { noWake.fulfill() }
+        unrelated.set("theme-observer-scope-probe", forKey: "unrelated.key")
+        await fulfillment(of: [noWake], timeout: 1.0)
+        defaults.onOwnKeyRead = nil
+        XCTAssertEqual(defaults.ownKeyReads, baseline,
+                       "the store must not re-read its own suite when a different suite changes")
+    }
+
+    /// Positive control: a write to the store's OWN suite (through the same
+    /// instance) still refreshes the resolved palette.
+    func testSameSuiteWriteStillRefreshesTheResolvedPalette() async {
+        let defaults = countingSuite("same-suite")
+        let store = ThemeStore(defaults: defaults, reduceMotionProvider: { false })
+        store.setPresentation(.herd)
+
+        let baseline = defaults.ownKeyReads
+        let woke = expectation(description: "an own-suite write still wakes the store")
+        woke.assertForOverFulfill = false
+        defaults.onOwnKeyRead = { woke.fulfill() }
+        defaults.set(HerdEnvironmentChoice.night.rawValue,
+                     forKey: ThemeStore.herdEnvironmentKey)
+        await fulfillment(of: [woke], timeout: 2.0)
+        defaults.onOwnKeyRead = nil
+        XCTAssertGreaterThan(defaults.ownKeyReads, baseline,
+                             "the own-suite write must reach the observer's re-read")
+        XCTAssertEqual(store.herdEnvironment, .night)
+        XCTAssertEqual(store.flavor, .mocha,
+                       "an external write to the store's own suite still refreshes the palette")
+    }
+}
+
 // MARK: - Color hexDescription (test-side: Color → #RRGGBB for assertions)
 
 extension Color {

@@ -375,9 +375,16 @@ final class ThemeStore: ObservableObject {
         // any future writer that goes straight to the shared key — observe
         // the defaults so the resolved palette can never lag a preference
         // change while a sheet is open.
+        //
+        // #533: scoped to this store's OWN suite instance — Foundation
+        // posts the changed `UserDefaults` instance as the notification
+        // object, so an unrelated suite (a different
+        // `UserDefaults(suiteName:)` or another component's store) can no
+        // longer wake this observer. `object: nil` was latent shared-state
+        // coupling from #526 (independent-review condition C2).
         defaultsObserver = NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification,
-            object: nil,
+            object: defaults,
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in self?.refreshFromDefaults() }

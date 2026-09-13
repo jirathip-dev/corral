@@ -491,7 +491,13 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # now 40/40 app sources and the pin below is recomputed over THIS
     # checkout by the canonical algorithm
     # (python3 -c "…release_source_digest(Path('.'))"; old fdbcc720…).
-    "c2a0a181efb6cddf20aa28a5130be47c5a18df153dd155f116fbff627855a8b2"
+    # #530 hoof-to-leg correspondence: UI/Herd/HerdArt.swift rotates each
+    # draft fetlock tuft by its own leg's whole gait angle (pose rest +
+    # diagonal swing) instead of the swing alone — no new app source, a
+    # membership check confirms RELEASE_SOURCE_FILES still lists every
+    # app-target *.swift (40/40), and the pin below is recomputed over THIS
+    # checkout by the canonical algorithm (old c2a0a181…).
+    "16b044e21a7867993548ade781ddda51c85c47bfc907c13b7a5ae37a3f3099f4"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

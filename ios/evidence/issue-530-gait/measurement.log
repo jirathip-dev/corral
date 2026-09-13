@@ -1,0 +1,174 @@
+# 530 measurement.log — stdout of the three shipped analysis helpers
+# (re-run from this directory against the raw fleet-side frames)
+
+$ /Users/jirathip/.hermes/hermes-agent/venv/bin/python3 measure-actual-app.py $FLEET/herd-base-demo-1.png $FLEET/herd-head-demo-1.png $FLEET
+{
+  "before": "/Users/jirathip/.config/fleet-operations/run/corral/evidence/impl530-hoof/herd-base-demo-1.png",
+  "after": "/Users/jirathip/.config/fleet-operations/run/corral/evidence/impl530-hoof/herd-head-demo-1.png",
+  "pixels": [
+    2556,
+    1179,
+    3
+  ],
+  "anchor_leg2_centroid": [
+    212.5,
+    1088.6
+  ],
+  "tuft_before_centroid": [
+    335.3,
+    1088.5
+  ],
+  "tuft_after_centroid": [
+    359.7,
+    1086.3
+  ],
+  "tuft_after_blobs": [
+    {
+      "pixels": 29,
+      "centroid": [
+        359.7,
+        1086.3
+      ],
+      "bbox": [
+        355,
+        1085,
+        363,
+        1088
+      ]
+    },
+    {
+      "pixels": 9,
+      "centroid": [
+        373.4,
+        1068.4
+      ],
+      "bbox": [
+        372,
+        1067,
+        376,
+        1069
+      ]
+    }
+  ],
+  "px_per_point": 2.9951,
+  "dislocated_pre_fix_angle_0": {
+    "art": [
+      84.0,
+      89.0
+    ],
+    "px": [
+      335.3,
+      1088.6
+    ]
+  },
+  "aligned_leg_angle_-26": {
+    "art": [
+      94.08,
+      86.67
+    ],
+    "px": [
+      365.5,
+      1081.6
+    ]
+  },
+  "tuft_before_vs_pre_fix_px": 0.1,
+  "tuft_before_vs_aligned_pt": 10.34,
+  "tuft_after_vs_aligned_px": 7.5,
+  "tuft_after_vs_pre_fix_pt": 8.18,
+  "tuft_moved_pt": 8.18
+}
+
+$ /Users/jirathip/.hermes/hermes-agent/venv/bin/python3 measure-working-draft-tuft.py $FLEET/draft-base-1.png $FLEET/draft-base-2.png $FLEET/draft-head-1.png $FLEET/draft-head-2.png
+        "gap_px": 0.0,
+        "gap_points": 0.0,
+        "touches_leg_paint_within_2px": true,
+        "nearest_paint_px": [
+          315,
+          2073
+        ]
+      },
+      {
+        "tuft_pixels": 411,
+        "tuft_bbox": [
+          286,
+          2063,
+          309,
+          2087
+        ],
+        "gap_px": 0.0,
+        "gap_points": 0.0,
+        "touches_leg_paint_within_2px": true,
+        "nearest_paint_px": [
+          308,
+          2076
+        ]
+      }
+    ]
+  },
+  "draft-head-2.png": {
+    "horse_box": [
+      224,
+      1829,
+      492,
+      2083
+    ],
+    "tuft_blobs": 2,
+    "tuft_measurements": [
+      {
+        "tuft_pixels": 411,
+        "tuft_bbox": [
+          330,
+          2068,
+          355,
+          2090
+        ],
+        "gap_px": 0.0,
+        "gap_points": 0.0,
+        "touches_leg_paint_within_2px": true,
+        "nearest_paint_px": [
+          332,
+          2083
+        ]
+      },
+      {
+        "tuft_pixels": 408,
+        "tuft_bbox": [
+          280,
+          2073,
+          304,
+          2095
+        ],
+        "gap_px": 0.0,
+        "gap_points": 0.0,
+        "touches_leg_paint_within_2px": true,
+        "nearest_paint_px": [
+          301,
+          2088
+        ]
+      }
+    ]
+  }
+}
+
+$ /Users/jirathip/.hermes/hermes-agent/venv/bin/python3 audit-gait-hoof.py .   (pre-fix classification table)
+light   stand        n/a (no fetlock tuft: breeds light/stock)
+light   working      n/a (no fetlock tuft: breeds light/stock)
+light   blocked      n/a (no fetlock tuft: breeds light/stock)
+light   done         n/a (no fetlock tuft: breeds light/stock)
+light   unknown      n/a (no fetlock tuft: breeds light/stock)
+light   graze        n/a (no fetlock tuft: breeds light/stock)
+light   alertStatic  n/a (no fetlock tuft: breeds light/stock)
+stock   stand        n/a (no fetlock tuft: breeds light/stock)
+stock   working      n/a (no fetlock tuft: breeds light/stock)
+stock   blocked      n/a (no fetlock tuft: breeds light/stock)
+stock   done         n/a (no fetlock tuft: breeds light/stock)
+stock   unknown      n/a (no fetlock tuft: breeds light/stock)
+stock   graze        n/a (no fetlock tuft: breeds light/stock)
+stock   alertStatic  n/a (no fetlock tuft: breeds light/stock)
+draft   stand        ALIGNED
+draft   working      MISALIGNED  worst 11.981 pt (expected 2.5) on leg 0
+draft   blocked      MISALIGNED  worst 11.179 pt (expected 2.5) on leg 0
+draft   done         ALIGNED
+draft   unknown      MISALIGNED  worst 3.56 pt (expected 2.5) on leg 0
+draft   graze        ALIGNED
+draft   alertStatic  ALIGNED

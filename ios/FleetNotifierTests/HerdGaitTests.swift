@@ -1,5 +1,6 @@
 import XCTest
 import SwiftUI
+import CryptoKit
 @testable import FleetNotifier
 
 /// #448 acceptance through the ACTUAL procedural renderer
@@ -272,5 +273,180 @@ final class HerdGaitTests: XCTestCase {
             + "gait:horse.gait(elapsed:elapsed,reduceMotion:reduced||!motionEnabled))"
         XCTAssertEqual(button.components(separatedBy: painted).count - 1, 1,
                        "horseButton must paint with the derived gait exactly once")
+    }
+
+    // MARK: #530 hoof-to-leg correspondence
+
+    /// Every coat/breed combination is reachable only through the name-derived
+    /// identity axes, so the matrix below walks each one by a deterministic
+    /// search over that constructor instead of a fixed name table.
+    private func identity(coat: Int, breed: Int) throws -> HorseIdentity {
+        let found = (0..<4096).lazy
+            .map { HorseIdentity(name: "i530-coat\(coat)-breed\(breed)-\($0)") }
+            .first { $0.coat == coat && $0.breed == breed }
+        return try XCTUnwrap(found, "no name-derived identity reaches coat \(coat) breed \(breed)")
+    }
+
+    /// The centre of an ink's axis-aligned box. The leg, hoof and tuft inks
+    /// are each one centrally symmetric rounded rect, so for every rotation
+    /// the box centre IS the rect's centre.
+    private func centre(_ ink: HorseInk) -> CGPoint {
+        CGPoint(x: ink.path.boundingRect.midX, y: ink.path.boundingRect.midY)
+    }
+
+    /// #530: the correspondence check is anchored on the DRAWN LEG INK, not
+    /// on the gait model. `HerdArt.leg` rotates one rigid rounded rect (with
+    /// its hoof band) about the hip, so for any pose rest angle, diagonal
+    /// swing, -4-degree working lean and outer transform the offset vector
+    /// from the leg ink's own centre to a member ink's centre is
+    /// rotation-invariant: a member authored on the leg's axis sits at
+    /// exactly the canonical offset length — any angular displacement grows
+    /// it (law of cosines) — and the fetlock tuft must additionally share the
+    /// hoof's axis and distal side. A tuft rotated by the swing alone (the
+    /// pre-#530 form, which drops the pose rest angle) or by a mirrored angle
+    /// lands off-axis by up to 12 pt and fails the cross/dot pair.
+    ///
+    /// The matrix walks every breed, every coat index, every pose and eight
+    /// gait phases at both authored amplitudes.
+    func testEveryHoofAndFetlockTuftStaysOnItsLegAnchorAcrossAllVariantsAndPhases() throws {
+        let poses: [HorsePose] = [.stand, .working, .blocked, .done, .unknown, .graze, .alertStatic]
+        var gaits: [HorseGait] = [.standstill]
+        for sample in 0..<8 {
+            gaits.append(HorseGait(phase: Double(sample) / 8, swing: 22))
+            gaits.append(HorseGait(phase: Double(sample) / 8, swing: 8))
+        }
+        for breed in 0..<3 {
+            let height = [34.0, 31, 28][breed]
+            for coat in 0..<8 {
+                let witness = try identity(coat: coat, breed: breed)
+                for pose in poses {
+                    for gait in gaits {
+                        let inks = art.drawing(witness, pose: pose, gait: gait)
+                        let label = "coat \(coat) breed \(breed) \(pose.rawValue) "
+                            + "phase \(gait.phase) swing \(gait.swing)"
+                        for index in 0..<4 {
+                            let leg = try ink("leg-\(index)", in: inks)
+                            let hoof = try ink("leg-\(index)-hoof", in: inks)
+                            let anchor = centre(leg)
+                            let hoofCentre = centre(hoof)
+                            let v = CGPoint(x: hoofCentre.x - anchor.x, y: hoofCentre.y - anchor.y)
+                            XCTAssertEqual(Double(hypot(v.x, v.y)), height / 2 - 2.5, accuracy: 0.01,
+                                           "\(label) leg-\(index) hoof must sit on its leg's axis")
+                            guard breed == 2, index == 0 || index == 2 else { continue }
+                            let tuft = try ink("leg-\(index)-tuft", in: inks)
+                            let tuftCentre = centre(tuft)
+                            let t = CGPoint(x: tuftCentre.x - anchor.x, y: tuftCentre.y - anchor.y)
+                            XCTAssertEqual(Double(hypot(t.x, t.y)), height / 2 - 5, accuracy: 0.01,
+                                           "\(label) leg-\(index) fetlock tuft must sit on its leg's axis")
+                            XCTAssertEqual(Double(v.x * t.y - v.y * t.x), 0, accuracy: 0.05,
+                                           "\(label) leg-\(index) fetlock tuft must share the hoof's axis")
+                            XCTAssertGreaterThan(Double(v.x * t.x + v.y * t.y), 0,
+                                                 "\(label) leg-\(index) fetlock tuft must sit distal, on the hoof's side")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The painted output of one drawing — colour, opacity, stroke and the
+    /// path geometry — serialized at a fixed precision and hashed. This is
+    /// exactly the value set `HerdArt.paint` consumes, so an equal digest
+    /// means an unchanged frame.
+    static func inkDigest(_ inks: [HorseInk]) -> String {
+        var text = ""
+        for ink in inks {
+            text += "\(ink.color)|\(ink.opacity)|\(ink.stroke)|"
+            ink.path.forEach { element in
+                switch element {
+                case let .move(to: p): text += "M\(Self.number(p.x)),\(Self.number(p.y));"
+                case let .line(to: p): text += "L\(Self.number(p.x)),\(Self.number(p.y));"
+                case let .quadCurve(to: p, control: c):
+                    text += "Q\(Self.number(c.x)),\(Self.number(c.y)),"
+                        + "\(Self.number(p.x)),\(Self.number(p.y));"
+                case let .curve(to: p, control1: a, control2: b):
+                    text += "C\(Self.number(a.x)),\(Self.number(a.y)),"
+                        + "\(Self.number(b.x)),\(Self.number(b.y)),"
+                        + "\(Self.number(p.x)),\(Self.number(p.y));"
+                case .closeSubpath: text += "Z;"
+                }
+            }
+            text += "\n"
+        }
+        return SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func number(_ value: CGFloat) -> String { String(format: "%.6f", Double(value)) }
+
+    /// The ink digests every pose which has a zero rest angle (and every
+    /// non-draft breed in the running poses) must keep FOREVER — captured
+    /// before the #530 fix by running this same test with an empty table
+    /// against `HerdArt.swift` at the pre-fix base `origin/integration`
+    /// 1d774d1f5d5270193b028f29f36670eac3fbabfb`. The printed
+    /// `i530-base-ink|…` lines are the same table, so a reviewer can
+    /// re-derive each value from `probe-gait.py`'s logs.
+    static let baseInk: [String: String] = [
+        "b0|stand|still": "41831ebbe121c18f627f9fcab3d0e31e71bf0570748e8e7a83b8a6588619c1c7",
+        "b0|stand|step": "63f1db99e2117b62f14902416b3348881eb9d73450ecf783b1718aeb381763ab",
+        "b0|done|still": "6826c13a44b774ea5e5c9f5c4f6c6da328ce1672466d4bc1859510780aa00102",
+        "b0|done|step": "6826c13a44b774ea5e5c9f5c4f6c6da328ce1672466d4bc1859510780aa00102",
+        "b0|alertStatic|still": "e6e091b2877bb7e4d7f5c4eca258997dc91c283c9dc5692086033fa4d2919638",
+        "b0|alertStatic|step": "e6e091b2877bb7e4d7f5c4eca258997dc91c283c9dc5692086033fa4d2919638",
+        "b0|graze|still": "14f2065db49d36e448d909e61de4ee1ea0b7c00aa46a97fc3fb0f556c772d712",
+        "b0|graze|step": "14f2065db49d36e448d909e61de4ee1ea0b7c00aa46a97fc3fb0f556c772d712",
+        "b0|working|trot": "3257dfc723300c02fc96101ddcfbb2c11bd55d1d3973a8c0dd6f8233f53d6c88",
+        "b0|blocked|trot": "fdad6ff56e5b0cf3c7c9655b63c61071ad5a90d546948b2c19a0d1f0d1e66709",
+        "b0|unknown|trot": "7d4516786e5fbc457abd28b8e0fffff543f73d012404afa4ea1445ffff3d957e",
+        "b1|stand|still": "3080763e4059ba6ec475bdddb25e130be947105965e6ff85e759ef296c6bcaf2",
+        "b1|stand|step": "c22852e2b3dcb039520578bcfeac13c919b5bfcaa00f3d7171308363e2f49396",
+        "b1|done|still": "59fe62d2b163730b7b329ad41c12a76149fa3b04b06f5e5c26a479757530e1b6",
+        "b1|done|step": "59fe62d2b163730b7b329ad41c12a76149fa3b04b06f5e5c26a479757530e1b6",
+        "b1|alertStatic|still": "77a87f13ad058062c8dc7550ccba60ecb311a1af7bf5da94ac9471c42f56b98a",
+        "b1|alertStatic|step": "77a87f13ad058062c8dc7550ccba60ecb311a1af7bf5da94ac9471c42f56b98a",
+        "b1|graze|still": "4c6c1ca6596020dc9d8011e17612a8b7aaaaea661cfe78cbf1b1e989c5dc2b36",
+        "b1|graze|step": "4c6c1ca6596020dc9d8011e17612a8b7aaaaea661cfe78cbf1b1e989c5dc2b36",
+        "b1|working|trot": "e6ee7d9305e4a3d10130942181f6d62b7dce5e6b77d0d86da19fbf47bf9d8e77",
+        "b1|blocked|trot": "84fd98b3bbd652493092af99cc1b2d0c7eaf38d5440c2333b2946b941a7d02a7",
+        "b1|unknown|trot": "0e049ea0bfd564142b32f7375397132aa5e74b0352951efa5214004ef09a0e72",
+        "b2|stand|still": "6c9131b86dd2c37308a30f2c5093ce49962de4366c0a4b4844ff500fc8ad1211",
+        "b2|stand|step": "b5efd1d23b9dd3bc7714e9dd01837fe7c29b71db2734d6a2e9bd8776c576fbce",
+        "b2|done|still": "c5d50f2408772b437cfc361d0ec0a8f7953ef5162f1d394a5348da5bddcfc868",
+        "b2|done|step": "c5d50f2408772b437cfc361d0ec0a8f7953ef5162f1d394a5348da5bddcfc868",
+        "b2|alertStatic|still": "f68239239e4dc9ca9817345a48898d5455b857b1d0bab31feda52ec061582e14",
+        "b2|alertStatic|step": "f68239239e4dc9ca9817345a48898d5455b857b1d0bab31feda52ec061582e14",
+        "b2|graze|still": "49200b8f6889cb6e666daba264bdb5c997e1dbc78f3e800daa9a407e96ec07fb",
+        "b2|graze|step": "49200b8f6889cb6e666daba264bdb5c997e1dbc78f3e800daa9a407e96ec07fb",
+    ]
+
+    /// #530 requirement 4, byte-identical form: the correspondence fix moves
+    /// the draft fetlock tufts in working / blocked / unknown (rest angle
+    /// non-zero) and nowhere else. Every sample below renders the exact
+    /// pre-fix ink — the frames a caller sees for standing, idle-stepping,
+    /// grazing, settled and alert-static horses, at both authored amplitudes.
+    func testZeroRestAnglePosesKeepTheBaseInkAcrossTheCorrespondenceFix() throws {
+        let idleStep = HorseGait(phase: 0.25, swing: 8)
+        let trot = HorseGait(phase: 0.25, swing: 22)
+        var samples: [(key: String, breed: Int, pose: HorsePose, gait: HorseGait)] = []
+        for breed in 0..<3 {
+            for pose in [HorsePose.stand, .done, .alertStatic, .graze] {
+                samples.append(("b\(breed)|\(pose.rawValue)|still", breed, pose, .standstill))
+                samples.append(("b\(breed)|\(pose.rawValue)|step", breed, pose, idleStep))
+            }
+        }
+        for breed in 0..<2 {
+            for pose in [HorsePose.working, .blocked, .unknown] {
+                samples.append(("b\(breed)|\(pose.rawValue)|trot", breed, pose, trot))
+            }
+        }
+        XCTAssertEqual(samples.count, 30)
+        var table: [String: String] = [:]
+        for sample in samples {
+            let witness = try identity(coat: 0, breed: sample.breed)
+            let digest = Self.inkDigest(art.drawing(witness, pose: sample.pose, gait: sample.gait))
+            table[sample.key] = digest
+            print("i530-base-ink|\(sample.key)|\(digest)")
+        }
+        XCTAssertEqual(table, Self.baseInk,
+                       "every pose with a zero rest angle must keep the pre-fix ink exactly")
     }
 }

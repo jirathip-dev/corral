@@ -1,0 +1,21 @@
+light   stand        n/a (no fetlock tuft: breeds light/stock)
+light   working      n/a (no fetlock tuft: breeds light/stock)
+light   blocked      n/a (no fetlock tuft: breeds light/stock)
+light   done         n/a (no fetlock tuft: breeds light/stock)
+light   unknown      n/a (no fetlock tuft: breeds light/stock)
+light   graze        n/a (no fetlock tuft: breeds light/stock)
+light   alertStatic  n/a (no fetlock tuft: breeds light/stock)
+stock   stand        n/a (no fetlock tuft: breeds light/stock)
+stock   working      n/a (no fetlock tuft: breeds light/stock)
+stock   blocked      n/a (no fetlock tuft: breeds light/stock)
+stock   done         n/a (no fetlock tuft: breeds light/stock)
+stock   unknown      n/a (no fetlock tuft: breeds light/stock)
+stock   graze        n/a (no fetlock tuft: breeds light/stock)
+stock   alertStatic  n/a (no fetlock tuft: breeds light/stock)
+draft   stand        ALIGNED
+draft   working      MISALIGNED  worst 11.981 pt (expected 2.5) on leg 0
+draft   blocked      MISALIGNED  worst 11.179 pt (expected 2.5) on leg 0
+draft   done         ALIGNED
+draft   unknown      MISALIGNED  worst 3.56 pt (expected 2.5) on leg 0
+draft   graze        ALIGNED
+draft   alertStatic  ALIGNED

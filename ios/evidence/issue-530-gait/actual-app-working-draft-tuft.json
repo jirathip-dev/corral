@@ -1,0 +1,174 @@
+{
+  "draft-base-1.png": {
+    "horse_box": [
+      219,
+      1829,
+      487,
+      2084
+    ],
+    "tuft_blobs": 2,
+    "tuft_measurements": [
+      {
+        "tuft_pixels": 404,
+        "tuft_bbox": [
+          258,
+          2082,
+          283,
+          2102
+        ],
+        "gap_px": 7.1,
+        "gap_points": 2.36,
+        "touches_leg_paint_within_2px": false,
+        "nearest_paint_px": [
+          285,
+          2078
+        ]
+      },
+      {
+        "tuft_pixels": 402,
+        "tuft_bbox": [
+          344,
+          2077,
+          370,
+          2095
+        ],
+        "gap_px": 9.2,
+        "gap_points": 3.08,
+        "touches_leg_paint_within_2px": false,
+        "nearest_paint_px": [
+          340,
+          2072
+        ]
+      }
+    ]
+  },
+  "draft-base-2.png": {
+    "horse_box": [
+      223,
+      1829,
+      491,
+      2097
+    ],
+    "tuft_blobs": 2,
+    "tuft_measurements": [
+      {
+        "tuft_pixels": 412,
+        "tuft_bbox": [
+          380,
+          2075,
+          407,
+          2094
+        ],
+        "gap_px": 0.0,
+        "gap_points": 0.0,
+        "touches_leg_paint_within_2px": true,
+        "nearest_paint_px": [
+          380,
+          2085
+        ]
+      },
+      {
+        "tuft_pixels": 407,
+        "tuft_bbox": [
+          228,
+          2086,
+          255,
+          2104
+        ],
+        "gap_px": 2.2,
+        "gap_points": 0.75,
+        "touches_leg_paint_within_2px": false,
+        "nearest_paint_px": [
+          257,
+          2098
+        ]
+      }
+    ]
+  },
+  "draft-head-1.png": {
+    "horse_box": [
+      219,
+      1829,
+      487,
+      2076
+    ],
+    "tuft_blobs": 2,
+    "tuft_measurements": [
+      {
+        "tuft_pixels": 415,
+        "tuft_bbox": [
+          314,
+          2060,
+          338,
+          2083
+        ],
+        "gap_px": 0.0,
+        "gap_points": 0.0,
+        "touches_leg_paint_within_2px": true,
+        "nearest_paint_px": [
+          315,
+          2073
+        ]
+      },
+      {
+        "tuft_pixels": 411,
+        "tuft_bbox": [
+          286,
+          2063,
+          309,
+          2087
+        ],
+        "gap_px": 0.0,
+        "gap_points": 0.0,
+        "touches_leg_paint_within_2px": true,
+        "nearest_paint_px": [
+          308,
+          2076
+        ]
+      }
+    ]
+  },
+  "draft-head-2.png": {
+    "horse_box": [
+      224,
+      1829,
+      492,
+      2083
+    ],
+    "tuft_blobs": 2,
+    "tuft_measurements": [
+      {
+        "tuft_pixels": 411,
+        "tuft_bbox": [
+          330,
+          2068,
+          355,
+          2090
+        ],
+        "gap_px": 0.0,
+        "gap_points": 0.0,
+        "touches_leg_paint_within_2px": true,
+        "nearest_paint_px": [
+          332,
+          2083
+        ]
+      },
+      {
+        "tuft_pixels": 408,
+        "tuft_bbox": [
+          280,
+          2073,
+          304,
+          2095
+        ],
+        "gap_px": 0.0,
+        "gap_points": 0.0,
+        "touches_leg_paint_within_2px": true,
+        "nearest_paint_px": [
+          301,
+          2088
+        ]
+      }
+    ]
+  }
+}

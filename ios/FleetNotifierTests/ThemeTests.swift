@@ -265,6 +265,132 @@ final class ThemeStoreTests: XCTestCase {
                                 reduceMotionProvider: { false })
         XCTAssertFalse(normal.reduceMotion)
     }
+
+    // MARK: #526 per-mode palette ownership (Board preset vs Herd environment)
+
+    /// The two saved appearance preferences are independent: the Herd
+    /// environment resolves the palette in Herd mode and NEVER consults the
+    /// Board preset, while switching back to Board restores the preset
+    /// verbatim (no conversion, no reset).
+    func testHerdEnvironmentOwnsTheHerdPaletteAndNeverTheBoardPreset() {
+        let defaults = suite("ownership")
+        let store = ThemeStore(defaults: defaults, reduceMotionProvider: { false })
+        store.setFlavor(.macchiato)                    // the saved Board preset
+        store.setPresentation(.herd)
+        store.setHerdEnvironment(.day)
+        XCTAssertEqual(store.flavor, .latte,
+                       "Herd Day resolves Latte even when the saved Board preset is a dark flavor")
+        XCTAssertEqual(defaults.string(forKey: ThemeStore.flavorKey),
+                       CatppuccinFlavor.macchiato.rawValue,
+                       "the Herd palette must never rewrite the saved Board preset")
+        XCTAssertEqual(defaults.string(forKey: ThemeStore.herdEnvironmentKey),
+                       HerdEnvironmentChoice.day.rawValue,
+                       "the Herd environment is its own saved preference")
+        store.setFlavor(.latte)                        // a LIGHT Board preset now
+        store.setHerdEnvironment(.night)
+        XCTAssertEqual(store.flavor, .mocha,
+                       "Herd Night resolves Mocha even when the saved Board preset is light")
+        XCTAssertEqual(store.boardFlavor, .latte,
+                       "the Board preset stays the saved one while Herd is selected")
+        store.setPresentation(.board)
+        XCTAssertEqual(store.flavor, .latte,
+                       "switching back to Board restores its preset verbatim")
+        XCTAssertEqual(defaults.string(forKey: ThemeStore.herdEnvironmentKey),
+                       HerdEnvironmentChoice.night.rawValue,
+                       "the Board switch must never rewrite the Herd environment")
+    }
+
+    /// Both preferences round-trip a cold relaunch and the cold-launch
+    /// resolution matches the persisted mode (a launch straight into Herd
+    /// renders the Herd Day/Night palette immediately — no Board-preset
+    /// frame).
+    func testBothPreferencesRoundTripAcrossRelaunch() {
+        let defaults = suite("relaunch")
+        let first = ThemeStore(defaults: defaults, reduceMotionProvider: { false })
+        first.setFlavor(.frappe)
+        first.setHerdEnvironment(.night)
+        first.setPresentation(.herd)
+        // The MODEL owns the persisted presentation (AppModel
+        // .selectFleetPresentation) — the store only mirrors it live; a
+        // real relaunch therefore reads the key the model wrote.
+        defaults.set(FleetPresentation.herd.rawValue, forKey: ThemeStore.presentationKey)
+        let relaunched = ThemeStore(defaults: defaults, reduceMotionProvider: { false })
+        XCTAssertEqual(relaunched.boardFlavor, .frappe,
+                       "the Board preset survives relaunch byte-for-byte")
+        XCTAssertEqual(relaunched.herdEnvironment, .night,
+                       "the Herd environment survives relaunch")
+        XCTAssertEqual(relaunched.presentation, .herd,
+                       "the persisted mode drives the cold-launch resolution")
+        XCTAssertEqual(relaunched.flavor, .mocha,
+                       "a Herd cold launch resolves Herd Night from the environment alone")
+        relaunched.setPresentation(.board)
+        XCTAssertEqual(relaunched.flavor, .frappe,
+                       "...and the Board preset is still there, never converted")
+    }
+
+    /// The resolved chrome follows the SAME lighting the ranch renders with:
+    /// HerdView reports `lighting.night` (the single HerdSun resolver site)
+    /// and the store re-themes in place.
+    func testReportedHerdLightingDrivesTheResolvedPalette() {
+        let store = ThemeStore(defaults: suite("lighting"), reduceMotionProvider: { false })
+        store.setPresentation(.herd)
+        store.setHerdEnvironment(.day)
+        XCTAssertEqual(store.flavor, .latte)
+        store.setHerdNight(true)                       // an Auto boundary / solar flip
+        XCTAssertEqual(store.flavor, .mocha,
+                       "the reported Night state re-themes every surface")
+        store.setHerdEnvironment(.night)               // the picker writes directly
+        XCTAssertEqual(store.flavor, .mocha)
+        store.setHerdEnvironment(.day)                 // ...and re-resolves immediately
+        XCTAssertEqual(store.flavor, .latte,
+                       "an environment write re-resolves even while a stale Night report "
+                       + "is still in place")
+        store.setHerdNight(false)
+        XCTAssertEqual(store.flavor, .latte)
+    }
+
+    /// Auto resolves through `HerdSun` (Day/Night) — the store must agree
+    /// with the resolver the ranch calls, at a pinned instant.
+    func testAutoResolutionMatchesTheSharedSunResolver() {
+        let store = ThemeStore(defaults: suite("auto"), reduceMotionProvider: { false })
+        store.setPresentation(.herd)
+        store.setHerdEnvironment(.auto)
+        XCTAssertEqual(store.flavor, ThemeStore.herdFlavor(night: store.herdNight))
+        XCTAssertEqual(store.herdNight,
+                       HerdSun.resolve(.auto, now: Date()).night,
+                       "Auto resolves the chrome from the SAME effective Day/Night state the ranch uses")
+        XCTAssertEqual(ThemeStore.herdFlavor(night: false), .latte)
+        XCTAssertEqual(ThemeStore.herdFlavor(night: true), .mocha)
+    }
+
+    /// An environment write that BYPASSES the store (the #457 evidence
+    /// plumbing, any future writer) still reaches the resolved palette —
+    /// an open sheet can never keep a stale palette.
+    func testExternalEnvironmentWriteRefreshesTheResolvedPalette() async {
+        let defaults = suite("external")
+        let store = ThemeStore(defaults: defaults, reduceMotionProvider: { false })
+        store.setPresentation(.herd)
+        store.setHerdEnvironment(.day)
+        XCTAssertEqual(store.flavor, .latte)
+        defaults.set(HerdEnvironmentChoice.night.rawValue,
+                     forKey: ThemeStore.herdEnvironmentKey)
+        var attempts = 0
+        while store.flavor != .mocha && attempts < 60 {
+            try? await Task.sleep(for: .milliseconds(20))
+            attempts += 1
+        }
+        XCTAssertEqual(store.flavor, .mocha,
+                       "the shared herdEnvironment key drives the palette even when written "
+                       + "outside the store")
+    }
+
+    /// The store reads the SAME persisted presentation key AppModel owns —
+    /// a divergence would make the cold-launch resolution disagree with the
+    /// mode the app actually renders.
+    func testPresentationKeyMatchesTheModelKey() {
+        XCTAssertEqual(ThemeStore.presentationKey, AppModel.fleetPresentationKey,
+                       "the ThemeStore must read the persisted presentation the model writes")
+    }
 }
 
 // MARK: - Color hexDescription (test-side: Color → #RRGGBB for assertions)

@@ -95,12 +95,20 @@ final class HerdLocation: NSObject, ObservableObject, CLLocationManagerDelegate 
     }
 }
 
+/// #526: the Settings → Appearance **Herd environment** control (visible
+/// only while Herd is the selected mode). Bound to the `ThemeStore`, which
+/// owns the resolved palette: picking an environment writes the shared
+/// `herdEnvironment` key (the ranch's own `@AppStorage` observes it) and
+/// re-resolves the chrome in the same update, so an open Settings sheet can
+/// never keep a stale palette. The Board preset is untouched.
 struct HerdEnvironmentSettings: View {
-    @AppStorage("herdEnvironment") private var choice = HerdEnvironmentChoice.auto
+    @EnvironmentObject private var theme: ThemeStore
     var body: some View {
         Section("Herd environment") {
-            Picker("Ranch light",selection:$choice) {
-                ForEach(HerdEnvironmentChoice.allCases,id:\.self) { Text($0.rawValue).tag($0) }
+            Picker("Ranch light", selection: Binding(
+                get: { theme.herdEnvironment },
+                set: { theme.setHerdEnvironment($0) })) {
+                ForEach(HerdEnvironmentChoice.allCases, id: \.self) { Text($0.rawValue).tag($0) }
             }.frame(minHeight:44)
             Text("Auto uses an already-authorized cached location for sunrise and sunset. Otherwise, Day is 07:00–19:00 on this device. Location is never required.")
                 .font(.caption)

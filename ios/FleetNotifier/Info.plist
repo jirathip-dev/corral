@@ -27,6 +27,8 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSCameraUsageDescription</key>
+	<string>Corral uses the camera only to scan the host's enrollment QR code — nothing is recorded or stored.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Connects to your corrald daemon on the local network (Tailscale) to show the fleet and stream agent output.</string>
 	<key>NSUserNotificationsUsageDescription</key>

@@ -4501,12 +4501,17 @@ struct AddHostSheet: View {
     @ObservedObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var theme: ThemeStore
+    /// #486: presentation-only state for the QR scanner cover (the pairing
+    /// state itself is model-owned, like every other draft value).
+    @State private var showEnrollmentScanner = false
 
     var body: some View {
         NavigationStack {
             Form {
                 if let prepared = model.addHostDraft.prepared {
                     confirmationSection(prepared)
+                } else if let enrollment = model.addHostDraft.enrollment {
+                    enrollmentSection(enrollment)
                 } else {
                     entrySection
                 }
@@ -4518,19 +4523,26 @@ struct AddHostSheet: View {
                     Button("Cancel") {
                         // #415: Cancel abandons the pairing — the
                         // scene-scoped draft (incl. the transient token)
-                        // is cleared. Failure never dismisses here.
+                        // is cleared (#486: any QR pairing too).
                         model.clearAddHostDraft()
                         dismiss()
                     }
                 }
                 ToolbarItem(placement: .topBarLeading) {
-                    if model.addHostDraft.prepared != nil {
+                    if model.addHostDraft.prepared != nil || model.addHostDraft.enrollment != nil {
                         Button {
-                            // #415: back to the entry phase for
-                            // CORRECTION — name/URL/token all stay in the
-                            // draft; the confirmed pairing is dropped.
-                            model.addHostDraft.prepared = nil
-                            model.addHostDraft.errorMessage = nil
+                            if model.addHostDraft.enrollment != nil {
+                                // #486: back to the entry phase for
+                                // CORRECTION — name/URL stay, the scanned
+                                // code is dropped, no profile is touched.
+                                model.discardEnrollment()
+                            } else {
+                                // #415: back to the entry phase for
+                                // CORRECTION — name/URL/token all stay in the
+                                // draft; the confirmed pairing is dropped.
+                                model.addHostDraft.prepared = nil
+                                model.addHostDraft.errorMessage = nil
+                            }
                         } label: {
                             Label("Edit host details", systemImage: "chevron.backward")
                         }
@@ -4558,6 +4570,12 @@ struct AddHostSheet: View {
             }
         }
         .presentationDragIndicator(.visible)
+        // #486: the one input route into this SAME surface — scan the
+        // host's QR code, then confirm the exact host identity + read-only
+        // scope below. No second connection surface exists.
+        .fullScreenCover(isPresented: $showEnrollmentScanner) {
+            EnrollmentScannerView(model: model)
+        }
         .translucentSheetBackdrop(theme.base)
 #if DEBUG
         // #416 evidence: medium detent under the evidence arg (see
@@ -4731,7 +4749,28 @@ struct AddHostSheet: View {
 
     /// Phase 1: name + URL entry. #415: fields bind straight to the
     /// model-owned scene-scoped draft, so churn can never clear them.
+    /// #486: the same section now also offers the QR route INTO this flow —
+    /// scan the host's code, confirm the verified identity + read-only
+    /// scope, done. Manual entry stays available underneath.
+    @ViewBuilder
     private var entrySection: some View {
+        Section {
+            Button {
+                model.addHostDraft.errorMessage = nil
+                showEnrollmentScanner = true
+            } label: {
+                Label("Scan host QR code", systemImage: "qrcode.viewfinder")
+            }
+            .disabled(model.addHostDraft.isWorking)
+            .accessibilityHint("Opens the camera to read the read-only host code")
+            Text("Scan the host code minted on the daemon host, or enter the host URL and registration token by hand below.")
+                .font(.caption)
+                .foregroundStyle(theme.subtext1)
+        } header: {
+            Text("Pair by code")
+        }
+        // #428: themed row surface (see themedRowSurface).
+        .themedRowSurface(theme)
         Section {
             ConnectionField(title: "Host name", secure: false,
                             text: $model.addHostDraft.name)
@@ -4837,6 +4876,143 @@ struct AddHostSheet: View {
                 dismiss()
             }
         }
+    }
+
+    /// #486: QR enrollment — the scanned code's verified host identity and
+    /// its read-only scope for explicit confirmation, then the host
+    /// approval wait. The redemption code itself is never rendered, copied,
+    /// or logged: it lives only in the model's transient slot, and this
+    /// view renders the draft, which carries no pairing material.
+    @ViewBuilder
+    private func enrollmentSection(_ enrollment: EnrollmentDraft) -> some View {
+        Section {
+            LabeledContent("Host", value: enrollment.displayName)
+            LabeledContent("URL", value: enrollment.urlString)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Host fingerprint (verified against the live host)")
+                    .font(.caption)
+                    .foregroundStyle(theme.subtext1)
+                Text(enrollment.fingerprint)
+                    .font(.caption2.monospaced())
+                    .textSelection(.enabled)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Host fingerprint, verified against the live host: \(enrollment.fingerprint)")
+            LabeledContent("Scope", value: enrollment.scope == EnrollmentQRPayload.readTailScope
+                           ? "read_tail — read-only"
+                           : enrollment.scope)
+            Text("This pairing is READ-ONLY: the board and recent output only — no control, no diffs, no shell.")
+                .font(.caption)
+                .foregroundStyle(theme.subtext1)
+        } header: {
+            Text("Confirm the host identity")
+        }
+        // #428: themed row surface (see themedRowSurface).
+        .themedRowSurface(theme)
+        switch enrollment.phase {
+        case .reviewing:
+            Section {
+                Button {
+                    confirmEnrollment()
+                } label: {
+                    if model.addHostDraft.isWorking {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Text("Confirm & pair")
+                    }
+                }
+                .disabled(model.addHostDraft.isWorking)
+                Button {
+                    model.discardEnrollment()
+                    showEnrollmentScanner = true
+                } label: {
+                    Label("Scan a different code", systemImage: "qrcode.viewfinder")
+                }
+                .disabled(model.addHostDraft.isWorking)
+            } header: {
+                Text("Pair")
+            } footer: {
+                Text("The host owner approves this device on the host itself; nothing is granted before that explicit approval.")
+                    .foregroundStyle(theme.subtext1)
+            }
+            // #428: themed row surface (see themedRowSurface).
+            .themedRowSurface(theme)
+        case .waiting:
+            Section {
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    Text("Waiting for host approval")
+                        .foregroundStyle(theme.text)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Waiting for host approval")
+                Text("Approve this device on the host (the daemon's owner channel). Until then nothing is granted and no output is shown for this host.")
+                    .font(.caption)
+                    .foregroundStyle(theme.subtext1)
+                Text("This code's approval window closes at \(approvalDeadlineText(enrollment.expiresTs)).")
+                    .font(.caption2)
+                    .foregroundStyle(theme.subtext1)
+                Button("Stop waiting") { model.stopEnrollmentWait() }
+            } header: {
+                Text("Waiting for approval")
+            }
+            // #428: themed row surface (see themedRowSurface).
+            .themedRowSurface(theme)
+        case .failed(let message):
+            Section {
+                Label(message, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(theme.red)
+                    .accessibilityLabel("Pairing failed. \(message)")
+                Button {
+                    model.discardEnrollment()
+                    showEnrollmentScanner = true
+                } label: {
+                    Label("Scan a fresh code", systemImage: "qrcode.viewfinder")
+                }
+            } header: {
+                Text("Pairing did not complete")
+            }
+            // #428: themed row surface (see themedRowSurface).
+            .themedRowSurface(theme)
+        case .interrupted:
+            Section {
+                Label("Pairing stopped before the host approved — nothing was paired.",
+                      systemImage: "pause.circle")
+                    .font(.caption)
+                    .foregroundStyle(theme.subtext1)
+                Button {
+                    model.discardEnrollment()
+                    showEnrollmentScanner = true
+                } label: {
+                    Label("Scan a fresh code", systemImage: "qrcode.viewfinder")
+                }
+            } header: {
+                Text("Pairing stopped")
+            }
+            // #428: themed row surface (see themedRowSurface).
+            .themedRowSurface(theme)
+        }
+    }
+
+    /// #486: submit the confirmed QR enrollment through the model. Only
+    /// `.success` dismisses (exactly once, after the profile commit and the
+    /// draft clear); every failure keeps the sheet open on its explicit
+    /// phase message.
+    private func confirmEnrollment() {
+        guard !model.addHostDraft.isWorking else { return }
+        Task {
+            let outcome = await model.completeEnrollmentPairing()
+            if case .success = outcome {
+                dismiss()
+            }
+        }
+    }
+
+    /// #486: the code's own approval deadline, in the user's locale.
+    private func approvalDeadlineText(_ expiresTs: UInt64) -> String {
+        Date(timeIntervalSince1970: TimeInterval(expiresTs))
+            .formatted(date: .omitted, time: .shortened)
     }
 }
 

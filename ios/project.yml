@@ -33,6 +33,7 @@ targets:
           fi
         inputFiles:
           - "$(SRCROOT)/FleetNotifier/App/AppModel.swift"
+          - "$(SRCROOT)/FleetNotifier/App/EnrollmentPairing.swift"
           - "$(SRCROOT)/FleetNotifier/App/FleetNotifierApp.swift"
           - "$(SRCROOT)/FleetNotifier/App/FleetStore.swift"
           - "$(SRCROOT)/FleetNotifier/Demo/AddHostCommitEvidenceURLProtocol.swift"
@@ -55,6 +56,7 @@ targets:
           - "$(SRCROOT)/FleetNotifier/UI/AppIconPicker.swift"
           - "$(SRCROOT)/FleetNotifier/UI/AppTheme.swift"
           - "$(SRCROOT)/FleetNotifier/UI/BoardModel.swift"
+          - "$(SRCROOT)/FleetNotifier/UI/EnrollmentScannerView.swift"
           - "$(SRCROOT)/FleetNotifier/UI/FleetViews.swift"
           - "$(SRCROOT)/FleetNotifier/UI/Herd/HerdArt.swift"
           - "$(SRCROOT)/FleetNotifier/UI/Herd/HerdEnvironmentChoice.swift"
@@ -95,6 +97,10 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         NSLocalNetworkUsageDescription: "Connects to your corrald daemon on the local network (Tailscale) to show the fleet and stream agent output."
+        # #486: the Add Host QR scanner is the only camera use — reading the
+        # host's read-only enrollment code on screen. Frames are never
+        # recorded, stored, or uploaded.
+        NSCameraUsageDescription: "Corral uses the camera only to scan the host's enrollment QR code — nothing is recorded or stored."
         NSAppTransportSecurity:
           # Deliberately NO ts.net / insecure-HTTP exception (#80): the
           # build-3 carve-out never worked — iOS forces a TLS upgrade on

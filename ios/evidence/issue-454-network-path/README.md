@@ -44,6 +44,27 @@ Uses the lane's private simulator + private DerivedData and serializes on the
 shared `/tmp/corral-heavy-gate.lock`. The raw `xcodebuild` exit status is the
 gate status; logs are named per run in the durable evidence directory.
 
+## Re-anchoring + portability (maintenance, #523)
+
+`red-probe-454.py` and `pre-review-fixes-454.py` locate the code they swap by
+exact string anchors, so they **fail closed** (exit 1, nothing written) when
+`AppModel.startPathMonitor()` or the pre-review blocks legitimately change. The
+GREEN anchor is the live `pathMonitor.start { … }` wiring **including its
+generation guard**; when that wiring changes, re-derive the anchor from the
+current `AppModel.swift` and keep the RED text a compiling stand-in for "no
+path integration is wired" — a ~30-second edit, never a loosened fragment
+(`red-probe-454.py` asserts exactly one match before splicing). The sibling
+script's `F2_START_FIXED` anchor tracks the same wiring and moves with it.
+
+Both scripts honour the same worktree override as the runner — the variable
+name and default mirror `run-454-tests.sh`:
+
+    IMPL454_WORKTREE=<checkout> python3 \
+      ios/evidence/issue-454-network-path/red-probe-454.py check
+
+The default remains the original lane worktree
+(`/Users/jirathip/.herdr/worktrees/corral/prep454-path-contract`).
+
 ## RED/GREEN proof
 
 `red-probe-454.py` (durable evidence directory) flips the lane back to the

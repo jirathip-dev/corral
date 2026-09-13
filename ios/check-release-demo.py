@@ -508,7 +508,25 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # Herd connection-detail popover rides the AA-pinned ranch chrome surface
     # (review condition 2) — re-pinned over THIS checkout by the canonical
     # algorithm (no new app source; the manifest stays 40/40).
-    "39d7fdbe93b4c63a72d95a70ef8b36c29378e0fbdc55cab5fdb3ec5f10cb4da1"
+    # #530 hoof-to-leg correspondence: UI/Herd/HerdArt.swift rotates each
+    # draft fetlock tuft by its own leg's whole gait angle (pose rest +
+    # diagonal swing) instead of the swing alone — no new app source, a
+    # membership check confirms RELEASE_SOURCE_FILES still lists every
+    # app-target *.swift (40/40), and the pin below is recomputed over THIS
+    # checkout by the canonical algorithm (old c2a0a181…).
+    # #530 x #528 union absorb: both lanes re-pinned this constant
+    # independently (16b044e2… / d290af67…), so the merged tree carries a
+    # THIRD value, recomputed here over the merged working tree — the union of
+    # both app-source deltas, manifest still 40/40. The test-source pin below
+    # is unchanged by this merge and matches its own recomputation.
+    # #526 x #530 reconcile absorb: #526 re-pinned over its post-#528
+    # palette source set (39d7fdbe…) while #530 re-pinned over its HerdArt
+    # gait source set (c6bd2ac6…); the merged tree carries a THIRD value
+    # again, recomputed by the canonical algorithm over THIS merged working
+    # tree — the union of both app-source deltas, membership check still
+    # 40/40. The test-source pin below follows the #526 test-source delta
+    # (dc04b35b…) and is unchanged by #530.
+    "1978fc18fb2eef6905ca1124f173c3c8a82cdef6987522cc22ae5e409e850203"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

@@ -519,7 +519,14 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # THIRD value, recomputed here over the merged working tree — the union of
     # both app-source deltas, manifest still 40/40. The test-source pin below
     # is unchanged by this merge and matches its own recomputation.
-    "c6bd2ac63e86456c9dd1560a3f3ab4a7526b652dfe817984ca2fda318c3c6e49"
+    # #526 x #530 reconcile absorb: #526 re-pinned over its post-#528
+    # palette source set (39d7fdbe…) while #530 re-pinned over its HerdArt
+    # gait source set (c6bd2ac6…); the merged tree carries a THIRD value
+    # again, recomputed by the canonical algorithm over THIS merged working
+    # tree — the union of both app-source deltas, membership check still
+    # 40/40. The test-source pin below follows the #526 test-source delta
+    # (dc04b35b…) and is unchanged by #530.
+    "1978fc18fb2eef6905ca1124f173c3c8a82cdef6987522cc22ae5e409e850203"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -738,7 +745,7 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # the Herd detail-popover ranch-chrome pin and the #457 ranch-site count
     # went 1 -> 2 for the condition-2 surface — re-pinned over THIS checkout
     # (plain sha256 of the pinned test file).
-    "0d9897fc53377d8db3c31fbce0fea359e4c9d1ea97361e6cf83ec38b544d087d"
+    "dc04b35bd4bc52bf794c7b07cd2fb3b5ba9af972670e87b68a44b806128468ef"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

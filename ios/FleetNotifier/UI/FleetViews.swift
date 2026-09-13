@@ -862,6 +862,11 @@ struct FleetView: View {
     /// (Board and Herd runs; same #427 double-fire convention).
     @State private var connectionChromeBoardRan = false
     @State private var connectionChromeHerdRan = false
+    /// #526: single-fire guards for the palette-ownership matrix (one per
+    /// launch; same double-fire convention as #427/#528).
+    @State private var paletteHerdDayRan = false
+    @State private var paletteHerdNightRan = false
+    @State private var paletteBoardRan = false
 #endif
     /// #386: which status sections are collapsed. View-owned so the state
     /// lives for the board session ONLY — never persisted, never restored
@@ -995,7 +1000,15 @@ struct FleetView: View {
                             showConnectionDetail: $showConnectionDetail,
                             showFilters: $showFilters,
                             showSettings: $showSettings,
-                            onLightingNight: { herdChromeNight = $0 },
+                            onLightingNight: { night in
+                                // #526: the ranch's resolved lighting drives
+                                // the app-level palette through the SAME
+                                // resolver — pushed by the root (the app-level
+                                // owner of the ThemeStore), never written by
+                                // the leaf view.
+                                herdChromeNight = night
+                                theme.setHerdNight(night)
+                            },
                             select: { horse in
                                 model.requestRecents(for: horse.agent.agentId,
                                                      hostProfileID: horse.hostProfileID, haptic: false)
@@ -1258,6 +1271,13 @@ struct FleetView: View {
         }
         .tint(theme.accent)
         .preferredColorScheme(theme.flavor.isLight ? .light : .dark)
+        // #526: the presentation mode is the palette OWNERSHIP switch —
+        // mirror AppModel's saved value into the ThemeStore (initial: true
+        // covers the cold-launch frame) so Board resolves its preset and
+        // Herd resolves Day/Night from the active Herd environment.
+        .onChange(of: model.fleetPresentation, initial: true) { _, mode in
+            theme.setPresentation(mode)
+        }
     }
 
     /// #457: the explicit presentation context for the ONE shared filter
@@ -1793,6 +1813,12 @@ struct FleetView: View {
             await runConnectionChromeBoardSequence()
         } else if Corral528Connection.wantsHerdEvidence(arguments: CommandLine.arguments) {
             await runConnectionChromeHerdSequence()
+        } else if Corral526Palette.wantsHerdDayEvidence(arguments: CommandLine.arguments) {
+            await runPaletteHerdDaySequence()
+        } else if Corral526Palette.wantsHerdNightEvidence(arguments: CommandLine.arguments) {
+            await runPaletteHerdNightSequence()
+        } else if Corral526Palette.wantsBoardEvidence(arguments: CommandLine.arguments) {
+            await runPaletteBoardSequence()
         } else if Corral457Evidence.wantsBoardShot(arguments: CommandLine.arguments) {
             await runContextBoardShot()
         } else if Corral457Evidence.wantsContextSequence(arguments: CommandLine.arguments) {
@@ -2811,6 +2837,164 @@ struct FleetView: View {
         guard await themePause(9000) else { return }
         connectionChromeHerdRan = true
         EvidenceMarkers.write("528-13-herd-done")
+        _ = await themePause(1500)
+    }
+
+    /// #526 evidence (Herd Day, saved BOARD preset Mocha — the opposite
+    /// light): the ranch + the agent cards + the front-rail/paddock headers
+    /// + the pager render the ranch DAY chrome, the sheets resolve the
+    /// Herd Day palette, and the Settings sheet shows the Herd environment
+    /// control (NO Board presets). An environment flip with the sheet OPEN
+    /// repaints it, the mode switch inside Settings updates it both ways,
+    /// and Recent Output opens from Herd in the Herd palette. simctl cannot
+    /// tap, so every phase drives the SAME state the real controls write.
+    private func runPaletteHerdDaySequence() async {
+        guard model.mode == .demo, model.multiHostConfigured else { return }
+        guard await themePause(0) else { return }
+        guard !paletteHerdDayRan else { return }
+        model.suppressOSNotificationPromptForDemoEvidence()
+        // Saved BOARD preset = Mocha (dark) — deliberately the OPPOSITE of
+        // the Herd Day chrome these frames must show.
+        theme.setFlavor(.mocha)
+        theme.setPresentation(.herd)
+        model.selectFleetPresentation(.herd)
+        theme.setHerdEnvironment(.day)
+        model.selectHostFilter(nil)
+        model.repoFilter = nil
+        showFilters = false
+        showSettings = false
+        guard await themePause(4000) else { return }
+        EvidenceMarkers.write("526-1-herd-day-opposite-board-mocha")
+        guard await themePause(9000) else { return }
+        showSettings = true
+        guard await themePause(4000) else { return }
+        EvidenceMarkers.write("526-2-settings-herd-day")
+        guard await themePause(9000) else { return }
+        // Environment switch WITH the sheet open: the open sheet (and the
+        // ranch behind it) must repaint to Night — never a stale palette.
+        theme.setHerdEnvironment(.night)
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("526-3-settings-herd-night-open-sheet")
+        guard await themePause(9000) else { return }
+        // Mode switch inside Settings (the picker's own two calls): Board
+        // shows its presets and hides the environment again.
+        theme.setPresentation(.board)
+        model.selectFleetPresentation(.board)
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("526-4-settings-board-selected")
+        guard await themePause(9000) else { return }
+        theme.setPresentation(.herd)
+        model.selectFleetPresentation(.herd)
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("526-5-settings-herd-selected")
+        guard await themePause(9000) else { return }
+        showSettings = false
+        theme.setHerdEnvironment(.day)
+        guard await themePause(4000) else { return }
+        EvidenceMarkers.write("526-6-herd-day-after-dismissal")
+        guard await themePause(9000) else { return }
+        // Recent Output from the Herd surface — the sheet the issue names.
+        // The demo seed's profiles carry pinned keys without a live host-key
+        // round trip, so the production `requestRecents` continuity gate
+        // would refuse the sheet; the driver sets the SAME model-owned
+        // request the production route writes (the sheet, its demo drive
+        // and its palette are the untouched production surfaces).
+        model.recentsRequest = RecentsRequest(id: UInt64(Date().timeIntervalSince1970 * 1000),
+                                              agentId: "herdr:demo-atlas-working",
+                                              hostProfileID: model.activeProfile?.id)
+        guard await themePause(4000) else { return }
+        EvidenceMarkers.write("526-7-recents-herd-day")
+        guard await themePause(9000) else { return }
+        model.recentsRequest = nil
+        paletteHerdDayRan = true
+        _ = await themePause(1500)
+    }
+
+    /// #526 evidence (Herd Night, saved BOARD preset Latte — the opposite
+    /// light): the Night chrome (ranch + cards + pager + sheets) with the
+    /// LIGHT Board preset untouched in the store, Settings in Herd Night,
+    /// Recent Output in Herd Night, then every demo host offline so the
+    /// frame shows what remains of the disconnected surfacing after #528
+    /// (the compact indicator + retained/stale rows; no routine banner).
+    private func runPaletteHerdNightSequence() async {
+        guard model.mode == .demo, model.multiHostConfigured else { return }
+        guard await themePause(0) else { return }
+        guard !paletteHerdNightRan else { return }
+        model.suppressOSNotificationPromptForDemoEvidence()
+        theme.setFlavor(.latte)
+        theme.setPresentation(.herd)
+        model.selectFleetPresentation(.herd)
+        theme.setHerdEnvironment(.night)
+        model.selectHostFilter(nil)
+        model.repoFilter = nil
+        showFilters = false
+        showSettings = false
+        guard await themePause(4000) else { return }
+        EvidenceMarkers.write("526-8-herd-night-opposite-board-latte")
+        guard await themePause(9000) else { return }
+        showSettings = true
+        guard await themePause(4000) else { return }
+        EvidenceMarkers.write("526-9-settings-herd-night")
+        guard await themePause(9000) else { return }
+        showSettings = false
+        guard await themePause(2500) else { return }
+        // Same direct presentation as the day sequence (the demo posture has
+        // no verified host-key continuity for the production gate).
+        model.recentsRequest = RecentsRequest(id: UInt64(Date().timeIntervalSince1970 * 1000),
+                                              agentId: "herdr:demo-atlas-working",
+                                              hostProfileID: model.activeProfile?.id)
+        guard await themePause(4000) else { return }
+        EvidenceMarkers.write("526-10-recents-herd-night")
+        guard await themePause(9000) else { return }
+        model.recentsRequest = nil
+        guard await themePause(2500) else { return }
+        for host in ["Host A", "Host B", "Host C"] {
+            model.setDemoHostPosture(.offline, hostName: host)
+        }
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("526-11-herd-disconnected-night")
+        guard await themePause(9000) else { return }
+        paletteHerdNightRan = true
+        _ = await themePause(1500)
+    }
+
+    /// #526 evidence (Board): the Board's OWN light/dark controls — the
+    /// saved preset alone drives the board chrome (Mocha dark, then Latte
+    /// light), the shared filter sheet keeps the board Catppuccin treatment
+    /// with a selected repo chip, and Board-launched Settings shows the
+    /// four presets with the Herd environment hidden.
+    private func runPaletteBoardSequence() async {
+        guard model.mode == .demo, model.multiHostConfigured else { return }
+        guard await themePause(0) else { return }
+        guard !paletteBoardRan else { return }
+        model.suppressOSNotificationPromptForDemoEvidence()
+        theme.setPresentation(.board)
+        model.selectFleetPresentation(.board)
+        theme.setFlavor(.mocha)
+        model.selectHostFilter(nil)
+        model.repoFilter = nil
+        showFilters = false
+        showSettings = false
+        guard await themePause(4000) else { return }
+        EvidenceMarkers.write("526-12-board-mocha-controls")
+        guard await themePause(9000) else { return }
+        theme.setFlavor(.latte)
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("526-13-board-latte-controls")
+        guard await themePause(9000) else { return }
+        showFilters = true
+        model.repoFilter = "demo-atlas"
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("526-14-board-latte-filter-sheet")
+        guard await themePause(9000) else { return }
+        showFilters = false
+        model.repoFilter = nil
+        showSettings = true
+        guard await themePause(2500) else { return }
+        EvidenceMarkers.write("526-15-board-latte-settings-presets")
+        guard await themePause(9000) else { return }
+        showSettings = false
+        paletteBoardRan = true
         _ = await themePause(1500)
     }
 
@@ -3851,9 +4035,17 @@ struct SettingsView: View {
                 Form {
                     appearanceSection
                     // #464: the App Icon picker sits directly below the
-                    // Appearance section's Board/Herd picker.
+                    // Appearance section's Board/Herd picker — and, like the
+                    // shared host/notification controls, stays available in
+                    // BOTH modes (#526).
                     appIconSection
-                    HerdEnvironmentSettings()
+                    // #526 palette ownership: the Herd environment control
+                    // (Ranch light Auto/Day/Night) renders only while Herd
+                    // is selected; the Board presets render only while
+                    // Board is selected (see appearanceSection).
+                    if model.fleetPresentation == .herd {
+                        HerdEnvironmentSettings()
+                    }
                     // #423: the legacy single-host Connection section — host
                     // endpoint, registration status, Re-register — serves the
                     // UNPAIRED pairing form and the ONE-host setup path only.
@@ -4204,10 +4396,12 @@ struct SettingsView: View {
     }
 #endif
 
-    /// #372 Appearance: the ONLY theme picker (Settings-only placement
-    /// lock). One row per Catppuccin flavor, locked order + swatch strips
-    /// (base / surface1 / mauve / teal / red of THAT flavor), checkmark on
-    /// the active row; selection persists.
+    /// #372 Appearance: the ONLY theme control (Settings-only placement
+    /// lock). #526 palette ownership makes the section mode-explicit: the
+    /// Board/Herd choice owns WHICH preference styles the app — Board shows
+    /// its four Catppuccin preset rows, Herd hides them and shows the
+    /// Herd-environment section below (see the Form). The two preferences
+    /// are independent and survive switching and relaunch.
     /// #458: the section also owns the canonical Board/Herd choice — the
     /// principal top switch is gone, so Settings is the ONLY place the
     /// saved presentation is controlled. Selection applies immediately
@@ -4217,7 +4411,14 @@ struct SettingsView: View {
         Section {
             Picker("Board or Herd", selection: Binding(
                 get: { model.fleetPresentation },
-                set: { model.selectFleetPresentation($0) })) {
+                set: { mode in
+                    // #526: mirror immediately so the sheet (and every other
+                    // open surface) re-resolves the palette in the SAME
+                    // update the selection lands in — no stale frame while
+                    // Settings stays open.
+                    theme.setPresentation(mode)
+                    model.selectFleetPresentation(mode)
+                })) {
                 ForEach(FleetPresentation.allCases, id: \.self) { mode in
                     Text(mode.rawValue).tag(mode)
                 }
@@ -4228,41 +4429,52 @@ struct SettingsView: View {
             .accessibilityIdentifier("settings.presentation")
             .id("settings.presentation")
             .padding(.vertical, 2)
-            ForEach(CatppuccinFlavor.allCases, id: \.self) { flavor in
-                let selected = flavor == theme.flavor
-                Button {
-                    theme.setFlavor(flavor)
-                } label: {
-                    HStack(spacing: 12) {
-                        FlavorSwatchStrip(flavor: flavor)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(flavor.displayName)
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(selected ? theme.accent
-                                                          : theme.text)
-                            Text(flavor.meta)
-                                .font(.caption)
-                                .foregroundStyle(theme.subtext1)
+            // #526: Board presets are visible only while Board owns the
+            // palette; Herd hides them and shows its environment section
+            // instead (the Form renders that section under the same mode
+            // gate).
+            if model.fleetPresentation == .board {
+                ForEach(CatppuccinFlavor.allCases, id: \.self) { flavor in
+                    let selected = flavor == theme.boardFlavor
+                    Button {
+                        theme.setFlavor(flavor)
+                    } label: {
+                        HStack(spacing: 12) {
+                            FlavorSwatchStrip(flavor: flavor)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(flavor.displayName)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(selected ? theme.accent
+                                                              : theme.text)
+                                Text(flavor.meta)
+                                    .font(.caption)
+                                    .foregroundStyle(theme.subtext1)
+                            }
+                            Spacer()
+                            if selected {
+                                Image(systemName: "checkmark")
+                                    .font(.subheadline.weight(.bold))
+                                    .foregroundStyle(theme.accent)
+                                    .accessibilityHidden(true)
+                            }
                         }
-                        Spacer()
-                        if selected {
-                            Image(systemName: "checkmark")
-                                .font(.subheadline.weight(.bold))
-                                .foregroundStyle(theme.accent)
-                                .accessibilityHidden(true)
-                        }
+                        .contentShape(Rectangle())
                     }
-                    .contentShape(Rectangle())
+                    .buttonStyle(.plain)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("\(flavor.displayName), \(flavor.meta)")
+                    .accessibilityAddTraits(selected ? [.isSelected] : [])
                 }
-                .buttonStyle(.plain)
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("\(flavor.displayName), \(flavor.meta)")
-                .accessibilityAddTraits(selected ? [.isSelected] : [])
             }
         } header: {
             Text("Appearance")
         } footer: {
-            Text("Board or Herd opens immediately and is saved for next launch. Board is the default. Applies to the whole app — board, sheets, rail and settings.")
+            // #526: ownership is per mode — the old "applies to the whole
+            // app" claim is gone. Two short mode-truthful sentences, no
+            // extra prose.
+            Text(model.fleetPresentation == .board
+                 ? "Board opens immediately and is saved for next launch. The preset styles the board and the sheets opened from it. Herd keeps its own environment."
+                 : "Herd opens immediately and is saved for next launch. Day and Night style the ranch chrome and the sheets opened from Herd.")
                 .foregroundStyle(theme.subtext1)
         }
         // #428: the native grouped CELL surface is system white/gray in

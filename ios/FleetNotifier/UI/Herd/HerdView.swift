@@ -66,6 +66,10 @@ struct HerdView: View {
     @State var evidenceRan = false
     @State var evidencePhase: String?
     @State var evidenceFullScreenRan = false
+    /// #526 evidence: shifts the lighting instant (see `lightingNow`) so the
+    /// Auto day→night transition can be captured deterministically. nil in
+    /// every non-evidence launch; Release never compiles this.
+    @State var evidenceClockOffset: TimeInterval?
 #endif
     private var paddocks: [HerdPaddock] { HerdProjection.paddocks(horses) }
     private var rail: [HerdHorse] { horses.filter(\.atRail) }
@@ -81,8 +85,20 @@ struct HerdView: View {
 #endif
         return environment
     }
+    /// #526: the instant the lighting resolves against. The live clock in
+    /// production; the #526 evidence driver shifts it (`evidenceClockOffset`)
+    /// to exercise a REAL Auto day→night transition deterministically —
+    /// the resolved `lighting.night` then drives the ranch, the chrome and
+    /// the ThemeStore through the same production path a boundary crossing
+    /// takes.
+    var lightingNow: Date {
+#if DEBUG
+        if let evidenceClockOffset { return now.addingTimeInterval(evidenceClockOffset) }
+#endif
+        return now
+    }
     var lighting: HerdLighting {
-        HerdSun.resolve(effectiveEnvironment,now:now,location:location.sample())
+        HerdSun.resolve(effectiveEnvironment,now:lightingNow,location:location.sample())
     }
     /// #457: the sealed ranch Day/Night control palette — resolved from the
     /// SAME `lighting` the ranch field renders with, so the floating chrome
@@ -143,10 +159,15 @@ struct HerdView: View {
             }
         }
         .onAppear { if motionEnabled { clock.start() } }
-        // #457: report the resolved lighting up to FleetView — the shared
-        // filter sheet's Herd context styles itself from this value.
+        // #457/#526: report the resolved lighting up to FleetView — the
+        // shared filter sheet's Herd context styles itself from this value,
+        // and the ROOT pushes it into the ThemeStore (so the resolved
+        // Day/Night state drives the whole app palette from this ONE
+        // resolver, and this leaf view never writes the app-level store).
         // `initial: true` covers the first rendered frame.
-        .onChange(of:lighting.night,initial:true) { _,night in onLightingNight(night) }
+        .onChange(of:lighting.night,initial:true) { _,night in
+            onLightingNight(night)
+        }
         .onChange(of:motionEnabled) { _,enabled in
             if enabled { clock.start() } else { clock.stop() }
         }
@@ -180,6 +201,9 @@ struct HerdView: View {
             }
         }
         .task { await runFullScreenEvidence() }
+        // #526 evidence: the Auto transition + pagination phases (HerdView
+        // owns the pager and the lighting instant they drive).
+        .task { await runPaletteAutoEvidence() }
         // Record from the current rendered value, not the task's captured
         // View struct (whose environment/immutable horse props may be stale).
         .onChange(of:evidencePhase) { _,phase in
@@ -301,8 +325,8 @@ struct HerdView: View {
     private var frontRail: some View {
         VStack(alignment:.leading,spacing:4) {
             Text("! FRONT RAIL · \(rail.count)\(rail.contains(where:\.disconnected) ? " LAST KNOWN" : " BLOCKED")")
-                .font(.caption.weight(.semibold)).foregroundStyle(theme.text)
-                .padding(6).background(.regularMaterial,in:RoundedRectangle(cornerRadius:6)).padding(.leading,12)
+                .font(.caption.weight(.semibold)).foregroundStyle(ranchTokens.inkColor)
+                .padding(6).ranchChromeSurface(ranchTokens, cornerRadius: 6).padding(.leading,12)
             if !rail.isEmpty {
                 ScrollView(.horizontal) {
                     LazyHStack(alignment:.top,spacing:10) {
@@ -346,8 +370,8 @@ struct HerdView: View {
                             Text(paddock.title).font(.headline).lineLimit(1)
                             Spacer(minLength:4)
                             Text("\(paddock.field.count) here · \(paddock.blockedCount) at rail").font(.caption2)
-                        }.foregroundStyle(theme.text).padding(8)
-                            .background(.regularMaterial,in:RoundedRectangle(cornerRadius:8))
+                        }.foregroundStyle(ranchTokens.inkColor).padding(8)
+                            .ranchChromeSurface(ranchTokens, cornerRadius: 8)
                         ScrollView(.vertical) {
                             LazyVGrid(columns:[GridItem(.adaptive(minimum:dynamicType.isAccessibilitySize ? width-32 : 156),spacing:6)],spacing:8) {
                                 ForEach(paddock.field) { horse in horseButton(horse,rail:false) }
@@ -372,19 +396,27 @@ struct HerdView: View {
         .simultaneousGesture(DragGesture().onChanged { _ in dragging = true }.onEnded { _ in dragging = false })
     }
     /// #456: compact floating paddock navigation above the home indicator —
-    /// Previous / position / Next as a rounded material pill instead of the
-    /// old opaque full-width bar.
+    /// Previous / position / Next as a rounded pill instead of the old
+    /// opaque full-width bar. #526: the pill, its text and its
+    /// enabled/disabled control inks ride the SAME ranch Day/Night chrome
+    /// the rest of the Herd surface renders with (the #457 sealed tokens),
+    /// so no surface inherits the app flavor over the ranch.
     private var navigation: some View {
         let index = paddocks.firstIndex { $0.id == paddockID } ?? 0
         return HStack {
             Button("Previous") { movePage(-1) }.disabled(index == 0).frame(minWidth:44,minHeight:44)
+                .foregroundStyle(index == 0 ? ranchTokens.mutedColor : ranchTokens.inkColor)
+                .accessibilityHint(index == 0 ? "First repository paddock" : "Previous repository paddock")
             Spacer(minLength:4)
             Text("\(index+1) / \(paddocks.count)").font(.caption.monospacedDigit())
             Spacer(minLength:4)
             Button("Next") { movePage(1) }.disabled(index+1 >= paddocks.count).frame(minWidth:44,minHeight:44)
+                .foregroundStyle(index+1 >= paddocks.count ? ranchTokens.mutedColor : ranchTokens.inkColor)
+                .accessibilityHint(index+1 >= paddocks.count ? "Last repository paddock" : "Next repository paddock")
         }.font(.caption)
+            .foregroundStyle(ranchTokens.inkColor)
             .padding(.horizontal,12).padding(.vertical,6)
-            .background(.regularMaterial,in:RoundedRectangle(cornerRadius:15))
+            .ranchChromeSurface(ranchTokens)
             .padding(.horizontal,12).padding(.bottom,6)
             .accessibilityLabel("Repository paddocks")
     }
@@ -418,8 +450,8 @@ struct HerdView: View {
                     Text(horse.name).font(.system(.caption,design:.monospaced))
                     Text("\(herdMark(horse.state)) \(horse.statusText)").font(.caption.weight(.semibold))
                     if let hostName = horse.hostName { Text(hostName).font(.caption2) }
-                }.foregroundStyle(theme.text).frame(maxWidth:.infinity).padding(.vertical,5)
-                    .background(.regularMaterial,in:RoundedRectangle(cornerRadius:8))
+                }.foregroundStyle(ranchTokens.inkColor).frame(maxWidth:.infinity).padding(.vertical,5)
+                    .ranchChromeSurface(ranchTokens, cornerRadius: 8)
             }.frame(width:rail ? (dynamicType.isAccessibilitySize ? 240 : 164) : nil)
                 .frame(minWidth:156,minHeight:44).contentShape(Rectangle())
         }
@@ -573,6 +605,48 @@ extension HerdView {
         try? await Task.sleep(for:.seconds(2))
         EvidenceMarkers.write("456-7-empty-scope")
         try? await Task.sleep(for:.seconds(9))
+    }
+
+    /// #526 evidence: with the environment on AUTO, shift the lighting
+    /// instant from local noon to local night — the resolved state must
+    /// flip the RANCH and the CHROME (through the lighting report the ROOT
+    /// pushes into the app palette) together, through the same path a real
+    /// boundary crossing takes. Then park on the first and last paddock so
+    /// the Previous/Next enabled-disabled pair is captured. Live in
+    /// HerdView's own file because the pager index and the lighting instant
+    /// it drives are HerdView state.
+    func runPaletteAutoEvidence() async {
+        guard CommandLine.arguments.contains("-corral526AutoEvidence"),
+              !evidenceRan else { return }
+        evidenceRan = true
+        evidenceEnvironment = .auto
+        theme.setHerdEnvironment(.auto)
+        paddockID = paddocks.first?.id
+        try? await Task.sleep(for:.seconds(2))
+        EvidenceMarkers.write("526-16-pagination-first-page-previous-disabled")
+        try? await Task.sleep(for:.seconds(9))
+        paddockID = paddocks.last?.id
+        try? await Task.sleep(for:.seconds(2))
+        EvidenceMarkers.write("526-17-pagination-last-page-next-disabled")
+        try? await Task.sleep(for:.seconds(9))
+        evidenceClockOffset = Self.evidenceClockOffset(forLocalHour: 12)
+        try? await Task.sleep(for:.seconds(2))
+        EvidenceMarkers.write("526-18-auto-day")
+        try? await Task.sleep(for:.seconds(9))
+        evidenceClockOffset = Self.evidenceClockOffset(forLocalHour: 22)
+        try? await Task.sleep(for:.seconds(2))
+        EvidenceMarkers.write("526-19-auto-night-transition")
+        try? await Task.sleep(for:.seconds(9))
+    }
+
+    /// The clock offset that lands the lighting instant on `hour` local
+    /// time today (a fresh simulator has no location, so the ranch uses the
+    /// fixed 07:00–19:00 window: noon resolves Day, 22:00 resolves Night).
+    static func evidenceClockOffset(forLocalHour hour: Int) -> TimeInterval? {
+        let calendar = Calendar.current
+        guard let target = calendar.date(bySettingHour: hour, minute: 0,
+                                         second: 0, of: Date()) else { return nil }
+        return target.timeIntervalSince(Date())
     }
 }
 #endif

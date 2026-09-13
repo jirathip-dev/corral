@@ -381,8 +381,73 @@ final class FullScreenHerdShellWiringTests: XCTestCase {
                       "long repository scope summaries stay single-line and truncate (ranch ink, #457)")
         XCTAssertTrue(herd.contains("Text(paddock.title).font(.headline).lineLimit(1)"),
                       "long paddock titles stay single-line")
-        XCTAssertTrue(herd.contains("Text(lighting.explanation).font(.caption2)"),
-                      "the truthful environment explanation stays visible")
+        XCTAssertFalse(herd.contains("Text(lighting.explanation)"),
+                       "the summary bar no longer renders the Day/Night explanation (#491)")
+    }
+
+    /// #491: the summary is wired as one adaptive fit ladder with ONE
+    /// combined VoiceOver element carrying the exact five scoped counts, and
+    /// the Day/Night explanation line is gone. Slice-scoped so a decoy
+    /// elsewhere in the file cannot false-green it (#316 lesson).
+    func testHerdSummaryWiresTheAdaptiveLadderAndTheCountsAccessibilityLabel() throws {
+        let herd = try compact(source("HerdView"))
+        XCTAssertFalse(herd.contains("Text(lighting.explanation)"),
+                       "no mode may render the Day/Night explanation in the summary")
+        let start = try XCTUnwrap(herd.range(of: "privatevarstatusSummary"))
+        let end = try XCTUnwrap(herd.range(of: "privatevaroutage", range: start.upperBound..<herd.endIndex),
+                                "the summary slice must close at the outage surface")
+        let summary = String(herd[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(summary.contains("ViewThatFits(in:.horizontal)"),
+                      "the summary is a horizontal fit ladder")
+        XCTAssertEqual(summary.components(separatedBy: ".accessibilityElement(children:.ignore)").count - 1, 1,
+                       "the summary card exposes exactly one combined accessibility element")
+        XCTAssertEqual(summary.components(separatedBy: ".accessibilityLabel(herdCountsAccessibilityLabel(horses))").count - 1, 1,
+                       "the combined element carries the exact scoped counts label")
+        let ladder = ["HStack(spacing:8){counts}", "HStack(spacing:8){compactCounts}",
+                      "VStack(alignment:.leading,spacing:2){counts}",
+                      "VStack(alignment:.leading,spacing:2){compactCounts}"]
+        var cursor = summary.startIndex
+        for candidate in ladder {
+            let range = try XCTUnwrap(summary.range(of: candidate, range: cursor..<summary.endIndex),
+                                      "the fit ladder must keep \(candidate) in this order")
+            cursor = range.upperBound
+        }
+        XCTAssertEqual(herd.components(separatedBy: "funcherdCountsAccessibilityLabel(_horses:[HerdHorse])->String").count - 1, 1,
+                       "the exact-counts VoiceOver label is defined exactly once")
+    }
+
+    /// #491: the summary's VoiceOver reading — exact scoped five names and
+    /// counts, in display order (owner fixture and the three-digit fixture).
+    func testHerdCountsAccessibilityLabelNamesAllFiveScopedCounts() {
+        func horse(_ index: Int, _ state: AgentState) -> HerdHorse {
+            let agent = Agent(agentId: "herdr:491-label-\(index)", state: state,
+                              seq: UInt64(index + 1), ts: 1_800_000_000_000,
+                              capabilities: ["read_tail"], workspace: Workspace(repo: "r491"),
+                              attachment: Attachment(kind: "herdr", reference: "fixture:491:\(index)"),
+                              displayName: "label-491-\(index)")
+            return HerdHorse(agent: agent, hostProfileID: nil, hostName: nil, disconnected: false)
+        }
+        var index = 0
+        var owner: [HerdHorse] = []
+        for (state, count) in [(AgentState.blocked, 0), (.working, 5), (.idle, 13), (.done, 22), (.unknown, 55)] {
+            for _ in 0..<count {
+                owner.append(horse(index, state))
+                index += 1
+            }
+        }
+        XCTAssertEqual(herdCountsAccessibilityLabel(owner),
+                       "0 blocked, 5 working, 13 idle, 22 done, 55 unknown",
+                       "the owner fixture reads all five status names and exact counts in order")
+        var threeDigit: [HerdHorse] = []
+        for (state, count) in [(AgentState.blocked, 102), (.working, 105), (.idle, 113), (.done, 122), (.unknown, 155)] {
+            for _ in 0..<count {
+                threeDigit.append(horse(index, state))
+                index += 1
+            }
+        }
+        XCTAssertEqual(herdCountsAccessibilityLabel(threeDigit),
+                       "102 blocked, 105 working, 113 idle, 122 done, 155 unknown",
+                       "three-digit counts stay verbatim in the VoiceOver reading")
     }
 
     func testRanchBackgroundCannotStealTapsAndIsCoveredWithoutStretch() throws {
@@ -743,6 +808,30 @@ final class FullScreenHerdShellAccessibilityLayoutTests: XCTestCase {
         }
     }
 
+    /// #491: an exact-count fixture — the owner-reported 0/5/13/22/55 shape
+    /// and the three-digit variant. States are assigned in the canonical
+    /// blocked/working/idle/done/unknown pair order; fictional data only.
+    private func countsFleet(blocked: Int, working: Int, idle: Int, done: Int,
+                             unknown: Int) -> [HerdHorse] {
+        let buckets: [(AgentState, Int)] = [(.blocked, blocked), (.working, working),
+                                            (.idle, idle), (.done, done), (.unknown, unknown)]
+        var horses: [HerdHorse] = []
+        var index = 0
+        for (state, count) in buckets {
+            for _ in 0..<count {
+                let agent = Agent(agentId: "herdr:491-fixture-\(index)", state: state,
+                                  seq: UInt64(index + 1), ts: 1_800_000_000_000,
+                                  capabilities: ["read_tail"],
+                                  workspace: Workspace(repo: "r491-\(index % 4)"),
+                                  attachment: Attachment(kind: "herdr", reference: "fixture:491:\(index)"),
+                                  displayName: "count-491-\(index)")
+                horses.append(HerdHorse(agent: agent, hostProfileID: nil, hostName: nil, disconnected: false))
+                index += 1
+            }
+        }
+        return horses
+    }
+
     // MARK: pixel canvas (1 px == 1 pt)
 
     private struct Canvas {
@@ -835,6 +924,17 @@ final class FullScreenHerdShellAccessibilityLayoutTests: XCTestCase {
             return luminance(x, y) < 115 && saturation < 90
         }
 
+        /// #491: the inverted polarity — the night ranch ink is light glyphs
+        /// on the dark glass (measured: text rows stay > 170 luminance while
+        /// the night glass reads ~40).
+        func isLightGlyph(_ x: Int, _ y: Int) -> Bool {
+            guard x >= 0, x < width, y >= 0, y < height else { return false }
+            let colour = rgb(x, y)
+            let saturation = max(colour.red, colour.green, colour.blue)
+                - min(colour.red, colour.green, colour.blue)
+            return luminance(x, y) > 170 && saturation < 60
+        }
+
         func inkGlyphs(rows: Range<Int>, columns: Range<Int>) -> Int {
             var count = 0
             for y in rows where y >= 0 && y < height {
@@ -873,17 +973,21 @@ final class FullScreenHerdShellAccessibilityLayoutTests: XCTestCase {
 
     private struct Snapshot {
         let canvas: Canvas
+        let image: UIImage
         let safeTop: CGFloat
         let safeBottom: CGFloat
     }
 
     /// Renders the REAL HerdView in a hosted window at `size` with the
-    /// deterministic Day lighting and returns the measured screen pixels.
-    /// The window must belong to the app's window scene: a scene-less window
-    /// reports zero safe-area insets and never rasterizes its SwiftUI layers.
-    private func render(_ size: CGSize, dynamicType: DynamicTypeSize) async throws -> Snapshot {
-        UserDefaults.standard.set(HerdEnvironmentChoice.day.rawValue, forKey: "herdEnvironment")
-        let scene = HerdView(horses: fleet(), obscured: false, select: { _ in },
+    /// requested environment (Day by default) and Dynamic Type size, and
+    /// returns the measured screen pixels. The window must belong to the
+    /// app's window scene: a scene-less window reports zero safe-area
+    /// insets and never rasterizes its SwiftUI layers.
+    private func render(_ size: CGSize, dynamicType: DynamicTypeSize,
+                        environment: HerdEnvironmentChoice = .day,
+                        horses: [HerdHorse]? = nil) async throws -> Snapshot {
+        UserDefaults.standard.set(environment.rawValue, forKey: "herdEnvironment")
+        let scene = HerdView(horses: horses ?? fleet(), obscured: false, select: { _ in },
                              openBoard: {}, retry: {})
             .environmentObject(ThemeStore())
             .environment(\.dynamicTypeSize, dynamicType)
@@ -902,7 +1006,7 @@ final class FullScreenHerdShellAccessibilityLayoutTests: XCTestCase {
             window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
         }
         let canvas = try XCTUnwrap(Canvas(image), "the hosted HerdView must render a bitmap")
-        return Snapshot(canvas: canvas, safeTop: window.safeAreaInsets.top,
+        return Snapshot(canvas: canvas, image: image, safeTop: window.safeAreaInsets.top,
                         safeBottom: window.safeAreaInsets.bottom)
     }
 
@@ -981,6 +1085,233 @@ final class FullScreenHerdShellAccessibilityLayoutTests: XCTestCase {
                                      Double(size.height) - Double(snapshot.safeBottom) + 2,
                 "\(label): the floating bottom navigation stays inside the safe area")
         }
+    }
+
+    // MARK: - #491 adaptive summary probes
+
+    /// #491: the mode-correct ink predicate (day = dark ink on the cream
+    /// glass, night = light ink on the dark glass).
+    private func isSummaryInk(_ canvas: Canvas, _ x: Int, _ y: Int, night: Bool) -> Bool {
+        night ? canvas.isLightGlyph(x, y) : canvas.isInkGlyph(x, y)
+    }
+
+    /// #491: maximal row-runs that contain at least one ink glyph, merging
+    /// over gaps of at most `gap` blank rows — one summary entry per band.
+    private func inkBands(_ canvas: Canvas, rows: Range<Int>, columns: Range<Int>,
+                          night: Bool = false, gap: Int = 3) -> [(top: Int, bottom: Int)] {
+        var bands: [(top: Int, bottom: Int)] = []
+        var start: Int?
+        var lastInk: Int?
+        for y in rows where y >= 0 && y < canvas.height {
+            var inked = false
+            for x in columns where x >= 0 && x < canvas.width {
+                if isSummaryInk(canvas, x, y, night: night) {
+                    inked = true
+                    break
+                }
+            }
+            if inked {
+                if start == nil { start = y }
+                lastInk = y
+            } else if let s = start, let last = lastInk, y - last > gap {
+                bands.append((s, last))
+                start = nil
+                lastInk = nil
+            }
+        }
+        if let s = start, let last = lastInk { bands.append((s, last)) }
+        return bands
+    }
+
+    /// #491: the horizontal/vertical extent of ink inside a region (nil when
+    /// the region holds no ink).
+    private func inkExtent(_ canvas: Canvas, rows: Range<Int>, columns: Range<Int>,
+                           night: Bool = false) -> (minX: Int, maxX: Int, minY: Int, maxY: Int, pixels: Int)? {
+        var minX = canvas.width, maxX = -1, minY = canvas.height, maxY = -1, pixels = 0
+        for y in rows where y >= 0 && y < canvas.height {
+            for x in columns where x >= 0 && x < canvas.width && isSummaryInk(canvas, x, y, night: night) {
+                minX = min(minX, x); maxX = max(maxX, x)
+                minY = min(minY, y); maxY = max(maxY, y)
+                pixels += 1
+            }
+        }
+        guard pixels > 0 else { return nil }
+        return (minX, maxX, minY, maxY, pixels)
+    }
+
+    /// #491: the counts summary card — the LAST top-chrome band, detected on
+    /// glyph-free columns (max extent over the candidate columns) so neither
+    /// the centred text nor the corner rounding can truncate the measured
+    /// band. `night` selects the night glass palette (a constant dark tint
+    /// over the night painting, measured (30,42,50)) over the day cream.
+    private func countsCard(_ snapshot: Snapshot, night: Bool = false) throws -> (top: Int, bottom: Int) {
+        let canvas = snapshot.canvas
+        let columns = [20, 30, canvas.width - 30, canvas.width - 20]
+        func isChrome(_ x: Int, _ y: Int) -> Bool {
+            if night {
+                let p = canvas.rgb(x, y)
+                return abs(p.red - 30) <= 6 && abs(p.green - 42) <= 6 && abs(p.blue - 50) <= 8
+            }
+            return canvas.isChromeSurface(x, y)
+        }
+        func band(column: Int, from: Int) -> (top: Int, bottom: Int)? {
+            guard let top = (from..<canvas.height).first(where: { isChrome(column, $0) }),
+                  let bottom = ((top + 6)..<canvas.height).first(where: { !isChrome(column, $0) })
+            else { return nil }
+            return (top, bottom)
+        }
+        let pillBottom = columns.compactMap { band(column: $0, from: 0)?.bottom }.max()
+        let pill = try XCTUnwrap(pillBottom, "the floating scope pill must render")
+        let card = try XCTUnwrap(columns.compactMap { band(column: $0, from: pill + 2) }
+                                    .max(by: { $0.bottom < $1.bottom }),
+                                 "the counts summary card must render below the pill")
+        return (card.top, card.bottom)
+    }
+
+    /// #491: the summary card holds exactly `expected` text bands, every ink
+    /// pixel within one text line's vertical span for single-row cells, and
+    /// — only for the short default-type day cards over the sky (the
+    /// `marginProbe`) — no ink in the window's outer margins. The margin
+    /// probe is skipped at accessibility sizes (the ranch art occupies
+    /// those rows) and at night (the starfield makes it unreliable).
+    @discardableResult
+    private func assertSummaryBands(_ snapshot: Snapshot, expected: Int, label: String,
+                                    night: Bool = false, marginProbe: Bool = false,
+                                    verticalSpanLimit: Int? = nil)
+        throws -> (top: Int, bottom: Int) {
+        let canvas = snapshot.canvas
+        let card = try countsCard(snapshot, night: night)
+        let rows = card.top..<card.bottom
+        let bands = inkBands(canvas, rows: rows, columns: 0..<canvas.width, night: night)
+        XCTAssertEqual(bands.count, expected,
+            "\(label): the summary must render \(expected) text band(s), found \(bands.count)")
+        let extent = try XCTUnwrap(inkExtent(canvas, rows: rows, columns: 0..<canvas.width, night: night),
+                                   "\(label): the summary must render ink")
+        if marginProbe && !night {
+            let leftMargin = inkExtent(canvas, rows: rows, columns: 0..<12)
+            let rightMargin = inkExtent(canvas, rows: rows, columns: (canvas.width - 12)..<canvas.width)
+            XCTAssertNil(leftMargin, "\(label): summary ink escapes past the card's left margin")
+            XCTAssertNil(rightMargin, "\(label): summary ink escapes past the card's right margin")
+        }
+        if let limit = verticalSpanLimit {
+            XCTAssertLessThanOrEqual(extent.maxY - extent.minY, limit,
+                "\(label): the summary ink spans \(extent.maxY - extent.minY) pt — more than one text line (\(limit) pt)")
+        }
+        print("[#491] \(label): bands=\(bands.count) card=[\(card.top)…\(card.bottom)] night=\(night)"
+            + " inkX=[\(extent.minX)…\(extent.maxX)] inkY=[\(extent.minY)…\(extent.maxY)] px=\(extent.pixels)")
+        return card
+    }
+
+    /// #491: keep the rendered pixels in the xcresult for review.
+    private func attach(_ image: UIImage, name: String) {
+        let attachment = XCTAttachment(image: image)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    /// #491 AC2: the owner fixture 0/5/13/22/55 sits on exactly ONE row at
+    /// the default type on every supported portrait width, with all five
+    /// entries' ink inside the card insets (no wrap, no clip, no overflow).
+    func testCountsSummaryStaysOneRowAtDefaultTypeAllWidths() async throws {
+        let owner = countsFleet(blocked: 0, working: 5, idle: 13, done: 22, unknown: 55)
+        for (name, size) in [("narrow 375x667", CGSize(width: 375, height: 667)),
+                             ("normal 393x852", CGSize(width: 393, height: 852)),
+                             ("wide 430x932", CGSize(width: 430, height: 932)),
+                             ("widest 440x956", CGSize(width: 440, height: 956))] {
+            let snapshot = try await render(size, dynamicType: .large, horses: owner)
+            try assertSummaryBands(snapshot, expected: 1,
+                                   label: "owner fixture \(name) default", marginProbe: true,
+                                   verticalSpanLimit: 40)
+            attach(snapshot.image, name: "491-owner-\(Int(size.width))x\(Int(size.height))-default")
+        }
+    }
+
+    /// #491 (owner: "full labels where feasible"): on the widest class the
+    /// ladder renders the full-label row — visibly wider than the compact
+    /// row the narrow phone uses.
+    func testCountsSummaryPrefersFullLabelsOnTheWidestPhone() async throws {
+        let owner = countsFleet(blocked: 0, working: 5, idle: 13, done: 22, unknown: 55)
+        let wide = try await render(CGSize(width: 440, height: 956), dynamicType: .large, horses: owner)
+        let narrow = try await render(CGSize(width: 375, height: 667), dynamicType: .large, horses: owner)
+        let wideCard = try countsCard(wide)
+        let narrowCard = try countsCard(narrow)
+        let wideExtent = try XCTUnwrap(inkExtent(wide.canvas, rows: wideCard.top..<wideCard.bottom,
+                                                 columns: 0..<wide.canvas.width))
+        let narrowExtent = try XCTUnwrap(inkExtent(narrow.canvas, rows: narrowCard.top..<narrowCard.bottom,
+                                                   columns: 0..<narrow.canvas.width))
+        let wideWidth = wideExtent.maxX - wideExtent.minX
+        let narrowWidth = narrowExtent.maxX - narrowExtent.minX
+        let wideInner = 440 - 48
+        XCTAssertGreaterThanOrEqual(Double(wideWidth), Double(wideInner) * 0.7,
+            "440x956 default: the full-label row must fill most of the card (measured \(wideWidth) pt inside \(wideInner) pt)")
+        XCTAssertGreaterThan(Double(wideWidth), Double(narrowWidth) * 1.5,
+            "the widest class must render the wider representation (measured \(wideWidth) vs \(narrowWidth) pt)")
+        print("[#491] full-label row check: 440 ink=\(wideWidth) pt (card \(wideInner)), 375 ink=\(narrowWidth) pt")
+    }
+
+    /// #491 AC2: representative three-digit counts stay on one row at the
+    /// default type on the narrow and normal phones.
+    func testCountsSummaryStaysOneRowWithThreeDigitCounts() async throws {
+        let threeDigit = countsFleet(blocked: 102, working: 105, idle: 113, done: 122, unknown: 155)
+        for (name, size) in [("narrow 375x667", CGSize(width: 375, height: 667)),
+                             ("normal 393x852", CGSize(width: 393, height: 852))] {
+            let snapshot = try await render(size, dynamicType: .large, horses: threeDigit)
+            try assertSummaryBands(snapshot, expected: 1,
+                                   label: "three-digit \(name) default", marginProbe: true,
+                                   verticalSpanLimit: 40)
+        }
+    }
+
+    /// #491 (owner-adaptive): where no single row can fit at accessibility
+    /// sizes the summary adapts to the vertical list — exactly the five
+    /// status entry lines, no Day/Night band, every ink inside the card.
+    /// These cells are deliberately NOT asserted to be one row.
+    func testCountsSummaryAdaptsVerticallyAtAccessibilitySizes() async throws {
+        let owner = countsFleet(blocked: 0, working: 5, idle: 13, done: 22, unknown: 55)
+        let threeDigit = countsFleet(blocked: 102, working: 105, idle: 113, done: 122, unknown: 155)
+        for (label, horses, type) in [("owner fixture 375x667 AX-XXXL", owner, DynamicTypeSize.accessibility5),
+                                      ("three-digit 375x667 AX2", threeDigit, DynamicTypeSize.accessibility2)] {
+            let snapshot = try await render(CGSize(width: 375, height: 667), dynamicType: type, horses: horses)
+            try assertSummaryBands(snapshot, expected: 5, label: label)
+            attach(snapshot.image, name: "491-adaptive-\(label.replacingOccurrences(of: " ", with: "-"))")
+        }
+    }
+
+    /// #491 AC3: the Day/Night explanation line is gone in every environment
+    /// mode — one summary band, no second-line space, and the same card
+    /// height whether the environment resolves Day or Night (Auto included;
+    /// its palette is detected from the render itself, so the cell is
+    /// stable whatever the wall clock resolves).
+    func testCountsSummaryOmitsEnvironmentLineInDayNightAndAuto() async throws {
+        let owner = countsFleet(blocked: 0, working: 5, idle: 13, done: 22, unknown: 55)
+        var heights: [String: Int] = [:]
+        for (name, choice) in [("Day", HerdEnvironmentChoice.day), ("Night", .night), ("Auto", .auto)] {
+            let snapshot = try await render(CGSize(width: 375, height: 667), dynamicType: .large,
+                                            environment: choice, horses: owner)
+            // Resolve the expected palette through the app's own resolver:
+            // Day and Night are explicit, Auto follows the wall clock exactly
+            // like the view does (fixed 07:00–19:00 clock without a location
+            // sample).
+            let night: Bool
+            switch choice {
+            case .night: night = true
+            case .day: night = false
+            case .auto: night = HerdSun.resolve(.auto, now: Date()).night
+            }
+            let card = try assertSummaryBands(snapshot, expected: 1,
+                                              label: "owner fixture 375x667 \(name)",
+                                              night: night, marginProbe: true, verticalSpanLimit: 40)
+            heights[name] = card.bottom - card.top
+            XCTAssertLessThanOrEqual(card.bottom - card.top, 40,
+                "\(name): the summary card must hold no reserved second text line (measured \(card.bottom - card.top) pt)")
+            attach(snapshot.image, name: "491-environment-\(name)-\(night ? "night" : "day")")
+        }
+        XCTAssertLessThanOrEqual(abs((heights["Day"] ?? 0) - (heights["Night"] ?? -99)), 5,
+            "the Day and Night summary cards must be the same single-line height (\(heights))")
+        XCTAssertLessThanOrEqual(abs((heights["Day"] ?? 0) - (heights["Auto"] ?? -99)), 5,
+            "the Day and Auto summary cards must be the same single-line height (\(heights))")
+        print("[#491] environment card heights: \(heights)")
     }
 }
 

@@ -35,6 +35,7 @@ targets:
           - "$(SRCROOT)/FleetNotifier/App/AppModel.swift"
           - "$(SRCROOT)/FleetNotifier/App/FleetNotifierApp.swift"
           - "$(SRCROOT)/FleetNotifier/App/FleetStore.swift"
+          - "$(SRCROOT)/FleetNotifier/Demo/AddHostCommitEvidenceURLProtocol.swift"
           - "$(SRCROOT)/FleetNotifier/Demo/DemoFleet.swift"
           - "$(SRCROOT)/FleetNotifier/Demo/HerdEvidence.swift"
           - "$(SRCROOT)/FleetNotifier/Keychain/DeviceKeyStore.swift"
@@ -60,11 +61,19 @@ targets:
           - "$(SRCROOT)/FleetNotifier/UI/Herd/HerdModel.swift"
           - "$(SRCROOT)/FleetNotifier/UI/Herd/HerdView.swift"
           - "$(SRCROOT)/FleetNotifier/UI/Herd/RanchEnvironment.swift"
+          # #459: the shared ambient wind contract + ambient power/thermal
+          # policy helpers are Release app source.
+          - "$(SRCROOT)/FleetNotifier/UI/Herd/HerdAmbientPolicy.swift"
+          - "$(SRCROOT)/FleetNotifier/UI/Herd/RanchWind.swift"
           - "$(SRCROOT)/FleetNotifier/UI/RecentOutputModel.swift"
           - "$(SRCROOT)/FleetNotifier/UI/StateStyle.swift"
           - "$(SRCROOT)/FleetNotifier/UI/TimeInState.swift"
           - "$(SRCROOT)/FleetNotifier/Wire/CanonicalJSON.swift"
           - "$(SRCROOT)/FleetNotifier/Wire/DriveClient.swift"
+          # #486: the enrollment QR privacy module adds the device-enrollment
+          # client + payload wire sources.
+          - "$(SRCROOT)/FleetNotifier/Wire/EnrollmentClient.swift"
+          - "$(SRCROOT)/FleetNotifier/Wire/EnrollmentPayload.swift"
           - "$(SRCROOT)/embed-release-source-digest.py"
           - "$(SRCROOT)/release_source_manifest.py"
         outputFiles:
@@ -73,7 +82,10 @@ targets:
     info:
       path: FleetNotifier/Info.plist
       properties:
-        CFBundleDisplayName: "Corral: Agent Fleet"
+        # #512: the installed Home Screen name is exactly `Corral`; the
+        # truncating `Corral: Agent Fleet` is pinned out by
+        # tools/herd-art/check-display-name.py (source and built product).
+        CFBundleDisplayName: "Corral"
         UIApplicationSupportsIndirectInputEvents: YES
         UILaunchScreen: {}
         ITSAppUsesNonExemptEncryption: false
@@ -166,6 +178,9 @@ targets:
              "$TARGET_BUILD_DIR/$WRAPPER_NAME/FleetViews.swift.txt"
           cp "$SRCROOT/FleetNotifier/UI/Herd/HerdView.swift" \
              "$TARGET_BUILD_DIR/$WRAPPER_NAME/HerdView.swift.txt"
+          # #459: the wind tests pin the production scene gate (ambient
+          # policy consult, freeze wiring, single timing owner) against the
+          # real source.
           cp "$SRCROOT/FleetNotifier/UI/Herd/RanchEnvironment.swift" \
              "$TARGET_BUILD_DIR/$WRAPPER_NAME/RanchEnvironment.swift.txt"
           # #464: the App Icon picker seam/wiring tests read the real source.

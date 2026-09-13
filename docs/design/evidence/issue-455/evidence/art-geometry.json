@@ -1,0 +1,214 @@
+[
+  {
+    "id": "Orchard::birch-clearing",
+    "button": {
+      "x": 12,
+      "y": 309.890625,
+      "right": 176,
+      "bottom": 476.125,
+      "width": 164,
+      "height": 166.234375
+    },
+    "art": {
+      "x": 28,
+      "y": 309.890625,
+      "right": 160,
+      "bottom": 409.890625,
+      "width": 132,
+      "height": 100
+    },
+    "caption": {
+      "x": 12,
+      "y": 417.890625,
+      "right": 176,
+      "bottom": 474.125,
+      "width": 164,
+      "height": 56.234375
+    },
+    "paint": {
+      "x": 48,
+      "y": 309.31231689453125,
+      "right": 156.1817626953125,
+      "bottom": 410.890625
+    },
+    "parent": {
+      "x": 12,
+      "y": 305.890625,
+      "right": 378,
+      "bottom": 476.125,
+      "width": 366,
+      "height": 170.234375
+    },
+    "header": {
+      "x": 12,
+      "y": 278.140625,
+      "right": 191.734375,
+      "bottom": 305.890625,
+      "width": 179.734375,
+      "height": 27.75
+    },
+    "paintInsideArt": false,
+    "paintAboveCaption": true,
+    "paintBelowHeader": true,
+    "paintInsideScrollViewport": true
+  },
+  {
+    "id": "Meadow::oak-before-dark",
+    "button": {
+      "x": 186,
+      "y": 309.890625,
+      "right": 350,
+      "bottom": 476.125,
+      "width": 164,
+      "height": 166.234375
+    },
+    "art": {
+      "x": 202,
+      "y": 309.890625,
+      "right": 334,
+      "bottom": 409.890625,
+      "width": 132,
+      "height": 100
+    },
+    "caption": {
+      "x": 186,
+      "y": 417.890625,
+      "right": 350,
+      "bottom": 474.125,
+      "width": 164,
+      "height": 56.234375
+    },
+    "paint": {
+      "x": 222,
+      "y": 309.31231689453125,
+      "right": 330.1817626953125,
+      "bottom": 410.890625
+    },
+    "parent": {
+      "x": 12,
+      "y": 305.890625,
+      "right": 378,
+      "bottom": 476.125,
+      "width": 366,
+      "height": 170.234375
+    },
+    "header": {
+      "x": 12,
+      "y": 278.140625,
+      "right": 191.734375,
+      "bottom": 305.890625,
+      "width": 179.734375,
+      "height": 27.75
+    },
+    "paintInsideArt": false,
+    "paintAboveCaption": true,
+    "paintBelowHeader": true,
+    "paintInsideScrollViewport": true
+  },
+  {
+    "id": "Meadow::spruce-hollow",
+    "button": {
+      "x": 12,
+      "y": 537.8125,
+      "right": 191,
+      "bottom": 702,
+      "width": 179,
+      "height": 164.1875
+    },
+    "art": {
+      "x": 35.5,
+      "y": 535.765625,
+      "right": 167.5,
+      "bottom": 635.765625,
+      "width": 132,
+      "height": 100
+    },
+    "caption": {
+      "x": 12,
+      "y": 643.765625,
+      "right": 191,
+      "bottom": 700,
+      "width": 179,
+      "height": 56.234375
+    },
+    "paint": {
+      "x": 55.5,
+      "y": 545.6118774414062,
+      "right": 169.1148681640625,
+      "bottom": 636.765625
+    },
+    "parent": {
+      "x": 12,
+      "y": 530.8125,
+      "right": 378,
+      "bottom": 702,
+      "width": 366,
+      "height": 171.1875
+    },
+    "header": {
+      "x": 23,
+      "y": 499.59375,
+      "right": 112.28125,
+      "bottom": 518.34375,
+      "width": 89.28125,
+      "height": 18.75
+    },
+    "paintInsideArt": false,
+    "paintAboveCaption": true,
+    "paintBelowHeader": true,
+    "paintInsideScrollViewport": true
+  },
+  {
+    "id": "Orchard::willow-bend",
+    "button": {
+      "x": 199,
+      "y": 537.8125,
+      "right": 378,
+      "bottom": 702,
+      "width": 179,
+      "height": 164.1875
+    },
+    "art": {
+      "x": 222.5,
+      "y": 535.765625,
+      "right": 354.5,
+      "bottom": 635.765625,
+      "width": 132,
+      "height": 100
+    },
+    "caption": {
+      "x": 199,
+      "y": 643.765625,
+      "right": 378,
+      "bottom": 700,
+      "width": 179,
+      "height": 56.234375
+    },
+    "paint": {
+      "x": 242.5,
+      "y": 571.015625,
+      "right": 347.5,
+      "bottom": 636.765625
+    },
+    "parent": {
+      "x": 12,
+      "y": 530.8125,
+      "right": 378,
+      "bottom": 702,
+      "width": 366,
+      "height": 171.1875
+    },
+    "header": {
+      "x": 23,
+      "y": 499.59375,
+      "right": 112.28125,
+      "bottom": 518.34375,
+      "width": 89.28125,
+      "height": 18.75
+    },
+    "paintInsideArt": false,
+    "paintAboveCaption": true,
+    "paintBelowHeader": true,
+    "paintInsideScrollViewport": true
+  }
+]

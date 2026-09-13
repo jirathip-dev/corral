@@ -1,0 +1,151 @@
+{
+  "checks": {
+    "approvedArtifactIdentity": {
+      "approvedVariant": "variant-a.html",
+      "approvedSha256": "ca0a1a0991aa66364598eaacdac4d328de6a4ac1e57e03707aa708851791bf61",
+      "approvedSha256Expected": "ca0a1a0991aa66364598eaacdac4d328de6a4ac1e57e03707aa708851791bf61",
+      "approvedSha256MatchesReceipt": true,
+      "historicalVariant": "variant-b.html",
+      "historicalSha256": "fa31421c9dcee0b5b1116627b404466f9009e78c3a970154326fca258d49b47c",
+      "historicalSha256Recorded": "fa31421c9dcee0b5b1116627b404466f9009e78c3a970154326fca258d49b47c",
+      "historicalArtifactIsDistinct": true,
+      "historicalStatus": "historical comparison only; explicitly NOT the approved variant",
+      "receipt": "https://github.com/jirathip-dev/corral/issues/455#issuecomment-5601951267"
+    },
+    "sourceManifest": {
+      "sourceManifestPath": "references/source-manifest.sha256",
+      "sourceManifestEntries": 146,
+      "verifiedByteIdentical": 137,
+      "relocated": [
+        {
+          "sourcePath": ".brief.md",
+          "packagePath": "references/designer-brief-455.md",
+          "sha256": "1d019912de38d984ac53e90e3c29e82a71564b8457e5af1d644508afa55176a5",
+          "matches": true
+        },
+        {
+          "sourcePath": "README.md",
+          "packagePath": "README-designer-original.md",
+          "sha256": "3c39537611e487bf8cd1694d0d4f970c42a793f1deed37debac72dad2a8f9fc1",
+          "matches": true
+        }
+      ],
+      "adaptedFromSource": [
+        {
+          "sourcePath": "tools/browser.py",
+          "packagePath": "tools/browser.py",
+          "sha256": "cb6b74beba0d3a52a9c5e3ab68618c2d02ef2eafc5b231a79c2a9a665267150b",
+          "matches": false
+        },
+        {
+          "sourcePath": "tools/check-reachability.py",
+          "packagePath": "tools/check-reachability.py",
+          "sha256": "7682e74f19826874e1aa8ee5f566368ecee92be3595f474964033554cd7212e2",
+          "matches": false
+        },
+        {
+          "sourcePath": "tools/gather.py",
+          "packagePath": "tools/gather.py",
+          "sha256": "6306a74e9ce3c86ca508ac8a734e9c3a87d39695d2f885c32f125da1abe702b4",
+          "matches": false
+        },
+        {
+          "sourcePath": "tools/package.py",
+          "packagePath": "tools/package.py",
+          "sha256": "c97e8aad0f4b0311e0f73245597727ed663fb7e620135562f04228a4aca9da46",
+          "matches": false
+        },
+        {
+          "sourcePath": "tools/record-motion.py",
+          "packagePath": "tools/record-motion.py",
+          "sha256": "88878120d0cd7450004dee2ca27941f5744bc11ab2d2ec384c485d33f7285cbe",
+          "matches": false
+        },
+        {
+          "sourcePath": "tools/verify-browser.py",
+          "packagePath": "tools/verify-browser.py",
+          "sha256": "f04e5831b5633d073a9f8e42e630aa56506d7da13fefc56bb28f6f052d846c3a",
+          "matches": false
+        },
+        {
+          "sourcePath": "tools/verify-workflows.py",
+          "packagePath": "tools/verify-workflows.py",
+          "sha256": "c6b1be914b3f77a4e4ee22b844d759425f68fa22c2aa1749d3a784c12d81525e",
+          "matches": false
+        }
+      ],
+      "normalizedForWhitespaceGate": [
+        {
+          "sourcePath": "evidence/run-log.txt",
+          "packagePath": "evidence/run-log.txt",
+          "sha256": "59a170a7159230c41e4b71a6b234d8ec6a1aa8d1f1d027d98c0fb8344a914cc2",
+          "matches": false,
+          "normalization": "trailing blank line at EOF normalized to a single newline so the docs-only diff passes git diff --check; content otherwise byte-identical",
+          "sourceSha256": "59a170a7159230c41e4b71a6b234d8ec6a1aa8d1f1d027d98c0fb8344a914cc2",
+          "contentWithoutTrailingNewlinesMatches": true,
+          "singleTrailingNewline": true
+        }
+      ],
+      "excluded": [
+        {
+          "sourcePath": "designer-run.log",
+          "sha256": "2aac34fae51322f0e8fdba626d62febb4c017fd4aa92cc289499a2a7d16c6d02",
+          "reason": "designer session runtime log; not a dependency of any claim; retained in the source bundle at /Users/jirathip/design-output/corral/455-immersive-herd/designer-run.log"
+        }
+      ],
+      "missing": [],
+      "changed": []
+    },
+    "toolsPortabilityLedger": {
+      "adaptedTools": [
+        "tools/browser.py",
+        "tools/check-reachability.py",
+        "tools/gather.py",
+        "tools/package.py",
+        "tools/record-motion.py",
+        "tools/verify-browser.py",
+        "tools/verify-workflows.py"
+      ],
+      "expectedAdaptedTools": [
+        "tools/browser.py",
+        "tools/check-reachability.py",
+        "tools/gather.py",
+        "tools/package.py",
+        "tools/record-motion.py",
+        "tools/verify-browser.py",
+        "tools/verify-workflows.py"
+      ],
+      "matchesDocumentedSet": true
+    },
+    "packageManifest": {
+      "manifestPath": "manifest.sha256",
+      "manifestEntries": 183,
+      "filesOnDiskExcludingManifest": 182,
+      "totalBytesExcludingManifest": 22000101,
+      "countsByExtension": {
+        ".css": 1,
+        ".html": 4,
+        ".js": 1,
+        ".json": 25,
+        ".log": 16,
+        ".md": 7,
+        ".mp4": 4,
+        ".png": 61,
+        ".py": 19,
+        ".sha256": 3,
+        ".svg": 32,
+        ".swift": 7,
+        ".txt": 2
+      },
+      "mismatched": [],
+      "missingFromManifest": [],
+      "extraInManifest": [],
+      "manifestIncludesItself": false,
+      "selfOutput": "package-verification/reconcile.json",
+      "selfOutputExcludedFromAccounting": true,
+      "note": "Counts cover the manifest state read at this run. When this JSON lives inside the package, the committed manifest.sha256 is sealed after this file exists and additionally covers it; tools/package.py --verify validates that full final set."
+    }
+  },
+  "status": "PASS",
+  "failures": []
+}

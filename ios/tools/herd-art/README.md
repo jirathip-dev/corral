@@ -91,6 +91,9 @@ From the repository root, with a concrete available simulator UDID:
     python3 ios/tools/herd-art/app-icons.py --check
     python3 ios/tools/herd-art/app-icons.py --write          # deterministic regeneration
     python3 ios/tools/herd-art/test-app-icons.py --output /tmp/app-icon-proofs
+    python3 ios/tools/herd-art/check-display-name.py
+    python3 ios/tools/herd-art/check-display-name.py --bundle /path/to/FleetNotifier.app
+    python3 ios/tools/herd-art/test-display-name.py --output /tmp/display-name-proofs
     python3 ios/tools/herd-art/check-native-art.py
     python3 ios/tools/herd-art/check-native-art.py --bundle /path/to/FleetNotifier.app
     python3 ios/tools/herd-art/test-native-art.py --app /path/to/FleetNotifier.app --output /tmp/herd-art-proofs
@@ -104,11 +107,24 @@ drift. `test-app-icons.py` mutates disposable copies (missing/misnamed
 alternate, legacy Original/Treatment-B swap, duplicate Bay alternate, wrong
 hash/dimension/alpha, stale output/project config) and requires each to RED.
 
+`check-display-name.py` is the #512 installed-name gate: the Home Screen label
+must be exactly `Corral`, not the truncating `Corral: Agent Fleet`. XcodeGen
+owns the generated `ios/FleetNotifier/Info.plist`, so the source mode asserts
+the value in that generated plist (the value that reaches the product) and
+pins the `ios/project.yml` scalar to `Corral` as well, so a spec-only edit
+fails before regeneration. `--bundle` extends the same exact-value assertion
+to the BUILT product's `Info.plist`, together with the
+`com.corral.fleetnotifier` identity. `test-display-name.py` mutates
+disposable copies (truncated/empty/lowercase/missing plist key, unreadable or
+missing plist, spec-only truncating edits, duplicate/missing spec key, and —
+with `--app` — the built-product cases) and requires each to RED.
+
 The source-mode subset of these checks runs per push and pull request in
 `.github/workflows/ios-art.yml` (`.github/workflows/` at the repository root):
-`check-release-demo.py`, `app-icons.py --check` and `test-app-icons.py`. The
-bundle and simulator commands above stay local or on the dispatch-only
-`ios.yml` job — they need a prior build or a booted simulator.
+`check-release-demo.py`, `app-icons.py --check`, `test-app-icons.py`,
+`check-display-name.py` and `test-display-name.py`. The bundle and simulator
+commands above stay local or on the dispatch-only `ios.yml` job — they need a
+prior build or a booted simulator.
 
 `check-release-demo.py` also invokes the native source guard and, with `--binary`,
 the actual app-product guard. The manifest digest covers all Herd app sources;

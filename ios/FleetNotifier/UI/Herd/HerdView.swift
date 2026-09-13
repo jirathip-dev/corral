@@ -244,26 +244,39 @@ struct HerdView: View {
         .accessibilityLabel("Settings")
         .accessibilityHint("Opens connection and notification settings")
     }
-    /// Truthful scoped counts + environment note, in the ranch Day/Night
-    /// ink (#457). When Dynamic Type or a narrow phone outgrows one line
-    /// the counts wrap to a second/third row (the base summary's own
-    /// fallback) instead of clipping.
+    /// #491 (owner-adaptive): the counts summary is an adaptive fit ladder —
+    /// full labels on one row where they fit, the compact mark+count row
+    /// where that fits, and the vertical list (full entries, else compact)
+    /// at very large Dynamic Type where no single row can fit. Never tiny
+    /// type, clipping, ellipsis, count caps or horizontal scrolling. The
+    /// Day/Night explanation line is deliberately gone from this bar; the
+    /// environment control, its transitions and the ambience stay.
     private var statusSummary: some View {
-        VStack(spacing:4) {
-            ViewThatFits(in:.horizontal) {
-                HStack(spacing:8) { counts }
-                VStack(alignment:.leading,spacing:2) { counts }
-            }
-            Text(lighting.explanation).font(.caption2)
+        ViewThatFits(in:.horizontal) {
+            HStack(spacing:8) { counts }
+            HStack(spacing:8) { compactCounts }
+            VStack(alignment:.leading,spacing:2) { counts }
+            VStack(alignment:.leading,spacing:2) { compactCounts }
         }
         .foregroundStyle(ranchTokens.inkColor)
         .padding(.vertical,6).padding(.horizontal,12)
         .frame(maxWidth:.infinity)
         .ranchChromeSurface(ranchTokens)
+        .accessibilityElement(children:.ignore)
+        .accessibilityLabel(herdCountsAccessibilityLabel(horses))
     }
     @ViewBuilder private var counts: some View {
         ForEach([AgentState.blocked,.working,.idle,.done,.unknown],id:\.self) { state in
             Text("\(herdMark(state)) \(horses.filter { $0.state == state }.count) \(state.rawValue)")
+                .font(.system(.caption2,design:.monospaced))
+        }
+    }
+    /// #491: the compact single-row representation — mark + exact count in
+    /// the same caption2 monospaced type; the full status names stay in the
+    /// summary's VoiceOver label.
+    @ViewBuilder private var compactCounts: some View {
+        ForEach([AgentState.blocked,.working,.idle,.done,.unknown],id:\.self) { state in
+            Text("\(herdMark(state)) \(horses.filter { $0.state == state }.count)")
                 .font(.system(.caption2,design:.monospaced))
         }
     }
@@ -584,4 +597,12 @@ func herdMark(_ state:AgentState) -> String {
     case .done: return "✓"
     case .unknown: return "?"
     }
+}
+
+/// #491: the summary bar's complete VoiceOver reading — full status names and
+/// the exact scoped counts, in display order.
+func herdCountsAccessibilityLabel(_ horses:[HerdHorse]) -> String {
+    [AgentState.blocked,.working,.idle,.done,.unknown]
+        .map { state in "\(horses.filter { $0.state == state }.count) \(state.rawValue)" }
+        .joined(separator:", ")
 }

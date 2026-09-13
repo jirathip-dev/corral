@@ -139,28 +139,63 @@ A new device is **read-only**: `grants` is empty, and the only capability
 names that can ever be granted are the signed reads (`read_tail`, plus the
 daemon-retained `read_diff`). There is no HTTP grant route.
 
-## 5. Grant the read capability (out-of-band)
+## 5. Grant the read capability (host-approved enrollment; out-of-band fallback)
 
-Grant administration is out-of-band since #354 — the host-admin `POST
-/grants` route and `scripts/corrald-grant.sh` are gone. The registry
-(`registry.json`, 0600, in the config dir) is loaded once at daemon start:
+Since #485 the host owner grants `read_tail` through a **local-only
+pairing flow** — no registry edits, no restart. Owner operations live on a
+unix socket (`<config-dir>/owner.sock`, mode 0600 in the 0700 config dir,
+peer-credential checked) and are deliberately **never HTTP routes**.
+
+1. **Owner mints** a short-lived single-use code (the reply carries the
+   versioned v1 QR payload):
+
+   ```sh
+   printf '%s' '{"op":"mint","endpoint":"https://<host>.<tailnet>.ts.net"}' \
+     | nc -U "$HOME/.config/corral/owner.sock"
+   ```
+
+2. **Device redeems** the payload's `code` with its own Ed25519 public key
+   (this creates a *pending request* — redeem alone grants nothing and can
+   never make a record):
+
+   ```sh
+   curl -s -X POST http://127.0.0.1:8474/enroll/redeem \
+     -H 'Content-Type: application/json' \
+     -d "{\"v\":1,\"code\":\"<code>\",\"public_key\":\"$PUBKEY\"}"
+   ```
+
+3. **Owner checks and approves** — the pending listing shows the full
+   `key_id`; approve only the key your device shows (the `name` label is
+   device-supplied and unverified):
+
+   ```sh
+   printf '%s' '{"op":"pending"}' | nc -U "$HOME/.config/corral/owner.sock"
+   printf '%s' '{"op":"approve","enrollment_id":"enr_..."}' \
+     | nc -U "$HOME/.config/corral/owner.sock"
+   ```
+
+The approved record carries `read_tail` **exactly** (never `read_diff`,
+never control), takes effect live, and is committed to disk *before* it is
+published. A revoked device returns only through a fresh explicit
+owner-approved pairing like the one above — never automatically:
 
 ```sh
-# 1. stop corrald
-# 2. edit <config-dir>/registry.json — set the device's "grants" array:
-#      { ..., "grants": ["read_tail"], "revoked": false, ... }
-# 3. start corrald again
+printf '%s' '{"op":"revoke","key_id":"dev_..."}' \
+  | nc -U "$HOME/.config/corral/owner.sock"
 ```
 
-`read_tail` unlocks the Recent-output (recents) surface — the only signed
-drive any client sends. Revoke by setting `"revoked": true` the same way.
+The device polls `POST /enroll/status` (which never answers 409, so a lost
+redeem response cannot brick pairing) and may fall back to its signed
+`POST /grants-read` if the daemon restarted mid-pairing. Full contract:
+[docs/enrollment-v1.md](enrollment-v1.md).
+
+**Fallback (unchanged):** the out-of-band registry edit remains valid for
+recovery — stop corrald, edit `<config-dir>/registry.json`'s `"grants"`
+array to `["read_tail"]` (or `"revoked": true`), start corrald again.
 Never hand the `admin-token` (or the `registration-token`) to a device.
 
 The base setup (board, live states, recents withheld) needs no grant at
-all; only the recents surface does. Host-approved enrollment and live
-revocation without registry edits is follow-up
-[#485](https://github.com/jirathip-dev/corral/issues/485) — not shipped in
-this release.
+all; only the recents surface does.
 
 ## 6. Drive (signed read)
 
@@ -214,10 +249,22 @@ does not claim physical-device or TestFlight verification.
 
 Notifications are optional in normal setup: the board and recents work
 without granting notification permission and without any APNs credentials.
-The app itself raises the OS notification-permission prompt on the first
-live board today — explicit opt-in, no-prompt behavior is follow-up
-[#487](https://github.com/jirathip-dev/corral/issues/487); host-approved QR
-pairing is follow-up [#486](https://github.com/jirathip-dev/corral/issues/486).
+The app never prompts on its own — fresh install, pairing, and the first
+live board request nothing and register no APNs token. Enabling
+**State-change notifications** in Settings is the only trigger: the OS
+permission prompt appears then, a denial or a not-determined state leaves
+the board fully usable, and onboarding completes without visiting Settings.
+The behavior is covered by the iOS unit suite. From a checkout with a
+booted simulator:
+
+```sh
+xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier \
+  -destination 'platform=iOS Simulator,id=<udid>' -derivedDataPath /tmp/fn-dd \
+  -only-testing:FleetNotifierTests/NotificationOptInRuntimeTests
+```
+
+Host-approved QR pairing is follow-up
+[#486](https://github.com/jirathip-dev/corral/issues/486).
 
 Registering from the phone is steps 4 and 5 above, with two phone-specific
 rules:

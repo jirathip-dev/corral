@@ -4,9 +4,11 @@
 //! aliased GraphQL query (one HTTP round-trip per poll; measured ~1.4s live
 //! against the real API — the brief's 531ms estimate predates the 2026
 //! schema's rollup `contexts` pagination, so treat <2s as the budget target)
-//! and emits [`GhRepoState`] facts into the [`PlaneSink`]: open PRs (state,
-//! mergeability, head oid, head branch name, closing-issue refs, CI status
-//! collapsed from `statusCheckRollup`), recent issue refs, default branch.
+//! and emits [`GhRepoState`] facts into the [`PlaneSink`]: open PRs (number,
+//! head oid, head branch name, closing-issue refs, CI status collapsed from
+//! `statusCheckRollup`), recent issue refs. #500 removed the PR-record
+//! `title`/`state`/`mergeable` collection (see
+//! `docs/evidence/issue-500/compatibility-decision.md`).
 //!
 //! Cadence rule (acceptance criterion 2):
 //! - **Zero polling** until at least one SSE client has EVER connected this
@@ -852,13 +854,9 @@ fn build_query(specs: &[GhRepoSpec]) -> String {
     query.push_str(&format!(
         r#"}}
 fragment GhPlaneRepo on Repository {{
-  defaultBranchRef {{ name }}
   pullRequests(first: {PR_LIMIT}, states: OPEN, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{
     nodes {{
       number
-      title
-      state
-      mergeable
       headRefOid
       headRefName
       closingIssuesReferences(first: {CLOSING_ISSUES_LIMIT}) {{
@@ -894,15 +892,8 @@ fragment GhPlaneRepo on Repository {{
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct RepoWire {
-    default_branch_ref: Option<DefaultBranchRefWire>,
     pull_requests: Option<NodesWire<PrWire>>,
     issues: Option<NodesWire<IssueWire>>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-struct DefaultBranchRefWire {
-    name: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -915,9 +906,6 @@ struct NodesWire<T> {
 #[serde(rename_all = "camelCase", default)]
 struct PrWire {
     number: u64,
-    title: Option<String>,
-    state: Option<String>,
-    mergeable: Option<String>,
     head_ref_oid: Option<String>,
     head_ref_name: Option<String>,
     closing_issues_references: Option<NodesWire<ClosingIssueWire>>,
@@ -1176,15 +1164,6 @@ fn build_repo_state(spec: &GhRepoSpec, wire: &RepoWire) -> GhRepoState {
     issues.sort_by_key(|issue| issue.number);
     GhRepoState {
         repo: spec.key.clone(),
-        default_branch: wire
-            .default_branch_ref
-            .as_ref()
-            .and_then(|b| b.name.clone())
-            .unwrap_or_default(),
-        // GitHub's API has no "ahead/behind vs default branch" concept; local
-        // tracking info is WS1's job. Cheaply unavailable in-query -> 0.
-        ahead: 0,
-        behind: 0,
         prs,
         issues,
     }
@@ -1227,12 +1206,6 @@ fn normalize_pr(spec: &GhRepoSpec, pr: &PrWire, repo_issues: &[IssueWire]) -> Gh
     GhPrState {
         repo: spec.key.clone(),
         pr_number: pr.number,
-        title: pr.title.clone().unwrap_or_default(),
-        state: pr.state.clone().unwrap_or_else(|| "UNKNOWN".to_string()),
-        mergeable: pr
-            .mergeable
-            .clone()
-            .unwrap_or_else(|| "UNKNOWN".to_string()),
         ci_status: collapse_ci(pr.status_check_rollup.as_ref()),
         head_sha: pr.head_ref_oid.clone().unwrap_or_default(),
         head_branch: pr.head_ref_name.clone().unwrap_or_default(),
@@ -1366,7 +1339,6 @@ mod tests {
         };
         let response = json!({
             "q0": {
-                "defaultBranchRef": { "name": "main" },
                 "issues": { "nodes": [
                     { "number": 7, "state": "OPEN", "title": "shared issue" }
                 ]}
@@ -1435,6 +1407,132 @@ mod tests {
             query.matches('}').count(),
             "query block must be brace-balanced (a missing close is a hard GraphQL parse error)"
         );
+    }
+
+    /// #499: the removed repo-level facts must stay absent from the
+    /// production poll artifact (the GraphQL query actually POSTed).
+    #[test]
+    fn removed_repo_facts_stay_absent_from_the_poll_query() {
+        let specs = fixture_specs();
+        let query = build_query(&specs);
+        assert!(
+            !query.contains("defaultBranchRef"),
+            "removed default-branch selection must stay out of the poll query:\n{query}"
+        );
+        // The removal deleted a selection; it must not have smuggled in a
+        // replacement leg (still exactly one repository clause per spec).
+        assert_eq!(query.matches("repository(owner:").count(), specs.len());
+        assert!(
+            query.contains("pullRequests(first: 20") && query.contains("issues(first: 10"),
+            "the retained PR/issue legs still ride the same single request"
+        );
+    }
+
+    /// #499: the emitted event (what the integrator and channel see) must not
+    /// carry the removed default-branch fact or the constant-zero counters.
+    #[test]
+    fn removed_repo_facts_stay_absent_from_the_emitted_state() {
+        let wire: RepoWire = serde_json::from_value(json!({
+            "name": "dotfiles",
+            "pullRequests": null,
+            "issues": null
+        }))
+        .unwrap();
+        let spec = fixture_specs()
+            .into_iter()
+            .find(|s| s.key == "dotfiles")
+            .expect("tracked");
+        let state = build_repo_state(&spec, &wire);
+        let emitted = serde_json::to_value(&state).expect("state serializes");
+        assert_eq!(emitted["repo"], "dotfiles");
+        for key in ["default_branch", "ahead", "behind"] {
+            assert!(
+                emitted.get(key).is_none(),
+                "removed repo fact `{key}` must stay out of the emitted state: {emitted}"
+            );
+        }
+        assert!(emitted["prs"].is_array() && emitted["issues"].is_array());
+    }
+
+    /// #500: the removed PR-record facts must stay absent from the production
+    /// poll artifact (the GraphQL query actually POSTed). The PR leg's direct
+    /// selections are sliced out before the retained `closingIssuesReferences`
+    /// sub-selection (which legitimately still asks for issue `title`/`state`).
+    #[test]
+    fn removed_pr_facts_stay_absent_from_the_poll_query() {
+        let specs = fixture_specs();
+        let query = build_query(&specs);
+        // The PR node selections: after the `pullRequests(...)` opening (whose
+        // filter legitimately contains `states: OPEN`) and before the retained
+        // `closingIssuesReferences` sub-selection (issue `title`/`state` stay).
+        let pr_selections = query
+            .split("pullRequests(first: 20")
+            .nth(1)
+            .and_then(|rest| rest.split("closingIssuesReferences").next())
+            .and_then(|leg| leg.split("nodes {").nth(1))
+            .expect("PR node selections before closingIssuesReferences");
+        for key in ["title", "state", "mergeable"] {
+            assert!(
+                !pr_selections.contains(key),
+                "removed PR fact `{key}` must stay out of the PR selections:\n{pr_selections}"
+            );
+        }
+        // The retained PR selections ride the same single request.
+        for retained in ["number", "headRefOid", "headRefName"] {
+            assert!(
+                pr_selections.contains(retained),
+                "retained PR fact `{retained}` must stay in the PR selections:\n{pr_selections}"
+            );
+        }
+        let rollup_leg = query
+            .split("closingIssuesReferences(first: 10)")
+            .nth(1)
+            .and_then(|rest| rest.split("issues(first: 10").next())
+            .expect("statusCheckRollup leg must follow the closing refs");
+        assert!(
+            rollup_leg.contains("statusCheckRollup"),
+            "retained `statusCheckRollup` must stay in the PR leg:\n{rollup_leg}"
+        );
+        assert_eq!(query.matches("repository(owner:").count(), specs.len());
+    }
+
+    /// #500: the emitted event must not carry the removed PR-record fields —
+    /// a wire payload that still includes `title`/`state`/`mergeable` keys
+    /// (an old server or a stale fixture) decodes without them.
+    #[test]
+    fn removed_pr_facts_stay_absent_from_the_emitted_state() {
+        let wire: RepoWire = serde_json::from_value(json!({
+            "name": "herdr-board",
+            "pullRequests": { "nodes": [ {
+                "number": 7,
+                "title": "P2 three planes",
+                "state": "OPEN",
+                "mergeable": "CONFLICTING",
+                "headRefOid": "abc123",
+                "headRefName": "ws2/gh-plane",
+                "statusCheckRollup": { "state": "SUCCESS", "contexts": { "nodes": [] } }
+            } ]},
+            "issues": null
+        }))
+        .unwrap();
+        let spec = fixture_specs()
+            .into_iter()
+            .find(|s| s.key == "herdr-board")
+            .expect("tracked");
+        let state = build_repo_state(&spec, &wire);
+        let emitted = serde_json::to_value(&state).expect("state serializes");
+        let pr = &emitted["prs"][0];
+        for key in ["title", "state", "mergeable"] {
+            assert!(
+                pr.get(key).is_none(),
+                "removed PR fact `{key}` must stay out of the emitted state: {emitted}"
+            );
+        }
+        // The retained facts still ride the same event.
+        assert_eq!(pr["pr_number"], 7);
+        assert_eq!(pr["ci_status"], "SUCCESS");
+        assert_eq!(pr["head_sha"], "abc123");
+        assert_eq!(pr["head_branch"], "ws2/gh-plane");
     }
 
     #[test]
@@ -1565,13 +1663,9 @@ mod tests {
     fn maps_repo_wire_into_contract_types() {
         let wire: RepoWire = serde_json::from_value(json!({
             "name": "herdr-board",
-            "defaultBranchRef": { "name": "main" },
             "pullRequests": { "nodes": [
                 {
                     "number": 7,
-                    "title": "P2 three planes",
-                    "state": "OPEN",
-                    "mergeable": "CONFLICTING",
                     "headRefOid": "abc123",
                     "headRefName": "ws2/gh-plane",
                     "closingIssuesReferences": { "nodes": [
@@ -1593,9 +1687,6 @@ mod tests {
                 },
                 {
                     "number": 6,
-                    "title": "head deleted",
-                    "state": "OPEN",
-                    "mergeable": "MERGEABLE",
                     "headRefOid": null,
                     "headRefName": null,
                     "closingIssuesReferences": null,
@@ -1631,13 +1722,9 @@ mod tests {
             .expect("tracked");
         let state = build_repo_state(&spec, &wire);
         assert_eq!(state.repo, "herdr-board");
-        assert_eq!(state.default_branch, "main");
-        assert_eq!(state.ahead, 0);
-        assert_eq!(state.behind, 0);
         assert_eq!(state.prs.len(), 2);
         // Wire order is 7,6 — decoded output is sorted by number (F7).
         assert_eq!(state.prs[0].pr_number, 6);
-        assert_eq!(state.prs[0].mergeable, "MERGEABLE");
         assert_eq!(
             state.prs[0].ci_status, "PENDING",
             "empty contexts -> aggregate state"
@@ -1652,7 +1739,6 @@ mod tests {
             "null closing refs -> empty"
         );
         assert_eq!(state.prs[1].pr_number, 7);
-        assert_eq!(state.prs[1].mergeable, "CONFLICTING");
         assert_eq!(state.prs[1].ci_status, "SUCCESS");
         assert_eq!(state.prs[1].head_sha, "abc123");
         assert_eq!(state.prs[1].head_branch, "ws2/gh-plane");
@@ -1739,7 +1825,6 @@ mod tests {
             .find(|s| s.key == "dotfiles")
             .expect("tracked");
         let state = build_repo_state(&spec, &wire);
-        assert_eq!(state.default_branch, "", "missing default branch -> empty");
         assert!(state.prs.is_empty());
         assert!(state.issues.is_empty());
     }

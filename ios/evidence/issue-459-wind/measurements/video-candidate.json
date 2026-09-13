@@ -1,0 +1,134 @@
+{
+  "consecutive_changed_pixels": {
+    "max": 1171,
+    "mean": 558.6,
+    "min": 155,
+    "of_pixels": 187866
+  },
+  "frames": 30,
+  "half_cycle_pair": {
+    "changed_fraction": 0.00853,
+    "changed_pixels": 1602,
+    "frame_gap": 6,
+    "of_pixels": 187866
+  },
+  "label": "cand-full",
+  "mode": "clip",
+  "resolution": {
+    "height": 639,
+    "width": 294
+  },
+  "row_profile_half_cycle": [
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        0,
+        45
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        45,
+        90
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        90,
+        135
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        135,
+        180
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        180,
+        225
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        225,
+        270
+      ]
+    },
+    {
+      "changed_fraction": 0.0254,
+      "rows": [
+        270,
+        315
+      ]
+    },
+    {
+      "changed_fraction": 0.02215,
+      "rows": [
+        315,
+        360
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        360,
+        405
+      ]
+    },
+    {
+      "changed_fraction": 0.00227,
+      "rows": [
+        405,
+        450
+      ]
+    },
+    {
+      "changed_fraction": 0.04339,
+      "rows": [
+        450,
+        495
+      ]
+    },
+    {
+      "changed_fraction": 0.02782,
+      "rows": [
+        495,
+        540
+      ]
+    },
+    {
+      "changed_fraction": 8e-05,
+      "rows": [
+        540,
+        585
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        585,
+        630
+      ]
+    },
+    {
+      "changed_fraction": 0.0,
+      "rows": [
+        630,
+        639
+      ]
+    }
+  ],
+  "video": "/tmp/g459-cand-test-full.mp4",
+  "window": {
+    "duration": 12.0,
+    "fps": 2.5,
+    "start": 4.0
+  }
+}

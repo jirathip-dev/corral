@@ -1,7 +1,7 @@
 name: iOS art/icon gates
 
-# Source-mode art/icon gates (#471) run for every push and pull request. All
-# four commands are stdlib-only Python and read committed files, so they run
+# Source-mode art/icon gates (#471) run for every push and pull request. Every
+# command here is stdlib-only Python and reads committed files, so they run
 # on a Linux runner in well under a minute with no signing, no release build,
 # no simulator and no secrets.
 #
@@ -42,6 +42,16 @@ jobs:
 
       - name: App-icon guard mutation battery
         run: python3 ios/tools/herd-art/test-app-icons.py --output "$RUNNER_TEMP/app-icon-proofs"
+
+      # #512: the installed Home Screen name must be exactly `Corral`. Source
+      # mode pins the generated `ios/FleetNotifier/Info.plist` (the value that
+      # reaches the product) and the XcodeGen spec; the built-product side runs
+      # with `--bundle` locally, and the mutation battery proves the guard bites.
+      - name: Installed display-name check
+        run: python3 ios/tools/herd-art/check-display-name.py
+
+      - name: Display-name guard mutation battery
+        run: python3 ios/tools/herd-art/test-display-name.py --output "$RUNNER_TEMP/display-name-proofs"
 
       # #494: the #480 gait metadata fixture suite. A hardcoded device claim or
       # an unresolvable identity/pixel source fails this step; the command's

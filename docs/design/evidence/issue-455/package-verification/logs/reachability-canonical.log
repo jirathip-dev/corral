@@ -1,0 +1,91 @@
+{
+  "checkedAt": "2026-09-12T08:33:24.780042+00:00",
+  "phoneDeviceTest": false,
+  "networkConfigurationChanged": false,
+  "targets": [
+    {
+      "url": "http://127.0.0.1:8777/corral/455-immersive-herd/index.html",
+      "status": 200,
+      "sha256": "5d562a97aad818a7934e425810bbd5aa3c9f2ec0274ebf1bb24f228ed167a6d8",
+      "bytes": 7124,
+      "matchesLocal": true
+    },
+    {
+      "url": "http://127.0.0.1:8777/corral/455-immersive-herd/variant-a.html",
+      "status": 200,
+      "sha256": "ca0a1a0991aa66364598eaacdac4d328de6a4ac1e57e03707aa708851791bf61",
+      "bytes": 1368951,
+      "matchesLocal": true
+    },
+    {
+      "url": "http://127.0.0.1:8777/corral/455-immersive-herd/variant-b.html",
+      "status": 200,
+      "sha256": "fa31421c9dcee0b5b1116627b404466f9009e78c3a970154326fca258d49b47c",
+      "bytes": 1368951,
+      "matchesLocal": true
+    },
+    {
+      "url": "http://127.0.0.1:8777/corral/455-immersive-herd/evidence/b-day-390x844.png",
+      "status": 200,
+      "sha256": "be5601d07ec00029c7f21f9e94d66de2348d2e78c37e2afc0e8df22204e5b4a5",
+      "bytes": 278162,
+      "matchesLocal": true
+    },
+    {
+      "url": "http://127.0.0.1:8777/corral/455-immersive-herd/evidence/day-realtime.mp4",
+      "status": 200,
+      "sha256": "606de7d2c9fc74570e2ef492be75c83ada9d02627e45d6f2adee1311bf8cbe9b",
+      "bytes": 167546,
+      "matchesLocal": true
+    },
+    {
+      "url": "http://127.0.0.1:8777/corral/455-immersive-herd/evidence/night-realtime.mp4",
+      "status": 200,
+      "sha256": "d16afe17a49cd15af23ab1612b247c019b0bebbcc210a076702d9857eb02eb1a",
+      "bytes": 177386,
+      "matchesLocal": true
+    },
+    {
+      "url": "https://jirathips-macbook-air.tail8c3301.ts.net:8444/corral/455-immersive-herd/index.html",
+      "status": 200,
+      "sha256": "5d562a97aad818a7934e425810bbd5aa3c9f2ec0274ebf1bb24f228ed167a6d8",
+      "bytes": 7124,
+      "matchesLocal": true
+    },
+    {
+      "url": "https://jirathips-macbook-air.tail8c3301.ts.net:8444/corral/455-immersive-herd/variant-a.html",
+      "status": 200,
+      "sha256": "ca0a1a0991aa66364598eaacdac4d328de6a4ac1e57e03707aa708851791bf61",
+      "bytes": 1368951,
+      "matchesLocal": true
+    },
+    {
+      "url": "https://jirathips-macbook-air.tail8c3301.ts.net:8444/corral/455-immersive-herd/variant-b.html",
+      "status": 200,
+      "sha256": "fa31421c9dcee0b5b1116627b404466f9009e78c3a970154326fca258d49b47c",
+      "bytes": 1368951,
+      "matchesLocal": true
+    },
+    {
+      "url": "https://jirathips-macbook-air.tail8c3301.ts.net:8444/corral/455-immersive-herd/evidence/b-day-390x844.png",
+      "status": 200,
+      "sha256": "be5601d07ec00029c7f21f9e94d66de2348d2e78c37e2afc0e8df22204e5b4a5",
+      "bytes": 278162,
+      "matchesLocal": true
+    },
+    {
+      "url": "https://jirathips-macbook-air.tail8c3301.ts.net:8444/corral/455-immersive-herd/evidence/day-realtime.mp4",
+      "status": 200,
+      "sha256": "606de7d2c9fc74570e2ef492be75c83ada9d02627e45d6f2adee1311bf8cbe9b",
+      "bytes": 167546,
+      "matchesLocal": true
+    },
+    {
+      "url": "https://jirathips-macbook-air.tail8c3301.ts.net:8444/corral/455-immersive-herd/evidence/night-realtime.mp4",
+      "status": 200,
+      "sha256": "d16afe17a49cd15af23ab1612b247c019b0bebbcc210a076702d9857eb02eb1a",
+      "bytes": 177386,
+      "matchesLocal": true
+    }
+  ]
+}

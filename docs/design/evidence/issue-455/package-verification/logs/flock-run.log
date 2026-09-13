@@ -1,0 +1,46 @@
+flock[77620]: format=dir owner=75961 wait=0s decision=wait reason=contention
+flock[77620]: format=dir owner=75961 wait=6s decision=wait reason=contention
+flock[77620]: format=dir owner=75961 wait=12s decision=wait reason=contention
+flock[77620]: format=dir owner=75961 wait=18s decision=wait reason=contention
+flock[77620]: format=dir owner=75961 wait=25s decision=wait reason=contention
+flock[77620]: format=dir owner=75961 wait=30s decision=wait reason=contention
+flock[77620]: format=dir owner=75961 wait=36s decision=wait reason=contention
+flock[77620]: format=dir owner=75961 wait=41s decision=wait reason=contention
+flock[77620]: format=dir owner=75961 wait=46s decision=wait reason=contention
+flock[77620]: format=dir owner=75961 wait=51s decision=wait reason=contention
+flock[77620]: format=dir owner=75961 wait=57s decision=wait reason=contention
+flock[77620]: format=dir owner=75961 wait=62s decision=wait reason=contention
+flock[77620]: format=dir owner=75961 wait=67s decision=wait reason=contention
+flock[77620]: format=dir owner=75961 wait=72s decision=wait reason=contention
+flock[77620]: format=dir owner=75961 wait=77s decision=wait reason=contention
+flock[77620]: format=dir owner=75961 wait=83s decision=wait reason=contention
+flock[77620]: format=dir owner=75961 wait=88s decision=wait reason=contention
+flock[77620]: format=dir owner=75961 wait=93s decision=wait reason=contention
+flock[77620]: format=dir owner=75961 wait=98s decision=wait reason=contention
+flock[77620]: format=dir owner=75961 wait=103s decision=wait reason=contention
+flock[77620]: format=dir owner=75961 wait=108s decision=wait reason=contention
+flock[77620]: format=dir owner=75961 wait=113s decision=wait reason=contention
+flock[77620]: format=dir owner=75961 wait=118s decision=wait reason=contention
+flock[77620]: format=dir owner=75961 wait=123s decision=wait reason=contention
+flock[77620]: format=dir owner=75961 wait=128s decision=wait reason=contention
+flock[77620]: format=dir owner=75961 wait=134s decision=wait reason=contention
+flock[77620]: format=dir owner=74205 wait=139s decision=wait reason=contention
+flock[77620]: format=dir owner=74205 wait=144s decision=wait reason=contention
+flock[77620]: format=dir owner=74205 wait=149s decision=wait reason=contention
+flock[77620]: format=dir owner=74205 wait=155s decision=wait reason=contention
+flock[77620]: format=dir owner=74205 wait=162s decision=wait reason=contention
+flock[77620]: format=dir owner=74205 wait=167s decision=wait reason=contention
+flock[77620]: format=dir owner=74205 wait=174s decision=wait reason=contention
+flock[77620]: format=dir owner=74205 wait=181s decision=wait reason=contention
+flock[77620]: format=dir owner=74205 wait=186s decision=wait reason=contention
+flock[77620]: format=dir owner=77620 wait=191s decision=acquired
+floor: 44 GiB free disk; load=139.79 84.86 95.18
+smoke EXIT=0 SECS=2 CMD=python3 -B tools/probe-visibility.py
+verify-browser EXIT=0 SECS=56 CMD=python3 -B tools/verify-browser.py
+verify-workflows EXIT=0 SECS=9 CMD=python3 -B tools/verify-workflows.py
+verify-art-geometry EXIT=0 SECS=0 CMD=python3 -B tools/verify-art-geometry.py
+verify-layers EXIT=0 SECS=2 CMD=python3 -B tools/verify-layers.py
+record-motion EXIT=0 SECS=26 CMD=python3 -B tools/record-motion.py
+contact-sheets EXIT=0 SECS=0 CMD=python3 -B tools/contact-sheets.py
+inspect-motion EXIT=0 SECS=0 CMD=python3 -B tools/inspect-motion.py
+SUITE-END 2026-09-12T08:36:53Z

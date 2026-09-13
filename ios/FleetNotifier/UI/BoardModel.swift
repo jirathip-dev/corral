@@ -379,34 +379,159 @@ extension BoardModel {
     /// kind. Never a full-width reconnect banner. #427 AC5: a host whose
     /// connection attempt is in flight stays textually visible too — the
     /// D7 row names connecting hosts with the same aggregate form (color is
-    /// never the only channel on the board).
+    /// never the only channel on the board). #528: the SAME aggregate text
+    /// is the compact connection indicator's label, computed over the
+    /// health vocabulary alone (the chip adaptor below delegates here).
     static func hostOutageSummary(hosts: [HostFilterChip]) -> String? {
+        hostOutageSummary(healths: hosts.map(\.health))
+    }
+
+    /// #528: the aggregate outage text over raw host healths — one shared
+    /// implementation for the filter chips and the compact connection
+    /// indicator, so their copy can never drift.
+    static func hostOutageSummary(healths: [HostChipHealth]) -> String? {
         var parts: [String] = []
-        let offline = hosts.filter { $0.health == .offline }.count
+        let offline = healths.filter { $0 == .offline }.count
         if offline == 1 {
             parts.append("1 host offline")
         } else if offline > 1 {
             parts.append("\(offline) hosts offline")
         }
-        let mismatch = hosts.filter { $0.health == .keyMismatch }.count
+        let mismatch = healths.filter { $0 == .keyMismatch }.count
         if mismatch == 1 {
             parts.append("1 host key mismatch")
         } else if mismatch > 1 {
             parts.append("\(mismatch) hosts key mismatch")
         }
-        let awaiting = hosts.filter { $0.health == .awaitingFingerprint }.count
+        let awaiting = healths.filter { $0 == .awaitingFingerprint }.count
         if awaiting == 1 {
             parts.append("1 host awaiting fingerprint")
         } else if awaiting > 1 {
             parts.append("\(awaiting) hosts awaiting fingerprint")
         }
-        let connecting = hosts.filter { $0.health == .connecting }.count
+        let connecting = healths.filter { $0 == .connecting }.count
         if connecting == 1 {
             parts.append("1 host connecting")
         } else if connecting > 1 {
             parts.append("\(connecting) hosts connecting")
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// #528: the aggregate per-fleet posture — the worst posture of any
+    /// host (mismatch > awaiting fingerprint > offline > connecting > live),
+    /// the SAME precedence the All host chip resolves. An EMPTY host list
+    /// fails closed to offline: chrome with no evidence of a live host must
+    /// never paint the connected state.
+    static func aggregateHostHealth(_ healths: [HostChipHealth]) -> HostChipHealth {
+        let kinds = Set(healths)
+        if kinds.contains(.keyMismatch) { return .keyMismatch }
+        if kinds.contains(.awaitingFingerprint) { return .awaitingFingerprint }
+        if kinds.contains(.offline) { return .offline }
+        if kinds.contains(.connecting) { return .connecting }
+        return kinds.isEmpty ? .offline : .live
+    }
+
+    // MARK: - #528 compact connection chrome (ONE indicator for Board + Herd)
+
+    /// One host's connection posture for the compact indicator — the SAME
+    /// per-host health vocabulary the host-filter chips and the filter sheet
+    /// render, so Board chrome, Herd chrome and the sheet can never disagree.
+    struct ConnectionHostStatus: Equatable, Identifiable, Sendable {
+        /// Stable identity (profile id / the single-host sentinel); used by
+        /// the detail list's ForEach only — never rendered.
+        let id: String
+        let name: String
+        let health: HostChipHealth
+    }
+
+    /// #528: the ONE compact connection indicator both the Board chrome and
+    /// the Herd floating chrome render. Pure projection over the per-host
+    /// health list — covering connected / connecting / disconnected /
+    /// partial multi-host with a compact label, an accessible status
+    /// description naming EVERY host, and the per-host detail rows the
+    /// indicator reveals on tap. No verbose helper copy lives here.
+    struct ConnectionIndicatorModel: Equatable, Sendable {
+        /// The covered states the spec names (partial = some hosts live,
+        /// some not).
+        enum Status: Equatable, Sendable {
+            case connected
+            case connecting
+            case disconnected
+            case partial
+        }
+
+        let status: Status
+        /// Compact visible label — "Live" / "Connecting" / "Offline" for a
+        /// single host; the D7 aggregate summary ("1 host offline · 1 host
+        /// connecting") for a multi-host fleet that is not fully live.
+        let label: String
+        /// The aggregate posture (worst host wins) — the indicator dot's
+        /// token. Color is never the only channel: `label` and
+        /// `accessibilityDescription` always ride with it (D8).
+        let dotHealth: HostChipHealth
+        /// VoiceOver description: the aggregate state plus every host's
+        /// status, and — while a retained board is not live — the explicit
+        /// last-known note (AC6: compact chrome never claims stale data is
+        /// confirmed live).
+        let accessibilityDescription: String
+        /// True while the indicator covers retained (last-known) rows — the
+        /// detail surface repeats the provenance in visible text.
+        let showsLastKnown: Bool
+        let hosts: [ConnectionHostStatus]
+
+        var isAnimated: Bool { status == .connecting }
+    }
+
+    /// The indicator projection. An EMPTY host list fails closed to the
+    /// disconnected state (never a silent "connected" chrome).
+    static func connectionIndicator(hosts: [ConnectionHostStatus],
+                                    showsLastKnown: Bool = false) -> ConnectionIndicatorModel {
+        let healths = hosts.map(\.health)
+        let live = healths.filter { $0 == .live }.count
+        let connecting = healths.filter { $0 == .connecting }.count
+        let status: ConnectionIndicatorModel.Status
+        if !healths.isEmpty, live == healths.count {
+            status = .connected
+        } else if live > 0 {
+            status = .partial
+        } else if connecting > 0 {
+            status = .connecting
+        } else {
+            status = .disconnected
+        }
+        let summary = hostOutageSummary(healths: healths)
+        let label: String
+        switch status {
+        case .connected:
+            label = "Live"
+        case .connecting:
+            label = hosts.count == 1 ? "Connecting" : (summary ?? "Connecting")
+        case .disconnected:
+            label = hosts.count == 1 ? "Offline" : (summary ?? "Offline")
+        case .partial:
+            label = summary ?? "Offline"
+        }
+        let stateText: String
+        switch status {
+        case .connected: stateText = "Connected"
+        case .connecting: stateText = "Connecting"
+        case .disconnected: stateText = "Offline"
+        case .partial: stateText = "Partially connected"
+        }
+        var parts = ["Connection status: \(stateText)."]
+        if !hosts.isEmpty {
+            parts.append(hosts.map { "\($0.name): \($0.health.label)" }
+                .joined(separator: ", ") + ".")
+        }
+        if showsLastKnown, status != .connected {
+            parts.append("Showing last-known fleet data.")
+        }
+        return ConnectionIndicatorModel(status: status, label: label,
+                                        dotHealth: aggregateHostHealth(healths),
+                                        accessibilityDescription: parts.joined(separator: " "),
+                                        showsLastKnown: showsLastKnown,
+                                        hosts: hosts)
     }
 
     /// D2/D4: keep the rows of ONE host (nil = every host).

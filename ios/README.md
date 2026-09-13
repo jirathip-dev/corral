@@ -304,9 +304,11 @@ Each row: agent name, repo, state (raw herdr token: working / idle /
 blocked / unknown), time-in-state, branch, and a small pane reference
 (debug aid). Rows inside a status sort by recency (ts desc, then agent id
 for determinism), and there is no search
-and no repo filter chip. Live SSE + pull-to-refresh keep the board fresh;
-when the daemon is unreachable the board keeps the last-known fleet under a
-"daemon offline" banner.
+and no repo filter chip. Live SSE keeps the board fresh and recovers on its
+own (the stream's own retry ladder, foreground resume and network-path
+restoration); when a host is unreachable the board keeps the last-known
+fleet and the compact connection indicator beside the Filters control names
+the state — tap it for the per-host connection details (#528).
 
 Tapping a row opens the recents bottom sheet: LIVE TAIL ONLY (the daemon's
 bounded ≤200-line read_tail, auto-scrolled, refreshed while open; loading /

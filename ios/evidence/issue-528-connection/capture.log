@@ -1,0 +1,57 @@
+# #528 evidence capture log
+
+Simulator: Apple iPhone 16, iOS 26.5, UDID 46C711A9-E5FC-4147-82F2-7553D33E9B1B
+           (`xcrun simctl create Corral528 "iPhone 16" com.apple.CoreSimulator.SimRuntime.iOS-26-5`)
+Build:     Debug, /tmp/i528-dd (scheme FleetNotifier; the app the tests/gates built)
+Driver:    one launch per matrix; `-corral528ConnectionEvidence` / `-corral528HerdEvidence`
+           (+ `-corral528AccessibilitySizes -UIPreferredContentSizeCategoryName
+           UICTContentSizeCategoryAccessibilityLarge` for the large-text pair)
+Phases:    marker files written by the driver in Documents/ux-evidence AFTER each state
+           settles; >= 9 s hold per phase; the host polls and screenshots each NEW
+           marker >= 2 s after detection (capture always inside the phase it names).
+Size:      `xcrun simctl io <udid> screenshot <raw>` (1179x2556 @3x) then
+           `sips -z 844 390 <raw> --out <name>-390x844.png` (0.18 % aspect distortion).
+
+## Runs (host commands, in order)
+
+    bash /tmp/i528-capture.sh <UDID> <EVDIR> 528-7-board-done  -corral528ConnectionEvidence
+    bash /tmp/i528-capture.sh <UDID> <EVDIR> 528-13-herd-done  -corral528HerdEvidence
+    bash /tmp/i528-capture.sh <UDID> <EVDIR> 528-ax-2-board-done -corral528ConnectionEvidence \
+         -corral528AccessibilitySizes -UIPreferredContentSizeCategoryName UICTContentSizeCategoryAccessibilityLarge
+    bash /tmp/i528-capture.sh <UDID> <EVDIR> 528-ax-5-herd-done  -corral528HerdEvidence \
+         -corral528AccessibilitySizes -UIPreferredContentSizeCategoryName UICTContentSizeCategoryAccessibilityLarge
+    # the two standard runs are repeated LAST so the a11y runs' shared phase-1
+    # markers (528-1/528-8) cannot leave the AX composition under a standard name
+
+Fix round r2 (review conditions 1 + 2): the whole matrix above was
+re-captured on the fresh Corral528Fix simulator (UDID
+DC56A639-72B2-498E-9621-E35AC1349166) after the driver + popover fix;
+the two `*-before-*` frames are the reviewed head's (ba83728) copies of
+528-9 / 528-ax-4 kept for the condition-2 before/after comparison.
+
+Raw run exits: BOARD_RUN_EXIT=0 HERD_RUN_EXIT=0 AX_BOARD_RUN_EXIT=0 AX_HERD_RUN_EXIT=0
+(see the closeout session log; every marker below was printed as `captured`).
+
+## Frames (sha256 + pixel dims)
+
+- 528-1-board-partial-390x844.png  390x844  a599538076491be87bc6925312e48d7e14e10eda996694aeea387cce3043cc8a
+- 528-10-herd-disconnected-390x844.png  390x844  6124cabbbaff5152b46872896d3c664c8f8da30b6a08d9e2d2efd9bf989b5329
+- 528-11-herd-recovered-390x844.png  390x844  2065559debe410457063befc9a4505cf980fb6ec418389a6041881e6e2fefc6d
+- 528-12-herd-empty-connecting-390x844.png  390x844  264a1687d0da063611ba1515536a8e825f88e08bd7f76b59ac444bf998359974
+- 528-13-herd-done-390x844.png  390x844  264a1687d0da063611ba1515536a8e825f88e08bd7f76b59ac444bf998359974
+- 528-2-board-detail-390x844.png  390x844  05468ae8fb4f886ef27cc707adb6c518bc00cc754ca9447aa6fa05604c835be9
+- 528-3-board-disconnected-390x844.png  390x844  e709ea60e4ef1a8686b41a0051bef9b9cf1a847031e64d76f2c90dd0583d6a88
+- 528-4-board-recovered-390x844.png  390x844  7f9de102558bc2fb3ca89a499e2ea3b2df706d68ee254f3505b4679d54536f8a
+- 528-5-board-empty-connecting-390x844.png  390x844  4e7ef3315e10aa79b9bd513b1bac7468ade6491041c4eed3e835072fc8356bb9
+- 528-6-board-partial-latte-390x844.png  390x844  bb21e06d3b50b6bf4e17957afbf7b398b584bd7b8d41d802f8d86df5f2ca18c2
+- 528-7-board-done-390x844.png  390x844  acd9d9a79db4f7ecbb8495d6fab003bc2ebf10507f01a65164715be6d9480a2a
+- 528-8-herd-partial-390x844.png  390x844  170ae923399404bb91d5d232daf1545a0d7a624822916ce6f14eafbec143145a
+- 528-9-before-390x844.png  390x844  ccafbc80feb5d1c54ea20cebe531168edd4f803340d1b3a2e2a552fba69b7dae
+- 528-9-herd-detail-390x844.png  390x844  2ab341342c61ef4201018dbcc7dc7f3a3e9d2a2ffd791d797b24733765eac1a8
+- 528-ax-1-board-partial-detail-390x844.png  390x844  96880b24b9e7fc257dec6e392783fc90265941435238f4887c838a2100db8b06
+- 528-ax-2-board-done-390x844.png  390x844  d6c998ba25b78bcdfaaf2b4b4ffc5fda25310cb8b954e020cf6f1e30a033a4a9
+- 528-ax-4-before-390x844.png  390x844  9a4241a09a08d35557166e1f56f7da5040e827b7cd4dce0a8a53a7f85d0d6e54
+- 528-ax-4-herd-partial-detail-390x844.png  390x844  3923621623dd687cd09ec2affeba4c3a1226b993529937ca7f457f6a1af6da43
+- 528-ax-5-herd-done-390x844.png  390x844  9e3bb6a4f30abf98d407c2deba693abff24eba9d8480ec451cc4eebb791a97dc
+
+NOTE: 528-13 is the terminal rest marker of the herd run and deliberately captures the SAME empty state as 528-12 (byte-identical pair; every other frame is distinct).

@@ -9945,6 +9945,30 @@ final class ConnectionChromeWiringTests: XCTestCase {
                       "the reveal repeats the stale provenance in visible text")
     }
 
+    /// #528 review condition 2: on Herd the revealed connection detail must
+    /// ride the repo's existing AA-pinned ranch chrome surface (the #457
+    /// treatment the floating chrome's bars use) instead of the translucent
+    /// popover material that washed out over the bright sky; the Board keeps
+    /// the plain popover surface.
+    func testHerdDetailPopoverRidesTheRanchChromeSurface() throws {
+        let board = try source("FleetViews")
+        let view = try slice(board, from: "struct ConnectionStatusIndicator: View {",
+                             to: "private struct ConnectionDetailList: View {")
+        XCTAssertTrue(view.contains("let detailChrome: RanchControlTokens?"),
+                      "the indicator carries its caller's chrome context")
+        XCTAssertTrue(view.contains("if let detailChrome {"),
+                      "only the Herd context takes the chrome surface")
+        XCTAssertTrue(view.contains(".ranchChromeSurface(detailChrome)"),
+                      "the Herd detail reuses the AA-pinned ranch chrome treatment")
+        XCTAssertTrue(view.contains("presentationCompactAdaptation(.popover)"),
+                      "the reveal stays a popover")
+        let herd = try source("HerdView")
+        XCTAssertTrue(herd.contains("detailChrome: ranchTokens"),
+                      "the Herd floating chrome passes the ranch tokens it already resolved")
+        XCTAssertTrue(board.contains("detailChrome: nil"),
+                      "the Board chrome passes no detail chrome (its backdrop needs none)")
+    }
+
     func testTheOneRowLayoutAndRemovedSurfaces() throws {
         let board = try source("FleetViews")
         // The one-row chrome: Filters + indicator + gear in ONE HStack.

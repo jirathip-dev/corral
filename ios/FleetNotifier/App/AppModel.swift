@@ -4078,6 +4078,22 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// #528 evidence (review condition 1): empty EVERY demo host's rows so
+    /// the multi-host AGGREGATE is genuinely empty. `fleet.seedDemo(agents:
+    /// [:])` alone empties only the ACTIVE host's store — the coordinator's
+    /// sessions keep rendering the other hosts' retained rows, which made the
+    /// captured "empty" frames show Host B rows. The ACTIVE host addresses
+    /// the live fleet store; every other host its coordinator session, the
+    /// same seam `setDemoHostPosture` uses. No stream is started, restarted
+    /// or touched.
+    func emptyDemoHostRows(rev: UInt64) {
+        guard mode == .demo else { return }
+        fleet.seedDemo(agents: [:], rev: rev)
+        for profile in profiles where profile.id != activeProfileID {
+            coordinator?.store(profileID: profile.id)?.seedDemo(agents: [:], rev: rev)
+        }
+    }
+
     /// #415 evidence: seeds the Add Host lifecycle evidence state — ONE
     /// pre-existing "Mac" profile (the original host that must survive an
     /// Add Host commit) and no live fleet. The bg-return / failed-submit

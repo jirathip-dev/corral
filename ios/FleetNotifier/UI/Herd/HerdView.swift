@@ -204,6 +204,7 @@ struct HerdView: View {
                 ConnectionStatusIndicator(model: connection,
                                           palette: ConnectionIndicatorPalette(ranch: ranchTokens,
                                                                               theme: theme),
+                                          detailChrome: ranchTokens,
                                           showDetail: $showConnectionDetail)
                     .ranchChromeSurface(ranchTokens)
                 settingsControl

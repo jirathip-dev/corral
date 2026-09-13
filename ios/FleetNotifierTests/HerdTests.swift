@@ -1614,9 +1614,12 @@ final class ContextualFilterSheetTests: XCTestCase {
             XCTAssertFalse(slice.contains("ranchChromeSurface"),
                            "\(label) keeps its own sheet treatment")
         }
-        XCTAssertEqual(board.components(separatedBy: "ranchChromeSurface(").count - 1, 1,
-                       "the ranch chrome surface extension is the ONLY definition (no herd "
-                       + "styling call sites inside FleetViews)")
+        XCTAssertEqual(board.components(separatedBy: "ranchChromeSurface(").count - 1, 2,
+                       "exactly TWO herd-styling sites in FleetViews: the ranch chrome surface "
+                       + "extension definition, and the #528-r2 Herd-context connection-detail "
+                       + "popover (review condition 2 — the detail rides the AA-pinned ranch "
+                       + "chrome over the bright sky; the BOARD chrome still consumes no ranch "
+                       + "tokens, its detail popover keeps the plain surface)")
     }
 
     func testHerdTriggerCountsAndGearTakeTheRanchChromeNotTheAppFlavorText() throws {

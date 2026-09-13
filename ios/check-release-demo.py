@@ -503,7 +503,12 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # recomputed over THIS checkout by the canonical algorithm
     # (python3 -c "…release_source_digest(Path('.'))"; re-pinned a second
     # time after the #528 evidence-seam + popover-edge follow-up edits).
-    "0516db51a7f47c2b48ce8abb3c4ac7100f3a8fe3dda95c2dab7a198f46d60edb"
+    # #528 fix round r2 (review conditions): the driver now empties EVERY
+    # host's rows for the empty/loading phases (`emptyDemoHostRows`) and the
+    # Herd connection-detail popover rides the AA-pinned ranch chrome surface
+    # (review condition 2) — re-pinned over THIS checkout by the canonical
+    # algorithm (no new app source; the manifest stays 40/40).
+    "d290af67475da691a6801bfe4837c3323957c5f606397035fc3428305dd18fea"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -718,7 +723,11 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # followed the gear + indicator into the one-row chrome — recomputed
     # over THIS checkout by the canonical algorithm (plain sha256,
     # 8bd983e2… → 25424ba1… → d3cedf44…).
-    "d3cedf4439a2311bd2b774282af5cd2c0cc91dc1d97ad2b8982d50239d254324"
+    # #528 fix round r2 (review conditions): ConnectionChromeWiringTests gained
+    # the Herd detail-popover ranch-chrome pin and the #457 ranch-site count
+    # went 1 -> 2 for the condition-2 surface — re-pinned over THIS checkout
+    # (plain sha256 of the pinned test file).
+    "0d9897fc53377d8db3c31fbce0fea359e4c9d1ea97361e6cf83ec38b544d087d"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

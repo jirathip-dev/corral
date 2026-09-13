@@ -8,7 +8,12 @@ TestFlight claim). Recorded on the FRESH `Corral528` simulator (iPhone 16,
 iOS 26.5, UDID 46C711A9-E5FC-4147-82F2-7553D33E9B1B) with the deterministic
 `-corral528ConnectionEvidence` / `-corral528HerdEvidence` drivers (marker
 files in `Documents/ux-evidence`, phase markers written AFTER the state
-settles, >= 9 s hold per phase, one launch per driver).
+settles, >= 9 s hold per phase, one launch per driver). The fix round r2
+(review conditions 1 + 2) re-captured the whole matrix on the fresh
+`Corral528Fix` simulator (iPhone 16, iOS 26.5, UDID
+DC56A639-72B2-498E-9621-E35AC1349166 — the original `Corral528` simulator was
+host-cleaned between rounds) and added the `*-before-*` frames for the
+popover-contrast pair.
 
 All frames are 1179x2556 px @3x iPhone-16 captures downscaled with
 `sips -z 844 390` (the repo's standard 390x844 device class; 0.18 % aspect
@@ -27,7 +32,11 @@ distortion from the native 393x852 pt — same convention as the #385/#401/
   into that row (still >= 44 pt, still labelled `Settings`).
 - Tapping the indicator reveals the per-host detail popover (which host is
   offline / connecting / key-mismatched) plus the last-known provenance line
-  while the retained board is not live.
+  while the retained board is not live. On Herd that popover rides the repo's
+  AA-pinned ranch chrome surface — the same Day/Night treatment as the
+  floating chrome bars around it — so it stays legible over the bright sky
+  (review condition 2; see the `-before` / current pair for `528-9` /
+  `528-ax-4`).
 - Removed: the Herd disconnect panel (the source-disconnected copy with its
   board/retry recovery actions), the Board pull-to-refresh instruction AND
   gesture, the routine connecting/offline board line, and the separate D7
@@ -44,18 +53,20 @@ distortion from the native 393x852 pt — same convention as the #385/#401/
 | `528-2-board-detail-390x844.png` | The revealed per-host detail popover: Host A live / Host B offline / Host C connecting + the last-known provenance line |
 | `528-3-board-disconnected-390x844.png` | Total disconnection: indicator `3 hosts offline` (no host live), board keeps the last-known fleet, rows stale |
 | `528-4-board-recovered-390x844.png` | Recovery: the fleet returns live (`Live`) AND the re-applied delta changed a retained row (demo-orbit-blocked → working) — no gesture involved |
-| `528-5-board-empty-connecting-390x844.png` | Empty/loading: zero-row board while one host is still connecting (`1 host connecting`), no last-known note |
+| `528-5-board-empty-connecting-390x844.png` | Empty/loading: a genuinely empty aggregate (every host's rows emptied) while Host A is still connecting — the indicator reads `1 host connecting`, the board renders no rows and no last-known note (review condition 1) |
 | `528-6-board-partial-latte-390x844.png` | Latte (light palette) partial frame — the indicator + one-row chrome in the light flavor |
 | `528-7-board-done-390x844.png` | Rest frame at the end of the board run (driver settled, no further phase) |
 | `528-8-herd-partial-390x844.png` | Herd floating chrome, partial: the SAME indicator state on the ranch, counts card intact, no outage panel |
-| `528-9-herd-detail-390x844.png` | Herd: the per-host detail reveal over the ranch |
+| `528-9-herd-detail-390x844.png` | Herd: the per-host detail reveal over the ranch, now on the AA-pinned ranch chrome surface (review condition 2) |
+| `528-9-before-390x844.png` | The pre-fix Herd reveal (committed at the reviewed head `ba83728`): the same content on the translucent popover material, low-contrast over the bright sky |
 | `528-10-herd-disconnected-390x844.png` | Herd, total disconnection: all horses render `unknown · last known …`, front rail reads `LAST KNOWN`, indicator `3 hosts offline` |
 | `528-11-herd-recovered-390x844.png` | Herd recovery: indicator `Live` |
-| `528-12-herd-empty-connecting-390x844.png` | Herd empty scope (`No agents in this scope`) with the connecting indicator |
-| `528-13-herd-done-390x844.png` | Rest frame at the end of the Herd run |
+| `528-12-herd-empty-connecting-390x844.png` | Herd empty scope with the connecting indicator: every host's rows emptied, so the scope renders `No agents in this scope` with no front rail and the indicator reads `1 host connecting` (review condition 1) |
+| `528-13-herd-done-390x844.png` | Rest frame at the end of the Herd run — by design the terminal marker fires on the SAME empty state as `528-12`, so the two files are byte-identical (the sha256 repeat is expected for this pair, not a stale capture; every other frame is distinct) |
 | `528-ax-1-board-partial-detail-390x844.png` | Board at the accessibility content size: the one-row chrome + the revealed detail (large text, nothing clipped) |
 | `528-ax-2-board-done-390x844.png` | Rest frame ending the board accessibility run |
-| `528-ax-4-herd-partial-detail-390x844.png` | Herd at the accessibility content size: floating chrome + detail reveal |
+| `528-ax-4-herd-partial-detail-390x844.png` | Herd at the accessibility content size: floating chrome + detail reveal on the ranch chrome surface (review condition 2) |
+| `528-ax-4-before-390x844.png` | The pre-fix accessibility-size reveal at the reviewed head — the low-contrast pair for the comparison above |
 | `528-ax-5-herd-done-390x844.png` | Rest frame ending the Herd accessibility run |
 
 ## Accessibility / VoiceOver / hit targets

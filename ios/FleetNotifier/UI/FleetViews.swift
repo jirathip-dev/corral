@@ -705,6 +705,14 @@ struct ConnectionIndicatorPalette: Equatable {
 struct ConnectionStatusIndicator: View {
     let model: BoardModel.ConnectionIndicatorModel
     let palette: ConnectionIndicatorPalette
+    /// #528 review condition 2: the ranch tokens when this indicator rides
+    /// the Herd floating chrome (nil on the Board). The revealed detail then
+    /// rides the repo's EXISTING AA-pinned ranch chrome surface
+    /// (`.ranchChromeSurface`, the #457 treatment the floating chrome's own
+    /// bars use) instead of the translucent popover material that washed out
+    /// over the bright sky at accessibility sizes. The Board keeps the plain
+    /// popover surface (its backdrop is the dark board, no wash-out).
+    let detailChrome: RanchControlTokens?
     @Binding var showDetail: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var pulse = false
@@ -739,8 +747,20 @@ struct ConnectionStatusIndicator: View {
         // popover opens BELOW it (arrow on the popover's top edge) — the
         // above-the-anchor placement clips off-screen.
         .popover(isPresented: $showDetail, arrowEdge: .top) {
-            ConnectionDetailList(model: model, palette: palette)
-                .presentationCompactAdaptation(.popover)
+            // #528 review condition 2: on Herd (detailChrome != nil) the
+            // revealed detail sits on the ranch chrome surface — the same
+            // AA-pinned Day/Night treatment as the chrome bars around it —
+            // so it stays legible over the bright sky; the Board keeps the
+            // standard popover surface.
+            Group {
+                if let detailChrome {
+                    ConnectionDetailList(model: model, palette: palette)
+                        .ranchChromeSurface(detailChrome)
+                } else {
+                    ConnectionDetailList(model: model, palette: palette)
+                }
+            }
+            .presentationCompactAdaptation(.popover)
         }
     }
 
@@ -1686,6 +1706,7 @@ struct FleetView: View {
                                 filterSummaryText: filterSummaryText)
             ConnectionStatusIndicator(model: connectionIndicator,
                                       palette: ConnectionIndicatorPalette(theme: theme),
+                                      detailChrome: nil,
                                       showDetail: $showConnectionDetail)
             settingsGearControl
         }
@@ -2709,10 +2730,15 @@ struct FleetView: View {
         guard await themePause(2500) else { return }
         EvidenceMarkers.write("528-4-board-recovered")
         guard await themePause(9000) else { return }
-        // Empty/loading: a zero-row board while one host is still
-        // connecting (the last-known note correctly disappears).
-        model.fleet.seedDemo(agents: [:], rev: 9)
+        // Empty/loading (review condition 1): a GENUINELY empty aggregate —
+        // every host's rows are emptied, not just the active store — while
+        // Host A is still connecting and the other hosts are live with no
+        // agents, so the indicator reads exactly `1 host connecting` and the
+        // last-known note correctly disappears.
+        model.emptyDemoHostRows(rev: 9)
         model.setDemoHostPosture(.connecting, hostName: "Host A")
+        model.setDemoHostPosture(.live, hostName: "Host B")
+        model.setDemoHostPosture(.live, hostName: "Host C")
         guard await themePause(2500) else { return }
         EvidenceMarkers.write("528-5-board-empty-connecting")
         guard await themePause(9000) else { return }
@@ -2771,8 +2797,15 @@ struct FleetView: View {
         guard await themePause(2500) else { return }
         EvidenceMarkers.write("528-11-herd-recovered")
         guard await themePause(9000) else { return }
-        model.fleet.seedDemo(agents: [:], rev: 20)
+        // Empty/loading (review condition 1): the SAME genuinely empty
+        // aggregate as the board phase — every host's rows emptied while
+        // Host A is connecting — so the Herd scope is truly empty
+        // (`No agents in this scope`, no front rail) with the connecting
+        // indicator.
+        model.emptyDemoHostRows(rev: 20)
         model.setDemoHostPosture(.connecting, hostName: "Host A")
+        model.setDemoHostPosture(.live, hostName: "Host B")
+        model.setDemoHostPosture(.live, hostName: "Host C")
         guard await themePause(2500) else { return }
         EvidenceMarkers.write("528-12-herd-empty-connecting")
         guard await themePause(9000) else { return }

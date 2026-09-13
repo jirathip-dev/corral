@@ -425,6 +425,18 @@ final class AppModel: ObservableObject {
     private let hapticTick: () -> Void
     /// Monotonic counter backing `RecentsRequest.id`.
     private var recentsSerial: UInt64 = 0
+    /// #397 lifecycle: whether the CURRENT `recentsRequest` value was written
+    /// while the sheet's item binding was still nil (the sheet was closed, or
+    /// SwiftUI had already cleared a real dismissal). SwiftUI's
+    /// `.sheet(item:)` fires `onDismiss` for a REPLACED presentation too —
+    /// the bound request changed while the sheet was up — and then hands
+    /// back a request that landed onto a NON-nil binding. Re-arming THAT
+    /// request writes yet another value, SwiftUI replaces again, and the
+    /// chain never terminates (probed iOS 26.5: unbounded close/reopen at
+    /// ~1 s per cycle — the build-25 video shape). Only a request that
+    /// landed onto a nil binding — a real dismissal transition was running
+    /// (#364 C) — may be re-armed.
+    private var recentsRequestLandedOnNilBinding = false
     /// #397 follow-up: notification taps deferred because the model was
     /// not ready to route them at delivery time (cold launch, reconnect
     /// boundary, board rows still loading). Bounded FIFO — see
@@ -3476,22 +3488,36 @@ final class AppModel: ObservableObject {
     private func presentRecents(agentId: String, hostProfileID: UUID?, haptic: Bool) {
         if haptic { hapticTick() }
         recentsSerial += 1
+        // #397 lifecycle: capture whether this request landed onto a nil
+        // sheet binding BEFORE writing it — `recentsSheetDismissed` reads
+        // exactly this fact to decide whether a re-arm is allowed.
+        recentsRequestLandedOnNilBinding = recentsRequest == nil
         recentsRequest = RecentsRequest(id: recentsSerial, agentId: agentId,
                                         hostProfileID: hostProfileID)
     }
 
-    /// The recents sheet finished dismissing (swipe-down or Done — the
-    /// board's `.sheet(item:onDismiss:)` calls this). SwiftUI already
-    /// wrote `recentsRequest` back to nil when the dismissal started; a
-    /// request that landed DURING the dismissal (SwiftUI drops
-    /// presentations issued while a dismissal transition is running) is
-    /// still pending here, so re-arm it with a fresh id and the completed
-    /// dismissal presents it immediately. With nothing pending the latch
-    /// stays nil — the next open, same agent included, is a brand-new
-    /// request that always presents.
+    /// The recents sheet's presentation ended — a real dismissal
+    /// (swipe-down or Done), or SwiftUI REPLACING the presentation because
+    /// the bound request changed while the sheet was up (both fire
+    /// `onDismiss`). SwiftUI writes `recentsRequest` back to nil when a
+    /// real dismissal starts, so a request that landed WHILE that dismissal
+    /// ran is still pending here and is re-armed ONCE with a fresh id for
+    /// the completed dismissal. A request that landed onto an ALREADY
+    /// PRESENTED sheet (non-nil binding) is a replacement SwiftUI presents
+    /// by itself — re-arming it writes a NEW id, SwiftUI replaces again,
+    /// and the write→replace→onDismiss chain never ends (#397 build-25
+    /// close/reopen loop). That case is left exactly as SwiftUI left it,
+    /// which keeps this reconciliation a FIXPOINT: at most one re-arm per
+    /// dismissal, never a chain. With nothing pending the latch stays nil —
+    /// the next open, same agent included, is a brand-new request that
+    /// always presents.
     func recentsSheetDismissed() {
         guard let pending = recentsRequest else { return }
+        guard recentsRequestLandedOnNilBinding else { return }
         recentsSerial += 1
+        // The re-arm itself lands onto the still-set request (a replacement
+        // write), so its own callback can never chain another re-arm.
+        recentsRequestLandedOnNilBinding = false
         recentsRequest = RecentsRequest(id: recentsSerial, agentId: pending.agentId,
                                         hostProfileID: pending.hostProfileID)
     }

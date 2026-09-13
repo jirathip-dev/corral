@@ -12381,6 +12381,109 @@ final class NotificationTapDeferredLifecycleTests: XCTestCase {
                          "a clean dismissal leaves nothing pending")
         }
     }
+
+
+    // MARK: #397 build-25 lifecycle defect — replaced-presentation dismissal
+
+    /// "Recent Output opens, then closes and reopens repeatedly" (build-25
+    /// owner video). SwiftUI's `.sheet(item:)` fires `onDismiss` when the
+    /// presented item is REPLACED while the sheet is up — not only on a real
+    /// dismissal — and the binding then already holds the newer request
+    /// (probed: the replacement's sheet appears by itself WITHOUT any
+    /// re-arm; a re-arm instead turns every callback into yet another
+    /// presentation write, and the write→replace→onDismiss chain never
+    /// terminates). A repeated tap delivery / replay attempt while the sheet
+    /// is presented is enough to start that loop, so the reconciler must be
+    /// a FIXPOINT.
+    func testReplacedPresentationDismissalCallbackMustNotChainPresentationWrites() throws {
+        defer { cleanup() }
+        let model = makeLegacyModel()
+        model.mode = .live
+        model.fleet.apply(.snapshot(Snapshot(
+            schemaVersion: 3, rev: 1, generatedAt: 1,
+            agents: ["a1": agent("a1")])))
+        // Tap one: the presentation write.
+        model.openNotification(agentId: "a1", hostKeyB64: nil)
+        _ = try XCTUnwrap(model.recentsRequest)
+        // Tap two (a re-delivered response / replay attempt): a second
+        // presentation write while the sheet is PRESENTED. SwiftUI replaces
+        // the presentation and then fires onDismiss with the binding already
+        // holding this newer request.
+        model.openNotification(agentId: "a1", hostKeyB64: nil)
+        let replaced = try XCTUnwrap(model.recentsRequest)
+        // SwiftUI's onDismiss for the replaced presentation.
+        model.recentsSheetDismissed()
+        let afterFirstCallback = try XCTUnwrap(model.recentsRequest)
+        // Repeating the callback must not keep producing new presentation
+        // values: each write replaces the sheet again (the observed cycle).
+        for _ in 0..<8 {
+            model.recentsSheetDismissed()
+        }
+        XCTAssertEqual(model.recentsRequest, afterFirstCallback,
+                       "a replacement-preserving dismissal callback must not chain new presentation writes — write→replace→onDismiss is the unbounded close/reopen cycle (replaced id \(replaced.id), landed at id \(String(describing: model.recentsRequest?.id)))")
+        XCTAssertEqual(model.recentsRequest?.agentId, "a1")
+    }
+
+    /// The `#364 C` mid-dismissal re-arm stays available AND bounded: a
+    /// request that landed while a dismissal was in flight is re-armed once
+    /// with a fresh id, and the re-arm's own replacement callback must be a
+    /// fixpoint (never a second write).
+    func testMidDismissalReArmIsBoundedToASingleWrite() throws {
+        defer { cleanup() }
+        let model = makeLegacyModel()
+        model.mode = .live
+        model.fleet.apply(.snapshot(Snapshot(
+            schemaVersion: 3, rev: 1, generatedAt: 1,
+            agents: ["a1": agent("a1")])))
+        model.openNotification(agentId: "a1", hostKeyB64: nil)
+        let presented = try XCTUnwrap(model.recentsRequest)
+        // The dismissal starts: SwiftUI writes nil through the binding.
+        model.recentsRequest = nil
+        // A tap lands during the dismissal transition (onto a nil binding).
+        model.openNotification(agentId: "a1", hostKeyB64: nil)
+        let landed = try XCTUnwrap(model.recentsRequest)
+        XCTAssertGreaterThan(landed.id, presented.id)
+        // Dismissal completes: the mid-dismissal request is re-armed ONCE.
+        model.recentsSheetDismissed()
+        let rearmed = try XCTUnwrap(model.recentsRequest)
+        XCTAssertGreaterThan(rearmed.id, landed.id,
+                             "a request that landed during the dismissal is re-armed with a fresh id")
+        XCTAssertEqual(rearmed.agentId, "a1")
+        // The re-arm's own replacement callback must not chain a further write.
+        model.recentsSheetDismissed()
+        XCTAssertEqual(model.recentsRequest, rearmed,
+                       "the mid-dismissal re-arm must be bounded to a single write")
+    }
+
+    /// Deferred-open-after-data (preserved contract): a tap delivered while
+    /// its target is not routable is retained and routes EXACTLY ONCE when
+    /// the board settles — repeated settle/callback deliveries (the board
+    /// churning through a resume) must not write additional presentation
+    /// values, and the one presentation must not be dropped.
+    func testDeferredTapPresentsExactlyOnceAcrossRepeatedSettleDeliveries() throws {
+        defer { cleanup() }
+        let model = makeLegacyModel()
+        // Cold process: no board yet — the tap is retained, never dropped.
+        model.openNotification(agentId: "a1", hostKeyB64: nil)
+        XCTAssertNil(model.recentsRequest,
+                     "nothing may present before the board settles")
+        model.mode = .live
+        // The first settle carries the agent: the deferred tap presents once.
+        model.fleet.apply(.snapshot(Snapshot(
+            schemaVersion: 3, rev: 1, generatedAt: 1,
+            agents: ["a1": agent("a1")])))
+        let presented = try XCTUnwrap(model.recentsRequest,
+                                      "the deferred tap must open once its agent is available")
+        // Later settles replay the (already consumed) tap: the presentation
+        // value must stay EXACTLY the one the tap produced.
+        for rev in 2...10 {
+            model.fleet.apply(.snapshot(Snapshot(
+                schemaVersion: 3, rev: UInt64(rev), generatedAt: 1,
+                agents: ["a1": agent("a1")])))
+        }
+        XCTAssertEqual(model.recentsRequest, presented,
+                       "one deferred tap = exactly one presentation write, across repeated settles")
+    }
 }
 
 /// #397 follow-up: the LocalNotifier notification-RESPONSE seam. A tap is

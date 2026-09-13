@@ -526,7 +526,20 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # tree — the union of both app-source deltas, membership check still
     # 40/40. The test-source pin below follows the #526 test-source delta
     # (dc04b35b…) and is unchanged by #530.
-    "1978fc18fb2eef6905ca1124f173c3c8a82cdef6987522cc22ae5e409e850203"
+    # #397 lifecycle (notification-driven sheet): AppModel's recents-sheet
+    # dismissal reconciliation is now a FIXPOINT — only a request that landed
+    # onto a nil sheet binding (a real dismissal transition) may be re-armed;
+    # re-arming a replaced presentation chained an unbounded write→replace→
+    # onDismiss close/reopen loop. Re-pinned over the #397 lifecycle source
+    # set (manifest stays 40/40).
+    # #397 x (#530 + #526) merge reconcile: merging origin/integration
+    # (3206cb3a: #528 + #530 + #526) unions the #397 lifecycle app-source
+    # delta (AppModel.swift) with the integration-side #528/#530/#526
+    # app-source deltas, so the merged tree carries a THIRD value (parents:
+    # #397 = 9be9bacf…, integration = 1978fc18…); recomputed by the
+    # canonical algorithm over THIS merged working tree — membership check
+    # still 40/40.
+    "62e3592585b5c06dcbccbec753317e658df7b287dd2092b0ba9dad918e88475f"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -745,7 +758,15 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # the Herd detail-popover ranch-chrome pin and the #457 ranch-site count
     # went 1 -> 2 for the condition-2 surface — re-pinned over THIS checkout
     # (plain sha256 of the pinned test file).
-    "dc04b35bd4bc52bf794c7b07cd2fb3b5ba9af972670e87b68a44b806128468ef"
+    # #397 lifecycle: NotificationTapDeferredLifecycleTests gains the
+    # replaced-presentation fixpoint, bounded mid-dismissal re-arm, and
+    # deferred-once-across-settles cases — re-pinned.
+    # #397 x (#530 + #526) merge reconcile: the merged test source set is the
+    # #397 lifecycle tests plus the #526 palette-ownership updates, so
+    # neither parent value is right (parents: #397 = d62b6469…, integration
+    # = dc04b35b…); recomputed as the plain sha256 of the merged
+    # FleetNotifierTests.swift over THIS merged working tree.
+    "6a4905105879547571661d128fc06ac654ae2aef9c7bfcee815d5f2f5a89e5e7"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

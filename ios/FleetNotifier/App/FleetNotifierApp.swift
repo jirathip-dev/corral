@@ -90,6 +90,11 @@ struct FleetNotifierApp: App {
                                 // rides the three-profile seed (Host B
                                 // offline + Host C connecting).
                                 || Corral528Connection.wantsAnyEvidence(arguments: CommandLine.arguments)
+                                // #526: the palette-ownership matrix rides
+                                // the same three-profile seed (per-host
+                                // repos → several paddocks, one offline
+                                // host for the retained/offline frames).
+                                || Corral526Palette.wantsAnyEvidence(arguments: CommandLine.arguments)
                                 || CommandLine.arguments.contains("-demoMode") {
                         // #401: the multi-host evidence drivers seed three
                         // synthetic profiles (live/offline/key-mismatch)
@@ -108,6 +113,15 @@ struct FleetNotifierApp: App {
                                     .wantsFilterHeaderConnectingEvidence(arguments: CommandLine.arguments),
                                 hostCConnecting: Corral528Connection
                                     .wantsAnyEvidence(arguments: CommandLine.arguments))
+                        } else if Corral526Palette.wantsAnyEvidence(arguments: CommandLine.arguments) {
+                            // #526: Host B offline (retained stale rows +
+                            // the compact offline indicator) and Host C
+                            // connecting — the same posture the #528 matrix
+                            // uses; C connecting rather than the terminal
+                            // key mismatch so the palette frames carry a
+                            // partial, not terminal, connection shape.
+                            model.enterMultiHostDemo(hostBConnecting: false,
+                                                     hostCConnecting: true)
                         } else if CorralDemoLaunch.wantsAddHostBgReturnEvidence(arguments: CommandLine.arguments)
                                     || CorralDemoLaunch.wantsAddHostFailedEvidence(arguments: CommandLine.arguments)
                                     || CorralDemoLaunch.wantsAddHostCommitEvidence(arguments: CommandLine.arguments) {
@@ -122,6 +136,9 @@ struct FleetNotifierApp: App {
                         // mode AFTER the demo seed (the Settings picker and
                         // the sequence driver then persist the REAL choice).
                         Corral458Presentation.seedIfNeeded(model)
+                        // #526 evidence: the Auto/pagination launch renders
+                        // the Herd surface from the first frame.
+                        Corral526Palette.seedIfNeeded(model)
                     }
 #endif
                 }
@@ -403,6 +420,62 @@ enum Corral528Connection {
 
     static func wantsAccessibilitySizes(arguments: [String]) -> Bool {
         arguments.contains(accessibilitySizesArgument)
+    }
+}
+
+/// #526 evidence: the per-mode palette-ownership matrix. Three chrome
+/// launches (`-corral526HerdDayEvidence` / `-corral526HerdNightEvidence` /
+/// `-corral526BoardEvidence`) drive the deterministic marker phases through
+/// the SAME state the real controls write (simctl cannot tap): Settings
+/// pickers, environment pickers, Recent Output requests, filter scopes and
+/// the demo hosts' connection postures. The fourth launch
+/// (`-corral526AutoEvidence`) runs HerdView's own internal driver for the
+/// Auto day→night transition and the pagination enabled/disabled pair,
+/// whose state (the pager + the lighting instant) lives inside HerdView.
+/// All four ride the three-profile demo seed (per-host repos → several
+/// paddocks; Host B offline → retained/stale rows).
+enum Corral526Palette {
+    static let herdDayArgument = "-corral526HerdDayEvidence"
+    static let herdNightArgument = "-corral526HerdNightEvidence"
+    static let boardArgument = "-corral526BoardEvidence"
+    static let autoArgument = "-corral526AutoEvidence"
+
+    static func wantsHerdDayEvidence(arguments: [String]) -> Bool {
+        arguments.contains(herdDayArgument)
+    }
+
+    static func wantsHerdNightEvidence(arguments: [String]) -> Bool {
+        arguments.contains(herdNightArgument)
+    }
+
+    static func wantsBoardEvidence(arguments: [String]) -> Bool {
+        arguments.contains(boardArgument)
+    }
+
+    /// The HerdView-internal driver (Auto transition + pagination).
+    static func wantsAutoEvidence(arguments: [String]) -> Bool {
+        arguments.contains(autoArgument)
+    }
+
+    /// Any #526 palette-ownership launch — the app seeds the same
+    /// three-profile demo for all four.
+    static func wantsAnyEvidence(arguments: [String]) -> Bool {
+        wantsHerdDayEvidence(arguments: arguments)
+            || wantsHerdNightEvidence(arguments: arguments)
+            || wantsBoardEvidence(arguments: arguments)
+            || wantsAutoEvidence(arguments: arguments)
+    }
+
+    /// The Auto/pagination launch renders the Herd surface from the first
+    /// frame (the FleetView chrome driver is inert for it — its phases live
+    /// inside HerdView); every other launch starts in Board and the driver
+    /// switches. Called after the demo seed, like Corral458Presentation.
+    @MainActor
+    static func seedIfNeeded(_ model: AppModel) {
+        let arguments = CommandLine.arguments
+        guard wantsAutoEvidence(arguments: arguments) else { return }
+        model.suppressOSNotificationPromptForDemoEvidence()
+        model.fleetPresentation = .herd
     }
 }
 

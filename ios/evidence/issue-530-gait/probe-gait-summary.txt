@@ -1,0 +1,30 @@
+# #530 probe battery summary (curated from the fleet-side raw logs)
+
+Command: python3 ios/tools/herd-art/probe-gait.py --udid <fresh sim> --output <dir>
+         (run under: flock /tmp/corral-heavy-gate.lock ...)
+Raw logs: probe-gait.log, probe-gait/commands.json, probe-gait/<arm>.log
+probe-gait.log sha256: 5bd477d2a7addca3c02013cbdad083eab0acc6210a1c64e19d2e313ac7cd7f9d
+commands.json sha256:  a7ef999ff50a4ab4d77d317e3832f66b400dc6419a097e93d4c19ad97c885e2f
+hoof-tuft-swing-only-red.log sha256: 3a6c201c6a9d8390abac0494d98308e1cdd4042953840b91a9f5fb7111ff759d
+
+| arm | exit | expected | seconds |
+| --- | --- | --- | --- |
+| generate | 0 | 0 | 0.2 |
+| gait-green | 0 | 0 | 107.8 |
+| gait-fixed-angle-red | 65 | 65 | 67.5 |
+| gait-coordination-red | 65 | 65 | 69.2 |
+| gait-reduce-motion-red | 65 | 65 | 64.9 |
+| gait-call-site-red | 65 | 65 | 63.7 |
+| hoof-anchor-green | 0 | 0 | 23.9 |
+| hoof-digest-green | 0 | 0 | 8.8 |
+| hoof-tuft-swing-only-red | 65 | 65 | 59.5 |
+| hoof-digest-under-defect-green | 0 | 0 | 10.8 |
+| restored-green | 0 | 0 | 21.5 |
+
+Mutation RED `hoof-tuft-swing-only-red`: 1360 XCTest assertion failures
+by kind: must share the hoof's axis = 680, must sit on its leg's axis = 680
+sample assertions:
+  XCTAssertEqualWithAccuracy failed: ("12.505272360511155") is not equal to ("9.0") +/- ("0.01") - coat 0 breed 2 working phase 0.0 swing 0.0 leg-0 fetlock tuft must sit on its leg's axis
+  XCTAssertEqualWithAccuracy failed: ("-124.17528632619428") is not equal to ("0.0") +/- ("0.05") - coat 0 breed 2 working phase 0.0 swing 0.0 leg-0 fetlock tuft must share the hoof's axis
+  XCTAssertEqualWithAccuracy failed: ("12.090352807915952") is not equal to ("9.0") +/- ("0.01") - coat 0 breed 2 working phase 0.0 swing 0.0 leg-2 fetlock tuft must sit on its leg's axis
+  XCTAssertEqualWithAccuracy failed: ("115.94921235776792") is not equal to ("0.0") +/- ("0.05") - coat 0 breed 2 working phase 0.0 swing 0.0 leg-2 fetlock tuft must share the hoof's axis

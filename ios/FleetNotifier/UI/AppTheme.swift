@@ -259,22 +259,66 @@ enum RepoHue {
 
 // MARK: - ThemeStore (the observable theme)
 
-/// The app-wide theme: the active flavor plus the Reduce Motion plumbing.
+/// The app-wide theme: the EFFECTIVE flavor plus the Reduce Motion plumbing.
 /// Lives as an environment object above the root view so every surface
 /// re-renders when the flavor flips (Settings → Appearance is the ONLY
 /// picker — placement lock) or when the system Reduce Motion setting
 /// changes.
+///
+/// #526 palette ownership: the app has TWO independent saved appearance
+/// preferences and the active presentation mode picks which one owns the
+/// palette:
+///
+/// - **Board** (`fleetPresentationKey` = board): the saved Catppuccin
+///   preset (`flavorKey`) styles the board and every sheet opened from it.
+/// - **Herd** (herd): the saved Herd environment (`herdEnvironmentKey`,
+///   Auto/Day/Night) resolves the palette — Day renders Latte, Night
+///   renders Mocha — and the Board preset is neither consulted nor
+///   rewritten while Herd is selected.
+///
+/// `boardFlavor` is the persisted Board preference (the ONLY value
+/// `setFlavor` touches); `flavor` is the resolved value every render site
+/// consumes, so a mode switch or Day/Night transition re-themes every open
+/// surface live. The two preference keys are never converted into one
+/// another (a Herd change cannot reset the Board preset and vice versa),
+/// and both round-trip through `UserDefaults` independently.
 @MainActor
 final class ThemeStore: ObservableObject {
-    /// Persisted selection key (`UserDefaults`), mirroring the
-    /// notifications-pairing key convention.
+    /// The BOARD preset's persisted key (`UserDefaults`), mirroring the
+    /// notifications-pairing key convention. #526: this key belongs to the
+    /// Board mode alone — the Herd surface never writes it.
     static let flavorKey = "fleetnotifier.themeFlavor"
 
-    @Published var flavor: CatppuccinFlavor {
-        didSet {
-            defaults.set(flavor.rawValue, forKey: Self.flavorKey)
-        }
-    }
+    /// #526: the saved Herd environment key — shared verbatim with the
+    /// `@AppStorage("herdEnvironment")` the Herd surface (and its evidence
+    /// plumbing) already read, so one preference drives the ranch and the
+    /// resolved chrome.
+    static let herdEnvironmentKey = "herdEnvironment"
+
+    /// #526: the persisted presentation mode — the SAME key
+    /// `AppModel.fleetPresentationKey` reads/writes (asserted equal by
+    /// tests). The store only READS it, so a cold launch straight into Herd
+    /// resolves the Day/Night palette before the first frame instead of
+    /// flashing the Board preset for a frame.
+    static let presentationKey = "fleetnotifier.fleetPresentation"
+
+    /// #526: the saved BOARD preset. Changing Herd never touches it.
+    @Published private(set) var boardFlavor: CatppuccinFlavor
+
+    /// #526: the saved Herd environment (Auto / Day / Night) — the Herd
+    /// mode's own preference, written only through `setHerdEnvironment`.
+    @Published private(set) var herdEnvironment: HerdEnvironmentChoice
+
+    /// #526: the resolved ranch lighting every Herd surface renders with
+    /// (false = Day, true = Night). Reported by `HerdView` (the single
+    /// `HerdSun` resolver site) so chrome and ranch can never disagree.
+    @Published private(set) var herdNight: Bool
+
+    /// #526: which mode currently owns the palette.
+    @Published private(set) var presentation: FleetPresentation
+
+    /// The resolved flavor every view consumes.
+    @Published private(set) var flavor: CatppuccinFlavor
 
     /// System Reduce Motion state (plumbing for the theme layer; the board's
     /// working-motion chip — #371 — consumes this; this lane already gates
@@ -284,6 +328,7 @@ final class ThemeStore: ObservableObject {
     private let defaults: UserDefaults
     private let reduceMotionProvider: @Sendable () -> Bool
     private var reduceMotionObserver: NSObjectProtocol?
+    private var defaultsObserver: NSObjectProtocol?
 
     /// - Parameters:
     ///   - defaults: persistence store (inject a suite in tests).
@@ -295,9 +340,26 @@ final class ThemeStore: ObservableObject {
          }) {
         self.defaults = defaults
         self.reduceMotionProvider = reduceMotionProvider
-        self.flavor = CatppuccinFlavor(
+        let savedFlavor = CatppuccinFlavor(
             rawValue: defaults.string(forKey: Self.flavorKey) ?? ""
         ) ?? .default
+        let savedEnvironment = HerdEnvironmentChoice(
+            rawValue: defaults.string(forKey: Self.herdEnvironmentKey) ?? ""
+        ) ?? .auto
+        let savedPresentation = FleetPresentation(
+            rawValue: defaults.string(forKey: Self.presentationKey) ?? ""
+        ) ?? .board
+        // The cold-launch seed: resolve Auto from the same `HerdSun`
+        // resolver the ranch uses (no cached location yet — the Herd
+        // surface reports the location-aware value as soon as it renders).
+        let savedNight = HerdSun.resolve(savedEnvironment, now: Date()).night
+        self.boardFlavor = savedFlavor
+        self.herdEnvironment = savedEnvironment
+        self.herdNight = savedNight
+        self.presentation = savedPresentation
+        self.flavor = Self.resolveFlavor(presentation: savedPresentation,
+                                         boardFlavor: savedFlavor,
+                                         herdNight: savedNight)
         self.reduceMotion = reduceMotionProvider()
         reduceMotionObserver = NotificationCenter.default.addObserver(
             forName: UIAccessibility.reduceMotionStatusDidChangeNotification,
@@ -308,17 +370,110 @@ final class ThemeStore: ObservableObject {
                 self?.reduceMotion = self?.reduceMotionProvider() ?? false
             }
         }
+        // #526: the Herd environment is written by the Settings picker
+        // (through this store) but ALSO by the #457 evidence plumbing and
+        // any future writer that goes straight to the shared key — observe
+        // the defaults so the resolved palette can never lag a preference
+        // change while a sheet is open.
+        defaultsObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.refreshFromDefaults() }
+        }
     }
 
     deinit {
         if let reduceMotionObserver {
             NotificationCenter.default.removeObserver(reduceMotionObserver)
         }
+        if let defaultsObserver {
+            NotificationCenter.default.removeObserver(defaultsObserver)
+        }
     }
 
-    /// Settings → Appearance selection. Persists immediately (didSet).
+    /// #526: Settings → Appearance (Board mode) selection — the BOARD
+    /// preset. Persists immediately; never writes the Herd environment.
     func setFlavor(_ flavor: CatppuccinFlavor) {
-        self.flavor = flavor
+        guard boardFlavor != flavor else { return }
+        boardFlavor = flavor
+        defaults.set(flavor.rawValue, forKey: Self.flavorKey)
+        recomputeFlavor()
+    }
+
+    /// #526: the active presentation mode (AppModel is the persistence
+    /// owner; this mirror decides which saved preference owns the palette).
+    func setPresentation(_ presentation: FleetPresentation) {
+        guard self.presentation != presentation else { return }
+        self.presentation = presentation
+        recomputeFlavor()
+    }
+
+    /// #526: Settings → Herd environment. Writes the shared
+    /// `herdEnvironment` key (the ranch's own `@AppStorage` observes it),
+    /// re-resolves Day/Night immediately, and never touches the Board
+    /// preset.
+    func setHerdEnvironment(_ environment: HerdEnvironmentChoice) {
+        guard herdEnvironment != environment else { return }
+        herdEnvironment = environment
+        defaults.set(environment.rawValue, forKey: Self.herdEnvironmentKey)
+        herdNight = HerdSun.resolve(environment, now: Date()).night
+        recomputeFlavor()
+    }
+
+    /// #526: the resolved ranch lighting reported by HerdView — the single
+    /// `HerdSun` resolver site — so Auto transitions re-theme the chrome
+    /// from the SAME effective Day/Night state the ranch renders with.
+    func setHerdNight(_ night: Bool) {
+        guard herdNight != night else { return }
+        herdNight = night
+        recomputeFlavor()
+    }
+
+    /// #526: the resolved Herd palette — Day renders Latte, Night renders
+    /// Mocha (the locked default dark flavor). Deliberately independent of
+    /// the Board preset.
+    static func herdFlavor(night: Bool) -> CatppuccinFlavor {
+        night ? .mocha : .latte
+    }
+
+    private static func resolveFlavor(presentation: FleetPresentation,
+                                      boardFlavor: CatppuccinFlavor,
+                                      herdNight: Bool) -> CatppuccinFlavor {
+        presentation == .herd ? herdFlavor(night: herdNight) : boardFlavor
+    }
+
+    private func recomputeFlavor() {
+        let resolved = Self.resolveFlavor(presentation: presentation,
+                                          boardFlavor: boardFlavor,
+                                          herdNight: herdNight)
+        if flavor != resolved { flavor = resolved }
+    }
+
+    /// #526: re-read both saved preferences (and the persisted mode) after
+    /// an EXTERNAL defaults write — the Settings pickers route through
+    /// `setFlavor` / `setHerdEnvironment`, but the evidence plumbing (and
+    /// tests) write the shared keys directly; the resolved palette must
+    /// still follow. Idempotent: unchanged values drop out immediately.
+    private func refreshFromDefaults() {
+        let savedEnvironment = HerdEnvironmentChoice(
+            rawValue: defaults.string(forKey: Self.herdEnvironmentKey) ?? ""
+        ) ?? .auto
+        if savedEnvironment != herdEnvironment {
+            herdEnvironment = savedEnvironment
+            herdNight = HerdSun.resolve(savedEnvironment, now: Date()).night
+        }
+        let savedFlavor = CatppuccinFlavor(
+            rawValue: defaults.string(forKey: Self.flavorKey) ?? ""
+        ) ?? .default
+        if savedFlavor != boardFlavor { boardFlavor = savedFlavor }
+        // The presentation is NOT re-read here: the live mode is mirrored by
+        // the app's own writers (the root's onChange and the Settings picker
+        // both call `setPresentation`), and the persisted mode is read once
+        // at init for the cold-launch resolution — a defaults notification
+        // must not publish a mode change of its own.
+        recomputeFlavor()
     }
 
     var palette: CatppuccinPalette {

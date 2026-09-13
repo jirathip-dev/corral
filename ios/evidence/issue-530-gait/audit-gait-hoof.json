@@ -1,0 +1,162 @@
+{
+  "breeds": {
+    "light": {
+      "w": 5.0,
+      "h": 34.0,
+      "belly": 66.0
+    },
+    "stock": {
+      "w": 6.2,
+      "h": 31.0,
+      "belly": 69.0
+    },
+    "draft": {
+      "w": 7.4,
+      "h": 28.0,
+      "belly": 72.0
+    }
+  },
+  "poses": {
+    "stand": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "working": [
+      28,
+      -26,
+      -26,
+      24
+    ],
+    "blocked": [
+      -26,
+      0,
+      0,
+      0
+    ],
+    "done": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "unknown": [
+      6,
+      -6,
+      -6,
+      6
+    ],
+    "graze": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "alertStatic": [
+      0,
+      0,
+      0,
+      0
+    ]
+  },
+  "gaits": [
+    [
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      22.0
+    ],
+    [
+      0.125,
+      22.0
+    ],
+    [
+      0.25,
+      22.0
+    ],
+    [
+      0.375,
+      22.0
+    ],
+    [
+      0.5,
+      22.0
+    ],
+    [
+      0.625,
+      22.0
+    ],
+    [
+      0.75,
+      22.0
+    ],
+    [
+      0.875,
+      22.0
+    ],
+    [
+      0.0,
+      8.0
+    ],
+    [
+      0.125,
+      8.0
+    ],
+    [
+      0.25,
+      8.0
+    ],
+    [
+      0.375,
+      8.0
+    ],
+    [
+      0.5,
+      8.0
+    ],
+    [
+      0.625,
+      8.0
+    ],
+    [
+      0.75,
+      8.0
+    ],
+    [
+      0.875,
+      8.0
+    ]
+  ],
+  "leg_x": {
+    "0": 84.0,
+    "1": 78.0,
+    "2": 43.0,
+    "3": 51.0
+  },
+  "table": [
+    "light   stand        n/a (no fetlock tuft: breeds light/stock) ",
+    "light   working      n/a (no fetlock tuft: breeds light/stock) ",
+    "light   blocked      n/a (no fetlock tuft: breeds light/stock) ",
+    "light   done         n/a (no fetlock tuft: breeds light/stock) ",
+    "light   unknown      n/a (no fetlock tuft: breeds light/stock) ",
+    "light   graze        n/a (no fetlock tuft: breeds light/stock) ",
+    "light   alertStatic  n/a (no fetlock tuft: breeds light/stock) ",
+    "stock   stand        n/a (no fetlock tuft: breeds light/stock) ",
+    "stock   working      n/a (no fetlock tuft: breeds light/stock) ",
+    "stock   blocked      n/a (no fetlock tuft: breeds light/stock) ",
+    "stock   done         n/a (no fetlock tuft: breeds light/stock) ",
+    "stock   unknown      n/a (no fetlock tuft: breeds light/stock) ",
+    "stock   graze        n/a (no fetlock tuft: breeds light/stock) ",
+    "stock   alertStatic  n/a (no fetlock tuft: breeds light/stock) ",
+    "draft   stand        ALIGNED     ",
+    "draft   working      MISALIGNED  worst 11.981 pt (expected 2.5) on leg 0",
+    "draft   blocked      MISALIGNED  worst 11.179 pt (expected 2.5) on leg 0",
+    "draft   done         ALIGNED     ",
+    "draft   unknown      MISALIGNED  worst 3.56 pt (expected 2.5) on leg 0",
+    "draft   graze        ALIGNED     ",
+    "draft   alertStatic  ALIGNED     "
+  ]
+}

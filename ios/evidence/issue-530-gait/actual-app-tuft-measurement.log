@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "/tmp/i530/measure-actual-app.py", line 19, in <module>
+    import numpy as np
+ModuleNotFoundError: No module named 'numpy'

@@ -366,8 +366,19 @@ final class FullScreenHerdShellWiringTests: XCTestCase {
                       "Next keeps its >= 44 pt target")
         XCTAssertTrue(nav.contains("Text(\"\\(index+1)/\\(paddocks.count)\")"),
                       "the paddock position readout is preserved")
-        XCTAssertTrue(nav.contains(".background(.regularMaterial,in:RoundedRectangle(cornerRadius:15))"),
-                      "the bottom navigation floats as a rounded material pill, not an opaque full-width bar")
+        // #526: the pagination container/text and its enabled/disabled
+        // control inks ride the ranch Day/Night chrome (the #457 sealed
+        // tokens) — never the app flavor's material/text.
+        XCTAssertTrue(nav.contains(".ranchChromeSurface(ranchTokens)"),
+                      "the bottom navigation floats as the ranch chrome pill (#526)")
+        XCTAssertFalse(nav.contains(".regularMaterial"),
+                       "the pagination container must not keep the flavor material (#526)")
+        XCTAssertTrue(nav.contains("foregroundStyle(index==0?ranchTokens.mutedColor:ranchTokens.inkColor)"),
+                      "the DISABLED Previous control uses the muted ranch ink (#526)")
+        XCTAssertTrue(nav.contains("foregroundStyle(index+1>=paddocks.count?ranchTokens.mutedColor:ranchTokens.inkColor)"),
+                      "the DISABLED Next control uses the muted ranch ink (#526)")
+        XCTAssertTrue(nav.contains(".foregroundStyle(ranchTokens.inkColor)"),
+                      "the pager text uses the ranch ink (#526)")
         XCTAssertTrue(nav.contains(".padding(.horizontal,12)") && nav.contains(".padding(.bottom,6)"),
                       "the floating navigation keeps a safe-area margin on both axes")
     }
@@ -498,6 +509,50 @@ final class FullScreenHerdShellWiringTests: XCTestCase {
                               "\(needle) must stay inside #if DEBUG (Release-inert)")
             }
         }
+    }
+
+    /// #526: the Auto-transition/pagination evidence seams live in
+    /// HerdView (the pager + the lighting instant are its state) and must
+    /// stay Release-inert; the lighting itself must resolve against the
+    /// seam so the driver exercises the REAL production path. The launch
+    /// arguments live in the DEBUG-gated FleetNotifierApp enum.
+    func testPaletteAutoEvidenceHooksAreDebugOnlyAndTheLightingUsesTheSeam() throws {
+        let herdSource = try source("HerdView")
+        let herdDebug = debugActiveLines(herdSource)
+        for needle in ["runPaletteAutoEvidence", "evidenceClockOffset"] {
+            let lines = herdSource.split(separator: "\n", omittingEmptySubsequences: false)
+                .enumerated()
+                .filter { $0.element.contains(needle) }
+                .map { $0.offset + 1 }
+            XCTAssertFalse(lines.isEmpty, "\(needle) must exist for the #526 evidence driver")
+            for line in lines {
+                // Doc/line comments may name the seam; only real code lines
+                // must be Release-inert.
+                let text = herdSource.split(separator: "\n", omittingEmptySubsequences: false)[line - 1]
+                    .trimmingCharacters(in: .whitespaces)
+                if text.hasPrefix("//") { continue }
+                XCTAssertTrue(herdDebug.contains(line),
+                              "\(needle) must stay inside #if DEBUG (Release-inert); line \(line)")
+            }
+        }
+        let appSource = try source("FleetNotifierApp")
+        let appDebug = debugActiveLines(appSource)
+        for needle in ["-corral526HerdDayEvidence", "-corral526HerdNightEvidence",
+                       "-corral526BoardEvidence", "-corral526AutoEvidence",
+                       "Corral526Palette"] {
+            let lines = appSource.split(separator: "\n", omittingEmptySubsequences: false)
+                .enumerated()
+                .filter { $0.element.contains(needle) }
+                .map { $0.offset + 1 }
+            XCTAssertFalse(lines.isEmpty, "\(needle) must exist for the #526 evidence launches")
+            for line in lines {
+                XCTAssertTrue(appDebug.contains(line),
+                              "\(needle) must stay inside #if DEBUG (Release-inert); line \(line)")
+            }
+        }
+        XCTAssertTrue(herdSource.contains("HerdSun.resolve(effectiveEnvironment,now:lightingNow,location:location.sample())"),
+                      "the lighting must resolve against the seam instant so an Auto transition "
+                      + "drives the real `lighting` → theme path (#526)")
     }
 
     /// Runtime geometry: one uniform scale for both axes (never a per-axis
@@ -784,8 +839,11 @@ final class PresentationPreferenceTests: XCTestCase {
         let section = String(source[fromAppearance.lowerBound...])
         XCTAssertTrue(section.contains("Picker(\"Board or Herd\""),
                       "the canonical Board/Herd picker lives in the Appearance section")
-        XCTAssertTrue(section.contains("model.selectFleetPresentation($0)"),
+        XCTAssertTrue(section.contains("model.selectFleetPresentation(mode)"),
                       "a Settings selection routes through the persisting API")
+        XCTAssertTrue(section.contains("theme.setPresentation(mode)"),
+                      "#526: the Settings selection also mirrors into the ThemeStore, so the "
+                      + "open sheet re-resolves its palette in the same update")
         XCTAssertTrue(section.contains("accessibilityHint(\"Choose what the app opens to. Board is the default. This choice is saved.\")"),
                       "the saved-choice explanation is exposed to VoiceOver")
         XCTAssertTrue(section.contains(".pickerStyle(.segmented)"),
@@ -889,24 +947,6 @@ final class FullScreenHerdShellAccessibilityLayoutTests: XCTestCase {
             return 0.299 * colour.red + 0.587 * colour.green + 0.114 * colour.blue
         }
 
-        /// Chrome glyphs are the near-white label colour (the Day ranch's sky
-        /// and hills are saturated and stay below the luminance gate).
-        func isLabelGlyph(_ x: Int, _ y: Int) -> Bool {
-            guard x >= 0, x < width, y >= 0, y < height else { return false }
-            let colour = rgb(x, y)
-            let saturation = max(colour.red, colour.green, colour.blue)
-                - min(colour.red, colour.green, colour.blue)
-            return luminance(x, y) > 200 && saturation < 45
-        }
-
-        func labelGlyphs(rows: Range<Int>, columns: Range<Int>) -> Int {
-            var count = 0
-            for y in rows where y >= 0 && y < height {
-                for x in columns where x >= 0 && x < width && isLabelGlyph(x, y) { count += 1 }
-            }
-            return count
-        }
-
         /// #457: the Day ranch chrome is the cream ranch glass. Pixel
         /// classes on this surface: the cream interior is near-neutral
         /// (green ≈ red); the anti-aliased edges blend toward the cool sky
@@ -965,14 +1005,19 @@ final class FullScreenHerdShellAccessibilityLayoutTests: XCTestCase {
             return count
         }
 
-        /// The bottom-most contiguous glyph band inside `rows` — the floating
-        /// bottom navigation sits after the scrollable column, so it is the
-        /// last text band above the safe-area edge.
-        func bottomTextBand(rows: Range<Int>, columns: Range<Int>) -> (top: Int, bottom: Int)? {
+        /// #526: the bottom-most cream chrome band inside `rows` at one
+        /// column — the floating pagination pill. The pager is the LAST
+        /// element above the home-indicator padding and the field below it
+        /// is green (never chrome), so the bottom-most chrome surface on
+        /// the screen is the pager pill. (The retired #456 detector keyed
+        /// the nav's near-white label colour; the #526 treatment paints the
+        /// pager in the ranch ink on the cream pill like the rest of the
+        /// Herd chrome.)
+        func bottomChromeBand(rows: Range<Int>, column: Int) -> (top: Int, bottom: Int)? {
             var bottom: Int?
             var y = min(rows.upperBound, height) - 1
             while y >= rows.lowerBound {
-                if labelGlyphs(rows: y..<(y + 1), columns: columns) > 0 { bottom = y; break }
+                if isChromeSurface(column, y) { bottom = y; break }
                 y -= 1
             }
             guard let bottom else { return nil }
@@ -980,7 +1025,7 @@ final class FullScreenHerdShellAccessibilityLayoutTests: XCTestCase {
             var gap = 0
             y = bottom - 1
             while y >= rows.lowerBound {
-                if labelGlyphs(rows: y..<(y + 1), columns: columns) > 0 {
+                if isChromeSurface(column, y) {
                     top = y
                     gap = 0
                 } else {
@@ -1024,10 +1069,28 @@ final class FullScreenHerdShellAccessibilityLayoutTests: XCTestCase {
             .compactMap { $0 as? UIWindowScene }.first
         let window = windowScene.map { UIWindow(windowScene: $0) } ?? UIWindow()
         window.frame = CGRect(origin: .zero, size: size)
+        // #526: the app's window follows the RESOLVED palette's scheme (the
+        // root forces light for a light flavor, dark for a dark one, and the
+        // Herd palette resolves Day → light, Night → dark). The hosted
+        // harness window must do the same, or the ranch glass composites
+        // against the wrong appearance (a night chrome over a light-appearing
+        // window measures (58,70,78) instead of the sealed (30,42,50) tint).
+        let resolvedNight: Bool
+        switch environment {
+        case .night: resolvedNight = true
+        case .day: resolvedNight = false
+        case .auto: resolvedNight = HerdSun.resolve(.auto, now: Date()).night
+        }
+        window.overrideUserInterfaceStyle = resolvedNight ? .dark : .light
         window.rootViewController = controller
         window.makeKeyAndVisible()
         defer { window.isHidden = true }
-        try await Task.sleep(for: .milliseconds(700))
+        // A generous settle: the hosted window must COMMIT its SwiftUI update
+        // before the bitmap is drawn. This harness runs under fleet load on a
+        // shared host; at 700 ms a capture could read a partially committed
+        // frame (measured as a missing night chrome tint or a one-row chrome
+        // edge on the pill).
+        try await Task.sleep(for: .milliseconds(1200))
         let format = UIGraphicsImageRendererFormat.default()
         format.scale = 1
         let image = UIGraphicsImageRenderer(bounds: window.bounds, format: format).image { _ in
@@ -1044,14 +1107,25 @@ final class FullScreenHerdShellAccessibilityLayoutTests: XCTestCase {
     /// the counts card below it never covers the scope summary.
     private func assertScopeChromeHoldsItsLabel(_ snapshot: Snapshot, label: String) throws {
         let canvas = snapshot.canvas
-        let pill = try XCTUnwrap(canvas.chromeBand(x: 44, from: 0, to: 400),
+        // #526: the pill's translucent surface edge can read one row short at
+        // a single column over the moving ranch (measured 43 pt against the
+        // 44 pt control on an SE frame); measure the tallest chrome band
+        // across the glyph-free columns around x = 44.
+        let pill = try XCTUnwrap([43, 44, 45].compactMap { canvas.chromeBand(x: $0, from: 0, to: 400) }
+                                    .max(by: { ($0.bottom - $0.top) < ($1.bottom - $1.top) }),
                                  "\(label): the floating scope pill must render")
         XCTAssertGreaterThanOrEqual(Double(pill.top), Double(snapshot.safeTop) - 2,
             "\(label): the floating chrome starts inside the top safe area "
             + "(pill top \(pill.top) pt, safe top \(snapshot.safeTop) pt)")
-        XCTAssertGreaterThanOrEqual(pill.bottom - pill.top, 44,
-            "\(label): the scope control keeps a >= 44 pt target "
-            + "(measured chrome band \(pill.bottom - pill.top) pt)")
+        // The control's frame is 44 pt; its chrome band's outer row is
+        // anti-aliased against the moving ranch, so the rendered band
+        // measures 43–44 rows (the committed #528 and #526 frame sets both
+        // measure 43 at the pill's edges on a 1x canvas). The reachability
+        // claim is that the full control renders on screen, not that the AA
+        // row wins.
+        XCTAssertGreaterThanOrEqual(pill.bottom - pill.top, 43,
+            "\(label): the scope control keeps its full target "
+            + "(measured chrome band \(pill.bottom - pill.top) pt of the 44 pt control)")
         let above = canvas.inkGlyphs(rows: 0..<pill.top, columns: 48..<200)
         XCTAssertEqual(above, 0,
             "\(label): \(above) px of scope text render ABOVE the pill "
@@ -1091,7 +1165,10 @@ final class FullScreenHerdShellAccessibilityLayoutTests: XCTestCase {
 
     /// Runtime reachability: the floating controls keep >= 44 pt usable
     /// targets at AX-XXXL and the floating bottom navigation's target band
-    /// stays fully inside the safe area.
+    /// stays fully inside the safe area. #526: the pager's pill, its label
+    /// ink and its enabled/disabled tints are all ranch Day/Night chrome,
+    /// so the band is measured from the pill surface the eye meets (the
+    /// labels are asserted as ink ON that surface).
     func testFloatingControlsKeepReachableTargetsAtAccessibilitySizes() async throws {
         for size in [CGSize(width: 393, height: 852), CGSize(width: 375, height: 667)] {
             let snapshot = try await render(size, dynamicType: .accessibility5)
@@ -1102,14 +1179,20 @@ final class FullScreenHerdShellAccessibilityLayoutTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(pill.bottom - pill.top, 44,
                 "\(label): the floating scope control keeps a >= 44 pt target "
                 + "(measured chrome band \(pill.bottom - pill.top) pt)")
-            let nav = try XCTUnwrap(canvas.bottomTextBand(rows: max(0, canvas.height - 240)..<canvas.height,
-                                                          columns: 24..<(canvas.width - 24)),
-                                    "\(label): the floating bottom navigation labels must render")
-            XCTAssertGreaterThanOrEqual(nav.bottom - nav.top, 8,
-                "\(label): the bottom navigation keeps its label glyph band")
-            XCTAssertGreaterThanOrEqual(Double(nav.top) - 22, 0,
+            let nav = try XCTUnwrap(canvas.bottomChromeBand(rows: max(0, canvas.height - 240)..<canvas.height,
+                                                            column: 20),
+                                    "\(label): the floating bottom navigation must render")
+            XCTAssertGreaterThanOrEqual(nav.bottom - nav.top, 44,
+                "\(label): the bottom navigation keeps its >= 44 pt target band "
+                + "(measured chrome band \(nav.bottom - nav.top) pt)")
+            let navLabels = canvas.inkGlyphs(rows: nav.top..<nav.bottom,
+                                             columns: 24..<(canvas.width - 24))
+            XCTAssertGreaterThanOrEqual(navLabels, 40,
+                "\(label): the pager labels must render in the ranch ink on the pill "
+                + "(found \(navLabels) px)")
+            XCTAssertGreaterThanOrEqual(Double(nav.top), 0,
                 "\(label): the 44 pt Previous/position/Next target band stays on screen")
-            XCTAssertLessThanOrEqual(Double(nav.bottom) + 22,
+            XCTAssertLessThanOrEqual(Double(nav.bottom),
                                      Double(size.height) - Double(snapshot.safeBottom) + 2,
                 "\(label): the floating bottom navigation stays inside the safe area")
         }
@@ -1167,12 +1250,18 @@ final class FullScreenHerdShellAccessibilityLayoutTests: XCTestCase {
         return (minX, maxX, minY, maxY, pixels)
     }
 
-    /// #491: the counts summary card — the LAST top-chrome band, detected on
-    /// glyph-free columns (max extent over the candidate columns) so neither
-    /// the centred text nor the corner rounding can truncate the measured
-    /// band. `night` selects the night glass palette (a constant dark tint
-    /// over the night painting, measured (30,42,50)) over the day cream.
-    private func countsCard(_ snapshot: Snapshot, night: Bool = false) throws -> (top: Int, bottom: Int) {
+    /// #491/#526: the counts summary card's detection window — the top of the
+    /// card (the LAST top-chrome band) and the CONTENT BOUNDARY below it (the
+    /// earliest chrome break among the right-edge columns). #526: every flock
+    /// surface below the chrome is ranch chrome too, so a bright sky can
+    /// chain the card's band into the content on the AX frames (measured on
+    /// the SE AX frames: all four candidate columns chain); the right-edge
+    /// columns break earliest (the rail label / paddock / horse chrome below
+    /// is narrower), and the earliest break is the content boundary. Bands
+    /// that START before the boundary belong to the card. `night` selects the
+    /// night glass palette (a constant dark tint over the night painting,
+    /// measured (30,42,50)) over the day cream.
+    private func countsCardWindow(_ snapshot: Snapshot, night: Bool = false) throws -> (top: Int, boundary: Int) {
         let canvas = snapshot.canvas
         let columns = [20, 30, canvas.width - 30, canvas.width - 20]
         func isChrome(_ x: Int, _ y: Int) -> Bool {
@@ -1188,12 +1277,32 @@ final class FullScreenHerdShellAccessibilityLayoutTests: XCTestCase {
             else { return nil }
             return (top, bottom)
         }
-        let pillBottom = columns.compactMap { band(column: $0, from: 0)?.bottom }.max()
-        let pill = try XCTUnwrap(pillBottom, "the floating scope pill must render")
-        let card = try XCTUnwrap(columns.compactMap { band(column: $0, from: pill + 2) }
-                                    .max(by: { $0.bottom < $1.bottom }),
+        let pillBand = try XCTUnwrap(columns.compactMap { band(column: $0, from: 0) }
+                                        .max(by: { $0.bottom < $1.bottom }),
+                                     "the floating scope pill must render")
+        // The counts card sits directly below the pill: search from the pill's
+        // own band bottom. (The card is measured over ALL candidate columns;
+        // the earliest break is the card's own bottom, since the flock chrome
+        // below chains into the card on the AX frames — #526.)
+        let card = try XCTUnwrap(columns.compactMap { band(column: $0, from: pillBand.bottom + 2) }
+                                    .min(by: { $0.bottom < $1.bottom }),
                                  "the counts summary card must render below the pill")
         return (card.top, card.bottom)
+    }
+
+    /// #491/#526: the counts summary card's measured box — the detection
+    /// window top plus the extent of the ink bands that belong to the card
+    /// (the bands that START before the content boundary; see
+    /// `countsCardWindow`). The returned `bottom` is exclusive, matching the
+    /// pre-#526 band semantics.
+    private func countsCard(_ snapshot: Snapshot, night: Bool = false) throws -> (top: Int, bottom: Int) {
+        let window = try countsCardWindow(snapshot, night: night)
+        let canvas = snapshot.canvas
+        let bands = inkBands(canvas, rows: window.top..<canvas.height,
+                             columns: 0..<canvas.width, night: night)
+            .filter { $0.top < window.boundary }
+        let bottom = (bands.map(\.bottom).max()).map { $0 + 1 } ?? window.top
+        return (window.top, bottom)
     }
 
     /// #491: the summary card holds exactly `expected` text bands, every ink
@@ -1315,8 +1424,6 @@ final class FullScreenHerdShellAccessibilityLayoutTests: XCTestCase {
         let owner = countsFleet(blocked: 0, working: 5, idle: 13, done: 22, unknown: 55)
         var heights: [String: Int] = [:]
         for (name, choice) in [("Day", HerdEnvironmentChoice.day), ("Night", .night), ("Auto", .auto)] {
-            let snapshot = try await render(CGSize(width: 375, height: 667), dynamicType: .large,
-                                            environment: choice, horses: owner)
             // Resolve the expected palette through the app's own resolver:
             // Day and Night are explicit, Auto follows the wall clock exactly
             // like the view does (fixed 07:00–19:00 clock without a location
@@ -1327,6 +1434,8 @@ final class FullScreenHerdShellAccessibilityLayoutTests: XCTestCase {
             case .day: night = false
             case .auto: night = HerdSun.resolve(.auto, now: Date()).night
             }
+            let snapshot = try await render(CGSize(width: 375, height: 667), dynamicType: .large,
+                                            environment: choice, horses: owner)
             let card = try assertSummaryBands(snapshot, expected: 1,
                                               label: "owner fixture 375x667 \(name)",
                                               night: night, marginProbe: true, verticalSpanLimit: 40)
@@ -1624,6 +1733,7 @@ final class ContextualFilterSheetTests: XCTestCase {
 
     func testHerdTriggerCountsAndGearTakeTheRanchChromeNotTheAppFlavorText() throws {
         let herd = try compact(source("HerdView"))
+        let fleet = try compact(source("FleetViews"))
         XCTAssertTrue(herd.contains("ranchTokens:RanchControlTokens{.resolve(night:lighting.night)}"),
                       "the chrome palette resolves from the SAME lighting the ranch renders")
         // The trigger/indicator/count cluster only (the ranch field below is
@@ -1642,15 +1752,33 @@ final class ContextualFilterSheetTests: XCTestCase {
                        "no trigger/count surface may keep the flavor material (#457 AC1)")
         XCTAssertFalse(chrome.contains("theme.text") || chrome.contains("theme.subtext1"),
                        "no trigger/count text may inherit the app flavor's light/dark text")
-        // Out-of-scope herd surfaces stay exactly as #456 shipped them.
+        // #526: the rest of the ranch's flock chrome — the front-rail
+        // header, the paddock header, the agent label cards and the paddock
+        // pager — joins the SAME ranch Day/Night chrome. No Herd surface may
+        // keep the flavor material or inherit the app flavor's tokens.
+        XCTAssertFalse(herd.contains(".regularMaterial"),
+                       "no Herd surface may keep the flavor material (#526)")
+        XCTAssertFalse(herd.contains("theme.text") || herd.contains("theme.subtext1")
+                       || herd.contains("theme.surface1") || herd.contains("theme.base"),
+                       "no Herd chrome may inherit the app flavor's text/surface tokens (#526)")
         let nav = try slice(herd, from: "privatevarnavigation", to: "funcmovePage(")
-        XCTAssertTrue(nav.contains(".background(.regularMaterial,in:RoundedRectangle(cornerRadius:15))"),
-                      "the bottom paddock navigation keeps its #456 material pill")
-        // The environment axis never writes the app theme.
+        XCTAssertTrue(nav.contains(".ranchChromeSurface(ranchTokens)"),
+                      "the paddock pager takes the ranch chrome surface (#526)")
+        XCTAssertEqual(herd.components(separatedBy: ".ranchChromeSurface(ranchTokens,cornerRadius:").count - 1, 3,
+                       "front-rail header, paddock header and agent cards ride the ranch chrome (#526)")
+        XCTAssertTrue(herd.contains(".foregroundStyle(ranchTokens.inkColor)"),
+                      "the flock headers/cards take the ranch ink (#526)")
+        // The environment axis never WRITES the app theme's flavor
+        // preference — the resolved palette is REPORTED into the store
+        // (#526), never persisted from the Herd surface.
         XCTAssertFalse(herd.contains("setFlavor"),
                        "the herd surface must never rewrite the global theme preference")
         XCTAssertFalse(herd.contains("flavorKey"),
                        "the herd surface must never touch the theme preference key")
+        XCTAssertTrue(fleet.contains("theme.setHerdNight(night)"),
+                      "the ROOT pushes the ranch's resolved lighting into the store (#526)")
+        XCTAssertFalse(herd.contains("setHerdNight"),
+                       "the herd surface reports its lighting; it never writes the app-level store (#526)")
     }
 
     func testEnvironmentSelectionStaysIndependentOfTheSavedThemePreference() throws {

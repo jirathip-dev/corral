@@ -4395,12 +4395,13 @@ final class SettingsAccessWiringTests: XCTestCase {
         // DEBUG-only recorded-evidence drivers (#365 settings, #372 theme,
         // #379 connect, #385 glass, #388 connection-inputs, #416
         // translucency, #415 add-host lifecycle, #401 multi-host settings/
-        // add and #458 presentation A/C sequences all open the same sheet);
-        // all required, none release-gated.
+        // add, #458 presentation A/C, #526 palette-ownership day/night/board
+        // sequences all open the same sheet); all required, none
+        // release-gated.
         XCTAssertEqual(releaseActionLines.count, 1,
                        "the gear must be the ONLY release-active settings opener")
-        XCTAssertEqual(allActionLines.count - releaseActionLines.count, 12,
-                       "the #365, #372, #379, #385, #388, #389, #401-settings, #401-add, #415 add-host-lifecycle, #416 translucency and #458 presentation DEBUG evidence drivers are the only debug-gated openers")
+        XCTAssertEqual(allActionLines.count - releaseActionLines.count, 15,
+                       "the #365, #372, #379, #385, #388, #389, #401-settings, #401-add, #415 add-host-lifecycle, #416 translucency, #458 presentation and #526 palette-ownership DEBUG evidence drivers are the only debug-gated openers")
     }
 
     func testDemoOverflowMenuIsDebugOnlyAndNoLongerHidesSettings() throws {
@@ -5139,8 +5140,14 @@ final class ThemeWiringTests: XCTestCase {
                       "picking a flavor must route through the ThemeStore")
         XCTAssertTrue(slice.contains("FlavorSwatchStrip(flavor: flavor)"),
                       "each flavor row must preview its palette swatches")
-        XCTAssertTrue(slice.contains("Applies to the whole app"),
-                      "the Appearance footer must state the app-wide scope")
+        // #526: ownership is per Board/Herd — the old app-wide claim is
+        // gone and each mode states its own scope.
+        XCTAssertFalse(slice.contains("Applies to the whole app"),
+                       "the superseded app-wide scope claim must be gone (#526)")
+        XCTAssertTrue(slice.contains("The preset styles the board and the sheets opened from it"),
+                      "Board mode must state its own scope (#526)")
+        XCTAssertTrue(slice.contains("Day and Night style the ranch chrome and the sheets opened from Herd"),
+                      "Herd mode must state its own scope (#526)")
 
         // Placement lock: the ONLY theme control is the Settings Appearance
         // section. Every other "theme.setFlavor" call site must sit inside
@@ -5168,6 +5175,59 @@ final class ThemeWiringTests: XCTestCase {
         // those lines are debug-active and the placement-lock loop above
         // already exempts them — nothing release-active may live outside
         // the Settings Appearance section.
+    }
+
+    /// #526 palette ownership, source-wired end to end: the Settings sheet
+    /// gates its appearance controls by the SELECTED mode, the mode picker
+    /// mirrors straight into the ThemeStore, and the root mirrors the
+    /// model's saved presentation in — the three links that make an open
+    /// sheet re-resolve instead of keeping a stale palette.
+    func testPaletteOwnershipIsModeGatedAndMirroredIntoTheThemeStore() throws {
+        let source = try bundledSource()
+        let settingsStart = try XCTUnwrap(source.range(of: "\nstruct SettingsView: View {"))
+        let settingsEnd = try XCTUnwrap(source.range(of: "\n// MARK: - How to connect",
+                                                      range: settingsStart.upperBound..<source.endIndex))
+        let settings = String(source[settingsStart.lowerBound..<settingsEnd.lowerBound])
+
+        // 1. The Board presets render only while Board is selected; the
+        //    Herd environment control only while Herd is selected — two
+        //    single gates in the Settings form, each immediately above the
+        //    control it gates.
+        let settingsLines = settings.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let boardGates = settingsLines.enumerated().filter { $0.element.contains("if model.fleetPresentation == .board {") }
+        let herdGates = settingsLines.enumerated().filter { $0.element.contains("if model.fleetPresentation == .herd {") }
+        XCTAssertEqual(boardGates.count, 1, "exactly ONE Board gate in Settings (#526)")
+        XCTAssertEqual(herdGates.count, 1, "exactly ONE Herd gate in Settings (#526)")
+        let presetRows = settingsLines.enumerated().filter { $0.element.contains("ForEach(CatppuccinFlavor.allCases") }
+        XCTAssertEqual(presetRows.count, 1, "the four preset rows must have ONE call site")
+        XCTAssertGreaterThan(presetRows[0].offset, boardGates[0].offset,
+                             "the preset rows must sit under the Board gate (#526)")
+        let environmentRow = settingsLines.enumerated().filter { $0.element.contains("HerdEnvironmentSettings()") }
+        XCTAssertEqual(environmentRow.count, 1,
+                       "exactly ONE Herd environment control call site (#526)")
+        XCTAssertGreaterThan(environmentRow[0].offset, herdGates[0].offset,
+                             "the Herd environment control must sit under the Herd gate (#526)")
+        // 3. The mode picker mirrors into the ThemeStore BEFORE/with the
+        //    model write, so the sheet repaints in the same update.
+        let modePicker = try XCTUnwrap(settings.range(of: "Picker(\"Board or Herd\", selection: Binding("))
+        let pickerBody = String(settings[modePicker.lowerBound...].prefix(900))
+        XCTAssertTrue(pickerBody.contains("theme.setPresentation(mode)"),
+                      "the mode switch must mirror into the ThemeStore (#526)")
+        XCTAssertTrue(pickerBody.contains("model.selectFleetPresentation(mode)"),
+                      "the mode switch must still persist through the model (unchanged owner)")
+
+        // 4. The root mirrors the model's presentation into the store with
+        //    an initial pass (cold-launch frame).
+        let rootStart = try XCTUnwrap(source.range(of: "\nstruct FleetView: View {"))
+        let rootEnd = try XCTUnwrap(source.range(of: "\n// MARK: - Banner",
+                                                 range: rootStart.upperBound..<source.endIndex))
+        let root = String(source[rootStart.lowerBound..<rootEnd.lowerBound])
+        XCTAssertTrue(root.contains(".onChange(of: model.fleetPresentation, initial: true) { _, mode in"),
+                      "the board root must mirror the saved presentation into the ThemeStore")
+        XCTAssertTrue(root.contains("theme.setPresentation(mode)"),
+                      "the mirror must call setPresentation")
+        XCTAssertTrue(root.contains(".preferredColorScheme(theme.flavor.isLight ? .light : .dark)"),
+                      "the native scheme must follow the RESOLVED flavor (#526)")
     }
 
     /// 1-based line numbers of every `#if DEBUG`-active line (same depth

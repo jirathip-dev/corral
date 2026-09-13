@@ -126,6 +126,19 @@ The source-mode subset of these checks runs per push and pull request in
 commands above stay local or on the dispatch-only `ios.yml` job — they need a
 prior build or a booted simulator.
 
+`probe-gait.py` is the #448/#530 native assertion battery (one disposable
+temp copy, `--udid` + `--output`): it is GREEN on the candidate, then requires
+each of fixed-angle legs, broken diagonal coordination, an ignored Reduce
+Motion, a removed `horseButton` gait argument, and the pre-#530 swing-only
+fetlock-tuft rotation to fail by XCTest ASSERTION (never compilation), and
+finally re-verifies byte-identical restoration before GREEN again. Its #530
+arm also re-runs the zero-rest-angle ink digests inside the mutated tree, so
+the restored tuft defect provably moves the tufts and nothing else. Both
+checks are XCTest methods in `FleetNotifierTests/HerdGaitTests.swift`:
+`testEveryHoofAndFetlockTuftStaysOnItsLegAnchorAcrossAllVariantsAndPhases`
+walks every breed, coat, pose and gait phase and anchors each hoof/fetlock
+tuft on the drawn leg ink itself.
+
 `check-release-demo.py` also invokes the native source guard and, with `--binary`,
 the actual app-product guard. The manifest digest covers all Herd app sources;
 DEBUG fixture types/flags must be absent from Release. The bundle gate checks

@@ -1,0 +1,34 @@
+== label=mut-red workdir=/tmp/i533-mut spec=FleetNotifierTests/ThemeStoreObserverScopeTests start=2026-09-14 04:54:13 ==
+/dev/disk3s5       228  159        39    80% 2380368 419156840    1%   /System/Volumes/Data
+[elided: 2484 lines of xcodebuild build/setup output; full log was /tmp/i533-mut-red.log on the run host (2517 lines)]
+Test Suite 'Selected tests' started at 2569-09-14 4:57:25.532 AM.
+Test Suite 'FleetNotifierTests.xctest' started at 2569-09-14 4:57:25.533 AM.
+Test Suite 'ThemeStoreObserverScopeTests' started at 2569-09-14 4:57:25.533 AM.
+Test Case '-[FleetNotifierTests.ThemeStoreObserverScopeTests testSameSuiteWriteStillRefreshesTheResolvedPalette]' started.
+Test Case '-[FleetNotifierTests.ThemeStoreObserverScopeTests testSameSuiteWriteStillRefreshesTheResolvedPalette]' passed (0.004 seconds).
+Test Case '-[FleetNotifierTests.ThemeStoreObserverScopeTests testUnrelatedSuiteWriteDoesNotWakeTheStore]' started.
+/tmp/i533-mut/ios/FleetNotifierTests/ThemeTests.swift:459: error: -[FleetNotifierTests.ThemeStoreObserverScopeTests testUnrelatedSuiteWriteDoesNotWakeTheStore] : Fulfilled inverted expectation "an unrelated-suite write must not re-read the store's keys".
+/tmp/i533-mut/ios/FleetNotifierTests/ThemeTests.swift:463: error: -[FleetNotifierTests.ThemeStoreObserverScopeTests testUnrelatedSuiteWriteDoesNotWakeTheStore] : XCTAssertEqual failed: ("6") is not equal to ("2") - the store must not re-read its own suite when a different suite changes
+Test Case '-[FleetNotifierTests.ThemeStoreObserverScopeTests testUnrelatedSuiteWriteDoesNotWakeTheStore]' failed (0.365 seconds).
+Test Suite 'ThemeStoreObserverScopeTests' failed at 2569-09-14 4:57:25.903 AM.
+	 Executed 2 tests, with 2 failures (0 unexpected) in 0.369 (0.370) seconds
+Test Suite 'FleetNotifierTests.xctest' failed at 2569-09-14 4:57:25.903 AM.
+	 Executed 2 tests, with 2 failures (0 unexpected) in 0.369 (0.370) seconds
+Test Suite 'Selected tests' failed at 2569-09-14 4:57:25.903 AM.
+	 Executed 2 tests, with 2 failures (0 unexpected) in 0.369 (0.371) seconds
+2026-09-14 04:58:02.170 xcodebuild[63341:110202222] [MT] IDETestOperationsObserverDebug: 58.309 elapsed -- Testing started completed.
+2026-09-14 04:58:02.171 xcodebuild[63341:110202222] [MT] IDETestOperationsObserverDebug: 0.000 sec, +0.000 sec -- start
+2026-09-14 04:58:02.171 xcodebuild[63341:110202222] [MT] IDETestOperationsObserverDebug: 58.309 sec, +58.309 sec -- end
+
+Test session results, code coverage, and logs:
+	/tmp/i533-mut-red.xcresult
+
+Failing tests:
+	ThemeStoreObserverScopeTests.testUnrelatedSuiteWriteDoesNotWakeTheStore()
+	ThemeStoreObserverScopeTests.testUnrelatedSuiteWriteDoesNotWakeTheStore()
+
+** TEST FAILED **
+
+Testing started
+EXIT=65
+== label=mut-red end=2026-09-14 04:58:05 ==

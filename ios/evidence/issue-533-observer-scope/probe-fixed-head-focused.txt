@@ -1,0 +1,28 @@
+== label=focus-green workdir=/Users/jirathip/.herdr/worktrees/corral/impl533-observer spec=FleetNotifierTests/ThemeStoreObserverScopeTests start=2026-09-14 04:47:51 ==
+/dev/disk3s5       228  159        39    81% 2368306 412249480    1%   /System/Volumes/Data
+[elided: 2488 lines of xcodebuild build/setup output; full log was /tmp/i533-focus-green.log on the run host (2515 lines)]
+Test Suite 'Selected tests' started at 2569-09-14 4:49:17.002 AM.
+Test Suite 'FleetNotifierTests.xctest' started at 2569-09-14 4:49:17.003 AM.
+Test Suite 'ThemeStoreObserverScopeTests' started at 2569-09-14 4:49:17.003 AM.
+Test Case '-[FleetNotifierTests.ThemeStoreObserverScopeTests testSameSuiteWriteStillRefreshesTheResolvedPalette]' started.
+Test Case '-[FleetNotifierTests.ThemeStoreObserverScopeTests testSameSuiteWriteStillRefreshesTheResolvedPalette]' passed (0.004 seconds).
+Test Case '-[FleetNotifierTests.ThemeStoreObserverScopeTests testUnrelatedSuiteWriteDoesNotWakeTheStore]' started.
+Test Case '-[FleetNotifierTests.ThemeStoreObserverScopeTests testUnrelatedSuiteWriteDoesNotWakeTheStore]' passed (1.051 seconds).
+Test Suite 'ThemeStoreObserverScopeTests' passed at 2569-09-14 4:49:18.058 AM.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 1.055 (1.056) seconds
+Test Suite 'FleetNotifierTests.xctest' passed at 2569-09-14 4:49:18.059 AM.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 1.055 (1.056) seconds
+Test Suite 'Selected tests' passed at 2569-09-14 4:49:18.059 AM.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 1.055 (1.057) seconds
+2026-09-14 04:49:18.567 xcodebuild[45611:110144154] [MT] IDETestOperationsObserverDebug: 11.450 elapsed -- Testing started completed.
+2026-09-14 04:49:18.567 xcodebuild[45611:110144154] [MT] IDETestOperationsObserverDebug: 0.000 sec, +0.000 sec -- start
+2026-09-14 04:49:18.567 xcodebuild[45611:110144154] [MT] IDETestOperationsObserverDebug: 11.450 sec, +11.450 sec -- end
+
+Test session results, code coverage, and logs:
+	/tmp/i533-focus-green.xcresult
+
+** TEST SUCCEEDED **
+
+Testing started
+EXIT=0
+== label=focus-green end=2026-09-14 04:49:18 ==

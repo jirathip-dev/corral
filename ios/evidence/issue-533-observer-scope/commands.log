@@ -1,0 +1,63 @@
+# #533 probe commands and raw exits
+
+All heavy runs on this host serialize on the shared gate lock:
+`flock /tmp/corral-heavy-gate.lock bash /tmp/i533-run.sh <label> <workdir> <udid> <dd> <spec>`
+(the runner holds the lock across build+test and appends `EXIT=<code>` inside
+its own log; `HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1` are set
+inside the runner).
+
+Simulator for every run: `Corral533-Observer`
+(`48FCC0F0-DAEB-4AFC-89CA-9D1DDB4D28A4`, iPhone 16, iOS 26.5), created for
+this lane. Focused spec: `FleetNotifierTests/ThemeStoreObserverScopeTests`.
+
+## 1. Focused run — lane tree (fixed)
+
+    flock /tmp/corral-heavy-gate.lock bash /tmp/i533-run.sh focus-green \
+      /Users/jirathip/.herdr/worktrees/corral/impl533-observer \
+      48FCC0F0-DAEB-4AFC-89CA-9D1DDB4D28A4 /tmp/i533-dd \
+      FleetNotifierTests/ThemeStoreObserverScopeTests
+    -> EXIT=0  (Executed 2 tests, with 0 failures)
+
+Tree identity at run time (sha256, reverified against commit 77bcee5):
+
+    819a9c408106da94b9a1944f8dcb81259163f3380d8eb2212696737c32c4d01b  ios/FleetNotifier/UI/AppTheme.swift
+    fc30833426bb7ef06f8d0cbcb478da04129b823e9638f9b9308e224753c82bbf  ios/FleetNotifierTests/ThemeTests.swift
+
+## 2. Mutation scratch copy under /tmp
+
+    git archive 77bcee5 | tar -x -C /tmp/i533-mut
+    python3: replace "object: defaults," -> "object: nil," in
+      /tmp/i533-mut/ios/FleetNotifier/UI/AppTheme.swift
+      (anchored; assert count == 1 -> exactly one site mutated,
+       line 387 = the ThemeStore defaults observer; line 366 was already
+       `object: nil` and is the untouched Reduce Motion observer)
+
+    sha256 after mutation:
+    70e2c5ef9f1c9739708e6fea9952ea8dfe9ef80a9c799a815aa604dc4bcca08a  AppTheme.swift (mutated)
+
+## 3. Focused run — mutated tree (RED)
+
+    flock /tmp/corral-heavy-gate.lock bash /tmp/i533-run.sh mut-red \
+      /tmp/i533-mut 48FCC0F0-DAEB-4AFC-89CA-9D1DDB4D28A4 /tmp/i533-mut-dd \
+      FleetNotifierTests/ThemeStoreObserverScopeTests
+    -> EXIT=65
+       ThemeTests.swift:459 error: Fulfilled inverted expectation
+         "an unrelated-suite write must not re-read the store's keys".
+       ThemeTests.swift:463 error: XCTAssertEqual failed:
+         ("6") is not equal to ("2") -
+         the store must not re-read its own suite when a different suite changes
+       Executed 2 tests, with 2 failures (0 unexpected)
+       (the same-suite positive control PASSED in this run: 0.004 s)
+
+## 4. Restore and focused run — restored tree (GREEN)
+
+    cp <worktree>/ios/FleetNotifier/UI/AppTheme.swift \
+       /tmp/i533-mut/ios/FleetNotifier/UI/AppTheme.swift
+    cmp -s <worktree-file> /tmp/i533-mut-file  -> identical
+    sha256 after restore:
+    819a9c408106da94b9a1944f8dcb81259163f3380d8eb2212696737c32c4d01b  AppTheme.swift (restored)
+
+    flock /tmp/corral-heavy-gate.lock bash /tmp/i533-run.sh mut-green \
+      /tmp/i533-mut 48FCC0F0-DAEB-4AFC-89CA-9D1DDB4D28A4 /tmp/i533-mut-dd \
+      FleetNotifierTests/ThemeStoreObserverScopeTests
+    -> EXIT=0  (Executed 2 tests, with 0 failures)

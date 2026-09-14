@@ -78,10 +78,16 @@ struct HerdArt {
         art.leg(84,belly-6,width,height,legs[0],"body",part:"leg-0")
         art.leg(43,belly-6,width,height,legs[2],"body",part:"leg-2")
         if identity.breed == 2 {
-            for (x, angle) in [(84.0, step), (43, -step)] {
+            // #530: the draft fetlock tuft wraps the fetlock of leg 0/2, so it
+            // must ride that leg's whole gait angle (pose rest + diagonal
+            // swing). Rotating it by the swing alone (the #448 form) dropped
+            // the rest angle and left the tuft hanging off the leg's end by up
+            // to 12 pt in the working/blocked/unknown poses; every pose whose
+            // rest angle is zero keeps the exact previous transform.
+            for (index, x) in [(0, 84.0), (2, 43.0)] {
                 let start = art.inks.count
-                art.rect(x-width/2-1,belly-6+height-8,width+2,6,3,"mane")
-                if angle != 0 { art.rotate(from:start,angle:angle,x:x,y:belly-6) }
+                art.rect(x-width/2-1,belly-6+height-8,width+2,6,3,"mane",part:"leg-\(index)-tuft")
+                if legs[index] != 0 { art.rotate(from:start,angle:legs[index],x:x,y:belly-6) }
             }
         }
         if pose == .graze {
@@ -129,8 +135,8 @@ struct HorseDraft {
     mutating func ellipse(_ x:Double,_ y:Double,_ rx:Double,_ ry:Double,_ color:String,opacity:Double = 1) {
         inks.append(HorseInk(path:Path(ellipseIn:CGRect(x:x-rx,y:y-ry,width:2*rx,height:2*ry)),color:color,opacity:opacity))
     }
-    mutating func rect(_ x:Double,_ y:Double,_ w:Double,_ h:Double,_ r:Double,_ color:String) {
-        inks.append(HorseInk(path:Path(roundedRect:CGRect(x:x,y:y,width:w,height:h),cornerRadius:r),color:color))
+    mutating func rect(_ x:Double,_ y:Double,_ w:Double,_ h:Double,_ r:Double,_ color:String,part:String = "") {
+        inks.append(HorseInk(path:Path(roundedRect:CGRect(x:x,y:y,width:w,height:h),cornerRadius:r),color:color,part:part))
     }
     mutating func rotate(from start:Int,angle:Double,x:Double,y:Double) {
         let transform = CGAffineTransform(translationX:x,y:y).rotated(by:angle * .pi/180).translatedBy(x:-x,y:-y)

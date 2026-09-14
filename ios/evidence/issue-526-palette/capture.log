@@ -1,0 +1,54 @@
+# #526 evidence — raw capture log
+
+Host: macOS 26.6.2 · lane worktree /Users/jirathip/.herdr/worktrees/corral/impl526-palette
+Head: ad6ce272f6186034b8e19ee066fe24e750734340
+Build: HERDR_XCODEBUILD_DIRECT=1 xcodebuild build -scheme FleetNotifier \
+       -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/i526-dd
+Sim: fresh iPhone 16, iOS 26.5 (UDID 379E5468-9787-4D87-A9A0-75BEE15AB80C)
+App: com.corral.fleetnotifier (Debug, demo seeds via the -corral526*Evidence args)
+
+## Raw frames (1179x2556 @3x, before the committed 390x844 downscale)
+
+RUN_herdday_EXIT=0 (7 shots) · RUN_herdnight_EXIT=0 (4) ·
+RUN_board_EXIT=0 (4) · RUN_auto_EXIT=0 (4) — see
+~/.config/fleet-operations/run/corral/evidence/impl526-palette/ev-status.txt
+
+RAW sha256:
+
+461dd40c355d3e14020000b3aa0c840e9120850b30e66a2a646cb3f14496f6b5  526-1-herd-day-opposite-board-mocha.png
+a7da9e972c3c79212fd048650aa06102bea099666e60d90e6bf245f338036c19  526-10-recents-herd-night.png
+e6b2ac499cda9584a5f7619b74d5d8fe3506d64dd44b8176f872f6ed192d5a15  526-11-herd-disconnected-night.png
+fafb71269ecf3e7ae4d02a78261a2e4dfa5b1b3f33f71497652a515634650232  526-12-board-mocha-controls.png
+8458a468461afe796300886351ea23c3315b4655226b8295251ce0a0f41b0d24  526-13-board-latte-controls.png
+c384cf630fb66d443d41e517f34d72cf984448e3d457e54aa701444fd9fcf67a  526-14-board-latte-filter-sheet.png
+ae441a07083bb80b49e8b85fab94cf45948af4af956506c2d6269d3ae047aba7  526-15-board-latte-settings-presets.png
+cd9ab3782fcfe5ee1de6db4b97a199c77a30b552b67c13be63ee672c5233139d  526-16-pagination-first-page-previous-disabled.png
+a20a2591dc48f222639726e8a9082af9418c476091369c6e1f7d7aa6200b646e  526-17-pagination-last-page-next-disabled.png
+f1a6b04084220f6f220b65bb63ad3286c7cb457b92052461f1e9bfa7da21dd3e  526-18-auto-day.png
+bdbc059a5a43cb1f7f3888f2bcc8fbf56ea25305de1f8b22564e468d890d6562  526-19-auto-night-transition.png
+9b904d51ab30f34e2d7e5ecb604a86ead37c685f70df14f696926c82cc6b406c  526-2-settings-herd-day.png
+e610dde302bd5c018954ae5d4f815cc29ecf589f6ca4a869870539b0c5c985fc  526-3-settings-herd-night-open-sheet.png
+3b51192d03384c57ce9d0a85b522f129192efb155fca511b97884cc4ddd9e49a  526-4-settings-board-selected.png
+e610dde302bd5c018954ae5d4f815cc29ecf589f6ca4a869870539b0c5c985fc  526-5-settings-herd-selected.png
+700cbf70d034e3d57d73326e0eddcae9dec5a3e788df272b023de2fe07a18c05  526-6-herd-day-after-dismissal.png
+e2d59957bcf297d2abb174fe070c19c5224833956a28fd471617cdeb5b0498d1  526-7-recents-herd-day.png
+e2ba23b4fd538d8a6d8db0b9b04f1b2ce32616509aabad6a22dccb7f596e73a4  526-8-herd-night-opposite-board-latte.png
+b08178951edd69e3a0d94dfefbfefdaf283293ba789084eb088d9f064c045f6a  526-9-settings-herd-night.png
+
+## Duplicate check
+
+- Raw hashes with more than one occurrence across the four runs: 1
+- The only duplicate is 526-3-settings-herd-night-open-sheet == 526-5-settings-herd-selected
+  (byte-identical BY CONSTRUCTION: switching the mode Herd→Board→Herd restores
+  exactly the same persisted state — Herd + Night — so the round-trip frame is
+  the same image; that identity is the evidence that no palette leaked across
+  the mode switch). Every other frame is unique.
+
+## Notes
+
+- Marker phases are written by the app itself (Documents/ux-evidence/*.marker)
+  and the capture script polls for each name (600 s deadline each), clears the
+  container's ux-evidence dir before the launch and clears its raw output dir
+  at the start.
+- The captures were taken under shared-host fleet load; every run reports its
+  own exit and the frame count above matches the driver's marker count.

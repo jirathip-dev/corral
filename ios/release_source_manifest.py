@@ -75,6 +75,11 @@ RELEASE_SOURCE_FILES = (
     # client + payload wire sources — added to the manifest.
     "ios/FleetNotifier/Wire/EnrollmentClient.swift",
     "ios/FleetNotifier/Wire/EnrollmentPayload.swift",
+    # #486 scanner/flow: the Add Host QR flow — the enrollment flow state +
+    # failure vocabulary (App/) and the camera scanner view (UI/) that wires
+    # the delivered enrollment module into the existing Add Host surface.
+    "ios/FleetNotifier/App/EnrollmentPairing.swift",
+    "ios/FleetNotifier/UI/EnrollmentScannerView.swift",
 )
 SOURCE_DIGEST_PREFIX = "corral-release-source-sha256:"
 

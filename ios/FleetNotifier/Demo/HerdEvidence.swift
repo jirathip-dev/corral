@@ -131,7 +131,11 @@ extension HerdView {
         guard await evidencePause() else { return }
         evidencePhase = "07-clock-running"
         guard await evidencePause() else { return }
-        openBoard()
+        // #528: the Open Board recovery override is REMOVED with the Herd
+        // disconnect panel; this recorded-evidence harness still needs its
+        // final Board frame, so it flips the presentation directly (the
+        // same surface the Settings picker writes).
+        HerdEvidence.model?.fleetPresentation = .board
     }
     private func evidencePause(_ seconds:Int = 2) async -> Bool {
         do { try await Task.sleep(for:.seconds(seconds)); return true }

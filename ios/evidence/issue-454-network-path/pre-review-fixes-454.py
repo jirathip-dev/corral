@@ -6,6 +6,16 @@ this lane's iOS actual-adapter test both decide whether a change is warranted
 ("if premise disproved by actual raw evidence report it, do not implement a
 speculative change").
 
+MAINTENANCE (#523): the anchors below are exact strings from the LIVE sources
+— `F2_START_FIXED` IS the current `startPathMonitor()` wiring, generation
+guard included. If the wiring legitimately changes, re-derive the affected
+BASE/FIXED pair from the current files (same ~30-second re-anchor rule as
+`red-probe-454.py`); a stale pair makes `apply`/`revert` fail closed (exit 1,
+nothing written) instead of patching the wrong text.
+
+The worktree is overridable with IMPL454_WORKTREE (same convention as
+`run-454-tests.sh`), so the script runs against any checkout.
+
 apply   -> writes the fixes (refuses if already applied)
 revert  -> restores the exact committed bytes and verifies the sha256
 check   -> prints which variant is on disk + hashes
@@ -13,10 +23,16 @@ check   -> prints which variant is on disk + hashes
 from __future__ import annotations
 
 import hashlib
+import os
 import sys
 from pathlib import Path
 
-WORKTREE = Path("/Users/jirathip/.herdr/worktrees/corral/prep454-path-contract")
+WORKTREE = Path(
+    os.environ.get(
+        "IMPL454_WORKTREE",
+        "/Users/jirathip/.herdr/worktrees/corral/prep454-path-contract",
+    )
+)
 APP_MODEL = WORKTREE / "ios/FleetNotifier/App/AppModel.swift"
 COORDINATOR = WORKTREE / "ios/FleetNotifier/Profiles/HostStreamCoordinator.swift"
 

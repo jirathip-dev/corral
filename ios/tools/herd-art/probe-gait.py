@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""#448 gait: assertion-level native RED/GREEN through the REAL renderer.
+"""#448 gait + #530 hoof/fetlock correspondence: assertion-level native
+RED/GREEN through the REAL renderer.
 
 The committed worktree project is never mutated or regenerated: `ios/` is
 copied to a temp root, where `xcodegen` registers the new (unregistered)
 `FleetNotifierTests/HerdGaitTests.swift` and every mutation runs against the
 disposable copy. Candidate GREEN first, then one-mutation-at-a-time REDs —
-fixed-angle renderer, broken diagonal coordination, reduce-motion ignored —
-each of which MUST fail by XCTest assertion (never compilation), then
-byte-verified restoration and GREEN again.
+fixed-angle renderer, broken diagonal coordination, reduce-motion ignored,
+call-site argument removed, and (#530) the swing-only fetlock-tuft rotation
+restored — each of which MUST fail by XCTest assertion (never compilation),
+then byte-verified restoration and GREEN again. #530 additionally runs the
+zero-rest-angle ink digests in the mutated tree, so the restored defect moves
+the tufts and NOTHING else.
 
 Run under the shared native flock; logs stay outside the source tree.
 """
@@ -116,6 +120,29 @@ def main():
                 failure='testHorseButtonCallSitePassesGaitIntoTheRenderer')
         finally:
             view.write_text(view_pristine)
+
+        # #530: the fetlock-tuft correspondence. The check is green on the
+        # fixed tree, and restoring the pre-#530 swing-only tuft rotation (the
+        # exact defect: the pose rest angle dropped out of the tuft transform)
+        # must RED it by assertion while the zero-rest-angle ink digests stay
+        # green in the SAME tree — the fix moves the tufts and nothing else.
+        anchor = 'FleetNotifierTests/HerdGaitTests/testEveryHoofAndFetlockTuftStaysOnItsLegAnchorAcrossAllVariantsAndPhases'
+        digests = 'FleetNotifierTests/HerdGaitTests/testZeroRestAnglePosesKeepTheBaseInkAcrossTheCorrespondenceFix'
+        run('hoof-anchor-green', base + ['-only-testing:' + anchor])
+        run('hoof-digest-green', base + ['-only-testing:' + digests])
+        tuft = 'if legs[index] != 0 { art.rotate(from:start,angle:legs[index],x:x,y:belly-6) }'
+        art_pristine = art.read_text()
+        assert art_pristine.count(tuft) == 1, 'M5: tuft rotation line not unique'
+        art.write_text(art_pristine.replace(
+            tuft,
+            'let swingOnly = index == 0 ? step : -step  // #530 probe M5: swing-only tuft\n'
+            '                if swingOnly != 0 { art.rotate(from:start,angle:swingOnly,x:x,y:belly-6) }'))
+        try:
+            run('hoof-tuft-swing-only-red', base + ['-only-testing:' + anchor], expected=65,
+                failure='testEveryHoofAndFetlockTuftStaysOnItsLegAnchorAcrossAllVariantsAndPhases')
+            run('hoof-digest-under-defect-green', base + ['-only-testing:' + digests], expected=0)
+        finally:
+            art.write_text(art_pristine)
 
         for relative, digest in sources.items():
             assert hashlib.sha256((root / relative).read_bytes()).hexdigest() == digest, relative

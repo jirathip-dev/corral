@@ -425,6 +425,18 @@ final class AppModel: ObservableObject {
     private let hapticTick: () -> Void
     /// Monotonic counter backing `RecentsRequest.id`.
     private var recentsSerial: UInt64 = 0
+    /// #397 lifecycle: whether the CURRENT `recentsRequest` value was written
+    /// while the sheet's item binding was still nil (the sheet was closed, or
+    /// SwiftUI had already cleared a real dismissal). SwiftUI's
+    /// `.sheet(item:)` fires `onDismiss` for a REPLACED presentation too —
+    /// the bound request changed while the sheet was up — and then hands
+    /// back a request that landed onto a NON-nil binding. Re-arming THAT
+    /// request writes yet another value, SwiftUI replaces again, and the
+    /// chain never terminates (probed iOS 26.5: unbounded close/reopen at
+    /// ~1 s per cycle — the build-25 video shape). Only a request that
+    /// landed onto a nil binding — a real dismissal transition was running
+    /// (#364 C) — may be re-armed.
+    private var recentsRequestLandedOnNilBinding = false
     /// #397 follow-up: notification taps deferred because the model was
     /// not ready to route them at delivery time (cold launch, reconnect
     /// boundary, board rows still loading). Bounded FIFO — see
@@ -446,9 +458,24 @@ final class AppModel: ObservableObject {
     /// Registration is also lifecycle-owned. A separate id prevents a
     /// canceled registration's cleanup from clearing a newer registration.
     private var registrationTaskId: UUID?
+    /// #486: the transient, memory-only slot for the scanned single-use
+    /// enrollment code. Deliberately NOT part of `addHostDraft`: the sheet
+    /// renders the draft only, so no view can show, copy, or screenshot
+    /// pairing material. Set at scan time; cleared by EVERY exit (commit,
+    /// discard, stop, failure, supersession).
+    private var enrollmentRedemptionCode: String?
+    /// #486: the in-flight QR pairing (redeem → approval wait → commit).
+    /// Model-owned so sheet churn cannot cancel the wait; cancellable
+    /// exactly once through `stopEnrollmentWait()`.
+    private var enrollmentPairingTask: Task<AddHostOutcome, Never>?
+    private var enrollmentPairingTaskId: UUID?
     /// Injectable for tests (URLProtocol-mocked session); `.shared` by
     /// default so production call sites are unchanged.
     private let session: URLSession
+    /// #486: pacing between `/enroll/status` polls while waiting for the
+    /// host owner's approval. Injectable so tests never sleep in seconds;
+    /// the code's own deadline still bounds the whole wait.
+    private let enrollmentPollInterval: TimeInterval
     /// #451: bounded pacing for the ACTIVE host's `/host-key` preflight
     /// ladder (the coordinator hosts share the same value).
     private let preflightRetryPolicy: HostPreflightRetryPolicy
@@ -527,9 +554,9 @@ final class AppModel: ObservableObject {
     static let notificationsKey = "fleetnotifier.notificationsEnabled"
     private static let log = Logger(subsystem: "com.corral.fleetnotifier", category: "host-profiles")
 
-    /// #458: the persisted Board/Herd preference (the value a cold relaunch
-    /// restores). `fleetPresentation` may temporarily diverge from it while
-    /// an Open Board recovery override is active.
+    /// #458/#528: the persisted Board/Herd preference (the value a cold
+    /// relaunch restores). `fleetPresentation` mirrors it — the removed
+    /// recovery override left the Settings selection as the only writer.
     var savedFleetPresentation: FleetPresentation {
         FleetPresentation(rawValue: defaults.string(forKey: Self.fleetPresentationKey) ?? "")
             ?? .board
@@ -540,13 +567,6 @@ final class AppModel: ObservableObject {
     func selectFleetPresentation(_ presentation: FleetPresentation) {
         defaults.set(presentation.rawValue, forKey: Self.fleetPresentationKey)
         fleetPresentation = presentation
-    }
-
-    /// #458: Open Board recovery — a TEMPORARY override of the current
-    /// presentation. It never touches the saved preference, so a cold
-    /// relaunch still restores the Settings selection.
-    func openBoard() {
-        fleetPresentation = .board
     }
 
 #if DEBUG
@@ -649,6 +669,7 @@ final class AppModel: ObservableObject {
          preflightRetryPolicy: HostPreflightRetryPolicy = .default,
          networkPathMonitor: NetworkPathMonitoring = SystemNetworkPathMonitor(),
          pathHintDebounce: TimeInterval = 0.5,
+         enrollmentPollInterval: TimeInterval = 2,
          pathHintSleep: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
              try await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
          }) {
@@ -665,6 +686,7 @@ final class AppModel: ObservableObject {
         self.preflightRetryPolicy = preflightRetryPolicy
         self.pathMonitor = networkPathMonitor
         self.pathHintDebounce = max(0, pathHintDebounce)
+        self.enrollmentPollInterval = max(0.01, enrollmentPollInterval)
         self.pathHintSleep = pathHintSleep
         self.identityLoader = identityLoader
         self.loadMeta = loadMeta
@@ -1696,6 +1718,11 @@ final class AppModel: ObservableObject {
         var urlString = ""
         var token = ""
         var prepared: PreparedHostPairing?
+        /// #486: non-nil while a scanned QR enrollment is in progress
+        /// (reviewing → waiting → failed/interrupted). The draft deliberately
+        /// carries no pairing material — the scanned redemption code lives
+        /// only in the model's private transient slot.
+        var enrollment: EnrollmentDraft?
         var errorMessage: String?
         var isWorking = false
     }
@@ -1714,6 +1741,10 @@ final class AppModel: ObservableObject {
         case registrationFailed(String)
         /// The committed profile could not be persisted.
         case profileStore(String)
+        /// #486: the QR enrollment flow did not complete (scan rejection,
+        /// redeem/approval failure, waiting interrupted). The message is
+        /// already user-facing and secret-free.
+        case enrollment(String)
 
         var message: String {
             switch self {
@@ -1727,6 +1758,8 @@ final class AppModel: ObservableObject {
                 return "Registration failed — \(detail)"
             case .profileStore(let detail):
                 return "Could not save the paired host profile — \(detail)"
+            case .enrollment(let detail):
+                return "Pairing was not completed — \(detail)"
             }
         }
     }
@@ -1855,66 +1888,25 @@ final class AppModel: ObservableObject {
                     guard !Task.isCancelled,
                           self.isCurrent(baseContext),
                           self.identityLifecycle.isCurrent(sharedRegistrationContext) else { return }
-                    // #397: a fresh pairing supersedes any pending
-                    // removal-clear for the same URL (the new enrollment
-                    // writes the token the shared key record should hold).
-                    self.supersedePendingClear(urlString: url.absoluteString)
-                    // Persist the fingerprint-confirmed pairing (B3/B5).
-                    // #415: only the SAME-URL record is replaced (the
-                    // store's own purge in commitActivePairing) — no
+                    // #486: the SAME commit tail the QR enrollment path
+                    // uses — persist the fingerprint-confirmed pairing
+                    // (B3/B5), rebind the runtime identity, open the live
+                    // stream. #415: only the SAME-URL record is replaced
+                    // (the store's own purge in commitActivePairing) — no
                     // other profile is ever removed by an Add Host commit.
-                    let now = UInt64(Date().timeIntervalSince1970)
-                    let carriedNotifications = self.activeProfile?.urlString == url.absoluteString
-                        ? (self.activeProfile?.notificationsEnabled ?? true)
-                        : true
-                    let profile = try store.commitActivePairing(
+                    let profile = try self.commitPairedHost(
                         displayName: prepared.displayName,
+                        url: url,
                         urlString: prepared.urlString,
                         hostKeyB64: prepared.hostKey.publicKey,
                         fingerprint: prepared.fingerprint,
                         keyId: response.keyId,
                         grants: response.grants,
                         expiryTs: response.expiryTs,
-                        registeredAt: now,
-                        notificationsEnabled: carriedNotifications)
-                    self.signer = candidateSigner
-                    self.keyStorageWarning = (storage == .insecureFallback)
-                    self.keyId = response.keyId
-                    self.grants = response.grants
-                    self.hostURL = url
-                    self.saveMeta(DeviceKeyStore.DeviceMeta(
-                        keyId: response.keyId, host: url.absoluteString,
-                        grants: response.grants, expiryTs: response.expiryTs,
-                        registeredAt: now))
-                    self.defaults.set(url.absoluteString, forKey: "fleetnotifier.host")
-                    self.reloadProfiles(from: store)
-                    self.persistActiveProfileID(profile.id)
-                    self.mode = .live
-                    self.identityLifecycle.setCurrent(
-                        mode: .live, hostURL: url, keyId: response.keyId,
-                        signerPublicKeyB64: candidateSigner.publicKeyB64)
-                    self.keyContinuityState = .verified
-                    self.fleet.acceptedHostIdentity = profile.hostKeyB64
-                    if switchingHost {
-                        // #421: a runtime HOST SWITCH (a second host
-                        // fingerprint-confirmed while this app is running)
-                        // must not let the previous active host's rows/
-                        // cursor ride the shared legacy store into the NEW
-                        // host — they would project under the new host's
-                        // composite id until an authoritative snapshot
-                        // replaced them (stale rows under both host badges
-                        // until relaunch). The old host's state survives in
-                        // its own per-profile cursor + durable board cache
-                        // (persisted by stopLive above) and re-enters via
-                        // its fresh coordinator session. Same-URL re-pairing
-                        // (switchingHost == false) keeps the live store and
-                        // its rows untouched — they still belong to the
-                        // active host.
-                        fleet.reset()
-                    } else {
-                        fleet.restoreCursor()
-                    }
-                    self.startLive()
+                        signer: candidateSigner,
+                        storage: storage,
+                        store: store,
+                        switchingHost: switchingHost)
                     self.banner = .info("Paired \(profile.displayName) · fingerprint confirmed")
                     // #415: the commit succeeded — ONLY now is the draft
                     // cleared (values survive every failure; the caller
@@ -1965,12 +1957,495 @@ final class AppModel: ObservableObject {
         return outcome
     }
 
+    /// #486: the shared pairing-commit tail — the ONE place a freshly
+    /// paired host becomes the ACTIVE profile and opens its live stream.
+    /// Used by the manual token flow (`completeAddHost`) and the QR
+    /// enrollment flow. The caller has already decided `switchingHost` and
+    /// handled the pre-commit teardown (a FAILED attempt never reaches
+    /// here, so the last-known board stays live behind the banner, #365).
+    @discardableResult
+    private func commitPairedHost(displayName: String,
+                                  url: URL,
+                                  urlString: String,
+                                  hostKeyB64: String,
+                                  fingerprint: String,
+                                  keyId: String,
+                                  grants: [String],
+                                  expiryTs: UInt64,
+                                  signer: DeviceSigner,
+                                  storage: DeviceKeyStore.Storage,
+                                  store: HostProfileStore,
+                                  switchingHost: Bool) throws -> HostProfile {
+        // #397: a fresh pairing supersedes any pending removal-clear for
+        // the same URL (the new enrollment writes the token the shared key
+        // record should hold).
+        supersedePendingClear(urlString: urlString)
+        let now = UInt64(Date().timeIntervalSince1970)
+        let carriedNotifications = activeProfile?.urlString == urlString
+            ? (activeProfile?.notificationsEnabled ?? true)
+            : true
+        let profile = try store.commitActivePairing(displayName: displayName,
+                                                    urlString: urlString,
+                                                    hostKeyB64: hostKeyB64,
+                                                    fingerprint: fingerprint,
+                                                    keyId: keyId,
+                                                    grants: grants,
+                                                    expiryTs: expiryTs,
+                                                    registeredAt: now,
+                                                    notificationsEnabled: carriedNotifications)
+        self.signer = signer
+        keyStorageWarning = (storage == .insecureFallback)
+        self.keyId = keyId
+        self.grants = grants
+        hostURL = url
+        saveMeta(DeviceKeyStore.DeviceMeta(keyId: keyId, host: url.absoluteString,
+                                           grants: grants, expiryTs: expiryTs,
+                                           registeredAt: now))
+        defaults.set(url.absoluteString, forKey: "fleetnotifier.host")
+        reloadProfiles(from: store)
+        persistActiveProfileID(profile.id)
+        mode = .live
+        identityLifecycle.setCurrent(mode: .live, hostURL: url, keyId: keyId,
+                                     signerPublicKeyB64: signer.publicKeyB64)
+        keyContinuityState = .verified
+        fleet.acceptedHostIdentity = profile.hostKeyB64
+        if switchingHost {
+            // #421: a runtime HOST SWITCH (a second host confirmed while
+            // this app is running) must not let the previous active host's
+            // rows/cursor ride the shared legacy store into the NEW host —
+            // they would project under the new host's composite id until an
+            // authoritative snapshot replaced them (stale rows under both
+            // host badges until relaunch). The old host's state survives in
+            // its own per-profile cursor + durable board cache (persisted
+            // by the caller's stopLive) and re-enters via its fresh
+            // coordinator session. Same-URL re-pairing (switchingHost ==
+            // false) keeps the live store and its rows untouched — they
+            // still belong to the active host.
+            fleet.reset()
+        } else {
+            fleet.restoreCursor()
+        }
+        startLive()
+        return profile
+    }
+
+    // MARK: - Enrollment QR pairing (#486)
+
+    /// #486: parse and gate one scanned host code. On success the draft
+    /// moves to the enrollment phase (host identity + read-only scope for
+    /// explicit confirmation) with the redemption code held ONLY in the
+    /// model's private transient slot; every rejection is an explicit,
+    /// actionable message and nothing is committed, sent, or persisted.
+    func handleScannedEnrollmentCode(_ text: String) async {
+        guard !addHostDraft.isWorking else { return }
+        addHostDraft.isWorking = true
+        addHostDraft.errorMessage = nil
+        defer { addHostDraft.isWorking = false }
+        do {
+            let payload = try EnrollmentQRPayload.parse(
+                text, now: UInt64(Date().timeIntervalSince1970))
+            guard let normalized = HostURLForm.normalized(payload.endpoint),
+                  let url = URL(string: normalized) else {
+                throw EnrollmentScanRejection.unusableEndpoint
+            }
+            // The frozen v1 binding: the code's host key must EQUAL the
+            // host's LIVE key. A mismatch is a tampering/rotation signal —
+            // never auto-trusted, and never paired.
+            let live: HostKeyResponse
+            do {
+                live = try await CorraldClient(host: url, session: session).fetchHostKey()
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                throw EnrollmentScanRejection.unreachableHost
+            }
+            guard HostKeyTrust.isWellFormed(live) else {
+                throw EnrollmentScanRejection.hostKeyUnusable
+            }
+            guard live.publicKey == payload.hostKeyB64 else {
+                throw EnrollmentScanRejection.hostKeyMismatch
+            }
+            guard let fingerprint = HostKeyTrust.fingerprint(forBase64: live.publicKey) else {
+                throw EnrollmentScanRejection.hostKeyUnusable
+            }
+            guard let store = profileStore else {
+                throw EnrollmentScanRejection.storeUnavailable
+            }
+            if let existing = store.orderedProfiles.first(where: {
+                $0.hostKeyB64 == payload.hostKeyB64
+            }) {
+                throw EnrollmentScanRejection.duplicateHost(existing.displayName)
+            }
+            if let existing = store.orderedProfiles.first(where: {
+                $0.urlString == normalized
+            }) {
+                // Same address, DIFFERENT key: the host was reinstalled or
+                // its key rotated. Existing profiles stay untouched — the
+                // user decides (remove the old entry, then re-pair).
+                throw EnrollmentScanRejection.changedHostKey(existing.displayName)
+            }
+            let trimmedName = addHostDraft.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = trimmedName.isEmpty
+                ? HostURLForm.displayNameCandidate(for: normalized)
+                : trimmedName
+            addHostDraft.name = name
+            addHostDraft.urlString = normalized
+            addHostDraft.prepared = nil
+            enrollmentRedemptionCode = payload.code
+            addHostDraft.enrollment = EnrollmentDraft(displayName: name,
+                                                      urlString: normalized,
+                                                      hostKeyB64: live.publicKey,
+                                                      fingerprint: fingerprint,
+                                                      expiresTs: payload.expiresTs,
+                                                      scope: payload.scope,
+                                                      phase: .reviewing)
+        } catch is CancellationError {
+            // The scanner/sheet went away mid-scan: nothing was verified
+            // here and there is nothing to report. Logged (never any
+            // pairing material) so the cancellation stays observable.
+            Self.log.info("Enrollment scan cancelled")
+        } catch let rejection as EnrollmentScanRejection {
+            addHostDraft.errorMessage = rejection.message
+        } catch let payloadError as EnrollmentPayloadError {
+            // Typed, localized, secret-free: the code is never echoed.
+            addHostDraft.errorMessage = payloadError.errorDescription
+                ?? EnrollmentScanRejection.malformedCode.message
+        } catch {
+            addHostDraft.errorMessage = EnrollmentScanRejection.malformedCode.message
+        }
+    }
+
+    /// #486: the user confirmed the host identity + read-only scope.
+    /// Redeem the code (a PENDING request, never authority), wait for the
+    /// host owner's explicit approval, then commit the paired profile
+    /// through the shared tail. Returns only once the pairing settles —
+    /// `.success` exactly when a profile was committed and the draft was
+    /// cleared.
+    func completeEnrollmentPairing() async -> AddHostOutcome {
+        guard enrollmentPairingTask == nil,
+              let enrollment = addHostDraft.enrollment,
+              enrollment.phase == .reviewing else {
+            return .failure(.inProgress)
+        }
+        guard let store = profileStore else {
+            return failEnrollment(EnrollmentScanRejection.storeUnavailable.message)
+        }
+        guard let code = enrollmentRedemptionCode,
+              let url = URL(string: enrollment.urlString) else {
+            return failEnrollment(EnrollmentScanRejection.unusableEndpoint.message)
+        }
+        let signer: DeviceSigner
+        let storage: DeviceKeyStore.Storage
+        do {
+            (signer, storage) = try identityLoader()
+        } catch {
+            return failEnrollment(EnrollmentScanRejection.deviceKeyUnavailable.message)
+        }
+        var waiting = enrollment
+        waiting.phase = .waiting
+        addHostDraft.enrollment = waiting
+        addHostDraft.errorMessage = nil
+        addHostDraft.isWorking = true
+        let taskId = UUID()
+        enrollmentPairingTaskId = taskId
+        let task = Task { @MainActor [weak self] () -> AddHostOutcome in
+            guard let self else { return .failure(.inProgress) }
+            defer {
+                if self.enrollmentPairingTaskId == taskId {
+                    self.enrollmentPairingTask = nil
+                    self.enrollmentPairingTaskId = nil
+                    self.addHostDraft.isWorking = false
+                }
+            }
+            return await self.awaitEnrollmentApproval(enrollment: waiting, code: code,
+                                                      url: url, signer: signer,
+                                                      storage: storage, store: store,
+                                                      taskId: taskId)
+        }
+        enrollmentPairingTask = task
+        return await task.value
+    }
+
+    /// #486: redeem → wait for approval → commit for ONE scanned code. The
+    /// code's single deadline is never extended (the redeem answer may only
+    /// shorten it); a transport failure while waiting keeps polling until
+    /// that deadline (an offline host is still ACTIONABLE — the deadline
+    /// settles it explicitly); everything else settles into an explicit
+    /// state.
+    private func awaitEnrollmentApproval(enrollment: EnrollmentDraft,
+                                         code: String,
+                                         url: URL,
+                                         signer: DeviceSigner,
+                                         storage: DeviceKeyStore.Storage,
+                                         store: HostProfileStore,
+                                         taskId: UUID) async -> AddHostOutcome {
+        let client = EnrollmentClient(host: url, session: session)
+        let redeem: EnrollmentRedeemResponse
+        do {
+            redeem = try await client.redeem(code: code,
+                                             publicKeyB64: signer.publicKeyB64,
+                                             name: enrollment.displayName)
+        } catch is CancellationError {
+            return markEnrollmentInterrupted(taskId: taskId)
+        } catch let error as EnrollmentClientError {
+            return failEnrollment(error.enrollmentMessage, taskId: taskId)
+        } catch {
+            return failEnrollment(EnrollmentScanRejection.unreachableHost.message,
+                                  taskId: taskId)
+        }
+        guard enrollmentPairingTaskId == taskId else { return .failure(.inProgress) }
+        let deadline = min(enrollment.expiresTs, redeem.expiresTs)
+        updateEnrollmentDeadline(deadline)
+        // Frozen §5.4 (C2b): after OUR OWN redeem, a 404/410 status means
+        // the daemon restarted (sessions are in-memory) — exactly ONE
+        // signed grants-read probe then decides.
+        var recovery = EnrollmentApprovalRecovery()
+        recovery.noteRedeemed(keyId: redeem.keyId)
+        let drive = DriveClient(host: url, session: session)
+        while true {
+            guard enrollmentPairingTaskId == taskId else { return .failure(.inProgress) }
+            if Task.isCancelled {
+                return markEnrollmentInterrupted(taskId: taskId)
+            }
+            if UInt64(Date().timeIntervalSince1970) >= deadline {
+                return failEnrollment(EnrollmentScanRejection.approvalTimedOut.message,
+                                      taskId: taskId)
+            }
+            let tick = await enrollmentWaitTick(client: client, drive: drive,
+                                                recovery: recovery, code: code,
+                                                signer: signer)
+            recovery = tick.recovery
+            switch tick.step {
+            case .approved(let keyId, let grants, let expiryTs):
+                return commitEnrollment(enrollment: enrollment, url: url,
+                                        keyId: keyId, grants: grants, expiryTs: expiryTs,
+                                        signer: signer, storage: storage,
+                                        store: store, taskId: taskId)
+            case .failed(let message):
+                return failEnrollment(message, taskId: taskId)
+            case .interrupted:
+                return markEnrollmentInterrupted(taskId: taskId)
+            case .keepWaiting:
+                do {
+                    try await Task.sleep(nanoseconds: UInt64(enrollmentPollInterval * 1_000_000_000))
+                } catch {
+                    return markEnrollmentInterrupted(taskId: taskId)
+                }
+            }
+        }
+    }
+
+    /// One wait tick: poll `/enroll/status` once and classify the answer.
+    private func enrollmentWaitTick(client: EnrollmentClient,
+                                    drive: DriveClient,
+                                    recovery: EnrollmentApprovalRecovery,
+                                    code: String,
+                                    signer: DeviceSigner) async -> EnrollmentWaitTick {
+        var recovery = recovery
+        do {
+            let status = try await client.status(code: code)
+            switch status.approval {
+            case .pending:
+                return EnrollmentWaitTick(step: .keepWaiting, recovery: recovery)
+            case .approved(let keyId, let grants, let expiryTs):
+                return EnrollmentWaitTick(step: .approved(keyId: keyId, grants: grants,
+                                                          expiryTs: expiryTs),
+                                          recovery: recovery)
+            case .denied(let denial):
+                return EnrollmentWaitTick(step: .failed(denial.enrollmentMessage),
+                                          recovery: recovery)
+            }
+        } catch is CancellationError {
+            return EnrollmentWaitTick(step: .interrupted, recovery: recovery)
+        } catch let error as EnrollmentClientError {
+            switch error {
+            case .server(let status, _, _) where status == 404 || status == 410:
+                let outcome = await recovery.recoverAfterSessionLoss(drive: drive,
+                                                                     signer: signer)
+                switch outcome {
+                case .approved(let keyId, let grants, let expiryTs):
+                    return EnrollmentWaitTick(step: .approved(keyId: keyId, grants: grants,
+                                                              expiryTs: expiryTs),
+                                              recovery: recovery)
+                case .denied(let denial):
+                    return EnrollmentWaitTick(step: .failed(denial.enrollmentMessage),
+                                              recovery: recovery)
+                case .pending:
+                    return EnrollmentWaitTick(step: .keepWaiting, recovery: recovery)
+                }
+            case .transport:
+                // The host dropped off the network mid-wait: keep polling
+                // (the deadline bounds the wait and fails it explicitly).
+                return EnrollmentWaitTick(step: .keepWaiting, recovery: recovery)
+            default:
+                return EnrollmentWaitTick(step: .failed(error.enrollmentMessage),
+                                          recovery: recovery)
+            }
+        } catch {
+            return EnrollmentWaitTick(step: .failed(EnrollmentScanRejection.unreachableHost.message),
+                                      recovery: recovery)
+        }
+    }
+
+    /// #486: the host APPROVED this device — commit through the shared
+    /// pairing tail. The approval's keyId/grants/expiry ride VERBATIM (this
+    /// client never widens a grant); the read-only gate has already refused
+    /// any record without `read_tail`, and a superseded pairing commits
+    /// nothing.
+    private func commitEnrollment(enrollment: EnrollmentDraft,
+                                  url: URL,
+                                  keyId: String,
+                                  grants: [String],
+                                  expiryTs: UInt64,
+                                  signer: DeviceSigner,
+                                  storage: DeviceKeyStore.Storage,
+                                  store: HostProfileStore,
+                                  taskId: UUID) -> AddHostOutcome {
+        guard enrollmentPairingTaskId == taskId else { return .failure(.inProgress) }
+        let switchingHost = activeProfile.map { $0.urlString != enrollment.urlString } ?? false
+        // #415/#421: the ACTIVE host's stream is stopped BEFORE the commit
+        // (its cursor + durable cache are persisted by stopLive) so the
+        // reset below cannot carry its rows onto the new identity. Nothing
+        // is stopped on a FAILED attempt: the last-known board stays live
+        // behind the banner until the commit actually happens.
+        cancelLifecycleTasks()
+        if switchingHost {
+            stopLive()
+        }
+        do {
+            let profile = try commitPairedHost(displayName: enrollment.displayName,
+                                               url: url,
+                                               urlString: enrollment.urlString,
+                                               hostKeyB64: enrollment.hostKeyB64,
+                                               fingerprint: enrollment.fingerprint,
+                                               keyId: keyId,
+                                               grants: grants,
+                                               expiryTs: expiryTs,
+                                               signer: signer,
+                                               storage: storage,
+                                               store: store,
+                                               switchingHost: switchingHost)
+            // The pairing completed: clear the whole draft (incl. the
+            // enrollment phase) and drop the transient code.
+            enrollmentPairingTask = nil
+            enrollmentPairingTaskId = nil
+            enrollmentRedemptionCode = nil
+            addHostDraft = AddHostDraft()
+            banner = .info("Paired \(profile.displayName) · host approved · read-only")
+            return .success
+        } catch {
+            return failEnrollment(error.localizedDescription, taskId: taskId)
+        }
+    }
+
+    /// #486: settle the enrollment draft into its explicit failure phase
+    /// (never a silent success, never an empty board) and drop the
+    /// transient code. `nil` = a pre-task setup failure; a task id must
+    /// still own the flow or the answer is discarded.
+    private func failEnrollment(_ message: String, taskId: UUID? = nil) -> AddHostOutcome {
+        if let taskId {
+            guard enrollmentPairingTaskId == taskId else { return .failure(.inProgress) }
+            enrollmentPairingTask = nil
+            enrollmentPairingTaskId = nil
+        }
+        enrollmentRedemptionCode = nil
+        if var enrollment = addHostDraft.enrollment {
+            // The verified identity + scope stay on screen for context;
+            // only the phase settles. The recovery is a freshly minted
+            // code, stated by the message.
+            enrollment.phase = .failed(message)
+            addHostDraft.enrollment = enrollment
+        } else {
+            addHostDraft.errorMessage = message
+        }
+        addHostDraft.isWorking = false
+        return .failure(.enrollment(message))
+    }
+
+    /// #486: the wait ended without approval (the owner stopped it, or the
+    /// task was cancelled). Nothing was committed; the terminal phase says
+    /// so explicitly and the code is dropped.
+    private func markEnrollmentInterrupted(taskId: UUID) -> AddHostOutcome {
+        guard enrollmentPairingTaskId == taskId else { return .failure(.inProgress) }
+        enrollmentPairingTask = nil
+        enrollmentPairingTaskId = nil
+        enrollmentRedemptionCode = nil
+        if var enrollment = addHostDraft.enrollment {
+            enrollment.phase = .interrupted
+            addHostDraft.enrollment = enrollment
+        }
+        addHostDraft.isWorking = false
+        return .failure(.enrollment(EnrollmentScanRejection.interrupted.message))
+    }
+
+    /// #486: the redeem answer may only SHORTEN the code's deadline (one
+    /// shared deadline for the whole mint → redeem → approve flow; it is
+    /// never extended).
+    private func updateEnrollmentDeadline(_ deadline: UInt64) {
+        guard var enrollment = addHostDraft.enrollment,
+              deadline < enrollment.expiresTs else { return }
+        enrollment.expiresTs = deadline
+        addHostDraft.enrollment = enrollment
+    }
+
+    /// #486: the owner stopped waiting for the host owner's approval. The
+    /// model-owned pairing task is cancelled, the terminal `.interrupted`
+    /// phase is set here (the task's own cancellation path is
+    /// ownership-guarded and cannot overwrite it), and the transient code
+    /// is dropped.
+    func stopEnrollmentWait() {
+        guard addHostDraft.enrollment?.phase == .waiting else { return }
+        enrollmentPairingTask?.cancel()
+        enrollmentPairingTask = nil
+        enrollmentPairingTaskId = nil
+        enrollmentRedemptionCode = nil
+        if var enrollment = addHostDraft.enrollment {
+            enrollment.phase = .interrupted
+            addHostDraft.enrollment = enrollment
+        }
+        addHostDraft.isWorking = false
+    }
+
+    /// #486: leave the QR enrollment flow (the sheet's back button, or a
+    /// re-scan). The transient code is dropped; the entered name/URL stay
+    /// for the manual path, and no profile is touched.
+    func discardEnrollment() {
+        enrollmentPairingTask?.cancel()
+        enrollmentPairingTask = nil
+        enrollmentPairingTaskId = nil
+        enrollmentRedemptionCode = nil
+        addHostDraft.enrollment = nil
+        addHostDraft.errorMessage = nil
+        addHostDraft.isWorking = false
+    }
+
+    /// #486: one classified wait step plus the (possibly advanced) C2b
+    /// recovery state.
+    private struct EnrollmentWaitTick {
+        var step: EnrollmentWaitStep
+        var recovery: EnrollmentApprovalRecovery
+    }
+
+    /// #486: what one status poll (or recovery probe) means for the wait.
+    private enum EnrollmentWaitStep {
+        case keepWaiting
+        case approved(keyId: String, grants: [String], expiryTs: UInt64)
+        case failed(String)
+        case interrupted
+    }
+
     // MARK: - Add Host draft + outcome (#415)
 
     /// #415: clear the scene-scoped Add Host draft. Called on Cancel and
     /// by the SUCCESS path AFTER the profile commit — never on failure,
     /// where every draft value must stay available for correction/retry.
+    /// #486: also tears down an in-flight QR pairing and drops the
+    /// transient redemption code (Cancel abandons the pairing).
     func clearAddHostDraft() {
+        enrollmentPairingTask?.cancel()
+        enrollmentPairingTask = nil
+        enrollmentPairingTaskId = nil
+        enrollmentRedemptionCode = nil
         addHostDraft = AddHostDraft()
     }
 
@@ -3013,22 +3488,36 @@ final class AppModel: ObservableObject {
     private func presentRecents(agentId: String, hostProfileID: UUID?, haptic: Bool) {
         if haptic { hapticTick() }
         recentsSerial += 1
+        // #397 lifecycle: capture whether this request landed onto a nil
+        // sheet binding BEFORE writing it — `recentsSheetDismissed` reads
+        // exactly this fact to decide whether a re-arm is allowed.
+        recentsRequestLandedOnNilBinding = recentsRequest == nil
         recentsRequest = RecentsRequest(id: recentsSerial, agentId: agentId,
                                         hostProfileID: hostProfileID)
     }
 
-    /// The recents sheet finished dismissing (swipe-down or Done — the
-    /// board's `.sheet(item:onDismiss:)` calls this). SwiftUI already
-    /// wrote `recentsRequest` back to nil when the dismissal started; a
-    /// request that landed DURING the dismissal (SwiftUI drops
-    /// presentations issued while a dismissal transition is running) is
-    /// still pending here, so re-arm it with a fresh id and the completed
-    /// dismissal presents it immediately. With nothing pending the latch
-    /// stays nil — the next open, same agent included, is a brand-new
-    /// request that always presents.
+    /// The recents sheet's presentation ended — a real dismissal
+    /// (swipe-down or Done), or SwiftUI REPLACING the presentation because
+    /// the bound request changed while the sheet was up (both fire
+    /// `onDismiss`). SwiftUI writes `recentsRequest` back to nil when a
+    /// real dismissal starts, so a request that landed WHILE that dismissal
+    /// ran is still pending here and is re-armed ONCE with a fresh id for
+    /// the completed dismissal. A request that landed onto an ALREADY
+    /// PRESENTED sheet (non-nil binding) is a replacement SwiftUI presents
+    /// by itself — re-arming it writes a NEW id, SwiftUI replaces again,
+    /// and the write→replace→onDismiss chain never ends (#397 build-25
+    /// close/reopen loop). That case is left exactly as SwiftUI left it,
+    /// which keeps this reconciliation a FIXPOINT: at most one re-arm per
+    /// dismissal, never a chain. With nothing pending the latch stays nil —
+    /// the next open, same agent included, is a brand-new request that
+    /// always presents.
     func recentsSheetDismissed() {
         guard let pending = recentsRequest else { return }
+        guard recentsRequestLandedOnNilBinding else { return }
         recentsSerial += 1
+        // The re-arm itself lands onto the still-set request (a replacement
+        // write), so its own callback can never chain another re-arm.
+        recentsRequestLandedOnNilBinding = false
         recentsRequest = RecentsRequest(id: recentsSerial, agentId: pending.agentId,
                                         hostProfileID: pending.hostProfileID)
     }
@@ -3495,7 +3984,12 @@ final class AppModel: ObservableObject {
     /// CONNECTING posture instead of the offline error, so the filter-header
     /// frames can capture the textual `connecting` health inside the filter
     /// sheet and the board banner.
-    func enterMultiHostDemo(hostBConnecting: Bool = false) {
+    /// `hostCConnecting` (#528 evidence): seed Host C's session store in the
+    /// connecting posture instead of the terminal key mismatch — the partial
+    /// shape (one live + one offline + one connecting host) the compact
+    /// connection indicator must distinguish.
+    func enterMultiHostDemo(hostBConnecting: Bool = false,
+                            hostCConnecting: Bool = false) {
         guard let store = profileStore, coordinator != nil else {
             enterDemo()
             return
@@ -3533,7 +4027,7 @@ final class AppModel: ObservableObject {
             grants: ["read_tail"],
             expiryTs: nil,
             registeredAt: 1)
-        if let profileC {
+        if let profileC, !hostCConnecting {
             // B4: C presents a different key — paused, fails closed.
             store.noteConnectionState(id: profileC.id, .keyMismatch)
         }
@@ -3561,6 +4055,13 @@ final class AppModel: ObservableObject {
                 storeB.noteConnectionError("host unreachable")
             }
         }
+        // #528 evidence: C mid-connect instead of the terminal key mismatch.
+        // The coordinator session exists only after the reloadProfiles
+        // above, so the posture is stamped HERE (the same seam B uses).
+        if hostCConnecting, let profileC,
+           let storeC = coordinator?.store(profileID: profileC.id) {
+            storeC.noteConnecting()
+        }
         store.noteLastSuccessfulConnection(id: profileA.id,
                                            at: now - 2 * 60 * 1000)
         store.noteLastSuccessfulConnection(id: profileB.id,
@@ -3574,6 +4075,49 @@ final class AppModel: ObservableObject {
         identityLifecycle.setCurrent(mode: .demo, hostURL: nil,
                                     keyId: nil,
                                     signerPublicKeyB64: signer?.publicKeyB64)
+    }
+
+    /// #528 evidence: the connection posture the driver seeds on one demo
+    /// host — the same three postures the indicator distinguishes.
+    enum DemoHostPosture {
+        case live
+        case connecting
+        case offline
+    }
+
+    /// #528 evidence: flip ONE seeded demo host's connection posture through
+    /// the SAME store seam the stream callbacks use (`noteConnected` /
+    /// `noteConnecting` / `noteConnectionError`). The ACTIVE host addresses
+    /// the live fleet store; every other host its coordinator session. No
+    /// stream is started, restarted, or touched.
+    func setDemoHostPosture(_ posture: DemoHostPosture, hostName: String) {
+        guard mode == .demo,
+              let profile = profiles.first(where: { $0.displayName == hostName }) else { return }
+        let store = profile.id == activeProfileID
+            ? fleet
+            : coordinator?.store(profileID: profile.id)
+        guard let store else { return }
+        switch posture {
+        case .live: store.noteConnected()
+        case .connecting: store.noteConnecting()
+        case .offline: store.noteConnectionError("host unreachable")
+        }
+    }
+
+    /// #528 evidence (review condition 1): empty EVERY demo host's rows so
+    /// the multi-host AGGREGATE is genuinely empty. `fleet.seedDemo(agents:
+    /// [:])` alone empties only the ACTIVE host's store — the coordinator's
+    /// sessions keep rendering the other hosts' retained rows, which made the
+    /// captured "empty" frames show Host B rows. The ACTIVE host addresses
+    /// the live fleet store; every other host its coordinator session, the
+    /// same seam `setDemoHostPosture` uses. No stream is started, restarted
+    /// or touched.
+    func emptyDemoHostRows(rev: UInt64) {
+        guard mode == .demo else { return }
+        fleet.seedDemo(agents: [:], rev: rev)
+        for profile in profiles where profile.id != activeProfileID {
+            coordinator?.store(profileID: profile.id)?.seedDemo(agents: [:], rev: rev)
+        }
     }
 
     /// #415 evidence: seeds the Add Host lifecycle evidence state — ONE

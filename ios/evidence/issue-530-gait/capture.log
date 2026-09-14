@@ -1,0 +1,82 @@
+# 530 capture log — 2026-09-13 ~14:46–15:12 +0700
+
+Two builds of the SAME app content, one simulator, identical launch arguments:
+
+* **base**  — the pre-fix renderer, `ios/FleetNotifier/UI/Herd/HerdArt.swift` sha256
+  `08f63618ec4bfe41f5f398f0f5177d9546e7b58f6cf71f7a6eb0b7e4373643e4`
+  (= `origin/integration` `1d774d1f5d5270193b028f29f36670eac3fbabfb` at that path, restored
+  byte-identically into a `/tmp` scratch copy of the tree).
+* **fixed** — implementation head `dcb7d47c0b9ce950f35132ec81dc1fd339824bf5`,
+  `HerdArt.swift` sha256 `36e87d415b4841ecbedbd5db628f96117201efcea738267a7984846398ae23c7`.
+
+Both app products were built by the lane's own test runs:
+
+    HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test \
+      -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier \
+      -destination "id=082082C2-4B1E-4396-8374-25EE0CA51EB8" \
+      -derivedDataPath <dd> -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO \
+      -only-testing:FleetNotifierTests/HerdGaitTests
+
+(base in the `/tmp/i530-base` scratch tree + `/tmp/i530-base-dd`, raw exit 65 recorded in the
+fleet-side `base-herdgait-tests.log`; fixed in the lane worktree + `/tmp/i530-dd`, raw exit 0 in
+`head-r2-herdgait-tests.log`). Debug app products:
+`<dd>/Build/Products/Debug-iphonesimulator/FleetNotifier.app`.
+
+Simulator (created for this lane, then booted; never erased or deleted; the shared `iPhone 16`
+device and other lanes' simulators were never touched):
+
+    xcrun simctl create i530-hoof "iPhone 16" com.apple.CoreSimulator.SimRuntime.iOS-26-5
+      -> 082082C2-4B1E-4396-8374-25EE0CA51EB8   (exit 0)
+    xcrun simctl boot 082082C2-4B1E-4396-8374-25EE0CA51EB8   (exit 0)
+    iPhone 16, iOS 26.5 — 393x852 pt = 1179x2556 px @3x
+
+## A. blocked-rail pair — `-demoMode -corral458HerdScenario`
+
+The demo fleet's global blocked rail carries `demo-garden-agent` (chestnut, breed 2 = draft,
+blocked) — the affected pose, static (blocked horses are standstill, so the frames are
+clock-independent). Per arm (`base`, `head`), all exits 0:
+
+    xcrun simctl install   <udid> <arm app>                     -> 0  (evidence-install-<arm>.log)
+    xcrun simctl terminate <udid> com.corral.fleetnotifier      -> (no-op if not running)
+    xcrun simctl launch    <udid> com.corral.fleetnotifier \
+        -demoMode -corral458HerdScenario                        -> 0  (evidence-launch-<arm>.log)
+    xcrun simctl io        <udid> screenshot herd-<arm>-demo-N.png  (N = 1..3, 1.1 s apart)
+                                                                -> 0 each (evidence-shots.exit)
+
+## B. working-draft paddock pair — `-demoMode -corralDemoMultiHostBoardEvidence -corral458HerdScenario`
+
+The multi-host demo seed's first paddock (`demo-atlas`) carries `demo-atlas-worker` — dun,
+breed 2 = draft, **working** — drawn in the paddock, so nothing overlays its fetlocks. Same
+install/launch/screenshot sequence per arm, all exits 0:
+
+    xcrun simctl install <udid> <arm app>                       -> 0  (draft-<arm>-install.log)
+    xcrun simctl launch  <udid> com.corral.fleetnotifier \
+        -demoMode -corralDemoMultiHostBoardEvidence -corral458HerdScenario
+                                                                -> 0  (draft-<arm>-launch.log)
+    xcrun simctl io <udid> screenshot draft-<arm>-N.png         -> 0 each (draft-shots.exit)
+
+Both horses' identities follow the app's name-derived axes (`HorseIdentity(name:)`,
+sha256 of the agent display name): `demo-garden-agent` → coat 1 (chestnut), breed 2 (draft);
+`demo-atlas-worker` → coat 5 (dun), breed 2 (draft).
+
+## C. committed set (curated from the raw frames above)
+
+    sips -z 844 390 <raw>/herd-base-demo-1.png --out base-rail-390x844.png              -> 0
+    sips -z 844 390 <raw>/herd-head-demo-1.png --out head-rail-390x844.png              -> 0
+    sips -z 844 390 <raw>/draft-base-1.png --out base-working-draft-paddock-390x844.png -> 0
+    sips -z 844 390 <raw>/draft-head-1.png --out head-working-draft-paddock-390x844.png -> 0
+
+(0.18 % aspect distortion from the native 393x852 pt — the repo's evidence convention.) The four
+`compare-*.png` panels are the raw 1179x2556 frames cropped/zoomed as documented in
+`README-derived-crops.md`; `probe-gait-summary.txt`, `actual-app-*.json`, `audit-gait-hoof.*` and
+`measurement.log` are produced by the three shipped helpers (see `measurement.log`), whose raw
+fleet-side sources are listed there by path.
+
+Raw fleet-side outputs (not committed, 50 frames + logs):
+`/Users/jirathip/.config/fleet-operations/run/corral/evidence/impl530-hoof/` — including the
+11-marker herd driver runs (`herd-evidence-head.log`, `herd-evidence-head-offline.log`,
+`herd-evidence-base-offline.log`, all exit 0) and the probe battery (`probe-gait.log`,
+`PROBE_EXIT=0`, `probe-gait/commands.json`).
+
+No frame, still, or derivative of the owner's video is used anywhere in this directory; the
+video was inspected read-only on the owning machine for diagnosis only.

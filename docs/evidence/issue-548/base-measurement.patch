@@ -1,0 +1,126 @@
+diff --git a/ios/FleetNotifier/UI/Herd/HerdView.swift b/ios/FleetNotifier/UI/Herd/HerdView.swift
+index 973de8c..813aaf2 100644
+--- a/ios/FleetNotifier/UI/Herd/HerdView.swift
++++ b/ios/FleetNotifier/UI/Herd/HerdView.swift
+@@ -158,6 +158,8 @@ struct HerdView: View {
+                 }
+             }
+         }
++        .coordinateSpace(name: "g548")
++        .onPreferenceChange(HerdRailFrames.self) { frames in print("G548_FRAMES \(frames)") }
+         .onAppear { if motionEnabled { clock.start() } }
+         // #457/#526: report the resolved lighting up to FleetView — the
+         // shared filter sheet's Herd context styles itself from this value,
+@@ -330,7 +332,8 @@ struct HerdView: View {
+             if !rail.isEmpty {
+                 ScrollView(.horizontal) {
+                     LazyHStack(alignment:.top,spacing:10) {
+-                        ForEach(rail) { horse in horseButton(horse,rail:true) }
++                        ForEach(rail) { horse in horseButton(horse,rail:true)
++                            .background(GeometryReader { proxy in Color.clear.preference(key: HerdRailFrames.self, value: [horse.name: proxy.frame(in: .named("g548"))]) }) }
+                     }.padding(.horizontal,12)
+                 }.scrollIndicators(.hidden)
+             } else {
+@@ -374,7 +377,8 @@ struct HerdView: View {
+                             .ranchChromeSurface(ranchTokens, cornerRadius: 8)
+                         ScrollView(.vertical) {
+                             LazyVGrid(columns:[GridItem(.adaptive(minimum:dynamicType.isAccessibilitySize ? width-32 : 156),spacing:6)],spacing:8) {
+-                                ForEach(paddock.field) { horse in horseButton(horse,rail:false) }
++                                ForEach(paddock.field) { horse in horseButton(horse,rail:false)
++                                    .background(GeometryReader { proxy in Color.clear.preference(key: HerdRailFrames.self, value: [horse.name: proxy.frame(in: .named("g548"))]) }) }
+                             }.padding(.vertical,8)
+                         }
+                     }.padding(.horizontal,12).frame(width:width).id(paddock.id)
+@@ -685,3 +689,10 @@ func herdCountsAccessibilityLabel(_ horses:[HerdHorse]) -> String {
+         .map { state in "\(horses.filter { $0.state == state }.count) \(state.rawValue)" }
+         .joined(separator:", ")
+ }
++
++struct HerdRailFrames: PreferenceKey {
++    static var defaultValue: [String: CGRect] { [:] }
++    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
++        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
++    }
++}
+diff --git a/ios/FleetNotifierTests/HerdTests.swift b/ios/FleetNotifierTests/HerdTests.swift
+index 917dfc8..bc9edec 100644
+--- a/ios/FleetNotifierTests/HerdTests.swift
++++ b/ios/FleetNotifierTests/HerdTests.swift
+@@ -1903,3 +1903,77 @@ final class ContextualFilterSheetTests: XCTestCase {
+         }
+     }
+ }
++
++// MARK: - #548 reserved rail zone
++
++@MainActor
++final class HerdRailZoneTests: XCTestCase {
++    private final class Frames {
++        var values: [String: CGRect] = [:]
++    }
++
++    private func fleet(_ state: String) -> [HerdHorse] {
++        var horses = (0..<15).map { index in
++            HerdHorse(agent: Agent(agentId: "548-field-\(index)", state: .idle,
++                                   workspace: Workspace(repo: "canter"), displayName: "field-\(index)"),
++                      hostProfileID: nil, hostName: nil, disconnected: false)
++        }
++        if state != "empty" {
++            horses.append(HerdHorse(agent: Agent(agentId: "548-rail", state: .blocked,
++                                                  workspace: Workspace(repo: "canter"), displayName: "rail-horse"),
++                                     hostProfileID: nil, hostName: nil, disconnected: state == "last-known"))
++        }
++        return horses
++    }
++
++    private func render(_ state: String, night: Bool, type: DynamicTypeSize = .large) async throws -> [String: CGRect] {
++        let defaults = UserDefaults.standard
++        let saved = defaults.object(forKey: "herdEnvironment")
++        defaults.set(night ? "Night" : "Day", forKey: "herdEnvironment")
++        defer {
++            if let saved { defaults.set(saved, forKey: "herdEnvironment") }
++            else { defaults.removeObject(forKey: "herdEnvironment") }
++        }
++        let frames = Frames()
++        let theme = ThemeStore(reduceMotionProvider: { true })
++        let view = HerdView(horses: fleet(state), obscured: false, select: { _ in })
++            .environmentObject(theme)
++            .environment(\.dynamicTypeSize, type)
++            .onPreferenceChange(HerdRailFrames.self) { frames.values = $0 }
++        let controller = UIHostingController(rootView: view)
++        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
++        let window = UIWindow(windowScene: scene)
++        window.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
++        window.overrideUserInterfaceStyle = night ? .dark : .light
++        window.rootViewController = controller
++        window.makeKeyAndVisible()
++        defer { window.isHidden = true }
++        try await Task.sleep(for: .milliseconds(1200))
++        let format = UIGraphicsImageRendererFormat.default()
++        format.scale = 1
++        let image = UIGraphicsImageRenderer(bounds: window.bounds, format: format).image { _ in
++            window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
++        }
++        let name = "\(night ? "night" : "day")-\(state)-\(type)"
++        let attachment = XCTAttachment(image: image)
++        attachment.name = "548-" + name
++        attachment.lifetime = .keepAlways
++        add(attachment)
++        let directory = try XCTUnwrap(FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first)
++            .appendingPathComponent("g548-evidence")
++        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
++        try XCTUnwrap(image.pngData()).write(to: directory.appendingPathComponent(name + ".png"))
++        print("G548_MEASURE \(name) safeTop=\(window.safeAreaInsets.top) frames=\(frames.values)")
++        return frames.values
++    }
++
++    func testReservedZoneKeepsFirstHorseRowFixed() async throws {
++        for night in [false, true] {
++            for state in ["empty", "blocked", "last-known"] {
++                let frames = try await render(state, night: night)
++                XCTAssertNotNil(frames["field-0"])
++            }
++        }
++        _ = try await render("blocked", night: false, type: .accessibility3)
++    }
++}

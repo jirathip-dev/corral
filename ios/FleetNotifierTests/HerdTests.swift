@@ -256,6 +256,157 @@ final class HerdTests: XCTestCase {
     }
 }
 
+
+// MARK: - #548 reserved rail zone
+
+@MainActor
+final class HerdRailZoneTests: XCTestCase {
+    private final class Frames {
+        var values: [String: CGRect] = [:]
+    }
+
+    private func fleet(_ state: String) -> [HerdHorse] {
+        var horses = (0..<15).map { index in
+            HerdHorse(agent: Agent(agentId: "548-field-\(index)", state: .idle,
+                                   workspace: Workspace(repo: "canter"), displayName: "field-\(index)"),
+                      hostProfileID: nil, hostName: nil, disconnected: false)
+        }
+        if state != "empty" {
+            horses.append(HerdHorse(agent: Agent(agentId: "548-rail", state: .blocked,
+                                                  workspace: Workspace(repo: "canter"), displayName: "rail-horse"),
+                                     hostProfileID: nil, hostName: nil, disconnected: state == "last-known"))
+        }
+        return horses
+    }
+
+    private func render(_ state: String, night: Bool, type: DynamicTypeSize = .large) async throws -> [String: CGRect] {
+        let defaults = UserDefaults.standard
+        let saved = defaults.object(forKey: "herdEnvironment")
+        defaults.set(night ? "Night" : "Day", forKey: "herdEnvironment")
+        defer {
+            if let saved { defaults.set(saved, forKey: "herdEnvironment") }
+            else { defaults.removeObject(forKey: "herdEnvironment") }
+        }
+        let frames = Frames()
+        let theme = ThemeStore(reduceMotionProvider: { true })
+        let view = HerdView(horses: fleet(state), obscured: false, select: { _ in })
+            .environmentObject(theme)
+            .environment(\.dynamicTypeSize, type)
+            .onPreferenceChange(HerdRailFrames.self) { frames.values = $0 }
+        let controller = UIHostingController(rootView: view)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
+        window.overrideUserInterfaceStyle = night ? .dark : .light
+        window.rootViewController = controller
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        try await Task.sleep(for: .milliseconds(1200))
+        let name = "\(night ? "night" : "day")-\(state)-\(type)"
+        try capture(window, name: name)
+        let measured = frames.values
+        print("G548_MEASURE \(name) safeTop=\(window.safeAreaInsets.top) frames=\(measured)")
+        if type == .accessibility3 && state == "blocked" && !night {
+            let scroll = try XCTUnwrap(scrollViews(window).max {
+                $0.contentSize.height - $0.bounds.height < $1.contentSize.height - $1.bounds.height
+            })
+            XCTAssertGreaterThan(scroll.contentSize.height - scroll.bounds.height, 200)
+            scroll.setContentOffset(CGPoint(x: 0, y: 200), animated: false)
+            try await Task.sleep(for: .milliseconds(300))
+            let before = try XCTUnwrap(measured["field-0"])
+            let after = try XCTUnwrap(frames.values["field-0"])
+            XCTAssertEqual(before.minY - after.minY, 200, accuracy: 0.5,
+                           "the real accessibility column scroll must expose the paddock")
+            try capture(window, name: name + "-scrolled")
+            print("G548_SCROLL before=\(before.minY) after=\(after.minY) offset=\(scroll.contentOffset.y)")
+        }
+        return measured
+    }
+
+    private func scrollViews(_ view: UIView) -> [UIScrollView] {
+        ((view as? UIScrollView).map { [$0] } ?? []) + view.subviews.flatMap { scrollViews($0) }
+    }
+
+    private func capture(_ window: UIWindow, name: String) throws {
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(bounds: window.bounds, format: format).image { _ in
+            window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+        }
+        let attachment = XCTAttachment(image: image)
+        attachment.name = "548-" + name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        let directory = try XCTUnwrap(FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first)
+            .appendingPathComponent("g548-evidence")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try XCTUnwrap(image.pngData()).write(to: directory.appendingPathComponent(name + ".png"))
+    }
+
+    func testReservedZoneKeepsFirstHorseRowFixed() async throws {
+        for type in [DynamicTypeSize.large, .accessibility3] {
+            for night in [false, true] {
+                var firstRows: [CGFloat] = []
+                var heights: [CGFloat] = []
+                for state in ["empty", "blocked", "last-known"] {
+                    let frames = try await render(state, night: night, type: type)
+                    let first = try XCTUnwrap(frames["field-0"])
+                    let zone = try XCTUnwrap(frames["rail-zone"])
+                    firstRows.append(first.minY)
+                    heights.append(zone.height)
+                    XCTAssertGreaterThan(zone.height, 108, "reserve the card, not just horse art")
+                    XCTAssertEqual(first.minY, zone.maxY + 8, accuracy: 0.5,
+                                   "the first horse row starts just below the reserved zone")
+                    if state == "empty" {
+                        XCTAssertNil(frames["rail-horse"])
+                    } else {
+                        let card = try XCTUnwrap(frames["rail-horse"])
+                        XCTAssertEqual(card.minY, zone.minY, accuracy: 0.01,
+                                       "rail cards are top-aligned inside the reserved zone")
+                        XCTAssertLessThanOrEqual(card.maxY, zone.maxY + 0.5, "rail card chrome must not clip")
+                    }
+                }
+                XCTAssertEqual(Set(firstRows).count, 1, "rail occupancy must not move the first horse row")
+                XCTAssertEqual(Set(heights).count, 1, "reserve identical card height in all three states")
+            }
+        }
+    }
+
+    func testRepositoryCaptionOnlyAddsPositiveRailCounts() throws {
+        for state in ["empty", "blocked", "last-known"] {
+            let paddock = try XCTUnwrap(HerdProjection.paddocks(fleet(state)).first)
+            XCTAssertEqual(herdRepositoryCaption(paddock),
+                           state == "empty" ? "canter · 15 here" : "canter · 15 here · 1 at rail")
+        }
+    }
+
+    func testEmptyRailHasNoLabelOrFenceAndKeepsTheSharedDestination() throws {
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "HerdView.swift", withExtension: "txt"))
+        let source = try String(contentsOf: url, encoding: .utf8).filter { !$0.isWhitespace }
+        let start = try XCTUnwrap(source.range(of: "privatevarrailZone:someView{"))
+        let end = try XCTUnwrap(source.range(of: "privatevarrepositoryChip:", range: start.upperBound..<source.endIndex))
+        let zone = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertFalse(zone.contains("FRONTRAIL"), "empty rail must never bring back the label")
+        XCTAssertFalse(zone.contains("RanchFrontRail("), "empty rail must never bring back the placeholder fence")
+        XCTAssertTrue(zone.contains("if!rail.isEmpty{ScrollView(.horizontal)"))
+        XCTAssertTrue(zone.contains("ForEach(rail){horseinhorseButton(horse,rail:true)}"))
+        XCTAssertTrue(zone.contains(".accessibilityLabel(\"Globalblockedfrontrail\")"))
+        XCTAssertTrue(zone.contains(".accessibilityHidden(rail.isEmpty)"))
+        let buttonStart = try XCTUnwrap(source.range(of: "privatefunchorseButton("))
+        let buttonEnd = try XCTUnwrap(source.range(of: "funcherdRepositoryCaption(", range: buttonStart.upperBound..<source.endIndex))
+        let button = String(source[buttonStart.lowerBound..<buttonEnd.lowerBound])
+        XCTAssertTrue(button.contains("Button{select(horse)}label:"))
+        XCTAssertTrue(button.contains("ifrail{RanchFrontRail(night:lighting.night).offset(y:9)"))
+        XCTAssertTrue(button.contains("Text(\"⚑\")"))
+        XCTAssertTrue(button.contains(".disabled(horse.disconnected)"))
+        let chip = String(source[end.lowerBound..<buttonStart.lowerBound])
+        XCTAssertTrue(chip.contains("Text(herdRepositoryCaption(paddock))"))
+        XCTAssertTrue(chip.contains("VStack(spacing:0){repositoryChiprailZone.layoutPriority(1)pager(width:width)}"))
+        XCTAssertTrue(chip.contains("ScrollView(.vertical){column}"))
+    }
+}
+
+
 // MARK: - #456 full-screen Herd shell (ranch behind safe areas, floating chrome)
 
 /// Source-wiring pins over the bundled FleetViews/HerdView/RanchEnvironment
@@ -397,8 +548,8 @@ final class FullScreenHerdShellWiringTests: XCTestCase {
                       "an empty scope keeps its explicit empty state")
         XCTAssertTrue(herd.contains("Text(scopeSummary).font(.caption2).foregroundStyle(ranchTokens.mutedColor).lineLimit(1).truncationMode(.tail)"),
                       "long repository scope summaries stay single-line and truncate (ranch ink, #457)")
-        XCTAssertTrue(herd.contains("Text(paddock.title).font(.headline).lineLimit(1)"),
-                      "long paddock titles stay single-line")
+        XCTAssertTrue(herd.contains("Text(herdRepositoryCaption(paddock)).font(.caption2).foregroundStyle(ranchTokens.inkColor).lineLimit(1)"),
+                      "long repository chip captions stay single-line")
         XCTAssertFalse(herd.contains("Text(lighting.explanation)"),
                        "the summary bar no longer renders the Day/Night explanation (#491)")
     }
@@ -1043,6 +1194,11 @@ final class FullScreenHerdShellAccessibilityLayoutTests: XCTestCase {
         let image: UIImage
         let safeTop: CGFloat
         let safeBottom: CGFloat
+        let contentTop: CGFloat
+    }
+
+    private final class ContentBoundary {
+        var top: CGFloat?
     }
 
     /// Renders the REAL HerdView in a hosted window at `size` with the
@@ -1054,6 +1210,7 @@ final class FullScreenHerdShellAccessibilityLayoutTests: XCTestCase {
                         environment: HerdEnvironmentChoice = .day,
                         horses: [HerdHorse]? = nil) async throws -> Snapshot {
         UserDefaults.standard.set(environment.rawValue, forKey: "herdEnvironment")
+        let boundary = ContentBoundary()
         // #528: the real composition renders the compact connection
         // indicator too (a single live host — the widest chrome row).
         let scene = HerdView(horses: horses ?? fleet(), obscured: false,
@@ -1064,6 +1221,7 @@ final class FullScreenHerdShellAccessibilityLayoutTests: XCTestCase {
                              select: { _ in })
             .environmentObject(ThemeStore())
             .environment(\.dynamicTypeSize, dynamicType)
+            .onPreferenceChange(HerdRailFrames.self) { boundary.top = $0["repository-chip"]?.minY }
         let controller = UIHostingController(rootView: AnyView(scene))
         let windowScene = UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }.first
@@ -1098,7 +1256,8 @@ final class FullScreenHerdShellAccessibilityLayoutTests: XCTestCase {
         }
         let canvas = try XCTUnwrap(Canvas(image), "the hosted HerdView must render a bitmap")
         return Snapshot(canvas: canvas, image: image, safeTop: window.safeAreaInsets.top,
-                        safeBottom: window.safeAreaInsets.bottom)
+                        safeBottom: window.safeAreaInsets.bottom,
+                        contentTop: try XCTUnwrap(boundary.top) + window.safeAreaInsets.top)
     }
 
     /// The floating scope-chrome contract at any Dynamic Type size: the pill
@@ -1287,7 +1446,9 @@ final class FullScreenHerdShellAccessibilityLayoutTests: XCTestCase {
         let card = try XCTUnwrap(columns.compactMap { band(column: $0, from: pillBand.bottom + 2) }
                                     .min(by: { $0.bottom < $1.bottom }),
                                  "the counts summary card must render below the pill")
-        return (card.top, card.bottom)
+        // #548: the new chip is directly below the HUD. Stop at its measured
+        // origin even when similarly coloured sky joins the two pixel bands.
+        return (card.top, min(card.bottom, Int(snapshot.contentTop)))
     }
 
     /// #491/#526: the counts summary card's measured box — the detection
@@ -1764,8 +1925,8 @@ final class ContextualFilterSheetTests: XCTestCase {
         let nav = try slice(herd, from: "privatevarnavigation", to: "funcmovePage(")
         XCTAssertTrue(nav.contains(".ranchChromeSurface(ranchTokens)"),
                       "the paddock pager takes the ranch chrome surface (#526)")
-        XCTAssertEqual(herd.components(separatedBy: ".ranchChromeSurface(ranchTokens,cornerRadius:").count - 1, 3,
-                       "front-rail header, paddock header and agent cards ride the ranch chrome (#526)")
+        XCTAssertEqual(herd.components(separatedBy: ".ranchChromeSurface(ranchTokens,cornerRadius:").count - 1, 2,
+                       "repository chip and agent cards ride the ranch chrome; empty-rail header is gone (#548)")
         XCTAssertTrue(herd.contains(".foregroundStyle(ranchTokens.inkColor)"),
                       "the flock headers/cards take the ranch ink (#526)")
         // The environment axis never WRITES the app theme's flavor

@@ -1,0 +1,32 @@
+[
+  {
+    "path": "ios/FleetNotifier/UI/Herd/HerdModel.swift",
+    "sha256": "59fb4806ea6f45712908258424b5ea6e9c2e0e7a7418499375984cb8c8d7bc59",
+    "unchanged": true
+  },
+  {
+    "path": "ios/FleetNotifier/UI/Herd/RanchEnvironment.swift",
+    "sha256": "b94b31032ad300e5487191d496ba99235cf956d10bf7730f2092ffcdea0729ba",
+    "unchanged": true
+  },
+  {
+    "path": "ios/FleetNotifier/UI/Herd/HerdArt.swift",
+    "sha256": "36e87d415b4841ecbedbd5db628f96117201efcea738267a7984846398ae23c7",
+    "unchanged": true
+  },
+  {
+    "path": "ios/FleetNotifier/UI/Herd/HerdAmbientPolicy.swift",
+    "sha256": "59e0863c9ab3d8daab38b1addd201c5aa3f4135eebf2a7146be0dd99a92cffe0",
+    "unchanged": true
+  },
+  {
+    "path": "ios/FleetNotifier/UI/Herd/HerdEnvironmentChoice.swift",
+    "sha256": "b4bdd40c969d7c513971c67ac3d502296333f357b906c4e684d19e1cdfa1e3a0",
+    "unchanged": true
+  },
+  {
+    "path": "ios/FleetNotifierTests/FleetNotifierTests.swift",
+    "sha256": "6a4905105879547571661d128fc06ac654ae2aef9c7bfcee815d5f2f5a89e5e7",
+    "unchanged": true
+  }
+]

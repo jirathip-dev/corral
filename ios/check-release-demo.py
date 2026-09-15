@@ -539,7 +539,8 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # #397 = 9be9bacf…, integration = 1978fc18…); recomputed by the
     # canonical algorithm over THIS merged working tree — membership check
     # still 40/40.
-    "62e3592585b5c06dcbccbec753317e658df7b287dd2092b0ba9dad918e88475f"
+    # 2026-09-15 #548: measured reserved rail zone and compact repository chip.
+    "6d553d20f62803d2212e20b8dab9b90e6500135b23577e01f914fcf0805e03ee"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

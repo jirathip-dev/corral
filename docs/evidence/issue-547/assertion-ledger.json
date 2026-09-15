@@ -1,0 +1,156 @@
+[
+  {
+    "file": "ios/FleetNotifierTests/PreflightRetryTests.swift",
+    "base_line": 270,
+    "old": "        XCTAssertEqual(requests(urls[1].appendingPathComponent(\"/events\")), 0,\n                       \"a mismatch never opens a stream\")",
+    "new": "        let eventsAtMismatch = requests(urls[1].appendingPathComponent(\"/events\"))\n        XCTAssertLessThanOrEqual(eventsAtMismatch, 1, \"at most the speculative owner\")\n        XCTAssertTrue((try XCTUnwrap(coordinator.store(profileID: profiles[1].id))).agents.isEmpty)\n        XCTAssertNil((try XCTUnwrap(coordinator.store(profileID: profiles[1].id))).lastEventId)\n        XCTAssertNotEqual((try XCTUnwrap(coordinator.store(profileID: profiles[1].id))).connectionState, .connected)\n        XCTAssertFalse(coordinator.allowsLiveWork(profileID: profiles[1].id))",
+    "why": "Parallel transport replaces serial waiting; verification, no application/no Live, and single ownership remain mandatory."
+  },
+  {
+    "file": "ios/FleetNotifierTests/PreflightRetryTests.swift",
+    "base_line": 278,
+    "old": "        XCTAssertEqual(requests(urls[1].appendingPathComponent(\"/events\")), 0)\n        let bStore",
+    "new": "        XCTAssertEqual(requests(urls[1].appendingPathComponent(\"/events\")), eventsAtMismatch, \"terminal mismatch never reopens\")\n        let bStore",
+    "why": "Parallel transport replaces serial waiting; verification, no application/no Live, and single ownership remain mandatory."
+  },
+  {
+    "file": "ios/FleetNotifierTests/PreflightRetryTests.swift",
+    "base_line": 321,
+    "old": "        XCTAssertEqual(requests(urls[1].appendingPathComponent(\"/events\")), 0,\n                       \"an unverified host never opens a stream\")",
+    "new": "        XCTAssertEqual(requests(urls[1].appendingPathComponent(\"/events\")), 1, \"one speculative stream, despite repeated key retries\")\n        XCTAssertTrue((try XCTUnwrap(coordinator.store(profileID: profiles[1].id))).agents.isEmpty)\n        XCTAssertNil((try XCTUnwrap(coordinator.store(profileID: profiles[1].id))).lastEventId)\n        XCTAssertNotEqual((try XCTUnwrap(coordinator.store(profileID: profiles[1].id))).connectionState, .connected)\n        XCTAssertFalse(coordinator.allowsLiveWork(profileID: profiles[1].id))",
+    "why": "Parallel transport replaces serial waiting; verification, no application/no Live, and single ownership remain mandatory."
+  },
+  {
+    "file": "ios/FleetNotifierTests/PreflightRetryTests.swift",
+    "base_line": 362,
+    "old": "        XCTAssertEqual(requests(urls[1].appendingPathComponent(\"/events\")), 0)",
+    "new": "        XCTAssertEqual(requests(urls[1].appendingPathComponent(\"/events\")), 1, \"extra starts never stack speculative streams\")\n        XCTAssertTrue((try XCTUnwrap(coordinator.store(profileID: profiles[1].id))).agents.isEmpty)\n        XCTAssertNil((try XCTUnwrap(coordinator.store(profileID: profiles[1].id))).lastEventId)\n        XCTAssertNotEqual((try XCTUnwrap(coordinator.store(profileID: profiles[1].id))).connectionState, .connected)\n        XCTAssertFalse(coordinator.allowsLiveWork(profileID: profiles[1].id))",
+    "why": "Parallel transport replaces serial waiting; verification, no application/no Live, and single ownership remain mandatory."
+  },
+  {
+    "file": "ios/FleetNotifierTests/PreflightRetryTests.swift",
+    "base_line": 547,
+    "old": "        XCTAssertEqual(requests(urls[1].appendingPathComponent(\"/events\")), 0,\n                       \"B never reached SSE before the pull\")",
+    "new": "        XCTAssertEqual(requests(urls[1].appendingPathComponent(\"/events\")), 1, \"B opened transport but is not verified\")\n        XCTAssertTrue((try XCTUnwrap(coordinator.store(profileID: profiles[1].id))).agents.isEmpty)\n        XCTAssertNil((try XCTUnwrap(coordinator.store(profileID: profiles[1].id))).lastEventId)\n        XCTAssertNotEqual((try XCTUnwrap(coordinator.store(profileID: profiles[1].id))).connectionState, .connected)\n        XCTAssertFalse(coordinator.allowsLiveWork(profileID: profiles[1].id))",
+    "why": "Parallel transport replaces serial waiting; verification, no application/no Live, and single ownership remain mandatory."
+  },
+  {
+    "file": "ios/FleetNotifierTests/PreflightRetryTests.swift",
+    "base_line": 709,
+    "old": "        XCTAssertEqual(model.keyContinuityState, .pending, \"fail-closed while unverified\")\n        XCTAssertEqual(requests(Self.hostURL.appendingPathComponent(\"/events\")), 0)",
+    "new": "        XCTAssertEqual(model.keyContinuityState, .pending, \"fail-closed while unverified\")\n        XCTAssertEqual(requests(Self.hostURL.appendingPathComponent(\"/events\")), 1, \"one speculative owner despite repeated starts\")\n        XCTAssertTrue(model.fleet.agents.isEmpty)\n        XCTAssertNil(model.fleet.lastEventId)\n        XCTAssertNotEqual(model.fleet.connectionState, .connected)",
+    "why": "Parallel transport replaces serial waiting; verification, no application/no Live, and single ownership remain mandatory."
+  },
+  {
+    "file": "ios/FleetNotifierTests/PreflightRetryTests.swift",
+    "base_line": 728,
+    "old": "        XCTAssertEqual(requests(Self.hostURL.appendingPathComponent(\"/events\")), 0,\n                       \"a mismatch never opens a stream\")",
+    "new": "        let eventsAtMismatch = requests(Self.hostURL.appendingPathComponent(\"/events\"))\n        XCTAssertLessThanOrEqual(eventsAtMismatch, 1, \"at most the speculative owner\")\n        XCTAssertTrue(model.fleet.agents.isEmpty)\n        XCTAssertNil(model.fleet.lastEventId)\n        XCTAssertNotEqual(model.fleet.connectionState, .connected)\n        XCTAssertFalse(model.fleet.isStreaming)",
+    "why": "Parallel transport replaces serial waiting; verification, no application/no Live, and single ownership remain mandatory."
+  },
+  {
+    "file": "ios/FleetNotifierTests/PreflightRetryTests.swift",
+    "base_line": 736,
+    "old": "        XCTAssertEqual(requests(Self.hostURL.appendingPathComponent(\"/events\")), 0)\n    }",
+    "new": "        XCTAssertEqual(requests(Self.hostURL.appendingPathComponent(\"/events\")), eventsAtMismatch, \"terminal mismatch never reopens\")\n        XCTAssertTrue(model.fleet.agents.isEmpty)\n        XCTAssertNil(model.fleet.lastEventId)\n        XCTAssertNotEqual(model.fleet.connectionState, .connected)\n    }",
+    "why": "Parallel transport replaces serial waiting; verification, no application/no Live, and single ownership remain mandatory."
+  },
+  {
+    "file": "ios/FleetNotifierTests/PreflightRetryTests.swift",
+    "base_line": 762,
+    "old": "        XCTAssertEqual(requests(Self.hostURL.appendingPathComponent(\"/events\")), 0)\n        await model.refreshFleet()",
+    "new": "        XCTAssertEqual(requests(Self.hostURL.appendingPathComponent(\"/events\")), 1, \"transport is open but verification is still required\")\n        XCTAssertTrue(model.fleet.agents.isEmpty)\n        XCTAssertNil(model.fleet.lastEventId)\n        XCTAssertNotEqual(model.fleet.connectionState, .connected)\n        await model.refreshFleet()",
+    "why": "Parallel transport replaces serial waiting; verification, no application/no Live, and single ownership remain mandatory."
+  },
+  {
+    "file": "ios/FleetNotifierTests/PreflightRetryTests.swift",
+    "base_line": 690,
+    "old": "    func testActiveHostRepeatedStartLiveNeverStacksASecondLadder() async {\n        var script: [URL: [PreflightRetryURLProtocol.Outcome]] = [:]",
+    "new": "    func testActiveHostRepeatedStartLiveNeverStacksASecondLadder() async {\n        var script: [URL: [PreflightRetryURLProtocol.Outcome]] = [:]\n        script[Self.hostURL.appendingPathComponent(\"/events\")] = [.holdOpen]",
+    "why": "Hold the now-reachable SSE fixture to count owners, not transport-error retries."
+  },
+  {
+    "file": "ios/FleetNotifierTests/FleetNotifierTests.swift",
+    "base_line": 7009,
+    "old": "        XCTAssertTrue(requests(to: eventsURL).isEmpty,\n                      \"no stream may reach the replacement identity\")",
+    "new": "        let eventsAtMismatch = requests(to: eventsURL).count\n        XCTAssertLessThanOrEqual(eventsAtMismatch, 1, \"only the speculative owner may have opened\")\n        XCTAssertFalse(model.fleet.isStreaming)\n        XCTAssertNotEqual(model.fleet.connectionState, .connected)\n        XCTAssertEqual(model.fleet.lastEventId, 5, \"no replacement frame was applied\")",
+    "why": "Parallel transport replaces serial waiting; verification, no application/no Live, and single ownership remain mandatory."
+  },
+  {
+    "file": "ios/FleetNotifierTests/FleetNotifierTests.swift",
+    "base_line": 7027,
+    "old": "        XCTAssertNil(model.recentsRequest, \"the recents sheet must stay closed\")",
+    "new": "        XCTAssertEqual(requests(to: eventsURL).count, eventsAtMismatch, \"terminal mismatch never reopens\")\n        XCTAssertNil(model.recentsRequest, \"the recents sheet must stay closed\")",
+    "why": "Parallel transport replaces serial waiting; verification, no application/no Live, and single ownership remain mandatory."
+  },
+  {
+    "file": "ios/FleetNotifierTests/FleetNotifierTests.swift",
+    "base_line": 7039,
+    "old": "        await waitUntil(!requests(to: eventsURL).isEmpty)\n        XCTAssertEqual(model.keyContinuityState, .verified)",
+    "new": "        await waitUntil(!requests(to: eventsURL).isEmpty && model.keyContinuityState == .verified)\n        XCTAssertEqual(model.keyContinuityState, .verified)",
+    "why": "Await both independent outcomes, retaining verification assertion."
+  },
+  {
+    "file": "ios/FleetNotifierTests/FleetNotifierTests.swift",
+    "base_line": 13181,
+    "old": "        XCTAssertEqual(PathHintURLProtocol.requestCount(for: events), 0,\n                       \"an unverified pinned host must never open a stream \u2014 the hint may not bypass the trust gate (#454 AC4)\")",
+    "new": "        XCTAssertEqual(PathHintURLProtocol.requestCount(for: events), 1, \"path hints never stack speculative streams\")\n        XCTAssertNil(fixture.model.fleet.lastEventId)\n        XCTAssertTrue(fixture.model.fleet.agents.isEmpty)\n        XCTAssertNotEqual(fixture.model.fleet.connectionState, .connected)",
+    "why": "Parallel transport replaces serial waiting; verification, no application/no Live, and single ownership remain mandatory."
+  },
+  {
+    "file": "ios/FleetNotifierTests/FleetNotifierTests.swift",
+    "base_line": 13167,
+    "old": "        scriptHostKey(Self.wedgedHost, keyIndex: 0, status: 500)\n\n        fixture.model.startLive()",
+    "new": "        scriptHostKey(Self.wedgedHost, keyIndex: 0, status: 500)\n        PathHintURLProtocol.script([.held], for: events)\n\n        fixture.model.startLive()",
+    "why": "Hold newly reachable transport to count owners, not transport-error retries."
+  },
+  {
+    "file": "ios/FleetNotifierTests/FleetNotifierTests.swift",
+    "base_line": 13208,
+    "old": "        XCTAssertTrue(mismatched, \"a different pinned key must fail closed\")\n        XCTAssertEqual(PathHintURLProtocol.requestCount(for: hostKey), 1)",
+    "new": "        XCTAssertTrue(mismatched, \"a different pinned key must fail closed\")\n        let eventsAtMismatch = PathHintURLProtocol.requestCount(for: events)\n        XCTAssertLessThanOrEqual(eventsAtMismatch, 1)\n        XCTAssertEqual(PathHintURLProtocol.requestCount(for: hostKey), 1)",
+    "why": "Parallel transport replaces serial waiting; verification, no application/no Live, and single ownership remain mandatory."
+  },
+  {
+    "file": "ios/FleetNotifierTests/FleetNotifierTests.swift",
+    "base_line": 13214,
+    "old": "        XCTAssertEqual(PathHintURLProtocol.requestCount(for: events), 0,\n                       \"no stream may reach a mismatched host (#454 AC4)\")",
+    "new": "        XCTAssertEqual(PathHintURLProtocol.requestCount(for: events), eventsAtMismatch,\n                       \"terminal mismatch never reopens for a path hint\")\n        XCTAssertNil(fixture.model.fleet.lastEventId)\n        XCTAssertTrue(fixture.model.fleet.agents.isEmpty)\n        XCTAssertNotEqual(fixture.model.fleet.connectionState, .connected)\n        XCTAssertFalse(fixture.model.fleet.isStreaming)",
+    "why": "Parallel transport replaces serial waiting; verification, no application/no Live, and single ownership remain mandatory."
+  },
+  {
+    "file": "ios/FleetNotifierTests/FleetNotifierTests.swift",
+    "base_line": 13931,
+    "old": "            script: [hostKeyA: (500, Data(\"down\".utf8), false)],",
+    "new": "            script: [hostKeyA: (500, Data(\"down\".utf8), false), eventsA: (200, Data(), true)],",
+    "why": "Hold newly reachable transport to count owners, not transport-error retries."
+  },
+  {
+    "file": "ios/FleetNotifierTests/FleetNotifierTests.swift",
+    "base_line": 13937,
+    "old": "        XCTAssertEqual(requestCount(eventsA), 0,\n                       \"an unverified pinned host must never open a stream (#451 B4)\")",
+    "new": "        XCTAssertEqual(requestCount(eventsA), 1, \"one speculative stream before background\")\n        XCTAssertNil(model.fleet.lastEventId)\n        XCTAssertTrue(model.fleet.agents.isEmpty)\n        XCTAssertNotEqual(model.fleet.connectionState, .connected)",
+    "why": "Parallel transport replaces serial waiting; verification, no application/no Live, and single ownership remain mandatory."
+  },
+  {
+    "file": "ios/FleetNotifierTests/FleetNotifierTests.swift",
+    "base_line": 13955,
+    "old": "        await waitUntil(requestCount(eventsA) >= 1, timeout: 6)\n        await settle(0.5)\n        XCTAssertEqual(requestCount(eventsA), 1,\n                       \"exactly one stream owner after the foreground re-verification (#453)\")",
+    "new": "        await waitUntil(requestCount(eventsA) == 2, timeout: 6)\n        await settle(0.5)\n        XCTAssertEqual(requestCount(eventsA), 2,\n                       \"one speculative owner per foreground, never stacked (#453)\")",
+    "why": "Parallel transport replaces serial waiting; verification, no application/no Live, and single ownership remain mandatory."
+  },
+  {
+    "file": "ios/FleetNotifierTests/FleetNotifierTests.swift",
+    "base_line": 13978,
+    "old": "        XCTAssertEqual(requestCount(eventsA), 0,\n                       \"a mismatched pinned host must never open a stream (#399 B4)\")",
+    "new": "        let eventsAtMismatch = requestCount(eventsA)\n        XCTAssertLessThanOrEqual(eventsAtMismatch, 1)\n        XCTAssertNil(model.fleet.lastEventId)\n        XCTAssertTrue(model.fleet.agents.isEmpty)\n        XCTAssertNotEqual(model.fleet.connectionState, .connected)",
+    "why": "Parallel transport replaces serial waiting; verification, no application/no Live, and single ownership remain mandatory."
+  },
+  {
+    "file": "ios/FleetNotifierTests/FleetNotifierTests.swift",
+    "base_line": 13990,
+    "old": "        XCTAssertEqual(requestCount(eventsA), 0,\n                       \"returning to active must never bypass the trust check (#453)\")",
+    "new": "        XCTAssertEqual(requestCount(eventsA), eventsAtMismatch,\n                       \"returning to active must never reopen after mismatch (#453)\")",
+    "why": "Parallel transport replaces serial waiting; verification, no application/no Live, and single ownership remain mandatory."
+  }
+]

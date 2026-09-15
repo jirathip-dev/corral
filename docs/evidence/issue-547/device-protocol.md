@@ -1,19 +1,23 @@
 # #547 physical-device capture protocol (NOT EXECUTED)
 
-Status: blocked before instrumentation. This protocol is a handoff, not evidence
-that instrumentation or the reconnect change shipped. See `.report.md` for the
-file-fence conflicts. No physical iPhone was attached (`xcrun devicectl list
-devices`: `No devices found.`). No timing samples have been collected.
+Status: instrumentation is implemented in round 2; this PHYSICAL capture has NOT
+been executed. `xcrun devicectl list devices` still reports `No devices found.`
+Simulator fixture samples are recorded separately in `.report.md`; they are not
+physical-device or loaded-host measurements.
 
 ## Prerequisites / human gates
 
-- Authorize a real row-visibility hook in the board renderer; a model publish,
-  row projection, or arbitrary next-main-queue callback is NOT row visibility.
-- Complete and verify release-active, privacy-safe instrumentation. Every event
-  needs a monotonic timestamp, an ephemeral reconnect-attempt ID, an ephemeral
-  per-host discriminator, and a fixed stage name. Never log URLs, profile names,
-  tokens, signing keys, agent IDs, or payloads. Confirm the actual category and
-  stage names from the delivered implementation before capturing.
+- Use the round-2 release-active logger: subsystem `com.corral.fleetnotifier`,
+  category `foreground-reconnect`. Format: `attempt=<random UUID> stage=<fixed
+  name> uptime=<monotonic seconds>`. Each host store owns an independent attempt;
+  there is no durable host/profile identifier in the record. Measure one host
+  per timing block so attempts can be attributed without logging private IDs.
+- Stage names: `path_ready`, `key_request`, `key_response`, `sse_200`,
+  `frame_received`, `frame_applied`, `row_visible`; `retained_row_visible` is
+  separate. `row_visible` is SwiftUI row appearance/update for the exact first
+  applied revision, NOT GPU scan-out. A collapsed/offscreen/coalesced revision
+  can have no row mark; record it as missing, never infer visibility from model
+  publication. No arbitrary queued callback substitutes for the row hook.
 - Prepare two owner-authorized physical-device builds: the pinned base
   `ed24e6f57075acf1e5b082c7cd29a931dfbfbd62` plus instrumentation ONLY (serial
   control), and the implemented head with IDENTICAL instrumentation. Record both
@@ -69,7 +73,7 @@ devices`: `No devices found.`). No timing samples have been collected.
 Required marks: path-ready, host-key request, host-key response, SSE HTTP 200,
 first frame received, first accepted frame applied, updated row visible.
 
-The stream and key-check branches overlap in the proposed implementation; they
+The stream and key-check branches overlap in the implemented reconnect; they
 are NOT a serial timing chain. Calculate each sample's durations first, then
 use `statistics.median` across the valid samples for that metric (never subtract
 aggregate timestamp medians). Report sample counts per metric:
@@ -104,6 +108,7 @@ or retain these four rows with a column for every duration listed above.
 | Serial control SHA: pending | Loaded Bazzite | NOT RUN | missing | missing | missing | missing | missing | missing | missing | missing | missing |
 | Implemented SHA: pending | Loaded Bazzite | NOT RUN | missing | missing | missing | missing | missing | missing | missing | missing | missing |
 
-No simulator, network, loaded-host, or physical-device timing result is claimed
-by this document. The exact workload and instrumentation must be supplied before
-this protocol can become an executable, reproducible capture gate.
+No network, loaded-host, or physical-device result is claimed by this document.
+The exact owner-authorized workload and instrumented serial control build remain
+prerequisites. Simulator fixture medians in the implementation report measure
+local URLProtocol gates and SwiftUI updates, not network latency or speedup.

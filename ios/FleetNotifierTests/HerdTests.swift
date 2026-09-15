@@ -71,10 +71,41 @@ final class HerdTests: XCTestCase {
             if state == .done { XCTAssertEqual(horse.pose(elapsed: 25, reduceMotion: false), .done) }
             if state == .idle { XCTAssertEqual(horse.pose(elapsed: 25-horse.identity.phase, reduceMotion: false), .graze) }
             let stale = HerdHorse(agent: horse.agent, hostProfileID: nil, hostName: nil, disconnected: true)
-            XCTAssertEqual(stale.state, .unknown)
-            XCTAssertEqual(stale.pose(elapsed: 25, reduceMotion: false), .unknown)
+            // #551 r2: a retained row presents its LAST-KNOWN token — never a
+            // recast to `unknown`; liveness is withheld by the static gait, the
+            // zero roam and the `last known` caption instead.
+            XCTAssertEqual(stale.state, state)
+            XCTAssertEqual(stale.pose(elapsed: 25, reduceMotion: true),
+                           horse.pose(elapsed: 25, reduceMotion: true),
+                           "static art follows the last-known state")
+            // #551 r3: the retained row's `reduceMotion: false` path stays
+            // covered too (the r2 ledger adjustment had narrowed this to the
+            // short-circuiting `reduceMotion: true` form): the retained row
+            // keeps the live row's static pose, minus the clock-driven grazing
+            // window, so its art never depends on the clock.
+            let livePose = horse.pose(elapsed: 25, reduceMotion: false)
+            XCTAssertEqual(stale.pose(elapsed: 25, reduceMotion: false),
+                           livePose == .graze ? .stand : livePose,
+                           "the retained row never takes the clock-driven graze")
+            if state == .idle {
+                let grazeTick = 55 - horse.identity.phase
+                XCTAssertEqual(horse.pose(elapsed: grazeTick, reduceMotion: false), .graze,
+                               "the live idle row still grazes in its window")
+                XCTAssertEqual(stale.pose(elapsed: grazeTick, reduceMotion: false), .stand,
+                               "the retained idle row never grazes (HerdModel graze guard)")
+                // #551 r3: the idle vertical bob is fenced exactly like `roam` —
+                // sampled across the clock sweep the verified row moves and the
+                // retained row is constant.
+                let sweep = stride(from: 0.0, through: 8.0, by: 0.5).map { $0 }
+                let liveBob = Set(sweep.map { horse.bob(elapsed: $0, reduceMotion: false, enabled: true) })
+                let staleBob = Set(sweep.map { stale.bob(elapsed: $0, reduceMotion: false, enabled: true) })
+                XCTAssertGreaterThan(liveBob.count, 1, "a verified idle row still bobs")
+                XCTAssertEqual(staleBob, [0], "a retained idle row's offset is constant")
+            }
+            XCTAssertEqual(stale.gait(elapsed: 25, reduceMotion: false), .standstill)
             XCTAssertEqual(stale.roam(elapsed: 25, enabled: true), 0)
             XCTAssertTrue(stale.statusText.contains("last known"))
+            XCTAssertTrue(stale.statusText.hasPrefix(state.rawValue))
         }
     }
 
@@ -372,6 +403,49 @@ final class HerdRailZoneTests: XCTestCase {
         }
     }
 
+    func testRepositoryChipSharesHUDRhythmAndKeepsIntrinsicChrome() async throws {
+        for type in [DynamicTypeSize.large, .accessibility3, .accessibility5] {
+            for night in [false, true] {
+                let frames = try await render("blocked", night: night, type: type)
+                let row = try XCTUnwrap(frames["hud-row"])
+                let counts = try XCTUnwrap(frames["hud-counts"])
+                let chip = try XCTUnwrap(frames["repository-surface"])
+                let text = try XCTUnwrap(frames["repository-text"])
+                let firstGap = counts.minY - row.maxY
+                let secondGap = chip.minY - counts.maxY
+                XCTAssertEqual(firstGap, 6, accuracy: 0.01, "the existing HUD rhythm stays unchanged")
+                XCTAssertEqual(secondGap, firstGap, accuracy: 0.01, "the chip joins the SAME HUD rhythm")
+                XCTAssertEqual(chip.minX, counts.minX, accuracy: 0.01)
+                XCTAssertLessThanOrEqual(chip.width, counts.width)
+                XCTAssertGreaterThanOrEqual(text.minX - chip.minX, 12 - 0.01)
+                XCTAssertGreaterThanOrEqual(chip.maxX - text.maxX, 12 - 0.01)
+                XCTAssertGreaterThanOrEqual(text.minY - chip.minY, 6 - 0.01)
+                XCTAssertGreaterThanOrEqual(chip.maxY - text.maxY, 6 - 0.01)
+                if type == .large {
+                    XCTAssertLessThan(chip.width, counts.width, "intrinsic chip, not a full-width bar")
+                    XCTAssertGreaterThan(text.height, counts.height - 12,
+                                         "the name text is a step up from the counters")
+                    XCTAssertEqual(chip.height - text.height, 12, accuracy: 0.01)
+                }
+                print("G552_MEASURE night=\(night) type=\(type) filtersToCounts=\(firstGap) countsToChip=\(secondGap) chipWidth=\(chip.width) countsWidth=\(counts.width) textHeight=\(text.height) countsTextHeight=\(counts.height - 12)")
+            }
+        }
+    }
+
+    func testRepositoryChipUsesPrimaryNameAndSecondaryCountFonts() throws {
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "HerdView.swift", withExtension: "txt"))
+        let source = try String(contentsOf: url, encoding: .utf8).filter { !$0.isWhitespace }
+        let start = try XCTUnwrap(source.range(of: "privatevarrepositoryChip:someView{"))
+        let end = try XCTUnwrap(source.range(of: "@ViewBuilderprivatefuncherdColumn(", range: start.upperBound..<source.endIndex))
+        let chip = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(chip.contains("letname=Text(paddock.title).font(.subheadline.weight(.semibold)).foregroundColor(ranchTokens.inkColor)"))
+        XCTAssertTrue(chip.contains("letcounts=Text(herdRepositoryCaption(paddock).dropFirst(paddock.title.count)).font(.caption).foregroundColor(ranchTokens.mutedColor)"))
+        XCTAssertTrue(chip.contains("Text(\"\\(name)\\(counts)\").fixedSize(horizontal:false,vertical:true)"))
+        XCTAssertTrue(chip.contains(".padding(.horizontal,12).padding(.vertical,6).ranchChromeSurface(ranchTokens)"))
+        XCTAssertFalse(chip.contains(".lineLimit("), "long names must not truncate at accessibility sizes")
+        XCTAssertTrue(chip.contains(".accessibilityLabel(herdRepositoryCaption(paddock))"))
+    }
+
     func testRepositoryCaptionOnlyAddsPositiveRailCounts() throws {
         for state in ["empty", "blocked", "last-known"] {
             let paddock = try XCTUnwrap(HerdProjection.paddocks(fleet(state)).first)
@@ -400,7 +474,7 @@ final class HerdRailZoneTests: XCTestCase {
         XCTAssertTrue(button.contains("Text(\"⚑\")"))
         XCTAssertTrue(button.contains(".disabled(horse.disconnected)"))
         let chip = String(source[end.lowerBound..<buttonStart.lowerBound])
-        XCTAssertTrue(chip.contains("Text(herdRepositoryCaption(paddock))"))
+        XCTAssertTrue(chip.contains("Text(herdRepositoryCaption(paddock).dropFirst(paddock.title.count))"))
         XCTAssertTrue(chip.contains("VStack(spacing:0){repositoryChiprailZone.layoutPriority(1)pager(width:width)}"))
         XCTAssertTrue(chip.contains("ScrollView(.vertical){column}"))
     }
@@ -548,8 +622,8 @@ final class FullScreenHerdShellWiringTests: XCTestCase {
                       "an empty scope keeps its explicit empty state")
         XCTAssertTrue(herd.contains("Text(scopeSummary).font(.caption2).foregroundStyle(ranchTokens.mutedColor).lineLimit(1).truncationMode(.tail)"),
                       "long repository scope summaries stay single-line and truncate (ranch ink, #457)")
-        XCTAssertTrue(herd.contains("Text(herdRepositoryCaption(paddock)).font(.caption2).foregroundStyle(ranchTokens.inkColor).lineLimit(1)"),
-                      "long repository chip captions stay single-line")
+        XCTAssertTrue(herd.contains("Text(\"\\(name)\\(counts)\").fixedSize(horizontal:false,vertical:true)"),
+                      "repository names and secondary counts wrap without clipping")
         XCTAssertFalse(herd.contains("Text(lighting.explanation)"),
                        "the summary bar no longer renders the Day/Night explanation (#491)")
     }
@@ -1925,8 +1999,8 @@ final class ContextualFilterSheetTests: XCTestCase {
         let nav = try slice(herd, from: "privatevarnavigation", to: "funcmovePage(")
         XCTAssertTrue(nav.contains(".ranchChromeSurface(ranchTokens)"),
                       "the paddock pager takes the ranch chrome surface (#526)")
-        XCTAssertEqual(herd.components(separatedBy: ".ranchChromeSurface(ranchTokens,cornerRadius:").count - 1, 2,
-                       "repository chip and agent cards ride the ranch chrome; empty-rail header is gone (#548)")
+        XCTAssertEqual(herd.components(separatedBy: ".ranchChromeSurface(ranchTokens,cornerRadius:").count - 1, 1,
+                       "agent cards retain compact corners; #552 chip uses the counters strip's default chrome")
         XCTAssertTrue(herd.contains(".foregroundStyle(ranchTokens.inkColor)"),
                       "the flock headers/cards take the ranch ink (#526)")
         // The environment axis never WRITES the app theme's flavor

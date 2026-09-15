@@ -14705,8 +14705,8 @@ final class ForegroundReconnectTests: XCTestCase {
     }
 
     private func frame(_ kind: String, rev: UInt64, epoch: String,
-                       id: String = "retained") throws -> SSEFrame {
-        let agent = Agent(agentId: id, state: .working, seq: rev, ts: rev,
+                       id: String = "retained", state: AgentState = .working) throws -> SSEFrame {
+        let agent = Agent(agentId: id, state: state, seq: rev, ts: rev,
                           capabilities: ["read_tail"], title: "revision \(rev)")
         let data: Data
         if kind == "snapshot" {
@@ -14728,7 +14728,8 @@ final class ForegroundReconnectTests: XCTestCase {
     }
 
     private func fixture(hosts: Int = 1, frames: Int = 2,
-                         mismatch: Bool = false,
+                         mismatch: Bool = false, retained: Bool = true,
+                         seed seedState: AgentState = .working,
                          policy: VerificationBufferPolicy = .init()) async throws -> Fixture {
         let suite = "corral.547.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -14763,15 +14764,15 @@ final class ForegroundReconnectTests: XCTestCase {
             identityLoader: { (DeviceSigner(key: Curve25519.Signing.PrivateKey()), .insecureFallback) },
             loadMeta: { nil }, saveMeta: { _ in }, wipeIdentity: {}, profileStore: profileStore,
             networkPathMonitor: monitor)
-        let seed = try frame("snapshot", rev: 5, epoch: epoch)
-        await model.fleet.ingest(seed).value
+        let seed = try frame("snapshot", rev: 5, epoch: epoch, state: seedState)
+        if retained { await model.fleet.ingest(seed).value }
         model.fleet.verificationBufferPolicy = policy
         for profile in profiles.dropFirst() {
             let store = try XCTUnwrap(model.coordinator?.store(profileID: profile.id))
-            await store.ingest(seed).value
+            if retained { await store.ingest(seed).value }
             store.verificationBufferPolicy = policy
         }
-        model.handleScenePhaseChange(.background)
+        if retained { model.handleScenePhaseChange(.background) }
         return Fixture(model: model, profiles: profiles, urls: urls, keys: keys, gates: gates,
             session: session, defaults: defaults, suite: suite, profileStore: profileStore,
             monitor: monitor, script: script)
@@ -15020,6 +15021,293 @@ final class ForegroundReconnectTests: XCTestCase {
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
+    }
+
+    func testWarmReturnDoesNotInheritEitherHostsRetryDelay() async throws {
+        var f = try await fixture(hosts: 2, frames: 1)
+        defer { f.finish() }
+        for url in f.urls {
+            f.script[url.appendingPathComponent("host-key")]?.gate = nil
+            f.script[url.appendingPathComponent("host-key")]?.status = 500
+        }
+        ForegroundReconnectURLProtocol.configure(f.script)
+        f.start()
+        let other = try XCTUnwrap(f.model.coordinator?.store(profileID: f.profiles[1].id))
+        await wait {
+            guard case .error = other.connectionState else { return false }
+            return f.model.banner?.kind == "host_key_unverified"
+        }
+        XCTAssertEqual(f.count("host-key"), 1)
+        XCTAssertEqual(f.count("host-key", host: 1), 1)
+        f.model.handleScenePhaseChange(.background)
+        for url in f.urls { f.script[url.appendingPathComponent("host-key")]?.status = 200 }
+        ForegroundReconnectURLProtocol.configure(f.script, reset: false)
+        let started = ProcessInfo.processInfo.systemUptime
+        f.start()
+        // The production ladder's first retry waits 3 s. A foreground first
+        // request must not inherit that wait, on either ownership path.
+        await wait({ f.count("host-key") == 2 && f.count("host-key", host: 1) == 2 }, timeout: 1)
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - started, 1)
+        await wait { f.model.keyContinuityState == .verified && other.lastEventId == 6 }
+        XCTAssertEqual(f.model.fleet.lastEventId, 6)
+    }
+
+    func testWarmReturnRetainsRenderedStatesUntilVerifiedReplacement() async throws {
+        var f = try await fixture(hosts: 2, frames: 1)
+        defer { f.finish() }
+        f.start()
+        for gate in f.gates { gate.release() }
+        let other = try XCTUnwrap(f.model.coordinator?.store(profileID: f.profiles[1].id))
+        await wait { f.model.fleet.lastEventId == 6 && other.lastEventId == 6 }
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = UIHostingController(rootView: FleetView(model: f.model)
+            .environmentObject(ThemeStore(defaults: f.defaults)))
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil }
+        f.model.handleScenePhaseChange(.background)
+        let keys = f.urls.map { _ in DriveRequestGate() }
+        defer { for gate in keys { gate.cancel() } }
+        for (index, url) in f.urls.enumerated() {
+            f.script[url.appendingPathComponent("host-key")]?.gate = keys[index]
+            f.script[url.appendingPathComponent("events")] = .init(
+                body: wire([try frame("snapshot", rev: 7, epoch: epoch, id: "replacement")]), holdOpen: true)
+        }
+        ForegroundReconnectURLProtocol.configure(f.script, reset: false)
+        f.start()
+        for store in [f.model.fleet, other] {
+            XCTAssertEqual(store.agent("retained")?.state, .working, "no foreground unknown recast")
+            XCTAssertEqual(store.lastEventId, 6)
+            XCTAssertNotEqual(store.connectionState, .connected)
+        }
+        await wait { f.model.fleet.bufferedFrameCount == 1 && other.bufferedFrameCount == 1 }
+        let rows = try XCTUnwrap(f.model.aggregateBoardRows)
+        XCTAssertEqual(rows.count, 2)
+        XCTAssertTrue(rows.allSatisfy { $0.isStale && $0.agent.state == .working && $0.agent.seq == 6 })
+        try await Task.sleep(for: .milliseconds(200))
+        attachBoard(window, name: "551-warm-retained-unverified")
+        keys[0].release()
+        await wait { f.model.fleet.lastEventId == 7 }
+        XCTAssertNil(f.model.fleet.agent("retained"))
+        XCTAssertEqual(f.model.fleet.agent("replacement")?.seq, 7)
+        XCTAssertEqual(other.agent("retained")?.seq, 6, "one host's verification cannot replace another's rows")
+        XCTAssertNotEqual(other.connectionState, .connected)
+        keys[1].release()
+        await wait { other.lastEventId == 7 }
+        XCTAssertNil(other.agent("retained"))
+        try await Task.sleep(for: .milliseconds(200))
+        attachBoard(window, name: "551-warm-applied-verified")
+    }
+
+    /// #551 r2 (round-2 fix contract): the HERD surface must present a retained
+    /// row's LAST-KNOWN state — its counters strip, row marks and captions —
+    /// instead of recasting it to `unknown`. The recast lived in
+    /// `HerdHorse.state` (`disconnected ? .unknown : agent.state`), and this is
+    /// the surface the owner photographed (`? N unknown` while `2 hosts
+    /// connecting`). Removing the recast must turn this test RED.
+    func testWarmReturnHerdSurfaceKeepsLastKnownStatesUntilVerified() async throws {
+        var f = try await fixture(hosts: 2, frames: 1)
+        defer { f.finish() }
+        // Re-script each host's reconnect so its first VERIFIED frame carries a
+        // distinguishable state — the counter switch to verified values is then
+        // observable, not just a repeat of the retained seed.
+        for (index, url) in f.urls.enumerated() {
+            f.script[url.appendingPathComponent("events")] = .init(
+                body: wire([try frame("delta", rev: 6, epoch: epoch, id: "replacement",
+                                      state: index == 0 ? .blocked : .idle)]),
+                holdOpen: true)
+        }
+        ForegroundReconnectURLProtocol.configure(f.script, reset: false)
+        f.start()
+        let other = try XCTUnwrap(f.model.coordinator?.store(profileID: f.profiles[1].id))
+        for store in [f.model.fleet, other] {
+            XCTAssertEqual(store.lastEventId, 5, "nothing has been applied yet")
+            XCTAssertNotEqual(store.connectionState, .connected)
+        }
+        // Warm return, both host keys still unverified: the Herd surface sees
+        // nothing but retained rows, and they must read last-known.
+        let retained = try herdHorses(f)
+        XCTAssertEqual(retained.count, 2, "one retained row per host")
+        XCTAssertTrue(retained.allSatisfy(\.disconnected), "no host has verified a frame yet")
+        XCTAssertTrue(retained.allSatisfy { $0.state == .working },
+                      "the Herd counters read the LAST-KNOWN state, never a recast")
+        XCTAssertFalse(retained.contains { herdMark($0.state) == "?" },
+                       "no `?` unknown mark may appear on a retained row")
+        XCTAssertEqual(herdCountsAccessibilityLabel(retained),
+                       "0 blocked, 2 working, 0 idle, 0 done, 0 unknown",
+                       "the owner's `? N unknown` strip is exactly what must not happen")
+        for horse in retained {
+            XCTAssertTrue(horse.statusText.hasPrefix("working"), "the last-known token leads")
+            XCTAssertTrue(horse.statusText.contains("last known"),
+                          "labelled last-known, never Live")
+            XCTAssertEqual(horse.gait(elapsed: 2.0, reduceMotion: false), .standstill,
+                           "nothing may read as live before the first verified frame")
+            XCTAssertEqual(horse.roam(elapsed: 2.0, enabled: true), 0)
+        }
+        // Host 0's key verifies: only ITS rows take the verified values.
+        f.gates[0].release()
+        await wait { f.model.fleet.lastEventId == 6 }
+        let half = try herdHorses(f)
+        XCTAssertEqual(herdCountsAccessibilityLabel(half),
+                       "1 blocked, 2 working, 0 idle, 0 done, 0 unknown",
+                       "the verified host's frame replaced its own rows only")
+        let live = try XCTUnwrap(half.first { $0.hostProfileID == f.profiles[0].id
+            && $0.agent.agentId == "replacement" })
+        XCTAssertFalse(live.disconnected)
+        XCTAssertEqual(live.state, .blocked)
+        XCTAssertEqual(live.statusText, "blocked", "a verified row is not labelled last-known")
+        let stale = try XCTUnwrap(half.first { $0.disconnected })
+        XCTAssertEqual(stale.state, .working, "the unverified host keeps its last-known token")
+        XCTAssertEqual(stale.statusText, "working · last known")
+        // Host 1 verifies: the whole surface carries verified values.
+        f.gates[1].release()
+        await wait { other.lastEventId == 6 }
+        let verified = try herdHorses(f)
+        XCTAssertTrue(verified.allSatisfy { !$0.disconnected })
+        XCTAssertEqual(herdCountsAccessibilityLabel(verified),
+                       "1 blocked, 2 working, 1 idle, 0 done, 0 unknown")
+    }
+
+    /// #551 r3: a RETAINED row must not animate at all. The idle vertical bob
+    /// (`HerdView`'s `y:` offset) is the twin of `roam`, and it was the one
+    /// motion path the round-2 recast removal un-suppressed: `motionEnabled`
+    /// (`HerdView.swift:117`) is surface-level (`horses.contains { !$0.disconnected }`)
+    /// while `disconnected` is per row, so in the mixed warm-return window (one
+    /// host verified, one retained) the retained host's idle rows bobbed.
+    /// Removing the `HerdHorse.bob` fence must turn this test RED.
+    func testWarmReturnRetainedIdleRowNeverBobsWhileVerifiedIdleRowAnimates() async throws {
+        var f = try await fixture(hosts: 2, frames: 1, seed: .idle)
+        defer { f.finish() }
+        for url in f.urls {
+            f.script[url.appendingPathComponent("events")] = .init(
+                body: wire([try frame("delta", rev: 6, epoch: epoch, id: "replacement",
+                                      state: .idle)]), holdOpen: true)
+        }
+        ForegroundReconnectURLProtocol.configure(f.script, reset: false)
+        f.start()
+        let other = try XCTUnwrap(f.model.coordinator?.store(profileID: f.profiles[1].id))
+        // Warm return, both host keys held: every row is retained and idle, and
+        // the surface-level motion gate the row's `y:` receives is open, so only
+        // the per-row fence can keep the offset constant.
+        let retainedRows = try herdHorses(f)
+        XCTAssertEqual(retainedRows.count, 2)
+        XCTAssertTrue(retainedRows.allSatisfy { $0.disconnected && $0.state == .idle })
+        for horse in retainedRows { assertBobFrozen(horse, "both hosts retained") }
+        // Host 0 verifies → its idle row is live while host 1's stays retained:
+        // the mixed window a two-host fleet hits on every warm return.
+        f.gates[0].release()
+        await wait { f.model.fleet.lastEventId == 6 }
+        let mixed = try herdHorses(f)
+        let verified = try XCTUnwrap(mixed.first { !$0.disconnected && $0.state == .idle },
+                                     "the verified host must expose an idle row")
+        let retained = try XCTUnwrap(mixed.first { $0.disconnected && $0.state == .idle },
+                                     "the unverified host must keep an idle row")
+        XCTAssertGreaterThan(bobOffsets(verified).count, 1,
+                             "a verified idle row still animates")
+        assertBobFrozen(retained, "one host verified, one retained")
+    }
+
+    /// The production `y:` offset of one row, sampled across an 8 s clock sweep.
+    private func bobOffsets(_ horse: HerdHorse) -> Set<CGFloat> {
+        Set(stride(from: 0.0, through: 8.0, by: 0.5).map {
+            horse.bob(elapsed: $0, reduceMotion: false, enabled: true)
+        })
+    }
+
+    private func assertBobFrozen(_ horse: HerdHorse, _ label: String,
+                                 file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(bobOffsets(horse), [0],
+                       "a retained idle row's offset must be constant (\(label))",
+                       file: file, line: line)
+    }
+
+    /// The production Herd route for the multi-host board — the SAME projection
+    /// call `FleetViews` makes for `HerdView(horses:)`, so the assertion runs on
+    /// the horses the surface actually receives.
+    private func herdHorses(_ f: Fixture) throws -> [HerdHorse] {
+        let rows = try XCTUnwrap(f.model.aggregateBoardRows)
+        return HerdProjection.multiple(BoardModel.hostSections(rows),
+                                       names: Dictionary(uniqueKeysWithValues:
+                                           f.model.profiles.map { ($0.id, $0.displayName) }))
+    }
+
+    func testSceneGrantsReadCanStayInFlightWhileFirstFrameApplies() async throws {
+        var f = try await fixture(frames: 1)
+        defer { f.finish() }
+        let events = DriveRequestGate(), grants = DriveRequestGate()
+        defer { events.cancel(); grants.cancel() }
+        f.script[f.urls[0].appendingPathComponent("events")]?.gate = events
+        f.script[f.urls[0].appendingPathComponent("grants-read")] = .init(
+            body: Data(#"{"ok":true,"key_id":"dev_reconnect","grants":["read_tail","interrupt"],"expiry_ts":1800000000,"revoked":false}"#.utf8), gate: grants)
+        ForegroundReconnectURLProtocol.configure(f.script)
+        f.start()
+        f.gates[0].release()
+        await wait { f.model.keyContinuityState == .verified }
+        // Exercise the real active handler while verified but still waiting
+        // for the first frame; force a signed read to actually be in flight.
+        f.model.handleScenePhaseChange(.inactive)
+        f.model.handleScenePhaseChange(.active)
+        await wait { f.count("grants-read") >= 1 }
+        XCTAssertEqual(f.model.fleet.lastEventId, 5)
+        XCTAssertFalse(f.model.grants.contains("interrupt"))
+        events.release()
+        await wait { f.model.fleet.lastEventId == 6 }
+        XCTAssertFalse(f.model.grants.contains("interrupt"), "the held grants reply has not completed")
+        grants.release()
+        await wait { f.model.grants.contains("interrupt") }
+    }
+
+    /// #551 measurement-only opt-in: real elapsed background intervals through
+    /// the production scene seam, but a local URLProtocol host, not OS suspension
+    /// or a physical/network benchmark. The normal suite never waits 330 seconds.
+    func testWarmReturnStageMeasurements() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["G551_MEASURE"] == "1",
+                          "opt-in stage capture; see issue-551 measurement driver")
+        var f = try await fixture(retained: false)
+        defer { f.finish() }
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = UIHostingController(rootView: FleetView(model: f.model)
+            .environmentObject(ThemeStore(defaults: f.defaults)))
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil }
+        f.script[f.urls[0].appendingPathComponent("host-key")]?.gate = nil
+        for (scenario, seconds, revision) in [("cold_model", 0, 1), ("warm_30", 30, 2), ("warm_300", 300, 3)] {
+            var backgroundElapsed = 0.0
+            if seconds > 0 {
+                f.model.handleScenePhaseChange(.background)
+                XCTAssertFalse(f.model.fleet.isStreaming)
+                let stopped = ProcessInfo.processInfo.systemUptime
+                print("G551_BACKGROUND_BEGIN \(scenario)")
+                try await Task.sleep(for: .seconds(seconds))
+                backgroundElapsed = ProcessInfo.processInfo.systemUptime - stopped
+                XCTAssertGreaterThanOrEqual(backgroundElapsed, Double(seconds))
+                XCTAssertEqual(f.model.fleet.agent("retained")?.seq, UInt64(revision - 1))
+                XCTAssertNotEqual(f.model.fleet.connectionState, .connected)
+            }
+            f.script[f.urls[0].appendingPathComponent("events")] = .init(
+                body: wire([try frame("snapshot", rev: UInt64(revision), epoch: epoch)]), holdOpen: true)
+            ForegroundReconnectURLProtocol.configure(f.script, reset: false)
+            let started = ProcessInfo.processInfo.systemUptime
+            if seconds == 0 {
+                f.model.startLive()
+                f.monitor.fire(satisfied: true)
+            } else {
+                f.start()
+            }
+            await wait { f.model.fleet.reconnectTiming.measurements[.rowVisible] != nil }
+            let stamps = f.model.fleet.reconnectTiming.measurements
+            for stage in ReconnectTiming.Stage.allCases where stage != .retainedRowVisible {
+                XCTAssertNotNil(stamps[stage], "missing \(stage.rawValue) in \(scenario)")
+            }
+            let record: [String: Any] = [
+                "scenario": scenario, "start_uptime": started,
+                "background_elapsed_seconds": backgroundElapsed,
+                "stamps": Dictionary(uniqueKeysWithValues: stamps.map { ($0.key.rawValue, $0.value) })
+            ]
+            let json = try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])
+            print("G551_SAMPLE \(String(decoding: json, as: UTF8.self))")
+        }
     }
 
     func testNativeRetainedBoardAndSimulatorStageMeasurements() async throws {

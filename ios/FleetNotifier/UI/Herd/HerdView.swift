@@ -37,6 +37,7 @@ struct HerdView: View {
     @State private var now = Date()
     @State private var timeRevision = 0
     @State private var dragging = false
+    private let hudSpacing: CGFloat = 6
     init(horses: [HerdHorse], obscured: Bool,
          scopeLabel: String = "Filters", scopeSummary: String = "All repositories",
          connection: BoardModel.ConnectionIndicatorModel
@@ -223,7 +224,7 @@ struct HerdView: View {
     /// SAME row, between the scope pill and the gear — the removed
     /// disconnect panel's recovery actions + verbose copy are gone.
     private var topChrome: some View {
-        VStack(spacing:6) {
+        VStack(spacing:hudSpacing) {
             HStack(spacing:8) {
                 scopeControl
                 ConnectionStatusIndicator(model: connection,
@@ -234,7 +235,13 @@ struct HerdView: View {
                     .ranchChromeSurface(ranchTokens)
                 settingsControl
             }
+#if DEBUG
+            .modifier(HerdRailFrameProbe(name:"hud-row"))
+#endif
             statusSummary
+#if DEBUG
+                .modifier(HerdRailFrameProbe(name:"hud-counts"))
+#endif
         }
         .padding(.horizontal,12)
         .padding(.top,6)
@@ -322,7 +329,8 @@ struct HerdView: View {
     /// in the floating chrome carries the state, and the stream/model
     /// recover on their own (the board uses the same source, so switching
     /// view was never network recovery). Disconnected horses still render
-    /// their last-known truth (`unknown · last known …`) via HerdHorse.
+    /// their last-known truth (`<state> · last known`) via HerdHorse — the
+    /// state token is never recast to `unknown` (#551 r2).
     private var railCardWidth: CGFloat { dynamicType.isAccessibilitySize ? 240 : 164 }
 
     /// #548: measure the card's intrinsic height, including the longest rail
@@ -359,16 +367,33 @@ struct HerdView: View {
         let paddock = paddocks.first { $0.id == paddockID } ?? paddocks.first
         return Group {
             if let paddock {
-                Text(herdRepositoryCaption(paddock))
-                    .font(.caption2).foregroundStyle(ranchTokens.inkColor)
-                    .lineLimit(1)
-                    .padding(.horizontal,8).padding(.vertical,2)
-                    .ranchChromeSurface(ranchTokens, cornerRadius: 8)
-                    .accessibilityLabel(herdRepositoryCaption(paddock))
+                let name = Text(paddock.title).font(.subheadline.weight(.semibold))
+                    .foregroundColor(ranchTokens.inkColor)
+                let counts = Text(herdRepositoryCaption(paddock).dropFirst(paddock.title.count))
+                    .font(.caption).foregroundColor(ranchTokens.mutedColor)
+                ZStack(alignment:.leading) {
+                    if dynamicType.isAccessibilitySize {
+                        // Reserve two lines across rail occupancy changes, without
+                        // capping longer names or counts at a truncating line limit.
+                        Text("\n").font(.subheadline.weight(.semibold)).hidden()
+                            .accessibilityHidden(true)
+                    }
+                    Text("\(name)\(counts)")
+                        .fixedSize(horizontal:false,vertical:true)
+#if DEBUG
+                        .modifier(HerdRailFrameProbe(name:"repository-text"))
+#endif
+                }
+                .padding(.horizontal,12).padding(.vertical,6)
+                .ranchChromeSurface(ranchTokens)
+                .accessibilityLabel(herdRepositoryCaption(paddock))
+#if DEBUG
+                .modifier(HerdRailFrameProbe(name:"repository-surface"))
+#endif
             }
         }
         .frame(maxWidth:.infinity,alignment:.leading)
-        .padding(.horizontal,12).padding(.top,2)
+        .padding(.horizontal,12).padding(.top,hudSpacing)
 #if DEBUG
         .modifier(HerdRailFrameProbe(name:"repository-chip"))
 #endif
@@ -472,8 +497,7 @@ struct HerdView: View {
                     }
                     .frame(width:132,height:100)
                     .offset(x:horse.roam(elapsed:elapsed,enabled:motionEnabled && !dragging && !rail),
-                            y:horse.state == .idle && !reduced && motionEnabled
-                                ? sin(elapsed/4+horse.identity.phase)*0.5 : 0)
+                            y:horse.bob(elapsed:elapsed,reduceMotion:reduced,enabled:motionEnabled))
                     .saturation(horse.disconnected ? 0.25 : lighting.night ? 0.82 : 1)
                     .brightness(lighting.night ? -0.07 : 0)
                     if rail {

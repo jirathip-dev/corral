@@ -546,7 +546,15 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # canonical algorithm; membership check still 40/40. The #548 branch carried
     # its own branch-local literal (6d553d20…) and this merge is where the single
     # merged value is re-derived.
-    "d8997fa8b255ffdf4f2042179517bb0d84dec9ddd083276be2e2150c513e247e"
+    # 2026-09-15 #552: repository chip hierarchy and shared HUD spacing.
+    # 2026-09-15 #551 r2: Herd retained-row presentation — HerdModel no longer
+    # recasts a retained row's state token to `unknown` (last-known state is
+    # presented as last-known, with motion withheld instead) and HerdView's
+    # doctrine comment follows; re-pinned over the #551 r2 source set.
+    # 2026-09-15 #551 r3: the idle vertical bob is fenced like `roam`
+    # (HerdHorse.bob, HerdModel) and HerdView's row offset calls it — the last
+    # motion path the recast removal un-suppressed; re-pinned.
+    "c5f0013fef00cf072c34ae38f08f85febf3f6ecb1eb8242b8d17b3ff7762811d"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -774,7 +782,15 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # = dc04b35b…); recomputed as the plain sha256 of the merged
     # FleetNotifierTests.swift over THIS merged working tree.
     # 2026-09-15 #547: parallel verified reconnect, bounded ingress and row timing.
-    "f8e9b422d92286d58065a6900c7907b635900ba5b7c6b90b923bef9f43eec034"
+    # 2026-09-15 #551: warm-return scene regressions and opt-in stage capture.
+    # 2026-09-15 #551 r2: the Herd-surface retained-row counter/mark regression
+    # (testWarmReturnHerdSurfaceKeepsLastKnownStatesUntilVerified) plus the
+    # inverted recast assertions in HerdTests/HerdGaitTests; re-pinned over the
+    # #551 r2 test source. Only FleetNotifierTests.swift is digested here.
+    # 2026-09-15 #551 r3: the retained-idle-row bob regression
+    # (testWarmReturnRetainedIdleRowNeverBobsWhileVerifiedIdleRowAnimates) +
+    # the seeded idle-state fixture parameter; re-pinned.
+    "823a89974d2e06567a20c897bad5f8776faa8e9cb3c04fc399a36c8e93b3b6f3"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

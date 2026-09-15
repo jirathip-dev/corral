@@ -6899,7 +6899,7 @@ final class HostProfileMigrationModelTests: XCTestCase {
 // MARK: - #399 key continuity (B4): fail-closed RED/GREEN target
 
 /// Launch/reconnect key continuity: with a PINNED profile, `/host-key`
-/// is re-checked before the live stream opens; a mismatch fails closed
+/// is re-checked before stream data is applied; a mismatch fails closed
 /// (no stream/fetch/push-register/Recent Output), the prior snapshot
 /// stays stale, and only Remove Host + fresh pairing recovers.
 @MainActor
@@ -7006,8 +7006,11 @@ final class HostKeyContinuityModelTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(requests(to: hostKeyURL).count, 1,
                                     "the /host-key re-check must run first")
         XCTAssertEqual(model.banner?.kind, "host_key_mismatch")
-        XCTAssertTrue(requests(to: eventsURL).isEmpty,
-                      "no stream may reach the replacement identity")
+        let eventsAtMismatch = requests(to: eventsURL).count
+        XCTAssertLessThanOrEqual(eventsAtMismatch, 1, "only the speculative owner may have opened")
+        XCTAssertFalse(model.fleet.isStreaming)
+        XCTAssertNotEqual(model.fleet.connectionState, .connected)
+        XCTAssertEqual(model.fleet.lastEventId, 5, "no replacement frame was applied")
         XCTAssertEqual(model.fleet.agents.count, 1,
                        "the last safe snapshot must stay stale, not erased")
         // Every other route fails closed too: pull refresh, grants
@@ -7024,6 +7027,7 @@ final class HostKeyContinuityModelTests: XCTestCase {
                       "no signed grants-read may reach the replacement identity")
         XCTAssertTrue(requests(to: driveURL).isEmpty,
                       "no Recent Output read may reach the replacement identity")
+        XCTAssertEqual(requests(to: eventsURL).count, eventsAtMismatch, "terminal mismatch never reopens")
         XCTAssertNil(model.recentsRequest, "the recents sheet must stay closed")
         // Push enrollment is gated by the same continuity predicate.
         let allowsPush = await KeyContinuityGate.allowsPushRegistration()
@@ -7036,10 +7040,10 @@ final class HostKeyContinuityModelTests: XCTestCase {
         defer { cleanup() }
         seedSnapshot(model: model)
         model.startLive()
-        await waitUntil(!requests(to: eventsURL).isEmpty)
+        await waitUntil(!requests(to: eventsURL).isEmpty && model.keyContinuityState == .verified)
         XCTAssertEqual(model.keyContinuityState, .verified)
         XCTAssertGreaterThanOrEqual(requests(to: hostKeyURL).count, 1,
-                                    "the check must run BEFORE the stream opens")
+                                    "the check must run before live work is allowed")
         XCTAssertGreaterThanOrEqual(requests(to: eventsURL).count, 1,
                                     "a matching key opens the live stream")
     }
@@ -8705,6 +8709,9 @@ final class RecentsCompositeRouteTests: XCTestCase {
 
     private func seed(model: AppModel, profileA: HostProfile, profileB: HostProfile,
                       seedAgentInB: Bool) async {
+        // #547: seed trusted fixture data only after both key checks finish.
+        await waitUntil(model.keyContinuityState == .verified)
+        await waitUntil(model.coordinator?.allowsLiveWork(profileID: profileB.id) == true)
         // Active host A holds the equal raw id too.
         model.fleet.apply(.snapshot(Snapshot(schemaVersion: 5, rev: 5, generatedAt: 0,
                                              agents: ["herdr:dup": agent("herdr:dup",
@@ -11817,6 +11824,8 @@ final class PerHostGrantsRefreshTests: XCTestCase {
     /// Wait until BOTH hosts are live (ACTIVE verified, B verified and
     /// streaming) and seed the equal raw agent id into both stores.
     private func seed(model: AppModel, profileA: HostProfile, profileB: HostProfile) async {
+        // #547: the active-host fixture also waits for verification before apply.
+        await waitUntil(model.keyContinuityState == .verified)
         model.fleet.apply(.snapshot(Snapshot(schemaVersion: 5, rev: 5, generatedAt: 0,
                                              agents: ["herdr:dup": agent("herdr:dup",
                                                                          state: .working,
@@ -13149,7 +13158,7 @@ final class NetworkPathHintTests: XCTestCase {
 
     /// AC4 (trust): a pinned-but-unverified ACTIVE host may only have its
     /// single #451 preflight ladder re-driven — and only while that ladder is
-    /// WAITING. No stream may ever open unverified, and nothing may stack.
+    /// WAITING. No data/Live may pass unverified, and nothing may stack.
     func testPinnedUnverifiedRestorationReDrivesTheWaitingPreflightLadderOnly() async {
         let monitor = FakeNetworkPathMonitor()
         let gate = PathHintDeferralGate()
@@ -13165,6 +13174,7 @@ final class NetworkPathHintTests: XCTestCase {
         let hostKey = hostKeyURL(Self.wedgedHost)
         let events = eventsURL(Self.wedgedHost)
         scriptHostKey(Self.wedgedHost, keyIndex: 0, status: 500)
+        PathHintURLProtocol.script([.held], for: events)
 
         fixture.model.startLive()
         let attemptOne = await waitFor { PathHintURLProtocol.requestCount(for: hostKey) == 1 }
@@ -13178,8 +13188,10 @@ final class NetworkPathHintTests: XCTestCase {
                                      timeout: 1.5)
         XCTAssertTrue(redriven,
                       "a path restoration must re-drive the WAITING preflight ladder exactly once (#454 AC4)")
-        XCTAssertEqual(PathHintURLProtocol.requestCount(for: events), 0,
-                       "an unverified pinned host must never open a stream — the hint may not bypass the trust gate (#454 AC4)")
+        XCTAssertEqual(PathHintURLProtocol.requestCount(for: events), 1, "path hints never stack speculative streams")
+        XCTAssertNil(fixture.model.fleet.lastEventId)
+        XCTAssertTrue(fixture.model.fleet.agents.isEmpty)
+        XCTAssertNotEqual(fixture.model.fleet.connectionState, .connected)
         await settle(0.5)
         XCTAssertEqual(PathHintURLProtocol.requestCount(for: hostKey), 2,
                        "one re-drive per waiting ladder — no restart loop (#454)")
@@ -13205,14 +13217,20 @@ final class NetworkPathHintTests: XCTestCase {
         fixture.model.startLive()
         let mismatched = await waitFor { fixture.model.keyContinuityState == .mismatch }
         XCTAssertTrue(mismatched, "a different pinned key must fail closed")
+        let eventsAtMismatch = PathHintURLProtocol.requestCount(for: events)
+        XCTAssertLessThanOrEqual(eventsAtMismatch, 1)
         XCTAssertEqual(PathHintURLProtocol.requestCount(for: hostKey), 1)
 
         for _ in 0..<3 { restoration(monitor) }
         await settle(0.6)
         XCTAssertEqual(PathHintURLProtocol.requestCount(for: hostKey), 1,
                        "a terminal mismatch must never be re-polled by a path hint (#454 AC4)")
-        XCTAssertEqual(PathHintURLProtocol.requestCount(for: events), 0,
-                       "no stream may reach a mismatched host (#454 AC4)")
+        XCTAssertEqual(PathHintURLProtocol.requestCount(for: events), eventsAtMismatch,
+                       "terminal mismatch never reopens for a path hint")
+        XCTAssertNil(fixture.model.fleet.lastEventId)
+        XCTAssertTrue(fixture.model.fleet.agents.isEmpty)
+        XCTAssertNotEqual(fixture.model.fleet.connectionState, .connected)
+        XCTAssertFalse(fixture.model.fleet.isStreaming)
         XCTAssertEqual(fixture.model.keyContinuityState, .mismatch)
     }
 
@@ -13393,6 +13411,7 @@ final class NetworkPathHintTests: XCTestCase {
         // released 200 carries no valid key body, so verification fails and
         // the ladder moves to its (30 s) wait.
         PathHintURLProtocol.script([.releaseJSON], for: hostKey)
+        PathHintURLProtocol.script([.sseComments(TimeInterval(0.2))], for: wedgedEvents)
 
         fixture.model.startLive()
         let verifying = await waitFor {
@@ -13406,8 +13425,12 @@ final class NetworkPathHintTests: XCTestCase {
         await settle(0.4)
         XCTAssertEqual(PathHintURLProtocol.requestCount(for: hostKey), 1,
                        "an in-flight preflight attempt must never be cancelled/restarted by a hint (#454)")
-        XCTAssertEqual(PathHintURLProtocol.requestCount(for: wedgedEvents), 0,
-                       "the unverified coordinator host must not open a stream (#454 AC4)")
+        XCTAssertEqual(PathHintURLProtocol.requestCount(for: wedgedEvents), 1,
+                       "#547: a path hint must not stack speculative streams")
+        XCTAssertEqual(fixture.model.coordinator?.store(profileID: fixture.profiles[1].id)?.agents.count, 0)
+        XCTAssertNil(fixture.model.coordinator?.store(profileID: fixture.profiles[1].id)?.lastEventId)
+        XCTAssertNotEqual(fixture.model.coordinator?.store(profileID: fixture.profiles[1].id)?.connectionState, .connected)
+        XCTAssertEqual(fixture.model.coordinator?.allowsLiveWork(profileID: fixture.profiles[1].id), false)
 
         // Let the attempt complete and fail: the ladder is WAITING now.
         PathHintURLProtocol.releaseHeld()
@@ -13419,8 +13442,12 @@ final class NetworkPathHintTests: XCTestCase {
                                      timeout: 1.5)
         XCTAssertTrue(redriven,
                       "a waiting coordinator preflight ladder must be re-driven exactly once (#454 AC4)")
-        XCTAssertEqual(PathHintURLProtocol.requestCount(for: wedgedEvents), 0,
-                       "the trust gate must never be bypassed by a hint (#454 AC4)")
+        XCTAssertEqual(PathHintURLProtocol.requestCount(for: wedgedEvents), 1,
+                       "#547: a path hint must not stack speculative streams")
+        XCTAssertEqual(fixture.model.coordinator?.store(profileID: fixture.profiles[1].id)?.agents.count, 0)
+        XCTAssertNil(fixture.model.coordinator?.store(profileID: fixture.profiles[1].id)?.lastEventId)
+        XCTAssertNotEqual(fixture.model.coordinator?.store(profileID: fixture.profiles[1].id)?.connectionState, .connected)
+        XCTAssertEqual(fixture.model.coordinator?.allowsLiveWork(profileID: fixture.profiles[1].id), false)
         await settle(0.5)
         XCTAssertEqual(PathHintURLProtocol.requestCount(for: hostKey), 2,
                        "no restart loop: one re-drive for the waiting ladder (#454)")
@@ -13928,14 +13955,16 @@ final class ScenePhaseLifecycleTests: XCTestCase {
         // Fast ladder so the retry cadence fits the test.
         let policy = HostPreflightRetryPolicy(baseInterval: 0.2, maxInterval: 0.4)
         let (model, _) = makeSingleHostModel(
-            script: [hostKeyA: (500, Data("down".utf8), false)],
+            script: [hostKeyA: (500, Data("down".utf8), false), eventsA: (200, Data(), true)],
             policy: policy)
         model.startLive()
-        // The pinned host cannot verify: NO stream may open while the
-        // ladder retries at its bounded rate.
+        // The pinned host cannot verify: the one speculative stream must
+        // not apply data or claim Live while the bounded ladder retries.
         await waitUntil(requestCount(hostKeyA) >= 2, timeout: 6)
-        XCTAssertEqual(requestCount(eventsA), 0,
-                       "an unverified pinned host must never open a stream (#451 B4)")
+        XCTAssertEqual(requestCount(eventsA), 1, "one speculative stream before background")
+        XCTAssertNil(model.fleet.lastEventId)
+        XCTAssertTrue(model.fleet.agents.isEmpty)
+        XCTAssertNotEqual(model.fleet.connectionState, .connected)
 
         model.handleScenePhaseChange(.background)
         await settle(0.5)  // drain any in-flight attempt; let the cancel land
@@ -13952,10 +13981,10 @@ final class ScenePhaseLifecycleTests: XCTestCase {
         ])
         model.handleScenePhaseChange(.active)
         await waitUntil(model.keyContinuityState == .verified, timeout: 6)
-        await waitUntil(requestCount(eventsA) >= 1, timeout: 6)
+        await waitUntil(requestCount(eventsA) == 2, timeout: 6)
         await settle(0.5)
-        XCTAssertEqual(requestCount(eventsA), 1,
-                       "exactly one stream owner after the foreground re-verification (#453)")
+        XCTAssertEqual(requestCount(eventsA), 2,
+                       "one speculative owner per foreground, never stacked (#453)")
         XCTAssertEqual(requestCount(hostKeyA), drainedAttempts + 1,
                        "exactly one re-verification ladder on return for the ACTIVE host (#453)")
         XCTAssertTrue(model.fleet.isStreaming)
@@ -13975,8 +14004,11 @@ final class ScenePhaseLifecycleTests: XCTestCase {
             script: [hostKeyA: (200, hostKeyBody(wrongKey), false)])
         model.startLive()
         await waitUntil(model.keyContinuityState == .mismatch)
-        XCTAssertEqual(requestCount(eventsA), 0,
-                       "a mismatched pinned host must never open a stream (#399 B4)")
+        let eventsAtMismatch = requestCount(eventsA)
+        XCTAssertLessThanOrEqual(eventsAtMismatch, 1)
+        XCTAssertNil(model.fleet.lastEventId)
+        XCTAssertTrue(model.fleet.agents.isEmpty)
+        XCTAssertNotEqual(model.fleet.connectionState, .connected)
         XCTAssertEqual(requestCount(hostKeyA), 1,
                        "a key mismatch is terminal — never re-polled (#451)")
 
@@ -13987,8 +14019,8 @@ final class ScenePhaseLifecycleTests: XCTestCase {
                        "the fail-closed posture must survive the scene cycle (#453)")
         XCTAssertEqual(model.banner?.kind, "host_key_mismatch",
                        "the truthful mismatch guidance must stay up")
-        XCTAssertEqual(requestCount(eventsA), 0,
-                       "returning to active must never bypass the trust check (#453)")
+        XCTAssertEqual(requestCount(eventsA), eventsAtMismatch,
+                       "returning to active must never reopen after mismatch (#453)")
         XCTAssertEqual(requestCount(hostKeyA), 1,
                        "a mismatch must not be re-polled by a scene change (#451 terminal)")
         XCTAssertFalse(model.fleet.isStreaming)
@@ -14560,5 +14592,467 @@ final class NotificationOptInRuntimeTests: XCTestCase {
         XCTAssertEqual(registerCount, 0)
         XCTAssertEqual(provider.promptCount, 0)
         XCTAssertEqual(provider.currentCount, 0)
+    }
+}
+
+// MARK: - #547 parallel foreground verification
+
+/// Real URLSession bytes, independently gated key responses, and request/cancel
+/// accounting. Every fixture is local: unscripted requests fail closed.
+private final class ForegroundReconnectURLProtocol: URLProtocol {
+    struct Reply {
+        var body: Data
+        var gate: DriveRequestGate?
+        var holdOpen = false
+        var status = 200
+    }
+    private static let lock = NSLock()
+    private static var replies: [URL: Reply] = [:]
+    private static var log: [URLRequest] = []
+    private static var stops: [URL] = []
+    private let delivery = DispatchQueue(label: "corral.547.fixture")
+    private var stopped = false
+    private var gate: DriveRequestGate?
+
+    static func configure(_ values: [URL: Reply], reset: Bool = true) {
+        lock.lock()
+        replies = values
+        if reset { log = []; stops = [] }
+        lock.unlock()
+    }
+    static var requests: [URLRequest] {
+        lock.lock()
+        defer { lock.unlock() }
+        return log
+    }
+    static func cancelled(_ url: URL) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return stops.contains(url)
+    }
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        guard let url = request.url else { return }
+        Self.lock.lock()
+        Self.log.append(request)
+        let reply = Self.replies[url]
+        Self.lock.unlock()
+        guard let reply else {
+            client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost))
+            return
+        }
+        gate = reply.gate
+        Task { [self] in
+            let released = await reply.gate?.wait() ?? true
+            delivery.async {
+                guard !self.stopped, released,
+                      let response = HTTPURLResponse(url: url, statusCode: reply.status,
+                        httpVersion: "HTTP/1.1", headerFields: ["Content-Type":
+                            reply.holdOpen ? "text/event-stream" : "application/json"]) else { return }
+                self.client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+                self.client?.urlProtocol(self, didLoad: reply.body)
+                if !reply.holdOpen { self.client?.urlProtocolDidFinishLoading(self) }
+            }
+        }
+    }
+    override func stopLoading() {
+        delivery.sync { stopped = true }
+        gate?.cancel()
+        if let url = request.url {
+            Self.lock.lock()
+            Self.stops.append(url)
+            Self.lock.unlock()
+        }
+    }
+}
+
+@MainActor
+final class ForegroundReconnectTests: XCTestCase {
+    private let epoch = String(repeating: "a", count: 32)
+    private let nextEpoch = String(repeating: "b", count: 32)
+
+    @MainActor
+    private struct Fixture {
+        let model: AppModel
+        let profiles: [HostProfile]
+        let urls: [URL]
+        let keys: [String]
+        let gates: [DriveRequestGate]
+        let session: URLSession
+        let defaults: UserDefaults
+        let suite: String
+        let profileStore: HostProfileStore
+        let monitor: FakeNetworkPathMonitor
+        var script: [URL: ForegroundReconnectURLProtocol.Reply]
+
+        func finish() {
+            model.handleScenePhaseChange(.background)
+            for gate in gates { gate.cancel() }
+            session.invalidateAndCancel()
+            KeyContinuityGate.reset()
+            defaults.removePersistentDomain(forName: suite)
+        }
+        func start() {
+            model.handleScenePhaseChange(.active)
+            monitor.fire(satisfied: true)
+        }
+        func count(_ path: String, host: Int = 0) -> Int {
+            ForegroundReconnectURLProtocol.requests.filter {
+                $0.url == urls[host].appendingPathComponent(path)
+            }.count
+        }
+    }
+
+    private func frame(_ kind: String, rev: UInt64, epoch: String,
+                       id: String = "retained") throws -> SSEFrame {
+        let agent = Agent(agentId: id, state: .working, seq: rev, ts: rev,
+                          capabilities: ["read_tail"], title: "revision \(rev)")
+        let data: Data
+        if kind == "snapshot" {
+            data = try JSONEncoder().encode(Snapshot(schemaVersion: 5, rev: rev,
+                generatedAt: 1, agents: [id: agent]))
+        } else {
+            data = try JSONEncoder().encode(Delta(rev: rev, upd: [agent], del: []))
+        }
+        var object = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        object["epoch"] = epoch
+        let json = String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)
+        return SSEFrame(kind: kind == "snapshot" ? .snapshot : .delta, id: rev, data: json)
+    }
+
+    private func wire(_ frames: [SSEFrame]) -> Data {
+        Data(frames.map {
+            "event: \($0.kind == .snapshot ? "snapshot" : "delta")\nid: \($0.id ?? 0)\ndata: \($0.data)\n\n"
+        }.joined().utf8)
+    }
+
+    private func fixture(hosts: Int = 1, frames: Int = 2,
+                         mismatch: Bool = false,
+                         policy: VerificationBufferPolicy = .init()) async throws -> Fixture {
+        let suite = "corral.547.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let profileStore = HostProfileStore(directory: nil, defaults: defaults)
+        var urls: [URL] = [], keys: [String] = [], profiles: [HostProfile] = []
+        var gates: [DriveRequestGate] = []
+        var script: [URL: ForegroundReconnectURLProtocol.Reply] = [:]
+        for index in 0..<hosts {
+            let url = try XCTUnwrap(URL(string: "https://host\(index).reconnect.example"))
+            let key = Data(repeating: UInt8(30 + index), count: 32).base64EncodedString()
+            let responseKey = mismatch ? Data(repeating: 99, count: 32).base64EncodedString() : key
+            let gate = DriveRequestGate()
+            urls.append(url); keys.append(key); gates.append(gate)
+            profiles.append(try profileStore.addProfile(displayName: "Fixture \(index)",
+                urlString: url.absoluteString, hostKeyB64: key, fingerprint: "fixture",
+                keyId: "dev_reconnect", grants: ["read_tail"], expiryTs: 1_800_000_000, registeredAt: 1))
+            script[url.appendingPathComponent("host-key")] = .init(
+                body: Data("{\"algorithm\":\"X25519\",\"public_key\":\"\(responseKey)\"}".utf8), gate: gate)
+            let events = try (0..<frames).map {
+                try frame("delta", rev: UInt64(6 + $0), epoch: epoch,
+                          id: $0 == 0 ? "retained" : "second")
+            }
+            script[url.appendingPathComponent("events")] = .init(body: wire(events), holdOpen: true)
+        }
+        ForegroundReconnectURLProtocol.configure(script)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [ForegroundReconnectURLProtocol.self]
+        let session = URLSession(configuration: config)
+        defaults.set(profiles[0].id.uuidString, forKey: "fleetnotifier.activeHostProfileID")
+        let monitor = FakeNetworkPathMonitor()
+        let model = AppModel(session: session, defaults: defaults,
+            identityLoader: { (DeviceSigner(key: Curve25519.Signing.PrivateKey()), .insecureFallback) },
+            loadMeta: { nil }, saveMeta: { _ in }, wipeIdentity: {}, profileStore: profileStore,
+            networkPathMonitor: monitor)
+        let seed = try frame("snapshot", rev: 5, epoch: epoch)
+        await model.fleet.ingest(seed).value
+        model.fleet.verificationBufferPolicy = policy
+        for profile in profiles.dropFirst() {
+            let store = try XCTUnwrap(model.coordinator?.store(profileID: profile.id))
+            await store.ingest(seed).value
+            store.verificationBufferPolicy = policy
+        }
+        model.handleScenePhaseChange(.background)
+        return Fixture(model: model, profiles: profiles, urls: urls, keys: keys, gates: gates,
+            session: session, defaults: defaults, suite: suite, profileStore: profileStore,
+            monitor: monitor, script: script)
+    }
+
+    private func wait(_ predicate: () -> Bool, timeout: TimeInterval = 5,
+                      file: StaticString = #filePath, line: UInt = #line) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !predicate(), Date() < deadline { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertTrue(predicate(), "condition did not arrive before deadline", file: file, line: line)
+    }
+
+    func testSceneOpensBeforeKeyAndAppliesBufferedDeltasInOrder() async throws {
+        let f = try await fixture()
+        defer { f.finish() }
+        var revisions: [UInt64] = []
+        f.start()
+        f.model.fleet.onAgentsChanged = { if let rev = f.model.fleet.lastEventId { revisions.append(rev) } }
+        await wait { f.model.fleet.bufferedFrameCount == 2 }
+        XCTAssertEqual(f.count("events"), 1, "parallel-open: the key is still held")
+        XCTAssertEqual(f.model.keyContinuityState, .pending)
+        XCTAssertEqual(f.model.fleet.lastEventId, 5, "verify-before-apply")
+        XCTAssertEqual(f.model.fleet.agents.count, 1)
+        XCTAssertNotEqual(f.model.fleet.connectionState, .connected)
+        let push = await KeyContinuityGate.allowsPushRegistration()
+        XCTAssertFalse(push)
+        await f.model.refreshGrants()
+        XCTAssertEqual(f.count("grants-read"), 0, "signed reads stay gated")
+        let request = try XCTUnwrap(ForegroundReconnectURLProtocol.requests.first { $0.url?.path == "/events" })
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Last-Event-ID"), "5")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Corral-Epoch"), epoch)
+        f.gates[0].release()
+        await wait { f.model.fleet.lastEventId == 7 }
+        XCTAssertEqual(revisions, [6, 7], "neither delta may be reordered or skipped")
+        XCTAssertEqual(f.model.fleet.agent("retained")?.seq, 6)
+        XCTAssertEqual(f.model.fleet.agent("second")?.seq, 7)
+        XCTAssertEqual(f.model.fleet.lastEventEpoch, epoch)
+        XCTAssertEqual(f.model.keyContinuityState, .verified)
+        XCTAssertEqual(f.count("snapshot"), 0, "same-epoch resume used delta bytes, not a snapshot fetch")
+        f.model.handleScenePhaseChange(.background)
+        XCTAssertEqual(f.profileStore.cursor(for: f.profiles[0].id), 7)
+        XCTAssertEqual(f.profileStore.cursorEpoch(for: f.profiles[0].id), epoch)
+    }
+
+    func testMismatchDiscardsBufferedFramesAndNeverRevivesLiveWork() async throws {
+        let f = try await fixture(mismatch: true)
+        defer { f.finish() }
+        f.start()
+        await wait { f.model.fleet.bufferedFrameCount == 2 }
+        f.gates[0].release()
+        await wait { f.model.keyContinuityState == .mismatch }
+        XCTAssertEqual(f.model.fleet.lastEventId, 5)
+        XCTAssertEqual(f.model.fleet.agents.count, 1)
+        XCTAssertEqual(f.model.fleet.bufferedFrameCount, 0)
+        XCTAssertFalse(f.model.fleet.isStreaming)
+        XCTAssertNotEqual(f.model.fleet.connectionState, .connected)
+        XCTAssertEqual(f.model.banner?.kind, "host_key_mismatch")
+        f.model.handleScenePhaseChange(.background)
+        f.start()
+        await f.model.refreshFleet()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(f.count("events"), 1)
+        XCTAssertEqual(f.count("host-key"), 1)
+        XCTAssertEqual(f.count("drive"), 0)
+        XCTAssertEqual(f.model.keyContinuityState, .mismatch)
+    }
+
+    func testCapDiscardsWholeWindowAndResumesOnlyAfterVerification() async throws {
+        var f = try await fixture(frames: 3, policy: .init(maxFrames: 2))
+        defer { f.finish() }
+        f.start()
+        await wait { f.count("events") == 1 && !f.model.fleet.isStreaming }
+        XCTAssertEqual(f.model.fleet.bufferedFrameCount, 0, "buffer cap must discard, not drop one delta")
+        XCTAssertEqual(f.model.fleet.lastEventId, 5)
+        XCTAssertNotEqual(f.model.fleet.connectionState, .connected)
+        f.start()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(f.count("events"), 1, "no repeated speculative windows while the key is held")
+        f.script[f.urls[0].appendingPathComponent("events")] = .init(
+            body: wire([try frame("delta", rev: 8, epoch: epoch)]), holdOpen: true)
+        ForegroundReconnectURLProtocol.configure(f.script, reset: false)
+        f.gates[0].release()
+        await wait { f.model.fleet.lastEventId == 8 }
+        XCTAssertEqual(f.count("events"), 2)
+        XCTAssertEqual(f.model.fleet.lastEventEpoch, epoch)
+    }
+
+    func testExpiryBoundsASlowKeyEvenWhenNoMoreFramesArrive() async throws {
+        let f = try await fixture(policy: .init(lifetime: 0.3))
+        defer { f.finish() }
+        f.start()
+        await wait { f.model.fleet.bufferedFrameCount == 2 }
+        await wait { !f.model.fleet.isStreaming }
+        XCTAssertEqual(f.model.fleet.bufferedFrameCount, 0)
+        XCTAssertEqual(f.model.fleet.lastEventId, 5)
+        XCTAssertEqual(f.model.keyContinuityState, .pending)
+        XCTAssertNotEqual(f.model.fleet.connectionState, .connected)
+        f.gates[0].release()
+        await wait { f.model.fleet.lastEventId == 7 }
+        XCTAssertEqual(f.count("events"), 2)
+    }
+
+    func testByteCapRejectsOneOversizedFrameBeforeApplication() async throws {
+        let f = try await fixture(frames: 1, policy: .init(maxBytes: 1))
+        defer { f.finish() }
+        f.start()
+        await wait { f.count("events") == 1 && !f.model.fleet.isStreaming }
+        XCTAssertEqual(f.model.fleet.bufferedFrameCount, 0)
+        XCTAssertEqual(f.model.fleet.lastEventId, 5)
+    }
+
+    func testBackgroundRaceCancelsKeyAndStreamAndRechecksOnReturn() async throws {
+        var f = try await fixture()
+        defer { f.finish() }
+        f.start()
+        await wait { f.model.fleet.bufferedFrameCount == 2 }
+        f.model.handleScenePhaseChange(.background)
+        await wait { ForegroundReconnectURLProtocol.cancelled(f.urls[0].appendingPathComponent("host-key")) }
+        XCTAssertFalse(f.model.fleet.isStreaming)
+        XCTAssertEqual(f.model.fleet.bufferedFrameCount, 0)
+        XCTAssertEqual(f.model.fleet.lastEventId, 5)
+        f.gates[0].release() // a retired reply must not apply anything
+        let replacement = DriveRequestGate()
+        defer { replacement.cancel() }
+        f.script[f.urls[0].appendingPathComponent("host-key")]?.gate = replacement
+        ForegroundReconnectURLProtocol.configure(f.script, reset: false)
+        f.start(); f.start()
+        await wait { f.model.fleet.bufferedFrameCount == 2 }
+        XCTAssertEqual(f.model.fleet.lastEventId, 5)
+        XCTAssertEqual(f.count("events"), 2)
+        XCTAssertEqual(f.count("host-key"), 2)
+        replacement.release()
+        await wait { f.model.fleet.lastEventId == 7 }
+        XCTAssertEqual(f.count("events"), 2)
+    }
+
+    func testSlowActiveHostDoesNotDelayHealthyCoordinatorAndRowsStayStale() async throws {
+        let f = try await fixture(hosts: 2)
+        defer { f.finish() }
+        let other = try XCTUnwrap(f.model.coordinator?.store(profileID: f.profiles[1].id))
+        f.start()
+        await wait { f.model.fleet.bufferedFrameCount == 2 && other.bufferedFrameCount == 2 }
+        XCTAssertEqual(f.model.aggregateBoardRows?.count, 2, "both retained rows remain available")
+        XCTAssertTrue(f.model.aggregateBoardRows?.allSatisfy(\.isStale) == true)
+        f.gates[1].release()
+        await wait { other.lastEventId == 7 }
+        XCTAssertEqual(other.connectionState, .connected)
+        XCTAssertEqual(f.model.fleet.lastEventId, 5)
+        XCTAssertEqual(f.model.keyContinuityState, .pending)
+        XCTAssertNotEqual(f.model.fleet.connectionState, .connected)
+        let activeRows = f.model.aggregateBoardRows?.filter { $0.identity.hostProfileID == f.profiles[0].id }
+        XCTAssertEqual(activeRows?.count, 1)
+        XCTAssertTrue(activeRows?.allSatisfy(\.isStale) == true)
+    }
+
+    func testSlowCoordinatorDoesNotDelayHealthyActiveHost() async throws {
+        let f = try await fixture(hosts: 2)
+        defer { f.finish() }
+        let other = try XCTUnwrap(f.model.coordinator?.store(profileID: f.profiles[1].id))
+        f.start()
+        await wait { other.bufferedFrameCount == 2 }
+        f.gates[0].release()
+        await wait { f.model.fleet.lastEventId == 7 }
+        XCTAssertEqual(other.lastEventId, 5)
+        XCTAssertNotEqual(other.connectionState, .connected)
+        XCTAssertFalse(f.model.coordinator?.allowsLiveWork(profileID: f.profiles[1].id) ?? true)
+    }
+
+    func testEpochChangeReplacesTheDeltaBaseWithAFullStreamSnapshot() async throws {
+        var f = try await fixture()
+        defer { f.finish() }
+        f.script[f.urls[0].appendingPathComponent("events")] = .init(body: wire([
+            try frame("delta", rev: 99, epoch: nextEpoch, id: "invalid-cross-epoch"),
+            try frame("snapshot", rev: 1, epoch: nextEpoch, id: "replacement")]), holdOpen: true)
+        ForegroundReconnectURLProtocol.configure(f.script)
+        f.start()
+        await wait { f.model.fleet.bufferedFrameCount == 2 }
+        XCTAssertEqual(f.model.fleet.lastEventId, 5)
+        f.gates[0].release()
+        await wait { f.model.fleet.lastEventEpoch == nextEpoch }
+        XCTAssertEqual(f.model.fleet.lastEventId, 1)
+        XCTAssertEqual(Set(f.model.fleet.agents.keys), ["replacement"])
+    }
+
+    func testNeverVerifiedColdStartBuffersItsFirstSnapshot() async throws {
+        var f = try await fixture()
+        defer { f.finish() }
+        f.model.fleet.reset()
+        f.script[f.urls[0].appendingPathComponent("events")] = .init(
+            body: wire([try frame("snapshot", rev: 1, epoch: epoch)]), holdOpen: true)
+        ForegroundReconnectURLProtocol.configure(f.script)
+        f.start()
+        await wait { f.model.fleet.bufferedFrameCount == 1 }
+        XCTAssertTrue(f.model.fleet.agents.isEmpty)
+        XCTAssertNil(f.model.fleet.lastEventId)
+        XCTAssertNotEqual(f.model.fleet.connectionState, .connected)
+        f.gates[0].release()
+        await wait { f.model.fleet.lastEventId == 1 }
+        XCTAssertEqual(f.model.keyContinuityState, .verified)
+    }
+
+    func testBufferedFramesFromAnEndedTransportNeverClaimLive() async throws {
+        var f = try await fixture()
+        defer { f.finish() }
+        f.script[f.urls[0].appendingPathComponent("events")]?.holdOpen = false
+        ForegroundReconnectURLProtocol.configure(f.script)
+        f.start()
+        await wait { f.model.fleet.bufferedFrameCount == 2 }
+        try await Task.sleep(for: .milliseconds(50))
+        var acknowledgements = 0
+        f.model.fleet.onConnected = { acknowledgements += 1 }
+        f.gates[0].release()
+        await wait { f.model.fleet.lastEventId == 7 }
+        XCTAssertEqual(acknowledgements, 0, "a buffered 200 must not revive an ended transport")
+        XCTAssertNotEqual(f.model.fleet.connectionState, .connected)
+    }
+
+    func testRowVisibilityHookIsWiredToBothProductionRowBodies() throws {
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "FleetViews.swift", withExtension: "txt"))
+        let source = try String(contentsOf: url, encoding: .utf8)
+        for (begin, end, identity) in [
+            ("private func agentRow(", "private func hostBoardSections(", "agent.agentId"),
+            ("private func hostAgentRow(", "private func hostDisplayName(", "row.agent.agentId")
+        ] {
+            let a = try XCTUnwrap(source.range(of: begin))
+            let b = try XCTUnwrap(source.range(of: end, range: a.upperBound..<source.endIndex))
+            let body = String(source[a.lowerBound..<b.lowerBound])
+            XCTAssertTrue(body.contains(".modifier(ReconnectRowVisibility(model: model, agentID: \(identity)"))
+            XCTAssertTrue(body.contains("revision:"))
+        }
+        let start = try XCTUnwrap(source.range(of: "struct ReconnectRowVisibility:"))
+        let end = try XCTUnwrap(source.range(of: "struct FleetView:", range: start.upperBound..<source.endIndex))
+        let hook = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(hook.contains(".onAppear"))
+        XCTAssertTrue(hook.contains(".onDisappear"))
+        XCTAssertTrue(hook.contains(".onChange(of: revision)"))
+        XCTAssertFalse(hook.contains("DispatchQueue"))
+        XCTAssertFalse(hook.contains("#if DEBUG"))
+    }
+
+    private func attachBoard(_ window: UIWindow, name: String) {
+        let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+            window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+        }
+        let attachment = XCTAttachment(image: image)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    func testNativeRetainedBoardAndSimulatorStageMeasurements() async throws {
+        for sample in 0..<10 {
+            let f = try await fixture(frames: 1)
+            defer { f.finish() }
+            let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+            let window = UIWindow(windowScene: scene)
+            let controller = UIHostingController(rootView: FleetView(model: f.model)
+                .environmentObject(ThemeStore(defaults: f.defaults)))
+            window.rootViewController = controller
+            f.start()
+            window.makeKeyAndVisible()
+            defer { window.isHidden = true; window.rootViewController = nil }
+            await wait { f.model.fleet.bufferedFrameCount == 1 }
+            await wait { f.model.fleet.reconnectTiming.measurements[.retainedRowVisible] != nil }
+            XCTAssertEqual(f.model.fleet.agent("retained")?.seq, 5)
+            XCTAssertNotEqual(f.model.fleet.connectionState, .connected)
+            XCTAssertNil(f.model.fleet.reconnectTiming.measurements[.rowVisible])
+            if sample == 0 { attachBoard(window, name: "547-retained-unverified") }
+            f.gates[0].release()
+            await wait { f.model.fleet.reconnectTiming.measurements[.rowVisible] != nil }
+            if sample == 0 { attachBoard(window, name: "547-applied-verified") }
+            let stamps = f.model.fleet.reconnectTiming.measurements
+            XCTAssertNotNil(stamps[.pathReady])
+            XCTAssertNotNil(stamps[.keyRequest])
+            XCTAssertNotNil(stamps[.keyResponse])
+            XCTAssertNotNil(stamps[.sse200])
+            XCTAssertNotNil(stamps[.frameReceived])
+            XCTAssertNotNil(stamps[.frameApplied])
+            let json = try JSONSerialization.data(withJSONObject: Dictionary(uniqueKeysWithValues:
+                stamps.map { ($0.key.rawValue, $0.value) }), options: [.sortedKeys])
+            print("G547_SIM_SAMPLE \(sample) \(String(decoding: json, as: UTF8.self))")
+        }
     }
 }

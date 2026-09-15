@@ -539,7 +539,8 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # #397 = 9be9bacf…, integration = 1978fc18…); recomputed by the
     # canonical algorithm over THIS merged working tree — membership check
     # still 40/40.
-    "62e3592585b5c06dcbccbec753317e658df7b287dd2092b0ba9dad918e88475f"
+    # 2026-09-15 #547: parallel verified reconnect, bounded ingress and row timing.
+    "3fa501712397ab6b5ca34b23448ae2a9186fc3d6bcda7b7276f0ca702de8445b"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -766,7 +767,8 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # neither parent value is right (parents: #397 = d62b6469…, integration
     # = dc04b35b…); recomputed as the plain sha256 of the merged
     # FleetNotifierTests.swift over THIS merged working tree.
-    "6a4905105879547571661d128fc06ac654ae2aef9c7bfcee815d5f2f5a89e5e7"
+    # 2026-09-15 #547: parallel verified reconnect, bounded ingress and row timing.
+    "f8e9b422d92286d58065a6900c7907b635900ba5b7c6b90b923bef9f43eec034"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

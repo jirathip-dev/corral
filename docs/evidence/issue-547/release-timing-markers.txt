@@ -1,0 +1,3 @@
+Assertion entries 21
+Fixture/comment entries 6
+{'foreground-reconnect': 74, 'path_ready': 2, 'key_request': 2, 'key_response': 2, 'sse_200': 7, 'frame_received': 2, 'frame_applied': 2, 'row_visible': 4}

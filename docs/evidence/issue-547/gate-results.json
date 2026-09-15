@@ -1,0 +1,125 @@
+{
+  "tested_head": "d31cf77ec4012cf77e03f33aaafdb528a4d3bbb5",
+  "gates": [
+    {
+      "command": "flock /tmp/n.lock env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g547-dd -only-testing:FleetNotifierTests/ScenePhaseLifecycleTests -only-testing:FleetNotifierTests/EpochRecoveryTests -only-testing:FleetNotifierTests/PreflightRetryCoordinatorTests -only-testing:FleetNotifierTests/PreflightRetryActiveHostTests -only-testing:FleetNotifierTests/SSEStreamRegressionTests -only-testing:FleetNotifierTests/ForegroundReconnectTests",
+      "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl547-foreground-reconnect",
+      "head": "d31cf77ec4012cf77e03f33aaafdb528a4d3bbb5",
+      "exit": 0,
+      "log": "/tmp/g547-focused.log",
+      "label": "focused",
+      "log_sha256": "f50b4da04ce37ddc92bad9e6f51ddc220e31c9863c2bfd92bccef788651a8a36",
+      "log_bytes": 400147,
+      "summary": [
+        "** TEST SUCCEEDED **",
+        "RAW_EXIT=0"
+      ],
+      "tests": 44,
+      "failures": 0
+    },
+    {
+      "command": "flock /tmp/n.lock env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g547-dd -only-testing:FleetNotifierTests",
+      "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl547-foreground-reconnect",
+      "head": "d31cf77ec4012cf77e03f33aaafdb528a4d3bbb5",
+      "exit": 0,
+      "log": "/tmp/g547-full.log",
+      "label": "full",
+      "log_sha256": "60cc8ec692674e9d9dcf02934b45842ceb3f93578c65a18f38fef755e4af44d5",
+      "log_bytes": 694410,
+      "summary": [
+        "** TEST SUCCEEDED **",
+        "RAW_EXIT=0"
+      ],
+      "tests": 627,
+      "failures": 0
+    },
+    {
+      "command": "python3 ios/check-release-demo.py",
+      "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl547-foreground-reconnect",
+      "head": "d31cf77ec4012cf77e03f33aaafdb528a4d3bbb5",
+      "exit": 0,
+      "log": "/tmp/g547-check-release.log",
+      "label": "check-release",
+      "log_sha256": "e19e1a3d4111eb84dfa8dca3e53f96d49214cb3e2ce6c6b0fbd2b9aae656f039",
+      "log_bytes": 166,
+      "summary": [
+        "source PASS: 7 native Swift renderer files; 8 unchanged approved icon inputs",
+        "release-demo check: PASS (Debug source preserved; Release boundary verified)",
+        "RAW_EXIT=0"
+      ]
+    },
+    {
+      "command": "python3 ios/check-release-demo.py --self-test",
+      "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl547-foreground-reconnect",
+      "head": "d31cf77ec4012cf77e03f33aaafdb528a4d3bbb5",
+      "exit": 0,
+      "log": "/tmp/g547-self-test.log",
+      "label": "self-test",
+      "log_sha256": "e19e1a3d4111eb84dfa8dca3e53f96d49214cb3e2ce6c6b0fbd2b9aae656f039",
+      "log_bytes": 166,
+      "summary": [
+        "source PASS: 7 native Swift renderer files; 8 unchanged approved icon inputs",
+        "release-demo check: PASS (Debug source preserved; Release boundary verified)",
+        "RAW_EXIT=0"
+      ]
+    },
+    {
+      "command": "flock /tmp/n.lock env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild build -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -configuration Debug -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/g547-debug-dd",
+      "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl547-foreground-reconnect",
+      "head": "d31cf77ec4012cf77e03f33aaafdb528a4d3bbb5",
+      "exit": 0,
+      "log": "/tmp/g547-debug.log",
+      "label": "debug",
+      "log_sha256": "2573ceba946faf741c4548bf5e2e60b87171a084030a68be06c9de252821a7ea",
+      "log_bytes": 223351,
+      "summary": [
+        "** BUILD SUCCEEDED **",
+        "RAW_EXIT=0"
+      ]
+    },
+    {
+      "command": "flock /tmp/n.lock env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild build -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -configuration Release -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/g547-release-dd CODE_SIGNING_ALLOWED=NO",
+      "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl547-foreground-reconnect",
+      "head": "d31cf77ec4012cf77e03f33aaafdb528a4d3bbb5",
+      "exit": 0,
+      "log": "/tmp/g547-release.log",
+      "label": "release",
+      "log_sha256": "2ee0c091c0167ff1a248093a909fe2102319b8ac7309fac5cbc0bf6949b0642c",
+      "log_bytes": 201117,
+      "summary": [
+        "** BUILD SUCCEEDED **",
+        "RAW_EXIT=0"
+      ]
+    },
+    {
+      "command": "python3 ios/check-release-demo.py --binary /tmp/g547-release-dd/Build/Products/Release-iphonesimulator/FleetNotifier.app/FleetNotifier",
+      "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl547-foreground-reconnect",
+      "head": "d31cf77ec4012cf77e03f33aaafdb528a4d3bbb5",
+      "exit": 0,
+      "log": "/tmp/g547-binary.log",
+      "label": "binary",
+      "log_sha256": "45fcfdf94ff2b8830b37bc004370e4fd95d25cda8eedf51d48a7dcc1b4ea2cc6",
+      "log_bytes": 537,
+      "summary": [
+        "source PASS: 7 native Swift renderer files; 8 unchanged approved icon inputs",
+        "bundle PASS: Mach-O /tmp/g547-release-dd/Build/Products/Release-iphonesimulator/FleetNotifier.app/FleetNotifier; 6 product files; catalog names ['AppIcon', 'BayPreview', 'Black', 'BlackPreview', 'Grey', 'GreyPreview', 'Palomino', 'PalominoPreview']",
+        "release-demo check: PASS (Debug source preserved; Release boundary verified)",
+        "release-demo check: inspected /tmp/g547-release-dd/Build/Products/Release-iphonesimulator/FleetNotifier.app/FleetNotifier",
+        "RAW_EXIT=0"
+      ]
+    },
+    {
+      "command": "bash -c 'cd ios && xcodegen generate --spec project.yml'",
+      "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl547-foreground-reconnect",
+      "head": "d31cf77ec4012cf77e03f33aaafdb528a4d3bbb5",
+      "exit": 0,
+      "log": "/tmp/g547-xcodegen.log",
+      "label": "xcodegen",
+      "log_sha256": "e61c0cdd921d83835660b6626689e2c189d431616ab3e38cfe173a065200e9cc",
+      "log_bytes": 214,
+      "summary": [
+        "RAW_EXIT=0"
+      ]
+    }
+  ]
+}

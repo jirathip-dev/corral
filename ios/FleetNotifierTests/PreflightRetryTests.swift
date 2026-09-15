@@ -246,7 +246,7 @@ final class PreflightRetryCoordinatorTests: XCTestCase {
     }
 
     /// AC2: a host that answers a DIFFERENT pinned key is terminal — no
-    /// stream, no retry, no later re-poll and no auto-repair.
+    /// surviving stream, no retry, no later re-poll and no auto-repair.
     func testKeyMismatchNeverRetriesOrOpensAStream() async throws {
         suiteName = "corral.h451.mismatch.\(UUID().uuidString)"
         defer { cleanup() }
@@ -267,15 +267,19 @@ final class PreflightRetryCoordinatorTests: XCTestCase {
         await waitUntil(coordinator.posture(profileID: profiles[1].id) == .mismatch)
         XCTAssertEqual(coordinator.posture(profileID: profiles[1].id), .mismatch,
                        "a different key must fail closed")
-        XCTAssertEqual(requests(urls[1].appendingPathComponent("/events")), 0,
-                       "a mismatch never opens a stream")
+        let eventsAtMismatch = requests(urls[1].appendingPathComponent("/events"))
+        XCTAssertLessThanOrEqual(eventsAtMismatch, 1, "at most the speculative owner")
+        XCTAssertTrue((try XCTUnwrap(coordinator.store(profileID: profiles[1].id))).agents.isEmpty)
+        XCTAssertNil((try XCTUnwrap(coordinator.store(profileID: profiles[1].id))).lastEventId)
+        XCTAssertNotEqual((try XCTUnwrap(coordinator.store(profileID: profiles[1].id))).connectionState, .connected)
+        XCTAssertFalse(coordinator.allowsLiveWork(profileID: profiles[1].id))
         // A later start / pull must not re-poll a known mismatch.
         coordinator.startSessionIfNeeded(profiles[1])
         _ = await coordinator.refreshAll(profiles: profiles)
         await settle(0.35)
         XCTAssertEqual(requests(urls[1].appendingPathComponent("/host-key")), 1,
                        "a mismatch must never be re-polled or auto-repaired")
-        XCTAssertEqual(requests(urls[1].appendingPathComponent("/events")), 0)
+        XCTAssertEqual(requests(urls[1].appendingPathComponent("/events")), eventsAtMismatch, "terminal mismatch never reopens")
         let bStore = try XCTUnwrap(coordinator.store(profileID: profiles[1].id))
         guard case .error = bStore.connectionState else {
             return XCTFail("the mismatch must publish a truthful store reason")
@@ -318,8 +322,11 @@ final class PreflightRetryCoordinatorTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(growth, 2, "the ladder must still be retrying (not stopped)")
         XCTAssertLessThanOrEqual(growth, Int(elapsed / policy.baseInterval) + 3,
                                  "bounded rate — no burst, no stacked ladders")
-        XCTAssertEqual(requests(urls[1].appendingPathComponent("/events")), 0,
-                       "an unverified host never opens a stream")
+        XCTAssertEqual(requests(urls[1].appendingPathComponent("/events")), 1, "one speculative stream, despite repeated key retries")
+        XCTAssertTrue((try XCTUnwrap(coordinator.store(profileID: profiles[1].id))).agents.isEmpty)
+        XCTAssertNil((try XCTUnwrap(coordinator.store(profileID: profiles[1].id))).lastEventId)
+        XCTAssertNotEqual((try XCTUnwrap(coordinator.store(profileID: profiles[1].id))).connectionState, .connected)
+        XCTAssertFalse(coordinator.allowsLiveWork(profileID: profiles[1].id))
         XCTAssertEqual(coordinator.posture(profileID: profiles[1].id), .verifying,
                        "a still-unreachable host stays fail-closed")
         let bStore = try XCTUnwrap(coordinator.store(profileID: profiles[1].id))
@@ -359,7 +366,11 @@ final class PreflightRetryCoordinatorTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(growth, 2, "the single ladder must keep retrying")
         XCTAssertLessThanOrEqual(growth, Int(elapsed / policy.baseInterval) + 3,
                                  "one owner: extra starts must not stack ladders (would multiply the rate)")
-        XCTAssertEqual(requests(urls[1].appendingPathComponent("/events")), 0)
+        XCTAssertEqual(requests(urls[1].appendingPathComponent("/events")), 1, "extra starts never stack speculative streams")
+        XCTAssertTrue((try XCTUnwrap(coordinator.store(profileID: profiles[1].id))).agents.isEmpty)
+        XCTAssertNil((try XCTUnwrap(coordinator.store(profileID: profiles[1].id))).lastEventId)
+        XCTAssertNotEqual((try XCTUnwrap(coordinator.store(profileID: profiles[1].id))).connectionState, .connected)
+        XCTAssertFalse(coordinator.allowsLiveWork(profileID: profiles[1].id))
     }
 
     /// AC3: background (stopAll) ends an in-flight ladder — no request
@@ -544,8 +555,11 @@ final class PreflightRetryCoordinatorTests: XCTestCase {
         await settle(0.3)
         XCTAssertEqual(requests(urls[1].appendingPathComponent("/host-key")), 1,
                        "the slow ladder has not ticked again yet")
-        XCTAssertEqual(requests(urls[1].appendingPathComponent("/events")), 0,
-                       "B never reached SSE before the pull")
+        XCTAssertEqual(requests(urls[1].appendingPathComponent("/events")), 1, "B opened transport but is not verified")
+        XCTAssertTrue((try XCTUnwrap(coordinator.store(profileID: profiles[1].id))).agents.isEmpty)
+        XCTAssertNil((try XCTUnwrap(coordinator.store(profileID: profiles[1].id))).lastEventId)
+        XCTAssertNotEqual((try XCTUnwrap(coordinator.store(profileID: profiles[1].id))).connectionState, .connected)
+        XCTAssertFalse(coordinator.allowsLiveWork(profileID: profiles[1].id))
         let eventsA = requests(urls[0].appendingPathComponent("/events"))
         XCTAssertEqual(eventsA, 1, "host A streams before the pull")
         _ = await coordinator.refreshAll(profiles: profiles)
@@ -689,6 +703,7 @@ final class PreflightRetryActiveHostTests: XCTestCase {
     /// bounded cadence.
     func testActiveHostRepeatedStartLiveNeverStacksASecondLadder() async {
         var script: [URL: [PreflightRetryURLProtocol.Outcome]] = [:]
+        script[Self.hostURL.appendingPathComponent("/events")] = [.holdOpen]
         script[Self.hostURL.appendingPathComponent("/host-key")] = [.fail(.cannotConnectToHost)]
         let session = scriptedSession(script)
         let policy = HostPreflightRetryPolicy(baseInterval: 0.05, maxInterval: 0.05)
@@ -707,10 +722,13 @@ final class PreflightRetryActiveHostTests: XCTestCase {
         XCTAssertLessThanOrEqual(growth, Int(elapsed / policy.baseInterval) + 3,
                                  "one owner: extra startLive calls must not stack ladders")
         XCTAssertEqual(model.keyContinuityState, .pending, "fail-closed while unverified")
-        XCTAssertEqual(requests(Self.hostURL.appendingPathComponent("/events")), 0)
+        XCTAssertEqual(requests(Self.hostURL.appendingPathComponent("/events")), 1, "one speculative owner despite repeated starts")
+        XCTAssertTrue(model.fleet.agents.isEmpty)
+        XCTAssertNil(model.fleet.lastEventId)
+        XCTAssertNotEqual(model.fleet.connectionState, .connected)
     }
 
-    /// AC2 parity: a mismatching active host never opens a stream, never
+    /// AC2 parity: a mismatching active host never retains a stream, never
     /// re-polls after the terminal mismatch, and keeps the fail-closed
     /// banner.
     func testActiveHostKeyMismatchIsTerminalAndNeverRePolled() async {
@@ -725,15 +743,22 @@ final class PreflightRetryActiveHostTests: XCTestCase {
         XCTAssertEqual(model.keyContinuityState, .mismatch)
         XCTAssertEqual(requests(Self.hostURL.appendingPathComponent("/host-key")), 1,
                        "a mismatch is terminal — no retry")
-        XCTAssertEqual(requests(Self.hostURL.appendingPathComponent("/events")), 0,
-                       "a mismatch never opens a stream")
+        let eventsAtMismatch = requests(Self.hostURL.appendingPathComponent("/events"))
+        XCTAssertLessThanOrEqual(eventsAtMismatch, 1, "at most the speculative owner")
+        XCTAssertTrue(model.fleet.agents.isEmpty)
+        XCTAssertNil(model.fleet.lastEventId)
+        XCTAssertNotEqual(model.fleet.connectionState, .connected)
+        XCTAssertFalse(model.fleet.isStreaming)
         XCTAssertEqual(model.banner?.kind, "host_key_mismatch")
         // Later startLive/refresh calls must not re-poll or auto-repair.
         model.startLive()
         await model.refreshFleet()
         await settle(0.35)
         XCTAssertEqual(requests(Self.hostURL.appendingPathComponent("/host-key")), 1)
-        XCTAssertEqual(requests(Self.hostURL.appendingPathComponent("/events")), 0)
+        XCTAssertEqual(requests(Self.hostURL.appendingPathComponent("/events")), eventsAtMismatch, "terminal mismatch never reopens")
+        XCTAssertTrue(model.fleet.agents.isEmpty)
+        XCTAssertNil(model.fleet.lastEventId)
+        XCTAssertNotEqual(model.fleet.connectionState, .connected)
     }
 
     /// AC5 parity: an ordinary pull gives the never-verified ACTIVE host an
@@ -759,7 +784,10 @@ final class PreflightRetryActiveHostTests: XCTestCase {
         XCTAssertEqual(requests(Self.hostURL.appendingPathComponent("/host-key")), 1,
                        "the slow ladder has not ticked again yet")
         XCTAssertEqual(model.keyContinuityState, .pending)
-        XCTAssertEqual(requests(Self.hostURL.appendingPathComponent("/events")), 0)
+        XCTAssertEqual(requests(Self.hostURL.appendingPathComponent("/events")), 1, "transport is open but verification is still required")
+        XCTAssertTrue(model.fleet.agents.isEmpty)
+        XCTAssertNil(model.fleet.lastEventId)
+        XCTAssertNotEqual(model.fleet.connectionState, .connected)
         await model.refreshFleet()
         await waitUntil(requests(Self.hostURL.appendingPathComponent("/host-key")) >= 2,
                         timeout: 0.8)

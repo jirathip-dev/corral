@@ -1,0 +1,24 @@
+ios/FleetNotifier/Profiles/HostStreamCoordinator.swift
+ 13: struct CompositeAgentID: Hashable, Sendable, CustomStringConvertible {
+       constructor: init ×2
+ 49: struct HostBoardRow: Equatable, Identifiable, Sendable {
+ 70: enum HostBoardProjection {
+       method: boardRows, liveFirst, canonicallyOrdered, partitionKey
+180: struct HostPreflightRetryPolicy: Equatable, Sendable {
+       method: delay, delayNanoseconds
+231: final class HostStreamCoordinator: ObservableObject {
+       method: noteRefreshFailure, update, startSessionIfNeeded, openStream, hintPathRestored, stopAll, remove, store, posture, agent, tailPane, allowsLiveWork, refreshAll, aggregateRows, persistMetadata, persistAllMetadata, persistCursors
+       constructor: init ×2
+
+ios/FleetNotifier/App/FleetStore.swift
+  7: struct SSECursor: Sendable {
+ 12: final class CursorBox: @unchecked Sendable {
+       method: read, write
+ 45: struct StreamLiveness: Sendable {
+       constructor: init ×2
+ 81: final class TransportHeartbeat: @unchecked Sendable {
+       method: mark, age
+       constructor: init
+121: final class FleetStore: ObservableObject {
+       method: accepts, apply ×2, applyStreamFrame, applyRefresh, trackTransitions, seedShadow, dropShadow, observe, updateStateEnteredAt, agent, conformsToPinnedHost, tail, tailBlocks, tailPane, rememberTail ×2, prepareTailFetch, foldTailFailure, cancelTailFetch, removeAgent, connect, reconnectIfNeeded, replaceStream, startWatchdog, watchdogTick, noteStreamEnded, noteConnectionError, noteConnected, noteConnecting, ingest, noteDecodeFailure, disconnect, reset, seedDemo, upsertDemo, persistCursor, restoreCursor ×2, purgeState
+       constructor: init

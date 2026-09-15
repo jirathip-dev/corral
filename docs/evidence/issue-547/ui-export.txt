@@ -1,0 +1,5 @@
+Exported 2 attachments for: ForegroundReconnectTests/testNativeRetainedBoardAndSimulatorStageMeasurements():
+File: 0C1193BC-3B1B-4ECA-9B13-6C106AAF0914.png, suggested name: "547-applied-verified_0_E3B4075F-3D50-440B-A33A-36A67E4F2620.png"
+File: 0E8E332E-6836-48B0-88C6-44161244CD7C.png, suggested name: "547-retained-unverified_0_4159B5A4-9890-4AF0-8CD4-16F3BA9430AA.png"
+
+Generated manifest file with attachment details: /tmp/g547-ui-attachments/manifest.json

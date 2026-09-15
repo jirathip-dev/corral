@@ -1046,9 +1046,12 @@ final class LiveSessionTransportTests: XCTestCase {
         script[host.appendingPathComponent("/events")] = [.holdOpen]
         script[probe] = [.holdOpen]
         let session = scriptedSession(script)
+        // One slow ladder step: session #1 gets exactly ONE (hanging) attempt
+        // before the boundary, so the answered attempt below belongs to the
+        // foreground session.
         let model = try makeModel(
             session: session,
-            policy: HostPreflightRetryPolicy(baseInterval: 0.05, maxInterval: 0.05,
+            policy: HostPreflightRetryPolicy(baseInterval: 1, maxInterval: 1,
                                              attemptTimeout: 0.2))
         model.startLive()
         let first = try XCTUnwrap(model.liveSession, "startLive must install a live session")
@@ -1066,6 +1069,9 @@ final class LiveSessionTransportTests: XCTestCase {
                        "premise: the probe request is in flight on the live session")
         XCTAssertEqual(PreflightRetryURLProtocol.stopCount(to: probe), 0,
                        "premise: the probe is still open across the boundary")
+        await waitUntil(PreflightRetryURLProtocol.startCount(to: key) == 1)
+        XCTAssertEqual(PreflightRetryURLProtocol.deliveredCount(to: key), 0,
+                       "premise: the first session's hanging preflight delivered nothing")
 
         model.handleScenePhaseChange(.background)
         model.handleScenePhaseChange(.active)
@@ -1076,11 +1082,12 @@ final class LiveSessionTransportTests: XCTestCase {
         XCTAssertEqual(failure.domain, NSURLErrorDomain)
         XCTAssertEqual(failure.code, NSURLErrorCancelled,
                        "(a) invalidateAndCancel() must tear the retired session's task down")
-        // The new session's OWN preflight is answered on the derived transport,
-        // while the retired session's attempt never delivered a response.
+        // The foreground session's OWN preflight is answered on the derived
+        // transport — the retired session's attempt never delivered a response.
         await waitUntil(PreflightRetryURLProtocol.deliveredCount(to: key) == 1, timeout: 3)
         XCTAssertEqual(PreflightRetryURLProtocol.deliveredCount(to: key), 1,
                        "(a) the foreground session's preflight must run on the derived transport")
+        await waitUntil(model.keyContinuityState == .verified, timeout: 3)
         XCTAssertEqual(model.keyContinuityState, .verified,
                        "(a) the fresh session verifies against an empty pool")
     }

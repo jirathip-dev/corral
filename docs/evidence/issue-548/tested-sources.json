@@ -1,0 +1,17 @@
+[
+  {
+    "path": "ios/FleetNotifier/UI/Herd/HerdView.swift",
+    "tested_commit": "e1beb6d262e45ae9e9b4b34746a15bc977fffa9a",
+    "sha256": "494cf16fb71c17e1b23866a39d649dd1a5a6e148c3eaec9baab72bb184a9a27a"
+  },
+  {
+    "path": "ios/FleetNotifierTests/HerdTests.swift",
+    "tested_commit": "e1beb6d262e45ae9e9b4b34746a15bc977fffa9a",
+    "sha256": "18046e07db41ccf73ce83b8782e703976425c12d2882dffbe914c361a971b757"
+  },
+  {
+    "path": "ios/check-release-demo.py",
+    "tested_commit": "e1beb6d262e45ae9e9b4b34746a15bc977fffa9a",
+    "sha256": "414391456530ab767260d97681aa1e4e292c0f2fd5364b260a4233c74816bce3"
+  }
+]

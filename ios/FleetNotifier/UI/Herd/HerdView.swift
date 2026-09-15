@@ -193,6 +193,7 @@ struct HerdView: View {
             paddockID = HerdProjection.reconciledPaddockID(paddockID,in:ids)
         }
 #if DEBUG
+        .coordinateSpace(name:"herdRailLayout")
         .task {
             // #456 full-screen evidence supersedes the #459-era sequence in
             // the same launch (one deterministic marker stream).
@@ -322,60 +323,80 @@ struct HerdView: View {
     /// recover on their own (the board uses the same source, so switching
     /// view was never network recovery). Disconnected horses still render
     /// their last-known truth (`unknown · last known …`) via HerdHorse.
-    private var frontRail: some View {
-        VStack(alignment:.leading,spacing:4) {
-            Text("! FRONT RAIL · \(rail.count)\(rail.contains(where:\.disconnected) ? " LAST KNOWN" : " BLOCKED")")
-                .font(.caption.weight(.semibold)).foregroundStyle(ranchTokens.inkColor)
-                .padding(6).ranchChromeSurface(ranchTokens, cornerRadius: 6).padding(.leading,12)
+    private var railCardWidth: CGFloat { dynamicType.isAccessibilitySize ? 240 : 164 }
+
+    /// #548: measure the card's intrinsic height, including the longest rail
+    /// status (and a host line in multi-host scopes). No art or hit target;
+    /// occupancy never participates in its layout. Dynamic Type still does.
+    private var railZone: some View {
+        VStack(spacing:2) {
+            Color.clear.frame(height:108)
+            horseCaption(name:" ",status:"? unknown · last known blocked",
+                         hostName:horses.contains { $0.hostName != nil } ? " " : nil,rail:true)
+        }
+        .frame(width:railCardWidth)
+        .fixedSize(horizontal:false,vertical:true)
+        .hidden()
+        .frame(maxWidth:.infinity,alignment:.leading)
+        .overlay(alignment:.topLeading) {
             if !rail.isEmpty {
                 ScrollView(.horizontal) {
                     LazyHStack(alignment:.top,spacing:10) {
                         ForEach(rail) { horse in horseButton(horse,rail:true) }
                     }.padding(.horizontal,12)
                 }.scrollIndicators(.hidden)
-            } else {
-                RanchFrontRail(night:lighting.night)
             }
         }
-        .accessibilityElement(children:.contain).accessibilityLabel("Global blocked front rail")
+        .accessibilityElement(children:.contain)
+        .accessibilityLabel("Global blocked front rail")
+        .accessibilityHidden(rail.isEmpty)
+#if DEBUG
+        .modifier(HerdRailFrameProbe(name:"rail-zone"))
+#endif
     }
-    /// #456-r1: the rail + paddock column. At accessibility sizes a small
-    /// phone cannot show the rail, the paddock header and the field at once,
-    /// so the column scrolls under the pinned chrome and above the pinned
-    /// navigation instead of being squeezed (the squeeze previously drew the
-    /// rail outside its pills and pushed the navigation out of place). At the
-    /// approved normal sizes the composition is unchanged.
+
+    private var repositoryChip: some View {
+        let paddock = paddocks.first { $0.id == paddockID } ?? paddocks.first
+        return Group {
+            if let paddock {
+                Text(herdRepositoryCaption(paddock))
+                    .font(.caption2).foregroundStyle(ranchTokens.inkColor)
+                    .lineLimit(1)
+                    .padding(.horizontal,8).padding(.vertical,2)
+                    .ranchChromeSurface(ranchTokens, cornerRadius: 8)
+                    .accessibilityLabel(herdRepositoryCaption(paddock))
+            }
+        }
+        .frame(maxWidth:.infinity,alignment:.leading)
+        .padding(.horizontal,12).padding(.top,2)
+#if DEBUG
+        .modifier(HerdRailFrameProbe(name:"repository-chip"))
+#endif
+    }
+
+    /// The same reserved zone in both paths. Large type scrolls the entire
+    /// chip/rail/field column between the pinned HUD and navigation.
     @ViewBuilder private func herdColumn(width:CGFloat) -> some View {
+        let column = VStack(spacing:0) {
+            repositoryChip
+            railZone.layoutPriority(1)
+            pager(width:width)
+        }
         if dynamicType.isAccessibilitySize {
-            ScrollView(.vertical) {
-                VStack(spacing:0) {
-                    frontRail
-                    pager(width:width)
-                }
-            }
+            ScrollView(.vertical) { column }
         } else {
-            VStack(spacing:0) {
-                Spacer(minLength:12).frame(maxHeight:88)
-                frontRail
-                pager(width:width)
-            }
+            column
         }
     }
     private func pager(width:CGFloat) -> some View {
         ScrollView(.horizontal) {
             LazyHStack(spacing:0) {
                 ForEach(paddocks) { paddock in
-                    VStack(spacing:4) {
-                        HStack {
-                            Text(paddock.title).font(.headline).lineLimit(1)
-                            Spacer(minLength:4)
-                            Text("\(paddock.field.count) here · \(paddock.blockedCount) at rail").font(.caption2)
-                        }.foregroundStyle(ranchTokens.inkColor).padding(8)
-                            .ranchChromeSurface(ranchTokens, cornerRadius: 8)
-                        ScrollView(.vertical) {
-                            LazyVGrid(columns:[GridItem(.adaptive(minimum:dynamicType.isAccessibilitySize ? width-32 : 156),spacing:6)],spacing:8) {
-                                ForEach(paddock.field) { horse in horseButton(horse,rail:false) }
-                            }.padding(.vertical,8)
+                    Group {
+                        if dynamicType.isAccessibilitySize {
+                            paddockField(paddock,width:width)
+                        } else {
+                            ScrollView(.vertical) { paddockField(paddock,width:width) }
                         }
                     }.padding(.horizontal,12).frame(width:width).id(paddock.id)
                         .background(GeometryReader { proxy in
@@ -425,6 +446,21 @@ struct HerdView: View {
         guard paddocks.indices.contains(index) else { return }
         paddockID = paddocks[index].id
     }
+    private func paddockField(_ paddock:HerdPaddock,width:CGFloat) -> some View {
+        LazyVGrid(columns:[GridItem(.adaptive(minimum:dynamicType.isAccessibilitySize ? width-32 : 156),spacing:6)],spacing:8) {
+            ForEach(paddock.field) { horse in horseButton(horse,rail:false) }
+        }.padding(.vertical,8)
+    }
+
+    private func horseCaption(name:String,status:String,hostName:String?,rail:Bool) -> some View {
+        VStack(spacing:2) {
+            Text(name).font(.system(.caption,design:.monospaced)).lineLimit(rail ? 1 : nil)
+            Text(status).font(.caption.weight(.semibold))
+            if let hostName { Text(hostName).font(.caption2).lineLimit(rail ? 1 : nil) }
+        }.foregroundStyle(ranchTokens.inkColor).frame(maxWidth:.infinity).padding(.vertical,5)
+            .ranchChromeSurface(ranchTokens, cornerRadius: 8)
+    }
+
     private func horseButton(_ horse:HerdHorse,rail:Bool) -> some View {
         Button { select(horse) } label: {
             VStack(spacing:2) {
@@ -446,13 +482,9 @@ struct HerdView: View {
                             .frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.trailing)
                     }
                 }.frame(height:108).accessibilityHidden(true)
-                VStack(spacing:2) {
-                    Text(horse.name).font(.system(.caption,design:.monospaced))
-                    Text("\(herdMark(horse.state)) \(horse.statusText)").font(.caption.weight(.semibold))
-                    if let hostName = horse.hostName { Text(hostName).font(.caption2) }
-                }.foregroundStyle(ranchTokens.inkColor).frame(maxWidth:.infinity).padding(.vertical,5)
-                    .ranchChromeSurface(ranchTokens, cornerRadius: 8)
-            }.frame(width:rail ? (dynamicType.isAccessibilitySize ? 240 : 164) : nil)
+                horseCaption(name:horse.name,status:"\(herdMark(horse.state)) \(horse.statusText)",
+                             hostName:horse.hostName,rail:rail)
+            }.frame(width:rail ? railCardWidth : nil)
                 .frame(minWidth:156,minHeight:44).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -460,8 +492,36 @@ struct HerdView: View {
         .accessibilityElement(children:.ignore)
         .accessibilityLabel("\(horse.name), \(horse.statusText), \(horse.agent.workspace.repo ?? "Other")\(horse.hostName.map { " on " + $0 } ?? "")")
         .accessibilityHint(horse.disconnected ? "Source disconnected" : "Opens recent output")
+#if DEBUG
+        .modifier(HerdRailFrameProbe(name:horse.name))
+#endif
     }
 }
+
+func herdRepositoryCaption(_ paddock:HerdPaddock) -> String {
+    let suffix = paddock.blockedCount > 0 ? " · \(paddock.blockedCount) at rail" : ""
+    return "\(paddock.title) · \(paddock.field.count) here" + suffix
+}
+
+#if DEBUG
+/// Geometry from the rendered production views, not a parallel layout model.
+struct HerdRailFrames: PreferenceKey {
+    static var defaultValue: [String: CGRect] { [:] }
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
+private struct HerdRailFrameProbe: ViewModifier {
+    let name: String
+    func body(content: Content) -> some View {
+        content.background(GeometryReader { proxy in
+            Color.clear.preference(key:HerdRailFrames.self,
+                                   value:[name:proxy.frame(in:.named("herdRailLayout"))])
+        })
+    }
+}
+#endif
 
 /// #456: full-screen cover mapping for the procedural ranch. The approved
 /// native scene is a 390x640 world; the cover gives it ONE uniform scale

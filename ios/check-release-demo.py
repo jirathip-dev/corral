@@ -540,7 +540,13 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # canonical algorithm over THIS merged working tree — membership check
     # still 40/40.
     # 2026-09-15 #547: parallel verified reconnect, bounded ingress and row timing.
-    "3fa501712397ab6b5ca34b23448ae2a9186fc3d6bcda7b7276f0ca702de8445b"
+    # 2026-09-15 integration merge (eafebfb #547 + #548): the merged tree unions
+    # the #547 AppModel/FleetStore/HostStreamCoordinator/FleetViews delta with the
+    # #548 Herd/UI delta, so the digest is recomputed over THIS merged tree by the
+    # canonical algorithm; membership check still 40/40. The #548 branch carried
+    # its own branch-local literal (6d553d20…) and this merge is where the single
+    # merged value is re-derived.
+    "d8997fa8b255ffdf4f2042179517bb0d84dec9ddd083276be2e2150c513e247e"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

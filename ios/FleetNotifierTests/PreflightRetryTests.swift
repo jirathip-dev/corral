@@ -46,11 +46,21 @@ private final class PreflightRetryURLProtocol: URLProtocol {
     private static let lock = NSLock()
     private static var queuesStorage: [URL: [Outcome]] = [:]
     private static var requestsStorage: [URLRequest] = []
+    /// #554: transport-level lifetime accounting. Every `startLoading` is a
+    /// dispatched request and every `stopLoading` is a torn-down one (finished,
+    /// cancelled — including by `URLSession.invalidateAndCancel()`), so
+    /// `started - stopped` is the number of transport tasks still alive.
+    private static var startsStorage: [String: Int] = [:]
+    private static var stopsStorage: [String: Int] = [:]
+    private static var deliveriesStorage: [String: Int] = [:]
 
     static func setScript(_ script: [URL: [Outcome]]) {
         lock.lock()
         queuesStorage = script
         requestsStorage = []
+        startsStorage = [:]
+        stopsStorage = [:]
+        deliveriesStorage = [:]
         lock.unlock()
     }
 
@@ -64,6 +74,42 @@ private final class PreflightRetryURLProtocol: URLProtocol {
         return requestsStorage.filter { $0.url?.absoluteString == url.absoluteString }.count
     }
 
+    /// #554: how many times a request for `url` has been DISPATCHED.
+    static func startCount(to url: URL) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return startsStorage[url.absoluteString] ?? 0
+    }
+
+    /// #554: how many times a request for `url` has been TORN DOWN.
+    static func stopCount(to url: URL) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return stopsStorage[url.absoluteString] ?? 0
+    }
+
+    /// #554: how many times a COMPLETE response for `url` has been handed to
+    /// the transport (a hold-open request is never counted).
+    static func deliveredCount(to url: URL) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return deliveriesStorage[url.absoluteString] ?? 0
+    }
+
+    /// #554: dispatched / torn-down totals across every URL — equal totals
+    /// after a teardown mean no transport task outlived it.
+    static var startedTotal: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return startsStorage.values.reduce(0, +)
+    }
+
+    static var stoppedTotal: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return stopsStorage.values.reduce(0, +)
+    }
+
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
@@ -75,6 +121,7 @@ private final class PreflightRetryURLProtocol: URLProtocol {
             return
         }
         Self.requestsStorage.append(request)
+        Self.startsStorage[url.absoluteString, default: 0] += 1
         var outcome: Outcome?
         if let queue = Self.queuesStorage[url], let first = queue.first {
             outcome = first
@@ -102,13 +149,25 @@ private final class PreflightRetryURLProtocol: URLProtocol {
                 client?.urlProtocol(self, didLoad: body)
             }
             if !holdOpen {
+                Self.lock.lock()
+                Self.deliveriesStorage[url.absoluteString, default: 0] += 1
+                Self.lock.unlock()
                 client?.urlProtocolDidFinishLoading(self)
             }
             // holdOpen: the stream is torn down by disconnect(), never by EOF.
         }
     }
 
-    override func stopLoading() {}
+    override func stopLoading() {
+        // #554: a torn-down transport task (finished or cancelled — including
+        // by a session's `invalidateAndCancel()`). Recorded per URL so a test
+        // can watch ONE request's lifetime.
+        Self.lock.lock()
+        if let url = request.url?.absoluteString {
+            Self.stopsStorage[url, default: 0] += 1
+        }
+        Self.lock.unlock()
+    }
 }
 
 /// #451 AC1-AC5, coordinator half: a pinned SECONDARY host whose preflight
@@ -851,5 +910,342 @@ final class PreflightRetryActiveHostTests: XCTestCase {
         XCTAssertEqual(requests(Self.hostURL.appendingPathComponent("/host-key")), before,
                        "background stopLive ends the ladder — no retry after the boundary")
         XCTAssertEqual(model.keyContinuityState, .pending)
+    }
+}
+
+// MARK: - #554 per-live-session transport (warm-return stalls)
+//
+// The owner's warm-return stall: `URLSession.shared`'s TCP/HTTP2 pool survives
+// a background, so the first foreground `/host-key` preflight could be
+// scheduled onto a connection that went stale while the app was suspended and
+// hang until the OS noticed. These tests drive the PRODUCTION scene seam
+// (`handleScenePhaseChange` → startLive/stopLive) and observe real URLSession
+// identities, real request lifetimes and real store state — never source text.
+
+/// #554: lock-guarded record of what ONE completion observed — completions run
+/// off the main actor.
+private final class ProbeCompletion: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Error?
+
+    func record(_ error: Error?) {
+        lock.lock()
+        stored = error
+        lock.unlock()
+    }
+
+    var error: Error? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+}
+
+/// #554 acceptance, entirely through the production scene seam:
+/// (a) a foreground cycle installs a DIFFERENT live session and invalidates the
+/// previous one, (b) a completion the retired session delivered is dropped,
+/// (c) a never-responding `/host-key` fails inside the ladder's own bound and
+/// the #451 ladder engages, (d) the stream timeout and `StreamLiveness` budget
+/// are unchanged, (e) rapid flapping leaves exactly one live session with zero
+/// leaked transport tasks.
+@MainActor
+final class LiveSessionTransportTests: XCTestCase {
+    private static let hostString = "https://h554.example"
+    private static let pinnedKey = Data(repeating: 4, count: 32).base64EncodedString()
+
+    private var suiteName = ""
+    private var model: AppModel?
+    private var injected: URLSession?
+
+    private func cleanup() {
+        model?.stopLive()
+        model = nil
+        injected?.invalidateAndCancel()
+        injected = nil
+        PreflightRetryURLProtocol.clearScript()
+        KeyContinuityGate.reset()
+        if !suiteName.isEmpty {
+            // SAFETY: suiteName was freshly minted per test.
+            UserDefaults(suiteName: suiteName)!.removePersistentDomain(forName: suiteName)
+            suiteName = ""
+        }
+    }
+
+    private func waitUntil(_ condition: @autoclosure () -> Bool,
+                           timeout: TimeInterval = 3) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+    }
+
+    private func settle(_ seconds: TimeInterval = 0.3) async {
+        try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+    }
+
+    private func hostURL() throws -> URL {
+        try XCTUnwrap(URL(string: Self.hostString))
+    }
+
+    private func probeURL() throws -> URL {
+        try XCTUnwrap(URL(string: Self.hostString + "/__554_probe__"))
+    }
+
+    private func keyURL() throws -> URL {
+        try hostURL().appendingPathComponent("/host-key")
+    }
+
+    private func scriptedSession(_ script: [URL: [PreflightRetryURLProtocol.Outcome]]) -> URLSession {
+        PreflightRetryURLProtocol.setScript(script)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [PreflightRetryURLProtocol.self]
+        let session = URLSession(configuration: config)
+        self.injected = session
+        return session
+    }
+
+    /// One pinned ACTIVE profile bound at init (mode `.live`), mirroring the
+    /// production launch wiring.
+    private func makeModel(session: URLSession,
+                           policy: HostPreflightRetryPolicy) throws -> AppModel {
+        suiteName = "corral.h554.live.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let store = HostProfileStore(directory: nil, defaults: defaults)
+        let profile = try store.addProfile(displayName: "Host 554",
+                                          urlString: Self.hostString,
+                                          hostKeyB64: Self.pinnedKey,
+                                          fingerprint: "FINGER",
+                                          keyId: "dev_554_a",
+                                          grants: ["read_tail"],
+                                          expiryTs: 1_800_000_000,
+                                          registeredAt: 1)
+        defaults.set(profile.id.uuidString, forKey: "fleetnotifier.activeHostProfileID")
+        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        let model = AppModel(session: session, defaults: defaults,
+                             identityLoader: { (signer, .insecureFallback) },
+                             loadMeta: { nil }, saveMeta: { _ in },
+                             wipeIdentity: {}, profileStore: store,
+                             preflightRetryPolicy: policy)
+        self.model = model
+        return model
+    }
+
+    /// (a) A background→foreground cycle installs a DIFFERENT live session and
+    /// `invalidateAndCancel()`s the previous one — observed through the
+    /// production seam: a task STARTED on the retired session is torn down by
+    /// the model and completes as cancelled.
+    func testForegroundCycleInstallsANewSessionAndInvalidatesTheRetiredOne() async throws {
+        defer { cleanup() }
+        let host = try hostURL()
+        let probe = try probeURL()
+        var script: [URL: [PreflightRetryURLProtocol.Outcome]] = [:]
+        script[host.appendingPathComponent("/host-key")] = [.holdOpen]
+        script[host.appendingPathComponent("/events")] = [.holdOpen]
+        script[probe] = [.holdOpen]
+        let session = scriptedSession(script)
+        let model = try makeModel(
+            session: session,
+            policy: HostPreflightRetryPolicy(baseInterval: 0.05, maxInterval: 0.05,
+                                             attemptTimeout: 0.2))
+        model.startLive()
+        let first = try XCTUnwrap(model.liveSession, "startLive must install a live session")
+        XCTAssertFalse(first === session,
+                       "the live session must be its own session, not the injected base one")
+
+        let finished = expectation(description: "a task started on the retired session fails")
+        let completion = ProbeCompletion()
+        first.dataTask(with: probe) { _, _, error in
+            completion.record(error)
+            finished.fulfill()
+        }.resume()
+        await waitUntil(PreflightRetryURLProtocol.startCount(to: probe) == 1)
+        XCTAssertEqual(PreflightRetryURLProtocol.startCount(to: probe), 1,
+                       "premise: the probe request is in flight on the live session")
+        XCTAssertEqual(PreflightRetryURLProtocol.stopCount(to: probe), 0,
+                       "premise: the probe is still open across the boundary")
+
+        model.handleScenePhaseChange(.background)
+        model.handleScenePhaseChange(.active)
+        let second = try XCTUnwrap(model.liveSession, "foreground must install a live session")
+        XCTAssertFalse(first === second, "(a) every foreground builds its OWN session")
+        await fulfillment(of: [finished], timeout: 3)
+        let failure = try XCTUnwrap(completion.error as NSError?)
+        XCTAssertEqual(failure.domain, NSURLErrorDomain)
+        XCTAssertEqual(failure.code, NSURLErrorCancelled,
+                       "(a) invalidateAndCancel() must tear the retired session's task down")
+    }
+
+    /// (b) A completion belonging to the RETIRED session is dropped: a pull
+    /// refresh left in flight across the boundary completes as cancelled, and
+    /// that completion must not be applied to the new live session's state
+    /// (a spurious refresh failure) — nor may the retired session's verification
+    /// carry over, so the new session must re-verify with its own pool.
+    func testCompletionFromTheRetiredSessionIsNeverApplied() async throws {
+        defer { cleanup() }
+        let host = try hostURL()
+        let key = try keyURL()
+        var script: [URL: [PreflightRetryURLProtocol.Outcome]] = [:]
+        // The FIRST session verifies; every later session's preflight hangs, so
+        // nothing but a re-verification on the new session could flip Live.
+        script[key] = [.ok(Self.pinnedKey), .holdOpen]
+        script[host.appendingPathComponent("/events")] = [.holdOpen]
+        script[host.appendingPathComponent("/snapshot")] = [.holdOpen]
+        let session = scriptedSession(script)
+        let snapshotURL = host.appendingPathComponent("/snapshot")
+        let model = try makeModel(
+            session: session,
+            policy: HostPreflightRetryPolicy(baseInterval: 0.05, maxInterval: 0.05))
+        model.startLive()
+        await waitUntil(model.keyContinuityState == .verified)
+        XCTAssertEqual(model.keyContinuityState, .verified,
+                       "premise: the first live session verified its host")
+        let first = try XCTUnwrap(model.liveSession)
+
+        // A LIVE pull refresh on that session, held in flight by the transport.
+        let pull = Task { @MainActor in await model.refreshFleet() }
+        await waitUntil(PreflightRetryURLProtocol.startCount(to: snapshotURL) == 1)
+        XCTAssertEqual(PreflightRetryURLProtocol.startCount(to: snapshotURL), 1,
+                       "premise: the refresh is in flight on the live session")
+        XCTAssertEqual(PreflightRetryURLProtocol.stopCount(to: snapshotURL), 0,
+                       "premise: the refresh has not completed yet")
+
+        model.handleScenePhaseChange(.background)
+        model.handleScenePhaseChange(.active)
+        let second = try XCTUnwrap(model.liveSession)
+        XCTAssertFalse(first === second, "the completion belongs to a retired session")
+        await pull.value
+        await settle(0.4)
+
+        XCTAssertNotEqual(model.banner?.kind, "fleet_refresh",
+                          "(b) a retired session's completion must never be applied to state")
+        XCTAssertEqual(model.keyContinuityState, .pending,
+                       "(b) the new session must re-verify; a retired verification never carries over")
+        XCTAssertNotEqual(model.fleet.connectionState, .connected,
+                          "(b) and the retired session must never leave the store Live")
+        XCTAssertTrue(model.fleet.agents.isEmpty)
+    }
+
+    /// (c) A `/host-key` that never responds fails inside the ladder's own
+    /// injectable bound — not the transport's request timeout — and the #451
+    /// ladder engages and retries it. The measured elapsed first-attempt time
+    /// is recorded in the test log against the constant.
+    func testNeverRespondingHostKeyFailsWithinTheBoundAndEngagesTheLadder() async throws {
+        defer { cleanup() }
+        XCTAssertLessThanOrEqual(HostPreflightRetryPolicy.default.attemptTimeout, 5,
+                                 "the production preflight bound is at most 5s")
+        let host = try hostURL()
+        let key = try keyURL()
+        var script: [URL: [PreflightRetryURLProtocol.Outcome]] = [:]
+        script[key] = [.holdOpen]
+        script[host.appendingPathComponent("/events")] = [.holdOpen]
+        let session = scriptedSession(script)
+        let policy = HostPreflightRetryPolicy(baseInterval: 0.05, maxInterval: 0.05,
+                                              attemptTimeout: 0.3)
+        let model = try makeModel(session: session, policy: policy)
+        let started = Date()
+        model.startLive()
+        await waitUntil(PreflightRetryURLProtocol.stopCount(to: key) >= 1, timeout: 3)
+        let firstAttemptFailure = Date().timeIntervalSince(started)
+        XCTAssertGreaterThanOrEqual(PreflightRetryURLProtocol.stopCount(to: key), 1,
+                                    "the hanging attempt must be torn down, not left hanging")
+        XCTAssertLessThanOrEqual(firstAttemptFailure, policy.attemptTimeout + 0.5,
+                                 "a never-responding /host-key must fail within the injectable bound")
+        await waitUntil(PreflightRetryURLProtocol.startCount(to: key) >= 3, timeout: 3)
+        let attempts = PreflightRetryURLProtocol.startCount(to: key)
+        print("ISSUE554_PREFLIGHT bound=\(policy.attemptTimeout) first_failure_after="
+              + "\(firstAttemptFailure) attempts=\(attempts)")
+        XCTAssertGreaterThanOrEqual(attempts, 3,
+                                    "the #451 ladder must engage and retry the bounded attempt")
+        XCTAssertEqual(model.keyContinuityState, .pending,
+                       "an unverified host must stay paused while the ladder retries")
+        XCTAssertNotEqual(model.fleet.connectionState, .connected,
+                          "an unverified host must never open a live stream")
+    }
+
+    /// (d) The live session INHERITS the transport timeouts, so the SSE stream's
+    /// own 60s request timeout and the #425 `StreamLiveness` budget (0.5 × 60)
+    /// are unchanged.
+    func testLiveSessionKeepsTheStreamTimeoutAndTheLivenessBudget() async throws {
+        defer { cleanup() }
+        let host = try hostURL()
+        var script: [URL: [PreflightRetryURLProtocol.Outcome]] = [:]
+        script[host.appendingPathComponent("/host-key")] = [.ok(Self.pinnedKey)]
+        script[host.appendingPathComponent("/events")] = [.holdOpen]
+        let session = scriptedSession(script)
+        let model = try makeModel(
+            session: session,
+            policy: HostPreflightRetryPolicy(baseInterval: 0.05, maxInterval: 0.05))
+        model.startLive()
+        let live = try XCTUnwrap(model.liveSession)
+        XCTAssertEqual(live.configuration.timeoutIntervalForRequest,
+                       session.configuration.timeoutIntervalForRequest,
+                       "(d) the derived session inherits the base session's timeouts")
+        XCTAssertEqual(live.configuration.timeoutIntervalForRequest, 60,
+                       "(d) the SSE stream's request timeout is unchanged")
+        XCTAssertFalse(live.configuration.waitsForConnectivity,
+                       "an attempt must fail fast instead of parking on connectivity")
+        XCTAssertEqual(live.configuration.protocolClasses?.contains { $0 == PreflightRetryURLProtocol.self },
+                       true, "the injected transport stack must ride along")
+        await waitUntil(model.fleet.isStreaming)
+        XCTAssertTrue(model.fleet.isStreaming, "the verified host must open its stream")
+        XCTAssertEqual(model.fleet.streamLiveness.inactivityBudget, 30,
+                       "(d) StreamLiveness stays 0.5 x the 60s stream timeout")
+        XCTAssertEqual(model.fleet.streamLiveness.tickInterval, 5)
+        XCTAssertEqual(StreamLiveness(transportTimeout: 60).inactivityBudget, 30)
+    }
+
+    /// (e) Rapid phase flapping leaves exactly ONE live session at a time, never
+    /// reuses (or aliases) a retired one, and leaks no transport task: every
+    /// dispatched request is torn down once the last boundary is crossed.
+    func testRapidPhaseFlappingLeavesOneLiveSessionAndNoLeakedTasks() async throws {
+        defer { cleanup() }
+        let host = try hostURL()
+        let probe = try probeURL()
+        var script: [URL: [PreflightRetryURLProtocol.Outcome]] = [:]
+        script[host.appendingPathComponent("/host-key")] = [.holdOpen]
+        script[host.appendingPathComponent("/events")] = [.holdOpen]
+        script[probe] = [.holdOpen]
+        let session = scriptedSession(script)
+        let model = try makeModel(
+            session: session,
+            policy: HostPreflightRetryPolicy(baseInterval: 0.05, maxInterval: 0.05,
+                                             attemptTimeout: 0.2))
+        model.startLive()
+        var probes: [(URLSession, ProbeCompletion)] = []
+        for _ in 0..<4 {
+            let live = try XCTUnwrap(model.liveSession)
+            let completion = ProbeCompletion()
+            live.dataTask(with: probe) { _, _, error in completion.record(error) }.resume()
+            probes.append((live, completion))
+            model.handleScenePhaseChange(.background)
+            model.handleScenePhaseChange(.active)
+            // Let the re-installed session actually dispatch its preflight and
+            // stream, so the boundary below tears down REAL in-flight work.
+            await settle(0.08)
+        }
+        let current = try XCTUnwrap(model.liveSession)
+        var identities = probes.map { ObjectIdentifier($0.0) }
+        identities.append(ObjectIdentifier(current))
+        XCTAssertEqual(Set(identities).count, identities.count,
+                       "(e) flapping must never reuse or alias a live session")
+
+        // A repeated startLive INSIDE one live session must reuse it.
+        model.startLive()
+        model.startLive()
+        XCTAssertTrue(model.liveSession === current,
+                      "(e) repeated startLive in one live session must not replace it")
+
+        model.handleScenePhaseChange(.background)
+        XCTAssertNil(model.liveSession, "(e) the last boundary retires the live session")
+        await settle(0.8)
+        for (index, entry) in probes.enumerated() {
+            let failure = entry.1.error as NSError?
+            XCTAssertEqual(failure?.code, NSURLErrorCancelled,
+                           "(e) retired live session #\(index) must be invalidated")
+        }
+        let started = PreflightRetryURLProtocol.startedTotal
+        let stopped = PreflightRetryURLProtocol.stoppedTotal
+        print("ISSUE554_TASKS started=\(started) stopped=\(stopped)")
+        XCTAssertEqual(started, stopped, "(e) zero leaked transport tasks across the flap")
     }
 }

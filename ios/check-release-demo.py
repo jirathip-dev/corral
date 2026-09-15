@@ -554,7 +554,12 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # 2026-09-15 #551 r3: the idle vertical bob is fenced like `roam`
     # (HerdHorse.bob, HerdModel) and HerdView's row offset calls it — the last
     # motion path the recast removal un-suppressed; re-pinned.
-    "c5f0013fef00cf072c34ae38f08f85febf3f6ecb1eb8242b8d17b3ff7762811d"
+    # 2026-09-15 #554: the per-live-session URLSession — AppModel gains the
+    # live-session transport (created in startLive, invalidated in stopLive,
+    # identity-guarded completions) and HostStreamCoordinator gains the
+    # adopted transport plus the bounded `/host-key` attempt; re-pinned over
+    # the #554 source set (recomputed from the tree, never hand-edited).
+    "2afb4c1150e30161c3183560f19ce7a92b2cdab34531961eec149cfe54e0437e"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

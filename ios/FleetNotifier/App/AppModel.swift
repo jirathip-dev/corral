@@ -470,8 +470,37 @@ final class AppModel: ObservableObject {
     private var enrollmentPairingTask: Task<AddHostOutcome, Never>?
     private var enrollmentPairingTaskId: UUID?
     /// Injectable for tests (URLProtocol-mocked session); `.shared` by
-    /// default so production call sites are unchanged.
+    /// default. #554: this is the BASE session — the configuration source for
+    /// each live session, and the transport every NON-live path keeps using
+    /// unchanged (enrollment, host pairing, device registration/token,
+    /// grants reads, signed drive reads).
     private let session: URLSession
+    /// #554: the CURRENT live session's own transport (nil outside a live
+    /// session). `startLive()` derives it from `session`'s configuration and
+    /// `stopLive()` invalidates it, so every foreground begins with an EMPTY
+    /// connection pool exactly like a cold launch: a pooled TCP/HTTP2
+    /// connection that went stale while the app was backgrounded
+    /// (Tailscale/NAT state change) can never be reused by the next
+    /// `/host-key` preflight or SSE attempt, which is the intermittent
+    /// "many seconds to first frame" warm return.
+    ///
+    /// Internal rather than private so the scene-phase regression tests can
+    /// observe the identity the production seam installs and retires.
+    private(set) var liveSession: URLSession?
+    /// #554: the transport every LIVE path builds its client from — the
+    /// ACTIVE host's SSE stream and its `/host-key` preflight ladder, the
+    /// path-hint reconnect, pull refresh, stale-agent reconciliation, and
+    /// every coordinator host client — falling back to the injected base
+    /// session outside a live session so non-live paths are untouched.
+    private var liveTransport: URLSession { liveSession ?? session }
+    /// #554: true while `transport` is STILL the live session's transport.
+    /// Every live-path completion checks this before applying anything, so a
+    /// completion belonging to a retired session can never land in its
+    /// successor (a `nil`/`nil` comparison is the non-live path, which is
+    /// unchanged).
+    private func isLiveTransport(_ transport: URLSession?) -> Bool {
+        liveSession === transport
+    }
     /// #486: pacing between `/enroll/status` polls while waiting for the
     /// host owner's approval. Injectable so tests never sleep in seconds;
     /// the code's own deadline still bounds the whole wait.
@@ -1262,8 +1291,14 @@ final class AppModel: ObservableObject {
         fleet.requireHostVerification()
         guard let url = URL(string: profile.urlString),
               let pinned = profile.hostKeyB64 else { return }
-        let client = CorraldClient(host: url, session: session)
+        // #554: the preflight rides the LIVE session's transport (empty pool
+        // after every foreground) and every attempt is bounded by the ladder's
+        // own short timeout instead of the transport's request timeout, so a
+        // dead path fails into this ladder's retries instead of hanging.
+        let transport = liveTransport
+        let client = CorraldClient(host: url, session: transport)
         let policy = preflightRetryPolicy
+        let attemptTimeout = policy.attemptTimeout
         let taskId = UUID()
         keyContinuityTaskId = taskId
         keyContinuityTask = Task { @MainActor [weak self] in
@@ -1281,15 +1316,17 @@ final class AppModel: ObservableObject {
             }
             var attempt = 1
             while true {
-                guard !Task.isCancelled, self.isCurrent(context) else { return }
+                guard !Task.isCancelled, self.isCurrent(context),
+                      self.isLiveTransport(transport) else { return }
                 // #454: an attempt is in flight — a path hint must not
                 // cancel/restart it; only the WAIT between attempts is
                 // interruptible.
                 self.keyContinuityWaiting = false
                 do {
                     self.fleet.reconnectTiming.mark(.keyRequest)
-                    let response = try await client.fetchHostKey()
-                    guard !Task.isCancelled, self.isCurrent(context) else { return }
+                    let response = try await client.fetchHostKey(within: attemptTimeout)
+                    guard !Task.isCancelled, self.isCurrent(context),
+                          self.isLiveTransport(transport) else { return }
                     self.fleet.reconnectTiming.mark(.keyResponse)
                     if HostKeyTrust.matches(response, pinnedKeyB64: pinned) {
                         self.keyContinuityState = .verified
@@ -1306,7 +1343,8 @@ final class AppModel: ObservableObject {
                     }
                     return
                 } catch {
-                    guard !Task.isCancelled, self.isCurrent(context) else { return }
+                    guard !Task.isCancelled, self.isCurrent(context),
+                          self.isLiveTransport(transport) else { return }
                     // Could not reach the host to verify identity: the
                     // stream stays closed (never unverified-open) and the
                     // banner states the truth. The ladder keeps its bounded
@@ -2681,8 +2719,36 @@ final class AppModel: ObservableObject {
     /// is fed by the same await.
     @Published private(set) var isRefreshingFleet = false
 
+    /// #554: install the live session's dedicated transport (idempotent).
+    ///
+    /// The configuration is DERIVED from the session this model was built
+    /// with: the same timeouts — `timeoutIntervalForRequest` therefore stays
+    /// 60s, so `StreamLiveness`'s 30s budget and the SSE stream's own 60s
+    /// timeout are unchanged — the same headers and cookie/cache policy (an
+    /// injected URLProtocol test stack rides along, which is what keeps the
+    /// injected-session path intact), and `waitsForConnectivity = false`, so
+    /// an attempt on a dead path fails fast instead of parking in "waiting
+    /// for connectivity" while the user stares at a stale board.
+    ///
+    /// Reused while a live session exists: a repeated startLive() inside one
+    /// live session (RootView task, `.active` transition, pairing, the
+    /// preflight ladder's own re-entry after verification) must never replace
+    /// the session its in-flight requests belong to.
+    private func installLiveSession() {
+        guard liveSession == nil else { return }
+        let configuration = session.configuration
+        configuration.waitsForConnectivity = false
+        liveSession = URLSession(configuration: configuration)
+    }
+
     func startLive() {
         guard let hostURL else { return }
+        // #554: a foreground starts with an EMPTY pool — install the live
+        // session BEFORE any client is built, and adopt it in the coordinator
+        // so every host's `/host-key` + `/events` client rides this live
+        // session rather than the backgrounded one's stale pool.
+        installLiveSession()
+        coordinator?.adoptTransportSession(liveTransport)
         if !fleet.isStreaming, keyContinuityTask == nil { fleet.beginReconnectTiming() }
         // #400 C3: start/reconnect every OTHER configured host
         // concurrently — independent of the ACTIVE profile's gates below
@@ -2717,7 +2783,7 @@ final class AppModel: ObservableObject {
                 beginKeyContinuityCheck(for: profile)
             }
         }
-        let client = CorraldClient(host: hostURL, session: session)
+        let client = CorraldClient(host: hostURL, session: liveTransport)
         // #354 L2: state-change notification hooks (started / blocked /
         // finished), fired by FleetStore on SSE deltas. #397: every hook
         // carries the ACTIVE profile id — notifications are composite
@@ -2840,6 +2906,14 @@ final class AppModel: ObservableObject {
     }
 
     func stopLive() {
+        // #554: retire the live session's IDENTITY before anything else — every
+        // live-path completion is identity-guarded against `liveSession`, so
+        // nothing belonging to this session can be applied to state while the
+        // teardown below runs. The session itself is NOT invalidated yet: the
+        // persistence/cancellation steps below still unwind tasks that were
+        // dispatched on it.
+        let retiring = liveSession
+        liveSession = nil
         // #454: the path monitor and every queued hint belong to the live
         // session — the background/removal boundary ends both, so no late
         // path callback can act after teardown.
@@ -2889,6 +2963,12 @@ final class AppModel: ObservableObject {
             keyContinuityState = .pending
             fleet.requireHostVerification(resetWindow: true)
         }
+        // #554: the live session's pool dies with the live session — AFTER the
+        // cursor/metadata persistence above (those reads must not race an
+        // invalidated transport). Every task dispatched on it is cancelled
+        // here, so nothing of this session can outlive the boundary, and the
+        // next foreground builds a fresh session with an empty pool.
+        retiring?.invalidateAndCancel()
     }
 
     /// #453: the app's scene-phase lifecycle routing — the production
@@ -3049,7 +3129,7 @@ final class AppModel: ObservableObject {
                 beginKeyContinuityCheck(for: profile)
             }
         } else if keyContinuityAllowsLiveWork, let hostURL {
-            fleet.reconnectIfNeeded(client: CorraldClient(host: hostURL, session: session))
+            fleet.reconnectIfNeeded(client: CorraldClient(host: hostURL, session: liveTransport))
         }
         if let store = profileStore {
             coordinator?.hintPathRestored(profiles: store.orderedProfiles)
@@ -3105,12 +3185,17 @@ final class AppModel: ObservableObject {
         // behavior (banner on failure); every coordinator host refreshes
         // in parallel and applies its own result — a failing host never
         // blocks or erases the hosts that succeeded.
-        let client = CorraldClient(host: hostURL, session: session)
+        // #554: a pull refresh is a LIVE read — it rides the live session's
+        // transport, and its completion is dropped if that session was retired
+        // (background) before the snapshot arrived.
+        let transport = liveSession
+        let client = CorraldClient(host: hostURL, session: liveTransport)
         let activeRefresh = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
                 let snapshot = try await client.fetchSnapshot()
-                guard !Task.isCancelled, self.isCurrent(context) else { return }
+                guard !Task.isCancelled, self.isCurrent(context),
+                      self.isLiveTransport(transport) else { return }
                 self.fleet.applyRefresh(snapshot)
                 self.persistBoardMetadata()
                 // #425: the snapshot succeeded, so the active host is
@@ -3120,7 +3205,8 @@ final class AppModel: ObservableObject {
                 // untouched (idempotent refresh, no duplicate tasks).
                 self.fleet.reconnectIfNeeded(client: client)
             } catch {
-                guard !Task.isCancelled, self.isCurrent(context) else { return }
+                guard !Task.isCancelled, self.isCurrent(context),
+                      self.isLiveTransport(transport) else { return }
                 self.banner = .error("fleet_refresh",
                                      "Fleet refresh failed — \(error.localizedDescription)")
             }
@@ -3961,14 +4047,18 @@ final class AppModel: ObservableObject {
             guard keyContinuityAllowsLiveWork else { return }
         }
         guard let hostURL else { return }
-        let client = CorraldClient(host: hostURL, session: session)
+        // #554: the reconciliation read is a LIVE read (live transport + a
+        // session-identity guard on its completion).
+        let transport = liveSession
+        let client = CorraldClient(host: hostURL, session: liveTransport)
         let taskId = UUID()
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
             defer { self.lifecycleTasks.removeValue(forKey: taskId) }
-            guard self.isCurrent(context) else { return }
+            guard self.isCurrent(context), self.isLiveTransport(transport) else { return }
             guard let snapshot = try? await client.fetchSnapshot() else { return }
-            guard !Task.isCancelled, self.isCurrent(context) else { return }
+            guard !Task.isCancelled, self.isCurrent(context),
+                  self.isLiveTransport(transport) else { return }
             store.apply(.snapshot(snapshot))
         }
         lifecycleTasks[taskId] = task

@@ -1,0 +1,782 @@
+# Issue 551 — warm-return reconnect: measurement-first report
+
+Lane: implementer, `corral` branch `g551-warm-return-reconnect`.
+Base: `integration` @ `b4515cc27898bc51461de3aad46b117d03e2e05b` (the orch
+rebased this branch onto it after round 1).
+**Rounds:** round 1 (measurement + regression pins) → **round 2 fix contract**
+(the Herd retained-row recast, section 8) → **round 3 fix contract** (the bob the
+recast removal un-suppressed + the coverage the round-2 ledger adjustment
+narrowed + these report corrections, section 9). Section 3's round-1 claim is
+**retracted** in section 3/8, and §8.1a/§8.3/§8.4 carry the round-3 corrections —
+read them before the rest.
+Head at which every number below was produced: see section 7 (`Head`).
+
+This lane resumed from the orchestrator's WIP-preservation commit (round 1:
+`1a17227` after the rebase) and adopted that state instead of restarting: it
+inspected it first (`git show --stat`, `git diff`), kept the preserved
+tests/evidence/digest-pin, and did not rewrite history.
+
+Round 1 changed only `ios/FleetNotifierTests/FleetNotifierTests.swift` among
+Swift files. Round 2 changes two production files —
+`ios/FleetNotifier/UI/Herd/HerdModel.swift` and
+`ios/FleetNotifier/UI/Herd/HerdView.swift` (comment only) — plus the test files
+listed in section 8's change map.
+
+The reported build's reviewed surface was verified byte-identical at round 1:
+the four production files this issue names are unchanged between the reported
+`8ff97a9b` and the round-1 base —
+
+```
+git diff --stat 8ff97a9b b6b69f3 -- ios/FleetNotifier/App/AppModel.swift \
+  ios/FleetNotifier/App/FleetStore.swift \
+  ios/FleetNotifier/Profiles/HostStreamCoordinator.swift \
+  ios/FleetNotifier/UI/FleetViews.swift      # empty, exit 0
+```
+
+so every measurement and reading below is about the code the owner ran.
+
+---
+
+## 1. Measurement
+
+Instrumentation: the #547 release-active `os.Logger` marks (subsystem
+`com.corral.fleetnotifier`, category `foreground-reconnect`) — the samples are
+read back from the same `ReconnectTiming` object the release build logs from,
+so they are the production stamps, not a test-only mirror.
+
+Driver `docs/evidence/issue-551/measure.py`: `xcodebuild build-for-testing`
+then `test-without-building` with a disposable `xctestrun` carrying
+`G551_MEASURE=1`, `-test-iterations 5`,
+`-test-repetition-relaunch-enabled YES` (fresh XCTest host **and** fresh
+`AppModel` per repetition), `-parallel-testing-enabled NO`, one test method
+(`ForegroundReconnectTests/testWarmReturnStageMeasurements`). Reducer
+`docs/evidence/issue-551/timings.py`: per-sample intervals first, then
+`statistics.median`; overlapping branches are never added together; negative
+dispatch intervals are retained instead of dropped.
+
+Scenarios — `cold_model`: an unseeded fresh model, then `startLive()` (the
+production start call); `warm_30` / `warm_300`: the real production
+`handleScenePhaseChange(.background)` seam, a real elapsed 30 s / 300 s, then
+`handleScenePhaseChange(.active)`. Every wait is checked against monotonic
+elapsed time. n = 5 per scenario; 15/15 samples valid (the reducer asserts
+exactly `{cold_model: 5, warm_30: 5, warm_300: 5}`).
+
+| Stage interval (median ms, n=5 each) | cold_model | warm_30 | warm_300 | warm_30 / cold | warm_300 / cold |
+| --- | --- | --- | --- | --- | --- |
+| `dispatch` — path_ready → key_request (negative = requests already in flight before the path observation) | -1.008 | -0.239 | -1.310 | 0.237× | 1.301× |
+| `key_rtt` — key_request → key_response | 5.656 | 0.928 | 2.648 | 0.164× | 0.468× |
+| `path_to_sse_200` — path_ready → sse_200 | 3.628 | 0.514 | 1.453 | 0.142× | 0.400× |
+| `sse_200_to_frame` — sse_200 → frame_received | 0.974 | 0.274 | 0.589 | 0.281× | 0.605× |
+| `frame_to_apply` — frame_received → frame_applied | 0.840 | 3.779 | 5.598 | 4.500× | 6.667× |
+| `key_response_to_apply` — key_response → frame_applied | 0.279 | 3.840 | 5.799 | 13.786× | 20.822× |
+| `apply_to_row` — frame_applied → row_visible | 48.948 | 2.894 | 3.434 | 0.059× | 0.070× |
+| `path_to_apply` — path_ready → frame_applied (path-relative, NOT trigger-relative) | 5.015 | 4.542 | 8.039 | 0.906× | 1.603× |
+| `seam_entry_to_apply` — production seam entry → frame_applied | **111.149** | **8.338** | **35.342** | **0.075×** | **0.318×** |
+
+Raw per-sample milliseconds for the two headline intervals:
+
+| Interval | Scenario | 5 samples (ms) | median |
+| --- | --- | --- | --- |
+| `seam_entry_to_apply` | cold_model | 144.06, 58.26, 186.29, 64.00, 111.15 | 111.149 |
+| `seam_entry_to_apply` | warm_30 | 12.06, 8.34, 23.04, 8.20, 5.61 | 8.338 |
+| `seam_entry_to_apply` | warm_300 | 63.49, 48.01, 27.02, 35.34, 12.26 | 35.342 |
+| `apply_to_row` | cold_model | 66.61, 36.65, 66.59, 31.67, 48.95 | 48.948 |
+| `apply_to_row` | warm_30 | 3.71, 2.75, 9.16, 2.89, 1.83 | 2.894 |
+| `apply_to_row` | warm_300 | 1.66, 9.85, 2.19, 4.19, 3.43 | 3.434 |
+
+**Which stage carries the warm-path delta on this lane: none.** The
+seam-relative total (production seam entry → first applied frame) is
+**111.149 ms cold vs 8.338 ms warm-30 (0.075×) and 35.342 ms warm-300
+(0.318×)**, n = 5 each — both far inside the brief's "≤ cold + 20 %" bar, and
+the only intervals in the whole chain that are *relatively* larger on the warm
+path are two sub-6 ms hops: `frame_received→frame_applied` (0.840 → 3.779 /
+5.598 ms) and `key_response→frame_applied` (0.279 → 3.840 / 5.799 ms). Both are
+the #547 verify-before-apply buffer hops — the warm path holds the frame in the
+bounded inbox until the key check completes, so the apply hop is measured inside
+that hold; the absolute difference is ~3–5 ms. The cold reference instead pays
+where the warm path does not: `apply_to_row` (48.948 ms cold vs 2.894 /
+3.434 ms warm) and the seam total itself, i.e. one-time XCTest-host/AppModel/
+first-render setup. `path_to_apply` looks larger for warm-300 (1.603×) but is
+not a latency — `dispatch` is negative in all three scenarios (−1.008 / −0.239 /
+−1.310 ms medians), i.e. the `NWPathMonitor` observation lands *after* the
+requests already started, so a path-relative interval is not a trigger-relative
+latency (it is reported, not dropped, as the reducer's contract requires).
+
+Corroborating run on the same base tree (the interrupted lane's preserved log,
+identical driver): seam_entry→apply 42.544 ms cold vs 14.573 ms warm-30
+(0.343×) and 16.523 ms warm-300 (0.390×). The absolute numbers differ between
+the two runs because this host was carrying sibling-fleet Xcode builds during
+mine (cold seam median 111 ms here vs 43 ms there); the ordering and the
+conclusion are identical, which is exactly why the fixture's absolute
+milliseconds are not the deliverable.
+
+**Bar check (measured lane only):** warm-30 0.075× and warm-300 0.318× of the
+cold median, n = 5 per scenario — inside the ≤ 1.20× bar. On the physical
+iPhone, against the Mac and a loaded Bazzite, this bar is the OWNER's gate and
+no number here substitutes for it (§5).
+
+---
+
+## 2. Implicated stage and the fix
+
+**Measured outcome: no client-side stage carries a warm-path penalty, and the
+three candidate mechanisms the issue lists are provably absent at this base.**
+Section 1's per-stage medians say the warm scenarios are not slower than the
+cold reference on the seam-relative stage chain; the one interval that looks
+larger (`path_to_apply`) is a path-monitor artifact, not a latency: `path_ready`
+is an asynchronous `NWPathMonitor` observation that lands *after* the requests
+already started — the dispatch interval (`path_ready` → `key_request`) is
+negative in all three scenarios (-1.008 / -0.239 / -1.310 ms medians), which is
+why
+the reducer retains negative dispatch values and why a path-relative interval is
+not a trigger-relative latency. The trigger-relative metric is
+`seam_entry_to_apply` (the production start/foreground call → first applied
+frame). What the lane cannot measure at all is stated in §7 and in
+`docs/evidence/issue-551/measurement.md`: a local `URLProtocol` transport has no
+socket, no TLS and no daemon, so it cannot reproduce connection-pool reuse after
+process suspension, OS scheduling, or a loaded remote host — the places a
+warm/cold *transport* difference would live.
+
+Candidate by candidate, with the anchors that make each one a non-mechanism at
+this base:
+
+1. **Ladder inheritance across the background boundary.** The #451 ladder's
+   pacing is a per-task local: `var attempt = 1` (AppModel.swift:1282) with
+   `policy.delayNanoseconds(beforeAttempt: attempt)` computed inside the same
+   task (AppModel.swift:1325), and the task's `defer` only clears the handle it
+   still owns (AppModel.swift:1271-1281). `stopLive()` cancels that task and
+   clears the waiting flag at the boundary (AppModel.swift:2871-2877), and the
+   `.active` seam re-enters `startLive()` → `beginKeyContinuityCheck`
+   (AppModel.swift:2916, 1255-1268). There is no persisted ladder state and
+   nothing to reset: a foreground first attempt *is* a fresh attempt 1, exactly
+   as the issue's candidate 1 asks for, already. Pinned by
+   `testWarmReturnDoesNotInheritEitherHostsRetryDelay` (two hosts, `500` flip
+   mid-background, both next `/host-key` requests inside 1 s) and by probe M1,
+   which re-introduces the hypothetical defect (the surviving, un-cancelled
+   ladder) and turns that test RED.
+2. **Foreground burst / grants on the reconnect critical path.**
+   `.active` dispatches grants on a detached task (`Task { await
+   refreshGrants() }`, AppModel.swift:2927) — `startLive()` does not await it;
+   `refreshGrants()` uses the already-loaded `self.signer` (AppModel.swift:
+   2528-2533), so it performs no Keychain read on the foreground path; and for
+   the ACTIVE host it is gated behind `keyContinuityAllowsLiveWork`
+   (AppModel.swift:2603-2606), i.e. the active host is not even signed while
+   the key check is pending. Pinned by
+   `testSceneGrantsReadCanStayInFlightWhileFirstFrameApplies`, which holds a
+   signed grants reply in flight and proves the first buffered frame applies
+   first. This is the issue's candidate 2 in its "run it after the first
+   verified frame" form, already true at this base.
+3. **Retained board blanked on the warm path.** §3 gives the anchors
+   (retention is untouched by `requireHostVerification`; application is
+   buffered, not erased; the projection copies the state token verbatim) plus
+   the rendered frames captured in the owner's exact state. Pinned by
+   `testWarmReturnRetainsRenderedStatesUntilVerifiedReplacement` and probe M2,
+   which restores the hypothetical blanking and turns that test RED.
+
+**So no TIMING/reconnect-path change is made: the three "expected candidates"
+are non-mechanisms at this head.** The brief's rule is "fix only the stage(s)
+the measurement implicates", and its hard stops include "a fix outside the
+implicated stage"; the measurement implicates no stage, so each candidate would
+be a behaviour change with no measured defect behind it (deferring
+`refreshGrants()` past the first verified frame would weaken #101's foreground
+re-sync; re-resetting a ladder that already starts at attempt 1 is a no-op
+carrying false confidence). `AppModel.swift` / `FleetStore.swift` /
+`HostStreamCoordinator.swift` are therefore untouched, and the guards keep any
+regression in those mechanisms loud (mutation-proven, §4).
+
+**Round-1 error, corrected here.** Round 1 generalised that conclusion from the
+timing stage chain and the BOARD row projection to "the client-side
+mechanism is absent" — and then asserted in §3 that the client *could not*
+produce the owner's board at all. That was wrong: the client's **Herd
+presentation** DID recast every retained row to `unknown`
+(`HerdHorse.state`, `ios/FleetNotifier/UI/Herd/HerdModel.swift:55`), which is
+the `? N unknown` strip the owner photographed. The round-2 review executed it
+and returned FAIL. The defect and its fix are section 8; §3 is retracted.
+
+### Change map (this lane's diff, for a reviewer)
+
+| Path | Change | Gate-affected? |
+| --- | --- | --- |
+| `ios/FleetNotifier/UI/Herd/HerdModel.swift` | **round 2 fix + round 3**: no state recast for retained rows, withheld motion for them (gait/roam/graze + the new fenced `bob`), explicit live-working paddock promotion | yes (release source) |
+| `ios/FleetNotifier/UI/Herd/HerdView.swift` | **round 2**: doctrine comment (`<state> · last known`); **round 3**: the row's `y:` offset calls the fenced `horse.bob(...)` instead of the inline clock expression | yes (release source) |
+| `ios/FleetNotifier/App/AppModel.swift` | **none** | — |
+| `ios/FleetNotifier/App/FleetStore.swift` | **none** | — |
+| `ios/FleetNotifier/Profiles/HostStreamCoordinator.swift` | **none** | — |
+| `ios/FleetNotifier/App/FleetNotifierApp.swift` | **none** (the scene wiring needed no change) | — |
+| `ios/FleetNotifier/UI/FleetViews.swift` | **none** | — |
+| `ios/FleetNotifierTests/FleetNotifierTests.swift` | 5 guard tests (3 round-1, 1 round-2 Herd-surface, 1 round-3 bob) + 1 opt-in measurement driver + `fixture(retained:seed:)` / `frame(state:)` parameters | yes (test target) |
+| `ios/FleetNotifierTests/HerdTests.swift` | round 2: the recast assertions inverted; round 3: the `reduceMotion: false` coverage restored + the graze-guard/bob pins (section 9.2) | yes (test target) |
+| `ios/FleetNotifierTests/HerdGaitTests.swift` | round 2: the recast assertions inverted; round 3: the `horseButton` bob call-site pin | yes (test target) |
+| `ios/check-release-demo.py` | `APPROVED_RELEASE_SOURCE_DIGEST` + `APPROVED_TEST_SOURCE_DIGEST` re-pinned with dated `#551 r2` / `#551 r3` comments | yes |
+| `docs/evidence/issue-551/{measure,timings,probes,run-gates,run-probes,aslop-compare}.py|sh`, `aslop-normalize.py`, `measurement.md`, `device-protocol.md`, `rendered-board.md`, `board-*.png`, `aslop-*-rules.txt`, `herd-rendered.md`, `herd-*.png` | round-1 evidence + round-2 Herd rendered pair and probe M3 + round-3 probes M4/M5 | no |
+| `.report.md` | this report | no |
+
+Anchor map for the three mechanisms the issue lists — the lines a fix *would*
+have touched, and where each mechanism already behaves correctly:
+`ios/FleetNotifier/App/AppModel.swift:1255-1332` (ladder),
+`:2842-2892` (`stopLive` boundary), `:2911-2937` (scene seam),
+`:2528-2606` (`refreshGrants` + active-host gate),
+`ios/FleetNotifier/App/FleetStore.swift:336-365` (reconnect timing +
+verify/drain), `:351-355` + `:537` (verification gate),
+`ios/FleetNotifier/Profiles/HostStreamCoordinator.swift:77-117` (row
+projection), `ios/FleetNotifier/UI/FleetViews.swift:1684-1696` (row render +
+stale label), and — round 2 — `ios/FleetNotifier/UI/Herd/HerdModel.swift:47-124`
+(the Herd presentation, section 8).
+
+
+---
+
+## 3. The reported `55 unknown` board: RETRACTION and the executed mechanism
+
+**RETRACTION.** Round 1 claimed here that "the client provably cannot produce
+that board; the wire can". That claim was **FALSE** and is withdrawn. It was
+derived only from the BOARD row projection and the store, and it generalised
+from them to the whole client surface. The round-1 review EXECUTED the
+client-side mechanism on the surface the owner photographed:
+
+```
+ios/FleetNotifier/UI/Herd/HerdModel.swift:55
+    var state: AgentState { disconnected ? .unknown : agent.state }
+```
+
+`HerdHorse.state` recast **every** retained row to `unknown` while its host was
+not connected — exactly the warm-return window, because `stopLive()`
+(`ios/FleetNotifier/App/AppModel.swift:2889-2891`) and `stopAll()`
+(`ios/FleetNotifier/Profiles/HostStreamCoordinator.swift:553-560`) put every
+pinned host into the unverified/connecting posture at background entry, and
+FleetViews' `herdDisconnected` (`ios/FleetNotifier/UI/FleetViews.swift:1326`)
+plus the multi-host `disconnected: $0.isStale`
+(`HerdModel.swift:126`, `isStale = !connected` at
+`HostStreamCoordinator.swift:88`) feed that flag to every horse. The Herd
+counters strip counts by that recast value
+(`ios/FleetNotifier/UI/Herd/HerdView.swift:313-323` and
+`herdCountsAccessibilityLabel`, `HerdView.swift:767-771`), so a reachable fleet
+on the warm path literally rendered `? 55 unknown`.
+
+The reviewer's RED probe (the recast removed without the rest of the fix) failed
+on exactly this comparison — quoted verbatim from the round-2 contract:
+`XCTAssertEqual failed: "0 blocked, 55 working, …")` is not equal to
+`("… 55 unknown")`, exit 65. This lane's own probe M3 restores the recast and
+fails on the same assertion in its own fixture (two retained rows, one per
+host), with the exact signature recorded in section 4's probe table and in
+`/tmp/g551-probe-results.json`. The fix and its guards are section 8.
+
+**What was, and still is, true on the BOARD surface** (the round-1 readings
+below stand — they were per-surface, and the round-1 error was in
+generalising them):
+
+- `FleetStore.requireHostVerification(resetWindow:)`
+  (`ios/FleetNotifier/App/FleetStore.swift:351-355`) flips `connectionState` to
+  `.connecting` and raises the verification flag. It touches no agent, cursor,
+  tail or `stateEnteredAt` data.
+- The pending-verification guard (`FleetStore.swift:537`) blocks **frame
+  application**, never retention: a frame that arrives while the key check is
+  pending is held in the bounded inbox (`drain`, `FleetStore.swift:380-402`: the
+  `.frame` case returns while `awaitingHostVerification`) and is applied only
+  after `verifyHostKey()` (`FleetStore.swift:357-365`) drains it in order.
+- The BOARD row projection preserves the state token verbatim: the live-store
+  path (`ios/FleetNotifier/Profiles/HostStreamCoordinator.swift:87-94`) copies
+  `agent.state` and only marks `isStale = !connected`; the durable-cache fill
+  path (`HostStreamCoordinator.swift:101-115`) does `guard let state =
+  AgentState(rawValue: row.state)` — a token is copied or the row is skipped,
+  and nothing is ever written back as `unknown`.
+- The board row renders `row.agent.state`
+  (`ios/FleetNotifier/UI/FleetViews.swift:1684-1689`) and adds an explicit
+  `StaleRowLabel(lastSeenMs:)` (`FleetViews.swift:1694-1696`).
+- Rendered proof on that surface: with the header reading `2 hosts connecting`
+  and no frame applied yet, both board rows render their retained `working`
+  chips plus `stale · last seen`
+  (`docs/evidence/issue-551/board-retained-unverified.png`), and after ONE
+  host's key verifies, only that host's row updates
+  (`board-applied-verified.png`). See
+  `docs/evidence/issue-551/rendered-board.md` for provenance and sha256s.
+  (Board-surface only — this is exactly the evidence placement the round-2
+  review flagged as insufficient; the Herd surface's pin is now in section 8.)
+
+**Secondary possibility, not the explanation.** The wire can ALSO produce an
+all-`unknown` board independently of the client: `AgentState::from_herdr_status`
+(`src/core/model.rs:45-53`) maps only `idle`/`working`/`blocked`/`done` and
+turns every other or missing status into `Unknown`, and the adapter passes
+`agent_status` through `unwrap_or("unknown")` (`src/adapters/herdr.rs:2078,
+2180, 2187`), registering panes as `Unknown` outright before herdr reports a
+status (`:2037`). That remains a code reading of the wire mapping, reported and
+not changed (a daemon change is outside this lane's fence); it is no longer
+offered as the explanation of the owner's screenshot, which the Herd recast
+already explains end to end.
+
+
+---
+
+## 4. Tests and probes
+
+All four tests live in the EXISTING `ForegroundReconnectTests` class in
+`ios/FleetNotifierTests/FleetNotifierTests.swift` — no new Swift file, so no
+project/pbxproj churn (G5). Each drives the production seam
+(`handleScenePhaseChange(.background)` / `.active`) against scripted pinned
+hosts, never an app-log parse.
+
+| Test | Mechanism pinned (production seam) | At this head |
+| --- | --- | --- |
+| `testWarmReturnHerdSurfaceKeepsLastKnownStatesUntilVerified` **(round 2)** | the production multi-host Herd route (`HerdProjection.multiple(BoardModel.hostSections(model.aggregateBoardRows))`, the same call `FleetViews:1016-1020` makes): both hosts' keys held → every retained row must present its LAST-KNOWN token in the counters strip / marks / captions (never `unknown`, no `?` mark), with motion withheld; host 0's verified frame switches ONLY its rows to the verified values; host 1 follows | green (**M3 → RED**) |
+| `testWarmReturnDoesNotInheritEitherHostsRetryDelay` | two pinned hosts, `/host-key` fails `500` across a real background interval (the ladder is left waiting with its banner up), then flips to `200`; after `.active` BOTH hosts' next first attempt must be on the wire in < 1 s — the production ladder's first retry waits 3 s | green (guard; **M1 → RED**) |
+| `testWarmReturnRetainsRenderedStatesUntilVerifiedReplacement` | both hosts' rows keep their last-reported state/seq and cursor across the boundary while the key check is held; nothing is applied while pending; the first verified frame replaces ONLY its own host's rows; + two rendered board frames attached | green (guard; **M2 → RED**) |
+| `testSceneGrantsReadCanStayInFlightWhileFirstFrameApplies` | a signed `/grants-read` held in flight while the first buffered frame applies: the frame applies, the grant set does not move until the reply lands | green (guard) |
+| `testWarmReturnStageMeasurements` | the opt-in (`G551_MEASURE=1`) stage-capture driver used by `measure.py`; skips unless explicitly opted in (observed skipped in G1/G2) | skipped by default |
+
+Existing suite coverage that must stay untouched is also exercised by these
+gates: the mismatch path stays terminal (G1 runs
+`testMismatchDiscardsBufferedFramesAndNeverRevivesLiveWork`), the #453
+lifecycle semantics, the #451 ladder/coordinator retry suites and the #450 epoch
+rules (`EpochRecoveryTests`) — all green in G1/G2 with no edits to any of them.
+
+**The guards are green at this head by design**, because the mechanisms the
+issue hypothesised are absent here (§2). What makes them evidence rather than
+decoration is the mandated mutation battery, run in a disposable worktree:
+
+The battery now runs the FIVE-test set (the four above plus
+`testMismatchDiscardsBufferedFramesAndNeverRevivesLiveWork`) and THREE probes:
+M1/M2 from round 1 and M3, which restores the round-1 defect the review
+executed. It runs at the committed head (`source_head` in
+`/tmp/g551-probe-results.json`), in a disposable `git worktree` created from that
+commit by `probes.py`, injecting ONE defect at a time and restoring each file
+byte-identically before the next:
+
+| Leg | Injected change (disposable tree) | Test | Raw exit | Assertion from the log |
+| --- | --- | --- | --- | --- |
+| `control` | none (pristine) | the 5 tests | **0** | `Executed 5 tests, with 0 failures` |
+| `M1-inherit-ladder` | `AppModel.stopLive()`: drop the ladder cancel (`keyContinuityTask?.cancel()` / `= nil` / `keyContinuityTaskId = nil`) so the old ladder and its wait survive the background boundary — the issue's hypothesised inherited backoff | `testWarmReturnDoesNotInheritEitherHostsRetryDelay` | **65** | `XCTAssertLessThan failed: ("1.1226790000218898") is not less than ("1.0")` (+ the deadline assert) and `** TEST FAILED **` |
+| `M2-blank-on-reconnect` | `FleetStore.beginReconnectTiming()`: `agents.removeAll()` — the issue's hypothesised foreground blanking | `testWarmReturnRetainsRenderedStatesUntilVerifiedReplacement` | **65** | `XCTAssertEqual failed: ("nil") is not equal to ("Optional(FleetNotifier.AgentState.working)") - no foreground unknown recast` (+7 more) and `** TEST FAILED **` |
+| `M3-herd-recast` **(round 2)** | `HerdModel.HerdHorse.state`: restore `disconnected ? .unknown : agent.state` — the EXACT defect the round-1 review executed | `testWarmReturnHerdSurfaceKeepsLastKnownStatesUntilVerified` | **65** | `XCTAssertEqual failed: ("0 blocked, 0 working, 0 idle, 0 done, 2 unknown") is not equal to ("0 blocked, 2 working, 0 idle, 0 done, 0 unknown") - the owner's `? N unknown` strip is exactly what must not happen` (+4 more, incl. `XCTAssertFalse failed - no `?` unknown mark may appear on a retained row`) and `** TEST FAILED **` |
+| `restored-green` | pristine again | the 5 tests | **0** | `Executed 5 tests, with 0 failures` |
+
+Byte-identical restore proof, per probe (recorded by the harness, not asserted in
+prose), all `git diff --exit-code` clean in the scratch tree after each restore:
+
+- M1 `AppModel.swift` sha256 `a1585450c008daba963319a990a0743343bece41240aadb5c6a543b59bcba7ba`
+  before **and** after.
+- M2 `FleetStore.swift` sha256
+  `fa5d3907aee207a0a26e7db22a55d2f759caed376f616db769686547ea01c902` before
+  **and** after.
+- M3 `HerdModel.swift` sha256
+  `ea91a4e6d2770d52ab86635f1bfe182b23af051d4d5f2954e570d2cd57ee654e` before
+  **and** after.
+
+Harness summary line: `PROBES=3 ASSERTION_RED=3 RESTORED_GREEN=5/5
+RESTORE=BYTE_IDENTICAL`; wrapper `PROBES_EXIT=0`. The scratch worktree and its
+DerivedData were removed afterwards; the implementation worktree was never
+mutated (`git status --porcelain` empty apart from this report).
+
+So each mandated probe is an assertion-level RED on exactly the mechanism it
+names — including M3, which restores the defect that was really shipped at the
+round-1 head — and the suite returns to GREEN on the pristine bytes. M1/M2
+inject candidate defects; M3 restores a real one.
+
+---
+
+## 5. Owner gate: physical-device protocol
+
+`docs/evidence/issue-551/device-protocol.md` carries the exact capture protocol
+(counterbalanced scenarios, per-attempt UUID grouping, monotonic-clock analysis,
+retain-every-attempt rule, retention-before-verification observation rule) and
+**empty** result tables — metadata table, per-stage results, warm/cold ratio and
+implicated-stage column all blank. No physical device is attached to this host:
+
+```
+xcrun devicectl list devices   # "No devices found"
+```
+
+The physical-iPhone numbers are the OWNER's gate. No number in this report is a
+device number, and nothing here claims the owner's observed slowdown is fixed
+on device.
+
+---
+
+## 6. Gates
+
+All commands were run from the worktree root under the shared heavy lock
+(`flock /tmp/n.lock`), with the brief's env (`HERDR_XCODEBUILD_DIRECT=1
+HERMES_SIM_TASK_ACTIVE=1`) and simulator
+`59DDC0C5-891E-4EC0-91AF-4F50DF68D793` (iPhone 16, iOS 26.5). A raw exit code is
+the verdict everywhere; no gate is judged through a downstream `grep`/`tail`.
+`docs/evidence/issue-547/bounded-run.py` wraps each leg with an outer deadline
+and appends the raw `RAW_EXIT=` to its own log.
+
+| Gate | Exact command (abbreviated only where the brief repeats the same flags) | Raw exit | Log |
+| --- | --- | --- | --- |
+| G1 focused | `flock /tmp/n.lock env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination "platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793" -derivedDataPath /tmp/g551-dd -only-testing:FleetNotifierTests/ScenePhaseLifecycleTests -only-testing:FleetNotifierTests/ForegroundReconnectTests -only-testing:FleetNotifierTests/PreflightRetryCoordinatorTests -only-testing:FleetNotifierTests/PreflightRetryActiveHostTests -only-testing:FleetNotifierTests/EpochRecoveryTests` | **0** | `/tmp/g551-focused-final.log` |
+| G2 full suite | same, `-only-testing:FleetNotifierTests` — `Executed 634 tests, with 1 test skipped and 0 failures` | **0** | `/tmp/g551-full-final.log` |
+| G3 boundary | `python3 ios/check-release-demo.py` | **0** | `/tmp/g551-check-release-final.log` |
+| G3 self-test | `python3 ios/check-release-demo.py --self-test` (re-pins verified at this head) | **0** | `/tmp/g551-self-test-final.log` |
+| G4 Debug | `flock … xcodebuild build -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -configuration Debug -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/g551-debug-dd` | **0** | `/tmp/g551-debug-final.log` |
+| G4 Release | `flock … xcodebuild build … -configuration Release -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/g551-release-dd CODE_SIGNING_ALLOWED=NO` | **0** | `/tmp/g551-release-final.log` |
+| G4 binary | `python3 ios/check-release-demo.py --binary /tmp/g551-release-dd/Build/Products/Release-iphonesimulator/FleetNotifier.app/FleetNotifier` | **0** | `/tmp/g551-binary-final.log` |
+| G5 xcodegen | `(cd ios && xcodegen generate --spec project.yml)` | **0** | `/tmp/g551-xcodegen-final.log` |
+| G5 drift | `git diff --exit-code -- ios/` — **empty** (no project/pbxproj churn; no new Swift file) | **0** | `/tmp/g551-xcodegen-diff-final.log` |
+| G6 anti-slop | `swift run --package-path ios/tools/anti-slop-swift anti-slop ios/FleetNotifier ios/FleetNotifierTests` (advisory) | **1** (24 pre-existing violations) | `/tmp/g551-aslop-head.log` |
+| G6 identity | `bash docs/evidence/issue-551/aslop-compare.sh` → base tree `git archive b6b69f3`, same tool; `(file, rule)` set + per-key count compare: `BASE_TOTAL=24 HEAD_TOTAL=24 ADDED={} GONE={} COUNT_CHANGED={}`; normalized rule lists byte-identical | **0** | `/tmp/g551-aslop-base.log`, `docs/evidence/issue-551/aslop-{base,head}-rules.txt` |
+| G7 hygiene | `git diff --check` | **0** | `/tmp/g551-diffcheck-final.log` |
+| G8 probes | `bash docs/evidence/issue-551/run-probes.sh` (one `flock /tmp/n.lock` across the whole battery; `docs/evidence/issue-551/probes.py`) | **0** (`PROBES=2 ASSERTION_RED=2 RESTORED_GREEN=4/4 RESTORE=BYTE_IDENTICAL`) | `/tmp/g551-probe-{control,M1-inherit-ladder,M2-blank-on-reconnect,restored-green}.log`, `/tmp/g551-probe-results.json` |
+
+An earlier pass of the same legs at the adopted WIP commit (rebased: `1a17227`,
+pre-rebase `130d797`) before the evidence/report commits produced the same
+verdicts — G1 0, G2 0 (634 tests at that pre-rebase head, 0 failures), G3 0/0,
+G4 0/0/0, G5 0/0, G6 1 (advisory, 24/0 added), G7 0 — logs
+`/tmp/g551-{focused,full,check-release,self-test,debug,release,binary,xcodegen,xcodegen-diff,aslop-head,diffcheck}.log`.
+The measurement legs (`measure.py`, `timings.py`) ran in that pass; the round-1
+gated head's `ios/` tree is byte-identical to that pass's (the only later round-1
+edits were docs/evidence and the report), which is why the stage capture in
+section 1 and in `measurement.md` applies to it unchanged.
+
+Measurement legs (not gates, but part of the deliverable):
+`python3 docs/evidence/issue-547/bounded-run.py g551-measure-outer 3000 flock
+/tmp/n.lock python3 docs/evidence/issue-551/measure.py` → `MEASURE_EXIT=0`
+(build leg `/tmp/g551-measure-build.log`, test leg `/tmp/g551-measure.log`),
+reducer `python3 docs/evidence/issue-551/timings.py /tmp/g551-measure.log` →
+`TIMINGS_EXIT=0`.
+
+Disk discipline: `df -h /` was checked before every heavy leg and after each
+one; the lane's DerivedData trees stayed under `/tmp/g551-*` and were removed
+after use (`rm -rf /tmp/g551-dd /tmp/g551-debug-dd /tmp/g551-release-dd
+/tmp/g551-probe-dd /tmp/g551-probe-tree`). No other lane's tree was touched.
+
+---
+
+## 7. Head, artifacts and honest non-claims
+
+The round-3 gate pass (section 9.5) ran at commit
+`95359f44b90eb177554d6d714bcd148e6704ccd1` — the lane's round-3 fix commit — on
+branch `g551-warm-return-reconnect`, and G8 ran at the same tree. The round-2
+pass (section 8.6) ran at its ancestor `627573a` and the round-1 pass (section 6)
+at `d7c4e77`, both with byte-identical `ios/` content to their own gated rounds.
+This report is committed as a further report-only commit on top: it changes
+**no** file under `ios/`, `docs/evidence/` or any tool path, so no byte any gate
+reads differs from the gated head — verifiable with `git diff --name-only
+95359f4..HEAD` (which lists only `.report.md`).
+
+Branch history (rebased once by the orch onto integration
+`b4515cc27898bc51461de3aad46b117d03e2e05b`, then linear and not rewritten
+again): `b4515cc` (base) → `1a17227` (the orchestrator's WIP-preservation
+commit, adopted as-is) → `acf79b1` (round-1 evidence: measurement result,
+rendered frames, drivers, probe deadline) → `d7c4e77` (round-1 report) →
+`627573a` (round-2 fix: Herd recast, Herd-surface guard, digest re-pins) →
+`ae9a885` (round-2 report + Herd rendered pair) → `95359f4` (round-3 fix: the
+fenced bob, restored graze coverage, call-site pin, probes M4/M5, digest
+re-pins) → this report commit. The round-1 measurement ran at
+`1a17227`/`acf79b1`-era content whose `ios/` tree is byte-identical to the
+round-1 gated head, so section 1's numbers apply unchanged; neither later round
+touched a timing file (section 8.6, 9.5).
+
+The branch is pushed; no PR, no merge, no `main`/release/TestFlight action was
+taken from this lane, and no GitHub state was mutated.
+
+- **No physical-device number is reported or inferred.** `xcrun devicectl list
+  devices` on this host returns `No devices found`; the owner's warm/cold bar on
+  a real iPhone against the Mac and a loaded Bazzite is unmeasured here.
+- **The measured lane cannot see a transport.** The fixture is a local
+  `URLProtocol` with immediate, zero-latency responses — no socket, no TLS, no
+  daemon, no OS suspension. It therefore cannot reproduce URLSession
+  connection-pool reuse after suspension, OS scheduling, or a loaded remote
+  host, which are plausible homes for a warm/cold difference of transport
+  origin. This lane does not claim the owner's slowdown is fixed, and does not
+  claim it is absent on device either: it shows that the client-side stage chain
+  at this head contributes no warm penalty and that the three mechanisms the
+  issue lists are not present in the code.
+- **`cold_model` is not a force-quit launch.** It is a fresh XCTest host + fresh
+  `AppModel`; `start_uptime` is immediately before the production start call,
+  not process launch. Absolute milliseconds are not comparable between this
+  run and the preserved earlier run (host load differed); the ordering is.
+- **`row_visible` is a SwiftUI appearance/update hook, not GPU scan-out.** A
+  collapsed/offscreen/coalesced row may legitimately not mark it, and
+  `retained_row_visible` may be absent for an already-mounted row — absence is
+  not proof of blanking. Retention is evidenced by the committed rendered
+  frames instead, captured outside the timing sample path.
+- **Section 3 is a code reading of the wire contract**, not a measurement of the
+  owner's Mac/Bazzite. It is reported, not changed: a daemon change is outside
+  this lane's fence and was not made.
+- **No CI claim.** Every gate in section 6 ran locally on this host; no GitHub
+  workflow was triggered, dispatched or observed.
+- **No release action.** No `main`, release, TestFlight, PR or merge action was
+  taken; no issue was commented on or closed from this lane. The branch is
+  pushed only. `code_signing`-free Release build only.
+- **anti-slop (G6) is advisory**, and is reported as a base-vs-head identity
+  comparison of `(file, rule)` sets with per-key counts — not as an absolute
+  cleanliness statement.
+- The fixture labels `stale · last seen 0s ago` and `20711d 9h` in the
+  committed frames are fixture clock artifacts (`ts = seq = rev` = 6/7 ms after
+  the Unix epoch), not production timing or a production formatting defect.
+- The mutation probes M1/M2 inject candidate defects into a disposable
+  worktree; they are **not** evidence that those defects existed in the owner's
+  build. Probe M3 is different in kind: it restores a defect that **did** exist
+  at the reviewed round-1 head (section 3/8).
+
+---
+
+## 8. Round 2 — the Herd retained-row recast: fix, guards and ledger
+
+### 8.1 The fix (`ios/FleetNotifier/UI/Herd/HerdModel.swift`)
+
+| Site | Before (the defect) | After |
+| --- | --- | --- |
+| `HerdHorse.state` (:55) | `disconnected ? .unknown : agent.state` — every retained row recast to `unknown` | `agent.state` — the last-known token, never recast |
+| `HerdHorse.statusText` (:57-59) | `"unknown · last known \(agent.state.rawValue)"` | `"\(agent.state.rawValue) · last known"` — last-known labelled as last-known |
+| `HerdHorse.pose` idle branch (:70-77) | the clock-driven grazing window applied to retained rows too | `!disconnected` gate: a retained row keeps the last-known idle stand |
+| `HerdHorse.gait` (:90-92) | standstill only via the (now removed) recast → `pose == .unknown` | explicit `guard !disconnected` → **standstill** — liveness is withheld by the motion the MODEL owns (gait/roam/graze). The row's `y:` bob was NOT covered by this and stayed clock-driven until round 3 (§8.1a, §9) |
+| `ios/FleetNotifier/UI/Herd/HerdView.swift:500-501` (the row's `y:` offset) | inline `horse.state == .idle && !reduced && motionEnabled ? sin(elapsed/4+identity.phase)*0.5 : 0` — unfenced, so once the recast was gone a RETAINED idle row bobbed (round-2 miss; corrected in round 3) | `horse.bob(elapsed:elapsed,reduceMotion:reduced,enabled:motionEnabled)` — `HerdHorse.bob` (`HerdModel.swift:107-115`) carries the same `!disconnected` fence as `roam`, so the vertical bob is fenced at the model, not at the call site |
+| `HerdProjection.paddocks` (:121-124) | promotion via the recast (`$0.state == .working`) | promotion via the LIVE fact (`$0.state == .working && !$0.disconnected`) — #548's pinned ordering ("do not promote disconnected working/blocked agents") is preserved explicitly instead of incidentally |
+| `ios/FleetNotifier/UI/Herd/HerdView.swift` (:327-333) | #528 doctrine comment documented the recast copy (`unknown · last known …`) | comment documents `<state> · last known` and that the token is never recast |
+
+The counters strip and the row captions needed **no code change**: they already
+consume `HerdHorse.state` / `statusText` / `herdMark(horse.state)`
+(`HerdView.swift:313-323`, `:509`, `:767-771`), so removing the recast at its
+single site fixes every consumer. `disconnected` continues to drive the
+desaturated art (`HerdView.swift:501`), the disabled row (`:515`), the
+`Source disconnected` hint (`:518`) and `motionEnabled` (`:117`) — retained rows
+are visibly not-Live, and none of them is blanked.
+
+### 8.1a Round-2 overstatement, corrected in round 3
+
+Round 2's claim — "liveness is withheld by motion, not by lying about the state"
+— was true of `gait`, `roam` and the `pose` graze guard, and **false for the row's
+`y:` bob**: `HerdView.swift:500-501` was left byte-identical (it *looked*
+unreachable for a retained row, because the recast made `state == .idle`
+structurally false), so once the recast was removed a retained idle row animated
+again. The round-2 review executed it on a throwaway probe
+(`state=idle distinct_y_offsets=17` across an 8 s sweep, gait and roam correctly
+frozen). Round 3 fences the bob at the model (`HerdHorse.bob`, §9.1) and pins it
+(§9.2). The `y:` site is the one place where "motion implies liveness" survived
+round 2 — §8.4's "deliberately NOT changed" list is corrected accordingly.
+
+Unchanged and still true: the retention/token fix, the counters/rows/captions,
+the `gait`/`roam` fences, the `pose` graze guard, the paddock promotion rule and
+the four inverted assertions of §8.3.
+
+### 8.2 The Herd-surface fixture that bites
+
+`ForegroundReconnectTests.testWarmReturnHerdSurfaceKeepsLastKnownStatesUntilVerified`
+(FleetNotifierTests.swift) drives the production scene seam exactly like the
+round-1 fixture (two pinned hosts, real `.background` → `.active`, both host-key
+checks held), then projects the horses through the SAME call `FleetViews` makes
+for `HerdView(horses:)`
+(`HerdProjection.multiple(BoardModel.hostSections(model.aggregateBoardRows))`,
+`FleetViews.swift:1016-1020`) and asserts:
+
+- both retained rows are `disconnected` and present `.working`
+  (`retained.allSatisfy { $0.state == .working }`),
+- no `?` unknown mark appears (`herdMark($0.state) != "?"`),
+- `herdCountsAccessibilityLabel(retained) == "0 blocked, 2 working, 0 idle, 0 done, 0 unknown"`
+  — the counters strip the owner photographed,
+- each caption leads with the last-known token and says `last known`,
+- motion is withheld (`gait == .standstill`, `roam == 0`),
+- after host 0's key verifies: `"1 blocked, 2 working, 0 idle, 0 done, 0 unknown"`,
+  host 0's replacement row reads `blocked` (no `last known`), host 1's row still
+  reads `working · last known`,
+- after host 1 verifies: `"1 blocked, 2 working, 1 idle, 0 done, 0 unknown"`,
+  every row live.
+
+Probe M3 restores the exact recast and turns this test RED (section 4's table +
+`/tmp/g551-probe-results.json`), and section 8.5 shows the same before/after on
+the real rendered surface. The existing Board pin
+(`testWarmReturnRetainsRenderedStatesUntilVerifiedReplacement`) is untouched and
+still green.
+
+### 8.3 Assertion ledger (assertions that pinned the recast and were inverted)
+
+Removing the defect made four pre-existing assertions false **because they
+asserted the defect**. They are inverted here. **Correction (round 3):** the
+round-2 adjustment of the `HerdTests.swift:75` row also NARROWED coverage — it
+asserted the `reduceMotion: true` form, which short-circuits `pose()` before the
+idle/graze branch, so the retained row's `reduceMotion: false` path lost its only
+assertion in that loop (executed consequence: deleting the new graze guard left
+all 637 tests green). Restored and pinned in §9.2. Nothing else was weakened,
+deleted or skipped:
+
+| File:line | Before (pinned the recast) | After |
+| --- | --- | --- |
+| `HerdTests.swift:74` | `XCTAssertEqual(stale.state, .unknown)` | `XCTAssertEqual(stale.state, state)` — the retained row's token is its last-known state |
+| `HerdTests.swift:75` | `XCTAssertEqual(stale.pose(elapsed: 25, reduceMotion: false), .unknown)` | `stale.pose(elapsed: 25, reduceMotion: true) == horse.pose(elapsed: 25, reduceMotion: true)` (static art follows the last-known state) + new `stale.gait(...) == .standstill` and `statusText.hasPrefix(state.rawValue)`; **round 3 restores the `reduceMotion: false` coverage** and pins the graze guard (§9.2) |
+| `HerdGaitTests.swift:215` | `XCTAssertEqual(stale.pose(elapsed: 2.0, reduceMotion: false), .unknown)` | `stale.state == .working` + `stale.pose(...) == .working` (+ the existing standstill gait assert kept) |
+| `HerdGaitTests.swift:256` | `assertSameDrawing(staleDrawing, drawn(.unknown), "disconnected")` | `assertSameDrawing(staleDrawing, drawn(.working, .standstill), "disconnected")` — the retained row renders its last-known pose statically |
+
+Every other Herd/lifecycle/board/preflight/epoch assertion in the suite is
+unchanged, including #548's ordering pins
+(`testPaddocksDoNotPromoteDisconnectedWorkingOrBlockedAgents`,
+`testPaddockOrderingTracksWorkingIdleDoneAndReconnectTransitions`), which stay
+green because the promotion rule is now explicit rather than recast-derived.
+
+### 8.4 Deliberately NOT changed — and why
+
+- **Timing/reconnect path**: `AppModel.swift`, `FleetStore.swift`,
+  `HostStreamCoordinator.swift` are untouched, per the contract's item 4 and the
+  round-1 measurement (no timing stage implicated).
+- **`HerdView.swift:341`'s hidden rail placeholder** (`"? unknown · last known
+  blocked"`) is byte-identical: it is a `.hidden()` sizing guard for #548's
+  measured rail card (the longest status the card must fit), not a counter/row
+  consumer, and shortening it would shrink that card. It renders nothing.
+- **`agent.state` retention and the wire/daemon mapping**: unchanged (§3).
+- **Correction (round 3): the row's `y:` bob at `HerdView.swift:500-501` was
+  wrongly "left alone" here in round 2.** It was byte-identical to the base, so
+  it looked like a no-op for retained rows — but the base's meaning came from the
+  recast (`state == .idle` was unreachable for a retained row), and removing the
+  recast made the bob reachable. That site is fenced in round 3 (§9.1); it was a
+  MISS, not a deliberate exclusion, and this list is corrected accordingly. The
+  lesson: a byte-identical line whose reachability depended on the removed defect
+  must be re-derived, not assumed inert.
+
+### 8.5 Rendered before/after evidence on the Herd surface
+
+`docs/evidence/issue-551/herd-rendered.md` + two frames captured through the
+app's own DEBUG evidence driver with identical args, one build per head:
+
+| Frame | Head | sha256 | Counts strip (read from the pixels) |
+| --- | --- | --- | --- |
+| `herd-retained-before-r1.png` | round-1 head `d7c4e77` | `fb13f2d856ef8b3bee23a88f5e0ede3bc0df174a20e4cedf1114f8a99993eae1` | `! 0  ○ 0  ◦ 0  ✓ 0  ? 12` — every row `unknown`, captions `? unknown · last known …` |
+| `herd-retained-after-r2.png` | round-2 head `627573a` | `1f4c8a532f08a292b60613fae7d31e1f2ff7ef93f7c3301ba036fc9c26aedd95` | `! 2  ○ 4  ◦ 3  ✓ 2  ? 1` — the fleet's last-known distribution, captions `! blocked · last known`, `◦ idle · last known`, `✓ done · last known` |
+
+Both frames keep the honest `Offline` indicator and the stale styling; the AFTER
+frame still shows the two retained blocked horses at the front rail (`2 at
+rail`). Command, marker-then-hold discipline, sha256s and the DEBUG-demo limits
+are in `herd-rendered.md`.
+
+### 8.6 Round-2 gates and battery
+
+All legs re-run at the round-2 committed head
+`627573acb89b37e6efe446276040aa8db34de855` with the brief's env and simulator:
+
+| Gate | Raw exit | Log |
+| --- | --- | --- |
+| G1 focused (ScenePhaseLifecycle, ForegroundReconnect, PreflightRetryCoordinator, PreflightRetryActiveHost, EpochRecovery, **HerdTests, HerdGaitTests, HerdWindTests, HerdEnvironmentTests**) | **0** — `Executed 90 tests, with 1 test skipped and 0 failures` | `/tmp/g551r2-focused-final.log` |
+| G2 full `FleetNotifierTests` | **0** — `Executed 637 tests, with 1 test skipped and 0 failures` | `/tmp/g551r2-full-final.log` |
+| G3 `check-release-demo.py` | **0** (`release-demo check: PASS`) | `/tmp/g551r2-check-release-final.log` |
+| G3 `--self-test` | **0** | `/tmp/g551r2-self-test-final.log` |
+| G4 Debug build | **0** | `/tmp/g551r2-debug-final.log` |
+| G4 Release build (`CODE_SIGNING_ALLOWED=NO`) | **0** | `/tmp/g551r2-release-final.log` |
+| G4 Release binary check | **0** | `/tmp/g551r2-binary-final.log` |
+| G5 `xcodegen generate` | **0** | `/tmp/g551r2-xcodegen-final.log` |
+| G5 `git diff --exit-code -- ios/` (drift) | **0** (empty) | `/tmp/g551r2-xcodegen-diff-final.log` |
+| G6 anti-slop (advisory) | **1** — 24 pre-existing | `/tmp/g551-aslop-head.log` |
+| G6 identity delta (`aslop-compare.sh`) | **0** — `BASE_TOTAL=24 HEAD_TOTAL=24 ADDED={} GONE={} COUNT_CHANGED={}` | `/tmp/g551r2-aslop-compare.log` |
+| G7 `git diff --check` | **0** | `/tmp/g551r2-diffcheck-final.log` |
+| G8 mutation battery (M1/M2/M3 + control + restored-green) | **0** — `PROBES=3 ASSERTION_RED=3 RESTORED_GREEN=5/5 RESTORE=BYTE_IDENTICAL` | `/tmp/g551-probe-*.log`, `/tmp/g551-probe-results.json` |
+
+The round-1 stage-capture measurement was **not** re-run (contract item 4): no
+change in this round touches timing, SSE, trust or the ladder — section 6's
+round-1 table and the round-1 medians stand, and the timing files are
+byte-identical to the round-1 content in this rebased history:
+`git diff --name-only d7c4e77..627573a -- ios/FleetNotifier/App ios/FleetNotifier/Profiles`
+is empty (round 2 touched only `UI/Herd/HerdModel.swift`,
+`UI/Herd/HerdView.swift`, the four test files and `ios/check-release-demo.py`).
+
+---
+
+## 9. Round 3 — the un-suppressed bob, the narrowed coverage, report corrections
+
+### 9.1 F1 [blocker] — the retained-row `y:` bob is fenced at the model
+
+| Site | Before (round 2) | After (round 3) |
+| --- | --- | --- |
+| `ios/FleetNotifier/UI/Herd/HerdView.swift:499-500` (the row's `.offset`) | `y: horse.state == .idle && !reduced && motionEnabled ? sin(elapsed/4+horse.identity.phase)*0.5 : 0` — inline and unfenced | `y: horse.bob(elapsed: elapsed, reduceMotion: reduced, enabled: motionEnabled)` |
+| `ios/FleetNotifier/UI/Herd/HerdModel.swift:107-115` | — (the bob lived in the view) | `func bob(elapsed:reduceMotion:enabled:) -> CGFloat` with `guard enabled, !disconnected, !reduceMotion, state == .idle, elapsed.isFinite else { return 0 }` — the `y:` twin of `roam`'s `x:`, fenced at the model so every call site inherits it |
+
+Reachability that made this live: `motionEnabled` (`HerdView.swift:117`) is
+surface-level (`horses.contains { !$0.disconnected }`) while `disconnected` is
+per row (`HerdModel.swift:142`), so in the mixed warm-return window (one host
+verified, one retained) the surface gate is OPEN for the retained host's rows.
+The verified path is unchanged: a verified idle row still bobs at the same
+amplitude/phase (`sin(elapsed/4 + identity.phase) * 0.5`), Reduce Motion and a
+closed surface gate still stop it, and a non-finite clock now yields 0 instead of
+`nan` (mirroring `roam`).
+
+### 9.2 F2 [blocker] — restored `reduceMotion: false` coverage + the graze-guard pin
+
+- `HerdTests.testStatesRailStaticSubstitutionAndRoamingBounds` (the loop over
+  every `AgentState`): the retained row's `reduceMotion: false` path is asserted
+  again — `stale.pose(elapsed: 25, reduceMotion: false)` must equal the live
+  twin's pose except inside the grazing window (where the retained row stays
+  `.stand`), and, for the idle state, the live row must still graze at
+  `55 - identity.phase` while the retained row must NOT; the idle bob is sampled
+  across an 8 s sweep (live > 1 distinct offset, retained constant `0`).
+- `HerdGaitTests.testHorseButtonOffsetRoutesTheBobThroughTheFencedModel` (new):
+  the bundled `HerdView.swift.txt` must contain
+  `y:horse.bob(elapsed:elapsed,reduceMotion:reduced,enabled:motionEnabled)` exactly
+  once inside `horseButton`, and the inline `y:horse.state==.idle` expression must
+  not survive anywhere in it — so a reverted call site cannot false-green the
+  behaviour test.
+- `ForegroundReconnectTests.testWarmReturnRetainedIdleRowNeverBobsWhileVerifiedIdleRowAnimates`
+  (new, the F1 pin): the production seam with two pinned hosts, both idle rows
+  retained → every row's `y:` offset is constant across the sweep; then host 0
+  verifies → its idle row animates while host 1's retained idle row stays
+  constant.
+- The fixture gained a `seed: AgentState = .working` parameter (default keeps every
+  existing call site byte-identical in behaviour).
+- No new rendered frame accompanies the bob: a ±0.5 pt vertical offset across the
+  clock is not observable in a single static capture, so the pin is the
+  sweep-sampled offset (constant for a retained row, moving for a verified one)
+  rather than a screenshot. The round-2 rendered pair (§8.5) still shows the
+  surface-level result this round preserves (captions/counters = last-known,
+  indicator = Offline).
+
+### 9.3 F3 — report corrections
+
+`§8.1` (the bob site added as a fixed row + the gait row scoped to the motion the
+model owns), new `§8.1a` (the round-2 overstatement "liveness is withheld by
+motion" was false for the bob), `§8.3` (the round-2 narrowing of the
+`reduceMotion: false` coverage is disclosed; "nothing else was weakened" corrected),
+`§8.4` (the `y:` bob listed as a MISS, not a deliberate exclusion).
+
+### 9.4 Round-3 probe battery
+
+Run at `95359f44b90eb177554d6d714bcd148e6704ccd1` (`source_head` in
+`/tmp/g551-probe-results.json`), in a disposable worktree created from that
+commit, one injected defect at a time, each restored byte-identically. The
+battery is EIGHT tests — the six `ForegroundReconnectTests` methods plus the two
+Herd model/renderer pins the round-3 contract names — and probes M1–M5:
+
+| Leg | Injected change (disposable tree) | Target test | Raw exit | Assertion from the log |
+| --- | --- | --- | --- | --- |
+| `control` | none (pristine) | the 8-test battery | **0** | `Executed 8 tests, with 0 failures` |
+| `M1-inherit-ladder` | `AppModel.stopLive()`: drop the ladder cancel | `ForegroundReconnectTests/testWarmReturnDoesNotInheritEitherHostsRetryDelay` | **65** | `XCTAssertLessThan failed: ("1.0652700000209734") is not less than ("1.0")` |
+| `M2-blank-on-reconnect` | `FleetStore.beginReconnectTiming()`: `agents.removeAll()` | `…/testWarmReturnRetainsRenderedStatesUntilVerifiedReplacement` | **65** | `XCTAssertEqual failed: ("nil") is not equal to ("Optional(FleetNotifier.AgentState.working)") - no foreground unknown recast` (+7) |
+| `M3-herd-recast` | `HerdModel.HerdHorse.state`: restore `disconnected ? .unknown : agent.state` (**the EXACT round-1 defect**) | `…/testWarmReturnHerdSurfaceKeepsLastKnownStatesUntilVerified` | **65** | `XCTAssertEqual failed: ("0 blocked, 0 working, 0 idle, 0 done, 2 unknown") is not equal to ("0 blocked, 2 working, 0 idle, 0 done, 0 unknown") - the owner's `? N unknown` strip is exactly what must not happen` (+4) |
+| `M4-retained-graze` **(r3, F2)** | `HerdModel` pose idle branch: drop `!disconnected &&` from the graze guard | `HerdTests/testStatesRailStaticSubstitutionAndRoamingBounds` | **65** | `XCTAssertEqual failed: ("graze") is not equal to ("stand") - the retained idle row never grazes (HerdModel graze guard)` |
+| `M5-retained-bob` **(r3, F1)** | `HerdModel.bob`: drop `!disconnected,` from the guard | `…/testWarmReturnRetainedIdleRowNeverBobsWhileVerifiedIdleRowAnimates` | **65** | `XCTAssertEqual failed: ("[-0.187…, -0.499…, … ]") is not equal to ("[0.0]") - a retained idle row's offset must be constant (both hosts retained / one host verified, one retained)` — **17 distinct offsets** across the sweep, matching the round-2 reviewer's own `distinct_y_offsets=17` |
+| `restored-green` | pristine again | the 8-test battery | **0** | `Executed 8 tests, with 0 failures` |
+
+Byte-identical restore proof (recorded by the harness; `git diff --exit-code`
+clean in the scratch tree after each restore): `AppModel.swift`
+`a1585450c008daba963319a990a0743343bece41240aadb5c6a543b59bcba7ba`,
+`FleetStore.swift`
+`fa5d3907aee207a0a26e7db22a55d2f759caed376f616db769686547ea01c902`,
+`HerdModel.swift` `0c30ced1a66c8ed570c3a64741e80981603256b805e4ca06cc73f187e0901a13`
+— each identical before **and** after its probe (M3/M4/M5 all share the HerdModel
+hash because each restores before the next runs). Harness summary:
+`PROBES=5 ASSERTION_RED=5 RESTORED_GREEN=8/8 RESTORE=BYTE_IDENTICAL`;
+`PROBES_EXIT=0`.
+
+Disk note (honest): the first attempt at this battery died mid-run with
+`OSError: [Errno 28] No space left on device` (the shared internal volume at
+287 Mi free — sibling fleets' build trees, not this lane's, are the bulk) after
+M1; the retry then failed once on a stale worktree registration left by that
+abort and was preceded by `git worktree prune`. The battery quoted above is the
+clean run; the aborted attempt's own restore was still verified byte-identical
+(its M1 record: `before == after`, `restore_diff_exit 0`).
+
+### 9.5 Round-3 gates
+
+All legs re-run at `95359f44b90eb177554d6d714bcd148e6704ccd1` with the brief's
+env and simulator:
+
+| Gate | Raw exit | Log |
+| --- | --- | --- |
+| G1 focused (ScenePhaseLifecycle, ForegroundReconnect, PreflightRetryCoordinator, PreflightRetryActiveHost, EpochRecovery, **HerdTests, HerdGaitTests, HerdWindTests, HerdEnvironmentTests**) | **0** — `Executed 92 tests, with 1 test skipped and 0 failures` | `/tmp/g551r3-focused-final.log` |
+| G2 full `FleetNotifierTests` | **0** — `Executed 639 tests, with 1 test skipped and 0 failures` | `/tmp/g551r3-full-final.log` |
+| G3 `check-release-demo.py` / `--self-test` (re-pinned) | **0** / **0** | `/tmp/g551r3-{check-release,self-test}-final.log` |
+| G4 Debug build / Release build / Release binary check | **0** / **0** / **0** | `/tmp/g551r3-{debug,release,binary}-final.log` |
+| G5 `xcodegen generate` / `git diff --exit-code -- ios/` | **0** / **0** (empty drift) | `/tmp/g551r3-{xcodegen,xcodegen-diff}-final.log` |
+| G6 anti-slop advisory / identity delta | **1** (24 pre-existing) / **0** — `BASE_TOTAL=24 HEAD_TOTAL=24 ADDED={} GONE={} COUNT_CHANGED={}` | `/tmp/g551-aslop-head.log`, `/tmp/g551r3-aslop-compare.log` |
+| G7 `git diff --check` | **0** | `/tmp/g551r3-diffcheck-final.log` |
+| G8 mutation battery (M1–M5 + control + restored-green) | **0** — `PROBES=5 ASSERTION_RED=5 RESTORED_GREEN=8/8 RESTORE=BYTE_IDENTICAL` | `/tmp/g551-probe-*.log`, `/tmp/g551-probe-results.json` |
+
+The round-1 stage-capture measurement was **not** re-run (contract item 4:
+timing/SSE/trust/ladder paths are untouched; `git diff --name-only
+627573a..95359f4 -- ios/FleetNotifier/App ios/FleetNotifier/Profiles` is empty),
+so section 1's medians and section 6's round-1 table stand unchanged.

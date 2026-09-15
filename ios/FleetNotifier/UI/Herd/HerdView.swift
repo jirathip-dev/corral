@@ -329,7 +329,8 @@ struct HerdView: View {
     /// in the floating chrome carries the state, and the stream/model
     /// recover on their own (the board uses the same source, so switching
     /// view was never network recovery). Disconnected horses still render
-    /// their last-known truth (`unknown · last known …`) via HerdHorse.
+    /// their last-known truth (`<state> · last known`) via HerdHorse — the
+    /// state token is never recast to `unknown` (#551 r2).
     private var railCardWidth: CGFloat { dynamicType.isAccessibilitySize ? 240 : 164 }
 
     /// #548: measure the card's intrinsic height, including the longest rail

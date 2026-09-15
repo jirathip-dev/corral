@@ -212,7 +212,10 @@ final class HerdGaitTests: XCTestCase {
             XCTAssertEqual(horse(state).gait(elapsed: 2.0, reduceMotion: false), .standstill, "\(state)")
         }
         let stale = horse(.working, disconnected: true)
-        XCTAssertEqual(stale.pose(elapsed: 2.0, reduceMotion: false), .unknown)
+        // #551 r2: a retained row keeps its LAST-KNOWN pose and withholds
+        // motion — it is never recast to `unknown`.
+        XCTAssertEqual(stale.state, .working)
+        XCTAssertEqual(stale.pose(elapsed: 2.0, reduceMotion: false), .working)
         XCTAssertEqual(stale.gait(elapsed: 2.0, reduceMotion: false), .standstill)
         XCTAssertEqual(working.gait(elapsed: .nan, reduceMotion: false), .standstill, "non-finite clock")
     }
@@ -243,8 +246,9 @@ final class HerdGaitTests: XCTestCase {
         }
     }
 
-    /// Reduce Motion and a disconnected source render the approved static
-    /// pose through the full model-plus-renderer pipeline.
+    /// Reduce Motion and a disconnected source render a static pose through
+    /// the full model-plus-renderer pipeline — the disconnected source in its
+    /// LAST-KNOWN pose (#551 r2), never recast to the unknown art.
     func testReduceMotionAndDisconnectedSourcesRenderStatic() throws {
         let working = horse(.working)
         let reducedPose = working.pose(elapsed: 3.0, reduceMotion: true)
@@ -253,7 +257,7 @@ final class HerdGaitTests: XCTestCase {
         let stale = horse(.working, disconnected: true)
         let staleDrawing = drawn(stale.pose(elapsed: 3.0, reduceMotion: false),
                                  stale.gait(elapsed: 3.0, reduceMotion: false))
-        assertSameDrawing(staleDrawing, drawn(.unknown), "disconnected")
+        assertSameDrawing(staleDrawing, drawn(.working, .standstill), "disconnected")
     }
 
     /// The runtime call site must pass the gait into the REAL horseButton

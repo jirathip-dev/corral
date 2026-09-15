@@ -71,10 +71,17 @@ final class HerdTests: XCTestCase {
             if state == .done { XCTAssertEqual(horse.pose(elapsed: 25, reduceMotion: false), .done) }
             if state == .idle { XCTAssertEqual(horse.pose(elapsed: 25-horse.identity.phase, reduceMotion: false), .graze) }
             let stale = HerdHorse(agent: horse.agent, hostProfileID: nil, hostName: nil, disconnected: true)
-            XCTAssertEqual(stale.state, .unknown)
-            XCTAssertEqual(stale.pose(elapsed: 25, reduceMotion: false), .unknown)
+            // #551 r2: a retained row presents its LAST-KNOWN token — never a
+            // recast to `unknown`; liveness is withheld by the static gait, the
+            // zero roam and the `last known` caption instead.
+            XCTAssertEqual(stale.state, state)
+            XCTAssertEqual(stale.pose(elapsed: 25, reduceMotion: true),
+                           horse.pose(elapsed: 25, reduceMotion: true),
+                           "static art follows the last-known state")
+            XCTAssertEqual(stale.gait(elapsed: 25, reduceMotion: false), .standstill)
             XCTAssertEqual(stale.roam(elapsed: 25, enabled: true), 0)
             XCTAssertTrue(stale.statusText.contains("last known"))
+            XCTAssertTrue(stale.statusText.hasPrefix(state.rawValue))
         }
     }
 

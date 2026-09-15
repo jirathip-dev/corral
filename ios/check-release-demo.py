@@ -547,7 +547,11 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # its own branch-local literal (6d553d20…) and this merge is where the single
     # merged value is re-derived.
     # 2026-09-15 #552: repository chip hierarchy and shared HUD spacing.
-    "c72970efb5c22bd136f056dff5bc4405b7190919057843544752f6a4a4131b79"
+    # 2026-09-15 #551 r2: Herd retained-row presentation — HerdModel no longer
+    # recasts a retained row's state token to `unknown` (last-known state is
+    # presented as last-known, with motion withheld instead) and HerdView's
+    # doctrine comment follows; re-pinned over the #551 r2 source set.
+    "29b75e2c46ccace78325f8a18fe275787822d4047297af2cf7429a6473cc2c01"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -775,9 +779,12 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # = dc04b35b…); recomputed as the plain sha256 of the merged
     # FleetNotifierTests.swift over THIS merged working tree.
     # 2026-09-15 #547: parallel verified reconnect, bounded ingress and row timing.
-    # 2026-09-15 #551: warm-return scene regressions and opt-in stage capture;
-    # Release app sources are unchanged.
-    "38e35172a147c4c56b5c3fe9336337c54170eea27c6c08c65784f211daafa753"
+    # 2026-09-15 #551: warm-return scene regressions and opt-in stage capture.
+    # 2026-09-15 #551 r2: the Herd-surface retained-row counter/mark regression
+    # (testWarmReturnHerdSurfaceKeepsLastKnownStatesUntilVerified) plus the
+    # inverted recast assertions in HerdTests/HerdGaitTests; re-pinned over the
+    # #551 r2 test source. Only FleetNotifierTests.swift is digested here.
+    "db1f570c2eea11b4c026fc13fa82f99c8179bdc80c721e7dea59cb8a6bba8877"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

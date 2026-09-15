@@ -14705,8 +14705,8 @@ final class ForegroundReconnectTests: XCTestCase {
     }
 
     private func frame(_ kind: String, rev: UInt64, epoch: String,
-                       id: String = "retained") throws -> SSEFrame {
-        let agent = Agent(agentId: id, state: .working, seq: rev, ts: rev,
+                       id: String = "retained", state: AgentState = .working) throws -> SSEFrame {
+        let agent = Agent(agentId: id, state: state, seq: rev, ts: rev,
                           capabilities: ["read_tail"], title: "revision \(rev)")
         let data: Data
         if kind == "snapshot" {
@@ -15096,6 +15096,85 @@ final class ForegroundReconnectTests: XCTestCase {
         XCTAssertNil(other.agent("retained"))
         try await Task.sleep(for: .milliseconds(200))
         attachBoard(window, name: "551-warm-applied-verified")
+    }
+
+    /// #551 r2 (round-2 fix contract): the HERD surface must present a retained
+    /// row's LAST-KNOWN state — its counters strip, row marks and captions —
+    /// instead of recasting it to `unknown`. The recast lived in
+    /// `HerdHorse.state` (`disconnected ? .unknown : agent.state`), and this is
+    /// the surface the owner photographed (`? N unknown` while `2 hosts
+    /// connecting`). Removing the recast must turn this test RED.
+    func testWarmReturnHerdSurfaceKeepsLastKnownStatesUntilVerified() async throws {
+        var f = try await fixture(hosts: 2, frames: 1)
+        defer { f.finish() }
+        // Re-script each host's reconnect so its first VERIFIED frame carries a
+        // distinguishable state — the counter switch to verified values is then
+        // observable, not just a repeat of the retained seed.
+        for (index, url) in f.urls.enumerated() {
+            f.script[url.appendingPathComponent("events")] = .init(
+                body: wire([try frame("delta", rev: 6, epoch: epoch, id: "replacement",
+                                      state: index == 0 ? .blocked : .idle)]),
+                holdOpen: true)
+        }
+        ForegroundReconnectURLProtocol.configure(f.script, reset: false)
+        f.start()
+        let other = try XCTUnwrap(f.model.coordinator?.store(profileID: f.profiles[1].id))
+        for store in [f.model.fleet, other] {
+            XCTAssertEqual(store.lastEventId, 5, "nothing has been applied yet")
+            XCTAssertNotEqual(store.connectionState, .connected)
+        }
+        // Warm return, both host keys still unverified: the Herd surface sees
+        // nothing but retained rows, and they must read last-known.
+        let retained = try herdHorses(f)
+        XCTAssertEqual(retained.count, 2, "one retained row per host")
+        XCTAssertTrue(retained.allSatisfy(\.disconnected), "no host has verified a frame yet")
+        XCTAssertTrue(retained.allSatisfy { $0.state == .working },
+                      "the Herd counters read the LAST-KNOWN state, never a recast")
+        XCTAssertFalse(retained.contains { herdMark($0.state) == "?" },
+                       "no `?` unknown mark may appear on a retained row")
+        XCTAssertEqual(herdCountsAccessibilityLabel(retained),
+                       "0 blocked, 2 working, 0 idle, 0 done, 0 unknown",
+                       "the owner's `? N unknown` strip is exactly what must not happen")
+        for horse in retained {
+            XCTAssertTrue(horse.statusText.hasPrefix("working"), "the last-known token leads")
+            XCTAssertTrue(horse.statusText.contains("last known"),
+                          "labelled last-known, never Live")
+            XCTAssertEqual(horse.gait(elapsed: 2.0, reduceMotion: false), .standstill,
+                           "nothing may read as live before the first verified frame")
+            XCTAssertEqual(horse.roam(elapsed: 2.0, enabled: true), 0)
+        }
+        // Host 0's key verifies: only ITS rows take the verified values.
+        f.gates[0].release()
+        await wait { f.model.fleet.lastEventId == 6 }
+        let half = try herdHorses(f)
+        XCTAssertEqual(herdCountsAccessibilityLabel(half),
+                       "1 blocked, 2 working, 0 idle, 0 done, 0 unknown",
+                       "the verified host's frame replaced its own rows only")
+        let live = try XCTUnwrap(half.first { $0.hostProfileID == f.profiles[0].id
+            && $0.agent.agentId == "replacement" })
+        XCTAssertFalse(live.disconnected)
+        XCTAssertEqual(live.state, .blocked)
+        XCTAssertEqual(live.statusText, "blocked", "a verified row is not labelled last-known")
+        let stale = try XCTUnwrap(half.first { $0.disconnected })
+        XCTAssertEqual(stale.state, .working, "the unverified host keeps its last-known token")
+        XCTAssertEqual(stale.statusText, "working · last known")
+        // Host 1 verifies: the whole surface carries verified values.
+        f.gates[1].release()
+        await wait { other.lastEventId == 6 }
+        let verified = try herdHorses(f)
+        XCTAssertTrue(verified.allSatisfy { !$0.disconnected })
+        XCTAssertEqual(herdCountsAccessibilityLabel(verified),
+                       "1 blocked, 2 working, 1 idle, 0 done, 0 unknown")
+    }
+
+    /// The production Herd route for the multi-host board — the SAME projection
+    /// call `FleetViews` makes for `HerdView(horses:)`, so the assertion runs on
+    /// the horses the surface actually receives.
+    private func herdHorses(_ f: Fixture) throws -> [HerdHorse] {
+        let rows = try XCTUnwrap(f.model.aggregateBoardRows)
+        return HerdProjection.multiple(BoardModel.hostSections(rows),
+                                       names: Dictionary(uniqueKeysWithValues:
+                                           f.model.profiles.map { ($0.id, $0.displayName) }))
     }
 
     func testSceneGrantsReadCanStayInFlightWhileFirstFrameApplies() async throws {

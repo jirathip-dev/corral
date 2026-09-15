@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """#551 invariant mutations in a disposable, byte-restored worktree.
 
-These inject candidate defects; they do NOT claim the defects existed at base.
-Run via bash /tmp/g551-probes.sh (which acquires /tmp/n.lock once).
+M1/M2 inject CANDIDATE defects (they do not claim those defects existed at base).
+M3 (#551 round 2) restores the EXACT defect the round-1 review executed: the
+`HerdHorse.state` recast that printed the owner's `? N unknown` strip.
+Run via bash docs/evidence/issue-551/run-probes.sh (one /tmp/n.lock invocation).
 """
 import hashlib
 import json
@@ -22,9 +24,12 @@ subprocess.run(['git', '-C', str(root), 'worktree', 'add', '--detach', str(scrat
 tests = [
     'testWarmReturnDoesNotInheritEitherHostsRetryDelay',
     'testWarmReturnRetainsRenderedStatesUntilVerifiedReplacement',
+    'testWarmReturnHerdSurfaceKeepsLastKnownStatesUntilVerified',
     'testSceneGrantsReadCanStayInFlightWhileFirstFrameApplies',
     'testMismatchDiscardsBufferedFramesAndNeverRevivesLiveWork',
 ]
+BATTERY_SIZE = len(tests)
+EXPECTED_GREEN = 'Executed %d tests, with 0 failures' % BATTERY_SIZE
 command = ['env', 'HERDR_XCODEBUILD_DIRECT=1', 'HERMES_SIM_TASK_ACTIVE=1',
     'xcodebuild', 'test', '-project', 'ios/FleetNotifier.xcodeproj', '-scheme', 'FleetNotifier',
     '-destination', 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793',
@@ -50,7 +55,7 @@ def run(label, selection):
 
 
 status, text, _ = run('control', tests)
-assert status == 0 and 'Executed 4 tests, with 0 failures' in text, 'Invalid GREEN control'
+assert status == 0 and EXPECTED_GREEN in text, 'Invalid GREEN control'
 mutations = [
     ('M1-inherit-ladder', 'ios/FleetNotifier/App/AppModel.swift',
      '        keyContinuityTask?.cancel()\n        keyContinuityTask = nil\n        keyContinuityTaskId = nil\n        // #454 pre-review fix 3: the background boundary resets',
@@ -60,6 +65,12 @@ mutations = [
      '    func beginReconnectTiming() {\n        reconnectTiming = ReconnectTiming()',
      '    func beginReconnectTiming() {\n        agents.removeAll()\n        reconnectTiming = ReconnectTiming()',
      tests[1]),
+    # #551 r2: the EXACT deleted defect — the Herd presentation recast that
+    # produced the owner's `? N unknown` strip on the warm-return path.
+    ('M3-herd-recast', 'ios/FleetNotifier/UI/Herd/HerdModel.swift',
+     '    var state: AgentState { agent.state }',
+     '    var state: AgentState { disconnected ? .unknown : agent.state }',
+     tests[2]),
 ]
 for label, relative, old, new, test in mutations:
     path = scratch / relative
@@ -86,7 +97,8 @@ for label, relative, old, new, test in mutations:
             results[-1]['restore_diff_exit'] = 0
         save()
 status, text, _ = run('restored-green', tests)
-assert status == 0 and 'Executed 4 tests, with 0 failures' in text, 'Final pristine GREEN failed'
+assert status == 0 and EXPECTED_GREEN in text, 'Final pristine GREEN failed'
 subprocess.run(['git', 'diff', '--exit-code'], cwd=scratch, check=True)
 subprocess.run(['git', '-C', str(root), 'worktree', 'remove', str(scratch)], check=True)
-print('PROBES=2 ASSERTION_RED=2 RESTORED_GREEN=4/4 RESTORE=BYTE_IDENTICAL', flush=True)
+print('PROBES=%d ASSERTION_RED=%d RESTORED_GREEN=%d/%d RESTORE=BYTE_IDENTICAL'
+      % (len(mutations), len(mutations), BATTERY_SIZE, BATTERY_SIZE), flush=True)

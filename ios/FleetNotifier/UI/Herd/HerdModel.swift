@@ -52,10 +52,18 @@ struct HerdHorse: Identifiable, Equatable {
     var id: String { (hostProfileID?.uuidString ?? "") + "::" + agent.agentId }
     var name: String { agent.displayName ?? agent.agentId }
     var identity: HorseIdentity { HorseIdentity(name: name) }
-    var state: AgentState { disconnected ? .unknown : agent.state }
+    /// #551 r2: the state token is NEVER recast for a retained row. A row
+    /// whose host is not connected presents the lane's LAST-KNOWN state, and
+    /// liveness is carried by everything else: `disconnected` drives the stale
+    /// caption, the desaturated art, the disabled row and the honest
+    /// reconnecting indicator, while `gait`/`roam` keep a retained horse
+    /// standstill. A retained row is therefore never dressed as live — and
+    /// never blanked to `unknown` either (#401/#425).
+    var state: AgentState { agent.state }
     var atRail: Bool { agent.state == .blocked }
+    /// Last-known is labelled as last-known; the token itself is unchanged.
     var statusText: String {
-        disconnected ? "unknown · last known \(agent.state.rawValue)" : state.rawValue
+        disconnected ? "\(agent.state.rawValue) · last known" : state.rawValue
     }
     func pose(elapsed: Double, reduceMotion: Bool) -> HorsePose {
         switch state {
@@ -65,7 +73,10 @@ struct HerdHorse: Identifiable, Equatable {
         case .unknown: return .unknown
         case .idle:
             let phase = (elapsed + identity.phase).truncatingRemainder(dividingBy: 30)
-            return !reduceMotion && phase >= 24 && phase < 28 ? .graze : .stand
+            // #551 r2: the grazing window is clock-driven art, so a retained
+            // row never takes it — it keeps the last-known idle stand.
+            return !disconnected && !reduceMotion && phase >= 24 && phase < 28
+                ? .graze : .stand
         }
     }
     /// #448 cadence and amplitude per state: a working horse cycles through
@@ -77,7 +88,9 @@ struct HerdHorse: Identifiable, Equatable {
     static let workingGait = (cycle: 2.4, swing: 22.0)
     static let idleGait = (cycle: 12.0, swing: 8.0)
     func gait(elapsed: Double, reduceMotion: Bool) -> HorseGait {
-        guard !reduceMotion, elapsed.isFinite else { return .standstill }
+        // #551 r2: a retained row's last-known pose is drawn STATICALLY — no
+        // gait may imply liveness before the first verified frame.
+        guard !disconnected, !reduceMotion, elapsed.isFinite else { return .standstill }
         let tuning: (cycle: Double, swing: Double)
         switch pose(elapsed: elapsed, reduceMotion: false) {
         case .working: tuning = Self.workingGait
@@ -106,8 +119,11 @@ enum HerdProjection {
     static func paddocks(_ horses: [HerdHorse]) -> [HerdPaddock] {
         let grouped = Dictionary(grouping: horses) { BoardModel.repoKey(of: $0.agent) }
         return grouped.keys.sorted { left, right in
-            let leftWorking = grouped[left]?.contains { $0.state == .working } == true
-            let rightWorking = grouped[right]?.contains { $0.state == .working } == true
+            // #551 r2: promotion is decided by the LIVE working fact, never by
+            // a retained token — a stale working row must not lead the herd
+            // (#548's pinned ordering).
+            let leftWorking = grouped[left]?.contains { $0.state == .working && !$0.disconnected } == true
+            let rightWorking = grouped[right]?.contains { $0.state == .working && !$0.disconnected } == true
             if leftWorking != rightWorking { return leftWorking }
             return (left ?? "\u{10ffff}") < (right ?? "\u{10ffff}")
         }.map { HerdPaddock(repo: $0, horses: grouped[$0] ?? []) }

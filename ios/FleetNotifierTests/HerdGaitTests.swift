@@ -212,7 +212,10 @@ final class HerdGaitTests: XCTestCase {
             XCTAssertEqual(horse(state).gait(elapsed: 2.0, reduceMotion: false), .standstill, "\(state)")
         }
         let stale = horse(.working, disconnected: true)
-        XCTAssertEqual(stale.pose(elapsed: 2.0, reduceMotion: false), .unknown)
+        // #551 r2: a retained row keeps its LAST-KNOWN pose and withholds
+        // motion — it is never recast to `unknown`.
+        XCTAssertEqual(stale.state, .working)
+        XCTAssertEqual(stale.pose(elapsed: 2.0, reduceMotion: false), .working)
         XCTAssertEqual(stale.gait(elapsed: 2.0, reduceMotion: false), .standstill)
         XCTAssertEqual(working.gait(elapsed: .nan, reduceMotion: false), .standstill, "non-finite clock")
     }
@@ -243,8 +246,9 @@ final class HerdGaitTests: XCTestCase {
         }
     }
 
-    /// Reduce Motion and a disconnected source render the approved static
-    /// pose through the full model-plus-renderer pipeline.
+    /// Reduce Motion and a disconnected source render a static pose through
+    /// the full model-plus-renderer pipeline — the disconnected source in its
+    /// LAST-KNOWN pose (#551 r2), never recast to the unknown art.
     func testReduceMotionAndDisconnectedSourcesRenderStatic() throws {
         let working = horse(.working)
         let reducedPose = working.pose(elapsed: 3.0, reduceMotion: true)
@@ -253,7 +257,7 @@ final class HerdGaitTests: XCTestCase {
         let stale = horse(.working, disconnected: true)
         let staleDrawing = drawn(stale.pose(elapsed: 3.0, reduceMotion: false),
                                  stale.gait(elapsed: 3.0, reduceMotion: false))
-        assertSameDrawing(staleDrawing, drawn(.unknown), "disconnected")
+        assertSameDrawing(staleDrawing, drawn(.working, .standstill), "disconnected")
     }
 
     /// The runtime call site must pass the gait into the REAL horseButton
@@ -273,6 +277,24 @@ final class HerdGaitTests: XCTestCase {
             + "gait:horse.gait(elapsed:elapsed,reduceMotion:reduced||!motionEnabled))"
         XCTAssertEqual(button.components(separatedBy: painted).count - 1, 1,
                        "horseButton must paint with the derived gait exactly once")
+    }
+
+    /// #551 r3: the row's `y:` offset must go through the FENCED `HerdHorse.bob`
+    /// (the twin of `roam`), never the inline clock-driven expression that let a
+    /// retained idle row animate. The bundled HerdView source is the file the app
+    /// target compiles, so reverting the call site turns this RED.
+    func testHorseButtonOffsetRoutesTheBobThroughTheFencedModel() throws {
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "HerdView.swift", withExtension: "txt"),
+                                "HerdView.swift.txt must ride in the test bundle")
+        let source = try String(contentsOf: url, encoding: .utf8).filter { !$0.isWhitespace }
+        let call = "privatefunchorseButton("
+        let start = try XCTUnwrap(source.range(of: call))
+        let button = String(source[start.lowerBound...])
+        let fenced = "y:horse.bob(elapsed:elapsed,reduceMotion:reduced,enabled:motionEnabled)"
+        XCTAssertEqual(button.components(separatedBy: fenced).count - 1, 1,
+                       "the row's y: offset must call horse.bob exactly once")
+        XCTAssertEqual(button.components(separatedBy: "y:horse.state==.idle").count - 1, 0,
+                       "the inline bob expression must not survive anywhere in horseButton")
     }
 
     // MARK: #530 hoof-to-leg correspondence

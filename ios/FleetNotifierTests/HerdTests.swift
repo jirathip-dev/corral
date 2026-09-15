@@ -71,10 +71,41 @@ final class HerdTests: XCTestCase {
             if state == .done { XCTAssertEqual(horse.pose(elapsed: 25, reduceMotion: false), .done) }
             if state == .idle { XCTAssertEqual(horse.pose(elapsed: 25-horse.identity.phase, reduceMotion: false), .graze) }
             let stale = HerdHorse(agent: horse.agent, hostProfileID: nil, hostName: nil, disconnected: true)
-            XCTAssertEqual(stale.state, .unknown)
-            XCTAssertEqual(stale.pose(elapsed: 25, reduceMotion: false), .unknown)
+            // #551 r2: a retained row presents its LAST-KNOWN token — never a
+            // recast to `unknown`; liveness is withheld by the static gait, the
+            // zero roam and the `last known` caption instead.
+            XCTAssertEqual(stale.state, state)
+            XCTAssertEqual(stale.pose(elapsed: 25, reduceMotion: true),
+                           horse.pose(elapsed: 25, reduceMotion: true),
+                           "static art follows the last-known state")
+            // #551 r3: the retained row's `reduceMotion: false` path stays
+            // covered too (the r2 ledger adjustment had narrowed this to the
+            // short-circuiting `reduceMotion: true` form): the retained row
+            // keeps the live row's static pose, minus the clock-driven grazing
+            // window, so its art never depends on the clock.
+            let livePose = horse.pose(elapsed: 25, reduceMotion: false)
+            XCTAssertEqual(stale.pose(elapsed: 25, reduceMotion: false),
+                           livePose == .graze ? .stand : livePose,
+                           "the retained row never takes the clock-driven graze")
+            if state == .idle {
+                let grazeTick = 55 - horse.identity.phase
+                XCTAssertEqual(horse.pose(elapsed: grazeTick, reduceMotion: false), .graze,
+                               "the live idle row still grazes in its window")
+                XCTAssertEqual(stale.pose(elapsed: grazeTick, reduceMotion: false), .stand,
+                               "the retained idle row never grazes (HerdModel graze guard)")
+                // #551 r3: the idle vertical bob is fenced exactly like `roam` —
+                // sampled across the clock sweep the verified row moves and the
+                // retained row is constant.
+                let sweep = stride(from: 0.0, through: 8.0, by: 0.5).map { $0 }
+                let liveBob = Set(sweep.map { horse.bob(elapsed: $0, reduceMotion: false, enabled: true) })
+                let staleBob = Set(sweep.map { stale.bob(elapsed: $0, reduceMotion: false, enabled: true) })
+                XCTAssertGreaterThan(liveBob.count, 1, "a verified idle row still bobs")
+                XCTAssertEqual(staleBob, [0], "a retained idle row's offset is constant")
+            }
+            XCTAssertEqual(stale.gait(elapsed: 25, reduceMotion: false), .standstill)
             XCTAssertEqual(stale.roam(elapsed: 25, enabled: true), 0)
             XCTAssertTrue(stale.statusText.contains("last known"))
+            XCTAssertTrue(stale.statusText.hasPrefix(state.rawValue))
         }
     }
 

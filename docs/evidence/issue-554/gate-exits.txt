@@ -1,9 +1,12 @@
-# G554 gate exits + per-suite counts at head ee89f95a1355611c4df4d1af9349010cec76a0fb
-# (raw exits; full logs under /tmp/g554-*.log — raw exit is the only gate evidence)
+# G554 gate exits at head 33c32887f5f3bf274109c0594c1596d8dd4a304d
+# (raw exit is the only gate evidence; full logs under /tmp/g554-*.log)
+# The chain leg below ran over this exact tree content (the same file contents
+# that commit 33c3288 records); G5's xcodegen-drift leg was re-run AFTER that
+# commit because the pre-commit run saw the lane's own uncommitted test diff.
 
-== chain driver (run-gates.sh all) ==
+== chain driver: bash docs/evidence/issue-554/run-gates.sh all (g554-chain3) ==
 HEAD=ee89f95a1355611c4df4d1af9349010cec76a0fb
-DF_START: /dev/disk3s1s1   228Gi    12Gi   725Mi    95%    459k  7.4M    6%   /
+DF_START: /dev/disk3s1s1   228Gi    12Gi   4.6Gi    72%    459k   48M    1%   /
 --- G1 focused (new #554 class + #451 ladders + scene seam/foreground) ---
 g554-focused_EXIT=0
 FOCUSED_EXIT=0
@@ -16,14 +19,14 @@ FULL_EXIT=0
 CHECK_RELEASE_EXIT=0
 SELF_TEST_EXIT=0
 --- G4 Debug + Release builds + binary check ---
-DF_BEFORE_G4: /dev/disk3s1s1   228Gi    12Gi   647Mi    95%    459k  6.6M    6%   /
+DF_BEFORE_G4: /dev/disk3s1s1   228Gi    12Gi   4.3Gi    74%    459k   45M    1%   /
 DEBUG_EXIT=0
-RELEASE_EXIT=65
+RELEASE_EXIT=0
 BINARY_EXIT=0
-DF_AFTER_G4: /dev/disk3s1s1   228Gi    12Gi   641Mi    95%    459k  6.6M    7%   /
+DF_AFTER_G4: /dev/disk3s1s1   228Gi    12Gi   4.3Gi    74%    459k   45M    1%   /
 --- G5 project-generation drift ---
 XCODEGEN_EXIT=0
-XCODEGEN_DIFF_EXIT=0
+XCODEGEN_DIFF_EXIT=1
 --- G6 advisory anti-slop (head) ---
 ASLOP_EXIT=1
 --- G7 hygiene ---
@@ -32,46 +35,60 @@ DIFFCHECK_EXIT=0
 BASE_EXTRACT_EXIT=0
 ASLOP_BASE_EXIT=1
 ASLOP_COMPARE_EXIT=0
-DF_END: /dev/disk3s1s1   228Gi    12Gi   513Mi    96%    459k  5.3M    8%   /
+DF_END: /dev/disk3s1s1   228Gi    12Gi   4.0Gi    75%    459k   42M    1%   /
 RAW_EXIT=0
 
-== G4 Release re-run (standalone, after the ENOSPC failure above) ==
-DF_BEFORE_RELEASE: (see driver output)
-RAW_EXIT=0
-g554-release_EXIT=0
-BINARY_EXIT=0
+== G5 re-run after the commit (same commands) ==
+HEAD=33c32887f5f3bf274109c0594c1596d8dd4a304d
+⚙️  Generating plists...
+⚙️  Generating project...
+⚙️  Writing project...
+Created project at /Users/jirathip/.herdr/worktrees/corral/impl554-live-session/ios/FleetNotifier.xcodeproj
+XCODEGEN_EXIT=0
+XCODEGEN_DIFF_EXIT=0
+
+== G4 Release: disk history on this host ==
+# The chain above (g554-chain3) built Debug AND Release with RELEASE_EXIT=0.
+# An EARLIER attempt of the same chain on this disk-starved host failed the
+# Release leg for space only (host at 116 MiB free):
+#   fatal error: lipo: can't write to output file
+#     .../FleetNotifier.app.dSYM/Contents/Resources/DWARF/FleetNotifier.lipo
+#     (No space left on device)
+#   -> ** BUILD FAILED **, RELEASE_EXIT=65
+# It was re-run standalone with the identical command on a host with headroom:
+#   g554-release_EXIT=0 ; ** BUILD SUCCEEDED **
 
 == G1 focused suite counts ==
-Test Suite 'ForegroundReconnectTests' passed at 2569-09-15 11:50:42.127 PM.
-	 Executed 19 tests, with 1 test skipped and 0 failures (0 unexpected) in 3.657 (3.662) seconds
-ISSUE554_PREFLIGHT bound=0.3 first_failure_after=0.3206150531768799 attempts=3
+Test Suite 'ForegroundReconnectTests' passed at 2569-09-16 1:19:52.312 AM.
+	 Executed 19 tests, with 1 test skipped and 0 failures (0 unexpected) in 5.104 (5.138) seconds
+ISSUE554_PREFLIGHT bound=0.3 first_failure_after=0.32353508472442627 attempts=3
 ISSUE554_TASKS started=12 stopped=12
-Test Suite 'LiveSessionTransportTests' passed at 2569-09-15 11:50:44.845 PM.
-Test Suite 'PreflightRetryActiveHostTests' passed at 2569-09-15 11:50:50.369 PM.
-Test Suite 'PreflightRetryCoordinatorTests' passed at 2569-09-15 11:50:58.683 PM.
-Test Suite 'ScenePhaseLifecycleTests' passed at 2569-09-15 11:51:04.250 PM.
-	 Executed 46 tests, with 1 test skipped and 0 failures (0 unexpected) in 25.768 (25.785) seconds
-	 Executed 46 tests, with 1 test skipped and 0 failures (0 unexpected) in 25.768 (25.785) seconds
+Test Suite 'LiveSessionTransportTests' passed at 2569-09-16 1:19:54.764 AM.
+Test Suite 'PreflightRetryActiveHostTests' passed at 2569-09-16 1:20:00.188 AM.
+Test Suite 'PreflightRetryCoordinatorTests' passed at 2569-09-16 1:20:08.497 AM.
+Test Suite 'ScenePhaseLifecycleTests' passed at 2569-09-16 1:20:14.023 AM.
+	 Executed 46 tests, with 1 test skipped and 0 failures (0 unexpected) in 26.804 (26.850) seconds
+	 Executed 46 tests, with 1 test skipped and 0 failures (0 unexpected) in 26.804 (26.851) seconds
 ** TEST SUCCEEDED **
 
 == G1b pin suite counts ==
-Test Suite 'EpochRecoveryTests' passed at 2569-09-15 11:51:35.270 PM.
-	 Executed 7 tests, with 0 failures (0 unexpected) in 0.346 (0.357) seconds
-Test Suite 'GrantsRefreshTests' passed at 2569-09-15 11:51:35.283 PM.
-	 Executed 2 tests, with 0 failures (0 unexpected) in 0.012 (0.013) seconds
-Test Suite 'HostKeyContinuityModelTests' passed at 2569-09-15 11:51:35.785 PM.
-	 Executed 3 tests, with 0 failures (0 unexpected) in 0.501 (0.502) seconds
-Test Suite 'PerHostGrantsRefreshTests' passed at 2569-09-15 11:51:36.191 PM.
-	 Executed 5 tests, with 0 failures (0 unexpected) in 0.405 (0.406) seconds
-Test Suite 'RecentOutputNotGrantedStateTests' passed at 2569-09-15 11:51:36.417 PM.
-	 Executed 4 tests, with 0 failures (0 unexpected) in 0.225 (0.226) seconds
-	 Executed 21 tests, with 0 failures (0 unexpected) in 1.490 (1.505) seconds
-	 Executed 21 tests, with 0 failures (0 unexpected) in 1.490 (1.506) seconds
+Test Suite 'EpochRecoveryTests' passed at 2569-09-16 1:20:59.127 AM.
+	 Executed 7 tests, with 0 failures (0 unexpected) in 0.509 (0.517) seconds
+Test Suite 'GrantsRefreshTests' passed at 2569-09-16 1:20:59.149 AM.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.021 (0.022) seconds
+Test Suite 'HostKeyContinuityModelTests' passed at 2569-09-16 1:20:59.573 AM.
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.422 (0.424) seconds
+Test Suite 'PerHostGrantsRefreshTests' passed at 2569-09-16 1:20:59.995 AM.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.419 (0.421) seconds
+Test Suite 'RecentOutputNotGrantedStateTests' passed at 2569-09-16 1:21:00.230 AM.
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.233 (0.235) seconds
+	 Executed 21 tests, with 0 failures (0 unexpected) in 1.605 (1.620) seconds
+	 Executed 21 tests, with 0 failures (0 unexpected) in 1.605 (1.621) seconds
 ** TEST SUCCEEDED **
 
 == G2 full suite ==
-	 Executed 644 tests, with 1 test skipped and 0 failures (0 unexpected) in 163.085 (166.594) seconds
-	 Executed 644 tests, with 1 test skipped and 0 failures (0 unexpected) in 163.085 (166.595) seconds
+	 Executed 644 tests, with 1 test skipped and 0 failures (0 unexpected) in 165.578 (165.834) seconds
+	 Executed 644 tests, with 1 test skipped and 0 failures (0 unexpected) in 165.578 (165.835) seconds
 ** TEST SUCCEEDED **
 
 == G3 + G4 binary ==
@@ -84,3 +101,15 @@ BASE_TOTAL=24 HEAD_TOTAL=24
 ADDED={}
 GONE={}
 COUNT_CHANGED={}
+
+== Probes (g554-probes4, head 33c3288) ==
+g554-probe-control_EXIT=0
+g554-probe-P1-shared-revert_EXIT=65
+g554-probe-P2-no-invalidate_EXIT=65
+g554-probe-P3-slow-preflight_EXIT=65
+g554-probe-P4-shrunk-stream-timeout_EXIT=65
+g554-probe-P5-no-session-guard_EXIT=65
+g554-probe-restored-green_EXIT=0
+PROBES=5 ASSERTION_RED=5 RESTORED_GREEN=5/5 RESTORE=BYTE_IDENTICAL
+PROBES_EXIT=0
+RAW_EXIT=0

@@ -1,5 +1,5 @@
 {
-  "source_head": "e1431422d5147eb89f0d592178a8cccd52b54ce4",
+  "source_head": "33c32887f5f3bf274109c0594c1596d8dd4a304d",
   "results": [
     {
       "label": "control",
@@ -14,12 +14,11 @@
       "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=C8E69C58-66A4-440D-850C-8C1628C720E6' -derivedDataPath /tmp/g554-probe-dd -only-testing:FleetNotifierTests/LiveSessionTransportTests/testForegroundCycleInstallsANewSessionAndInvalidatesTheRetiredOne",
       "log": "/tmp/g554-probe-P1-shared-revert.log",
       "assertion_failures": [
-        "LiveSessionTransportTests/testForegroundCycleInstallsANewSessionAndInvalidatesTheRetiredOne",
         "LiveSessionTransportTests/testForegroundCycleInstallsANewSessionAndInvalidatesTheRetiredOne"
       ],
       "file": "ios/FleetNotifier/App/AppModel.swift",
-      "old": "        liveSession = URLSession(configuration: configuration)",
-      "new": "        // Candidate defect: the pre-#554 production behaviour \u2014 the live\n        // session IS the base/shared session (stale pool survives).\n        liveSession = session",
+      "old": "    private func installLiveSession() {\n        guard liveSession == nil else { return }\n        let configuration = session.configuration\n        configuration.waitsForConnectivity = false\n        liveSession = URLSession(configuration: configuration)\n    }",
+      "new": "    private func installLiveSession() {\n        // Candidate defect: the pre-#554 production behaviour \u2014 no\n        // per-live-session transport, so every client rides the base/shared\n        // session and no session is ever invalidated.\n        liveSession = nil\n    }",
       "before_sha256": "86b36d6d074f2f7fca72a6dde12ffba5717a96dde607253833f0900e4b7ba1e6",
       "expected_red": [
         "LiveSessionTransportTests/testForegroundCycleInstallsANewSessionAndInvalidatesTheRetiredOne"
@@ -35,6 +34,7 @@
       "assertion_failures": [
         "LiveSessionTransportTests/testForegroundCycleInstallsANewSessionAndInvalidatesTheRetiredOne",
         "LiveSessionTransportTests/testForegroundCycleInstallsANewSessionAndInvalidatesTheRetiredOne",
+        "LiveSessionTransportTests/testRapidPhaseFlappingLeavesOneLiveSessionAndNoLeakedTasks",
         "LiveSessionTransportTests/testRapidPhaseFlappingLeavesOneLiveSessionAndNoLeakedTasks",
         "LiveSessionTransportTests/testRapidPhaseFlappingLeavesOneLiveSessionAndNoLeakedTasks",
         "LiveSessionTransportTests/testRapidPhaseFlappingLeavesOneLiveSessionAndNoLeakedTasks",

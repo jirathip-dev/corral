@@ -2741,6 +2741,34 @@ final class AppModel: ObservableObject {
         liveSession = URLSession(configuration: configuration)
     }
 
+    /// #554 round 2 (F1): retire the live session's transport and repair every
+    /// holder of it in ONE step.
+    ///
+    /// Invalidating the transport is what kills the stale pooled connection,
+    /// but it also makes the retired session FATAL to dispatch on: creating a
+    /// task on an invalidated `URLSession` raises an uncatchable
+    /// `NSGenericException` that kills the process. `stopLive()` clears
+    /// `liveSession` while `mode` stays live, so a live path still runs between
+    /// this boundary and the next `startLive()` — and the coordinator CACHES
+    /// the transport it builds its host clients from (`urlSession`, adopted by
+    /// `startLive()` → `adoptTransportSession`). Left alone, that holder keeps
+    /// the dead session, and a foreground-reachable dispatch on it (Settings ▸
+    /// Retry → `startSessionIfNeeded`, a path-restoration hint's reconnect, a
+    /// per-host refresh) creates the fatal task.
+    ///
+    /// So the repair is part of the retirement itself, BEFORE the invalidation:
+    /// the coordinator is reset to the base session, which is never invalidated
+    /// (it is the injected/`.shared` session every non-live path already uses),
+    /// and the next `startLive()` re-adopts the new live session. A dispatch
+    /// site that captured a client earlier still re-checks the transport before
+    /// creating its task — see `refreshFleet()` and
+    /// `HostStreamCoordinator.refreshAll(profiles:)`.
+    private func retireLiveTransport(_ transport: URLSession?) {
+        guard let transport else { return }
+        coordinator?.adoptTransportSession(session)
+        transport.invalidateAndCancel()
+    }
+
     func startLive() {
         guard let hostURL else { return }
         // #554: a foreground starts with an EMPTY pool — install the live
@@ -2963,12 +2991,15 @@ final class AppModel: ObservableObject {
             keyContinuityState = .pending
             fleet.requireHostVerification(resetWindow: true)
         }
-        // #554: the live session's pool dies with the live session — AFTER the
-        // cursor/metadata persistence above (those reads must not race an
-        // invalidated transport). Every task dispatched on it is cancelled
-        // here, so nothing of this session can outlive the boundary, and the
-        // next foreground builds a fresh session with an empty pool.
-        retiring?.invalidateAndCancel()
+        // #554 round 2 (F1): the live session's pool dies with the live
+        // session — AFTER the cursor/metadata persistence above (those reads
+        // must not race an invalidated transport), and in the SAME step as the
+        // repair of every holder of the retired transport, so no live-path
+        // dispatch can create a task on an invalidated session (see
+        // retireLiveTransport). Every task dispatched on it is cancelled here,
+        // so nothing of this session can outlive the boundary, and the next
+        // foreground builds a fresh session with an empty pool.
+        retireLiveTransport(retiring)
     }
 
     /// #453: the app's scene-phase lifecycle routing — the production
@@ -3192,6 +3223,14 @@ final class AppModel: ObservableObject {
         let client = CorraldClient(host: hostURL, session: liveTransport)
         let activeRefresh = Task { @MainActor [weak self] in
             guard let self else { return }
+            // #554 round 2 (F1): the client above was built on whatever
+            // transport was live at dispatch time, and this body may run only
+            // AFTER a retirement boundary (the pull is queued behind a
+            // background). Creating a task on the retired session would abort
+            // the process, so the transport is re-checked BEFORE the first
+            // request — a client whose live session has been retired never
+            // dispatches (its completion would have been dropped below anyway).
+            guard self.isLiveTransport(transport) else { return }
             do {
                 let snapshot = try await client.fetchSnapshot()
                 guard !Task.isCancelled, self.isCurrent(context),

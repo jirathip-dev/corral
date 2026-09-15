@@ -559,7 +559,12 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # identity-guarded completions) and HostStreamCoordinator gains the
     # adopted transport plus the bounded `/host-key` attempt; re-pinned over
     # the #554 source set (recomputed from the tree, never hand-edited).
-    "2afb4c1150e30161c3183560f19ce7a92b2cdab34531961eec149cfe54e0437e"
+    # 2026-09-16 #554 r2 (F1 fix): retiring the live transport now also REPAIRS
+    # the coordinator's adopted transport in the same step (single retirement
+    # point `AppModel.retireLiveTransport`) and both deferred live dispatch
+    # sites re-check the transport before creating a task; re-pinned over the
+    # round-2 source set (recomputed from the tree, never hand-edited).
+    "db62b11d99d2e2246cdcb91d439e9f90ad10062822b29f4a34511b68a75d867c"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

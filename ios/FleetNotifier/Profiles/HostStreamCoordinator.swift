@@ -374,15 +374,21 @@ final class HostStreamCoordinator: ObservableObject {
 
     // MARK: - Session lifecycle (C3/E3)
 
-    /// #554: adopt the CURRENT live session's transport. AppModel calls this
-    /// from startLive() with the session it just installed (the coordinator
-    /// itself is built in AppModel.init, before any live session exists), so
-    /// every host client created from here on — `/host-key` preflight and
-    /// `/events` — rides the same per-live-session transport as the ACTIVE
-    /// host. A transport already installed (a repeated startLive inside one
-    /// live session) is a no-op, and a ladder/stream already running keeps
-    /// the client it was built with: its own identity guard refuses a
-    /// completion that arrives from a superseded transport.
+    /// #554: set the transport this coordinator builds its host clients from.
+    /// AppModel calls this from startLive() with the session it just installed
+    /// (the coordinator itself is built in AppModel.init, before any live
+    /// session exists), so every host client created from here on —
+    /// `/host-key` preflight and `/events` — rides the same per-live-session
+    /// transport as the ACTIVE host. A transport already installed (a repeated
+    /// startLive inside one live session) is a no-op, and a ladder/stream
+    /// already running keeps the client it was built with: its own identity
+    /// guard refuses a completion that arrives from a superseded transport.
+    ///
+    /// #554 round 2 (F1): the SAME call is the repair half of the retirement
+    /// step — `AppModel.retireLiveTransport` resets this holder to the base
+    /// session in the same step that invalidates a retired live session, so an
+    /// invalidated session can never remain the transport a live-path dispatch
+    /// uses (creating a task on one aborts the process).
     func adoptTransportSession(_ session: URLSession) {
         guard urlSession !== session else { return }
         urlSession = session
@@ -703,6 +709,15 @@ final class HostStreamCoordinator: ObservableObject {
             let task: Task<String?, Never> = Task { @MainActor [weak self] in
                 guard let self, let session = self.sessions[profile.id] else {
                     return "host removed during refresh"
+                }
+                // #554 round 2 (F1): this client was built from the transport
+                // installed when the refresh was launched; the body runs later
+                // and a retirement boundary may have retired that transport in
+                // between. Dispatch only while it is STILL this coordinator's
+                // transport — a task created on an invalidated session aborts
+                // the process.
+                guard self.urlSession === client.session else {
+                    return "transport retired during refresh"
                 }
                 do {
                     let snapshot = try await client.fetchSnapshot()

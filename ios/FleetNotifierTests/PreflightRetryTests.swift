@@ -951,15 +951,22 @@ private final class ProbeCompletion: @unchecked Sendable {
 @MainActor
 final class LiveSessionTransportTests: XCTestCase {
     private static let hostString = "https://h554.example"
+    /// #554 round 2: the coordinator-owned (non-active) host of the F1 pin.
+    /// It carries its OWN pinned identity — a duplicate key is refused by the
+    /// store's identity check.
+    private static let secondaryHostString = "https://h554-b.example"
     private static let pinnedKey = Data(repeating: 4, count: 32).base64EncodedString()
+    private static let secondaryPinnedKey = Data(repeating: 5, count: 32).base64EncodedString()
 
     private var suiteName = ""
     private var model: AppModel?
     private var injected: URLSession?
+    private var secondaryProfile: HostProfile?
 
     private func cleanup() {
         model?.stopLive()
         model = nil
+        secondaryProfile = nil
         injected?.invalidateAndCancel()
         injected = nil
         PreflightRetryURLProtocol.clearScript()
@@ -1005,9 +1012,12 @@ final class LiveSessionTransportTests: XCTestCase {
     }
 
     /// One pinned ACTIVE profile bound at init (mode `.live`), mirroring the
-    /// production launch wiring.
+    /// production launch wiring. `secondary: true` also pairs ONE pinned
+    /// coordinator-owned (non-active) host — the profile whose host clients the
+    /// coordinator builds from the transport it adopted.
     private func makeModel(session: URLSession,
-                           policy: HostPreflightRetryPolicy) throws -> AppModel {
+                           policy: HostPreflightRetryPolicy,
+                           secondary: Bool = false) throws -> AppModel {
         suiteName = "corral.h554.live.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         let store = HostProfileStore(directory: nil, defaults: defaults)
@@ -1019,6 +1029,16 @@ final class LiveSessionTransportTests: XCTestCase {
                                           grants: ["read_tail"],
                                           expiryTs: 1_800_000_000,
                                           registeredAt: 1)
+        secondaryProfile = secondary
+            ? try store.addProfile(displayName: "Host 554 B",
+                                   urlString: Self.secondaryHostString,
+                                   hostKeyB64: Self.secondaryPinnedKey,
+                                   fingerprint: "FINGER B",
+                                   keyId: "dev_554_b",
+                                   grants: ["read_tail"],
+                                   expiryTs: 1_800_000_000,
+                                   registeredAt: 1)
+            : nil
         defaults.set(profile.id.uuidString, forKey: "fleetnotifier.activeHostProfileID")
         let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
         let model = AppModel(session: session, defaults: defaults,
@@ -1275,5 +1295,117 @@ final class LiveSessionTransportTests: XCTestCase {
                                     "(e) every probe request dispatched on a retired session must be torn down")
         XCTAssertGreaterThan(PreflightRetryURLProtocol.startCount(to: probe), 0,
                              "(e) premise: the flapping dispatched real transport work")
+    }
+
+    /// (F1 — round 2) The class the round-1 suite could not see: task CREATION
+    /// on a retired transport, not completion delivery. `stopLive()` clears
+    /// `liveSession` while `mode` stays live, so a foreground-reachable path
+    /// still runs inside that window: Settings ▸ Retry
+    /// (`retryHostConnection(_:)`) drives the coordinator's
+    /// `startSessionIfNeeded`, and the coordinator built its client from the
+    /// transport it CACHED (`urlSession`, adopted in `startLive()`). Nothing
+    /// repaired that holder when the live session was invalidated, so the retry
+    /// created a task on the invalidated `URLSession` — an uncatchable
+    /// `NSGenericException` that killed the process (the reviewer's PROBE2:
+    /// exit 65, `liveSession_nil=true`, `mode=live`). This pin drives that
+    /// route through the production scene seam and fails RED at 42ca305.
+    func testRetryDuringRetirementNeverDispatchesOnTheRetiredTransport() async throws {
+        defer { cleanup() }
+        let host = try hostURL()
+        let secondaryHost = try XCTUnwrap(URL(string: Self.secondaryHostString))
+        let secondaryKey = secondaryHost.appendingPathComponent("/host-key")
+        let secondaryEvents = secondaryHost.appendingPathComponent("/events")
+        let secondarySnapshot = secondaryHost.appendingPathComponent("/snapshot")
+        let activeSnapshot = host.appendingPathComponent("/snapshot")
+        let probe = try probeURL()
+        var script: [URL: [PreflightRetryURLProtocol.Outcome]] = [:]
+        script[try keyURL()] = [.ok(Self.pinnedKey)]
+        script[host.appendingPathComponent("/events")] = [.holdOpen]
+        script[secondaryKey] = [.ok(Self.secondaryPinnedKey)]
+        script[secondaryEvents] = [.holdOpen]
+        script[secondarySnapshot] = [.fail(.timedOut)]
+        script[activeSnapshot] = [.fail(.timedOut)]
+        script[probe] = [.holdOpen]
+        let session = scriptedSession(script)
+        let model = try makeModel(
+            session: session,
+            policy: HostPreflightRetryPolicy(baseInterval: 0.05, maxInterval: 0.05),
+            secondary: true)
+        let secondary = try XCTUnwrap(secondaryProfile, "premise: the coordinator host is paired")
+        model.startLive()
+        let retiring = try XCTUnwrap(model.liveSession, "startLive must install a live session")
+        XCTAssertFalse(retiring === session,
+                       "the live session is its own transport, not the base one")
+        await waitUntil(model.keyContinuityState == .verified, timeout: 3)
+        XCTAssertEqual(model.keyContinuityState, .verified,
+                       "premise: the ACTIVE host verified on the live session")
+        await waitUntil(model.coordinator?.store(profileID: secondary.id)?.isStreaming == true,
+                        timeout: 3)
+        XCTAssertEqual(model.coordinator?.store(profileID: secondary.id)?.isStreaming, true,
+                       "premise: the coordinator host runs on the live session too")
+
+        // A task dispatched on the live session BEFORE the boundary can only
+        // complete as cancelled afterwards — the observation that the retired
+        // transport really is invalidated.
+        let retired = expectation(description: "the retired session's task fails")
+        let completion = ProbeCompletion()
+        retiring.dataTask(with: probe) { _, _, error in
+            completion.record(error)
+            retired.fulfill()
+        }.resume()
+        await waitUntil(PreflightRetryURLProtocol.startCount(to: probe) == 1)
+        XCTAssertEqual(PreflightRetryURLProtocol.startCount(to: probe), 1,
+                       "premise: the probe is in flight on the live session")
+
+        // The retirement boundary (background, or the first half of a host
+        // switch): the live session is retired and its pool killed, while the
+        // model stays in `.live` and keeps serving live paths.
+        model.handleScenePhaseChange(.background)
+        XCTAssertNil(model.liveSession, "premise: the boundary retires the live session")
+        XCTAssertEqual(model.mode, .live, "premise: a live path is still reachable")
+        await fulfillment(of: [retired], timeout: 3)
+        XCTAssertEqual((completion.error as NSError?)?.code, NSURLErrorCancelled,
+                       "the retired transport is invalidated, not merely dropped")
+        // The transport's own teardown record lags the completion callback, so
+        // this is a bounded wait, not a same-tick read.
+        await waitUntil(PreflightRetryURLProtocol.stopCount(to: probe) >= 1, timeout: 2)
+        XCTAssertGreaterThanOrEqual(PreflightRetryURLProtocol.stopCount(to: probe), 1,
+                                    "the retirement tore its in-flight task down")
+
+        // The reviewer's abort site, reached exactly as the app reaches it.
+        // At 42ca305 the task created here is fatal.
+        let keyBefore = PreflightRetryURLProtocol.startCount(to: secondaryKey)
+        let eventsBefore = PreflightRetryURLProtocol.startCount(to: secondaryEvents)
+        let deliveredBefore = PreflightRetryURLProtocol.deliveredCount(to: secondaryKey)
+        model.retryHostConnection(secondary)
+        // The retry's work is asynchronous: the stream attempt and the bounded
+        // preflight both dispatch from inside their own tasks, so each is
+        // given its own bounded wait before it is asserted on.
+        await waitUntil(PreflightRetryURLProtocol.startCount(to: secondaryKey) > keyBefore, timeout: 3)
+        XCTAssertGreaterThan(PreflightRetryURLProtocol.startCount(to: secondaryKey), keyBefore,
+                             "the retry must still dispatch — on a VALID transport")
+        await waitUntil(PreflightRetryURLProtocol.startCount(to: secondaryEvents) > eventsBefore,
+                        timeout: 3)
+        XCTAssertGreaterThan(PreflightRetryURLProtocol.startCount(to: secondaryEvents), eventsBefore,
+                             "and the coordinator host's stream must be dispatched too")
+        await waitUntil(PreflightRetryURLProtocol.deliveredCount(to: secondaryKey) > deliveredBefore,
+                        timeout: 3)
+        XCTAssertGreaterThan(PreflightRetryURLProtocol.deliveredCount(to: secondaryKey), deliveredBefore,
+                             "the bounded preflight must actually be answered")
+        XCTAssertNil(model.liveSession, "a retry must not invent a live session")
+
+        // The next foreground owns the only live transport, and the live path
+        // that runs afterwards dispatches on it — never on the retired one.
+        model.handleScenePhaseChange(.active)
+        let foreground = try XCTUnwrap(model.liveSession, "foreground must install a live session")
+        XCTAssertFalse(foreground === retiring, "the next live session is a NEW transport")
+        XCTAssertFalse(foreground === session, "and never the base session")
+        await waitUntil(model.keyContinuityState == .verified, timeout: 3)
+        let snapshotBefore = PreflightRetryURLProtocol.startCount(to: activeSnapshot)
+        await model.refreshFleet()
+        XCTAssertGreaterThan(PreflightRetryURLProtocol.startCount(to: activeSnapshot), snapshotBefore,
+                             "a live-path dispatch after the foreground still works")
+        XCTAssertTrue(model.liveSession === foreground,
+                      "the foreground session is the only live transport in use")
     }
 }

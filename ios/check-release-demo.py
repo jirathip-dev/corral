@@ -547,7 +547,8 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # its own branch-local literal (6d553d20…) and this merge is where the single
     # merged value is re-derived.
     # 2026-09-15 #546: release-active opt-in bounded snapshot hint client.
-    "a96d67ffc34cff5211c6287d53331424eb10b5e2f91d3160238e46c1df9df052"
+    # 2026-09-15 #546 R2: runtime coordinator trust gates hint admission.
+    "7e984a5aa8f390fd8a1f0dc1ee1a386c359b377cce212f7e81e14055c9ee2413"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -776,7 +777,8 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # FleetNotifierTests.swift over THIS merged working tree.
     # 2026-09-15 #547: parallel verified reconnect, bounded ingress and row timing.
     # 2026-09-15 #546: real delegate hint regressions, privacy and race guards.
-    "b1dfe816e1cdc94e090b893f3f176316f34208e5f36675a67328f32e5cc05ce7"
+    # 2026-09-15 #546 R2: runtime mismatch and five admission witness gaps.
+    "9704ac79eeb9d9d83e299ee5be84b1044fe49c22f4955db5ca534f805e3e40cc"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

@@ -15138,15 +15138,17 @@ final class BackgroundHintTests: XCTestCase {
 
         func script(host: Int = 0, rev: UInt64 = 5, epoch: String? = "A",
                     gate: DriveRequestGate? = nil, keyGate: DriveRequestGate? = nil,
-                    returnedKey: String? = nil, status: Int = 200) throws -> DeterministicDriveScript {
+                    returnedKey: String? = nil, status: Int = 200,
+                    agentHost: String? = nil, eventGate: DriveRequestGate? = nil) throws -> DeterministicDriveScript {
             let key = try XCTUnwrap(hosts[host].hostKeyB64)
             let agent = Agent(agentId: "row", state: .working, seq: rev, ts: 1,
-                              host: key, title: "Allowed board title")
+                              host: agentHost ?? key, title: "Allowed board title")
             let snapshot = Snapshot(schemaVersion: 5, rev: rev, generatedAt: 1,
                                     agents: ["row": agent], epoch: epoch)
             var gates: [String: DriveRequestGate] = [:]
             gates["/snapshot"] = gate
             gates["/host-key"] = keyGate
+            gates["/events"] = eventGate
             let script = DeterministicDriveScript(responses: [
                 "/host-key": try JSONEncoder().encode(HostKeyResponse(algorithm: "X25519", publicKey: returnedKey ?? key)),
                 "/snapshot": try JSONEncoder().encode(snapshot)
@@ -15330,6 +15332,7 @@ final class BackgroundHintTests: XCTestCase {
     func testHostThirtyMinuteCeilingAndDeviceHourlyCeiling() async throws {
         let f = try Fixture()
         defer { f.finish() }
+        try await prepareHintCoordinator(f, host: 1)
         _ = try f.script()
         let first = f.receive()
         try await wait { first.results.count == 1 }
@@ -15452,6 +15455,7 @@ final class BackgroundHintTests: XCTestCase {
     func testRemovedHostCannotBeRecreatedByLateSnapshot() async throws {
         let f = try Fixture()
         defer { f.finish() }
+        try await prepareHintCoordinator(f, host: 1)
         let gate = DriveRequestGate()
         defer { gate.release() }
         let script = try f.script(host: 1, gate: gate)
@@ -15523,5 +15527,184 @@ final class BackgroundHintTests: XCTestCase {
         XCTAssertTrue(f.model.fleet.agents.isEmpty)
         XCTAssertNotEqual(f.model.fleet.connectionState, .connected)
         XCTAssertNil(f.profiles.boardCache.load(for: f.hosts[0].id))
+    }
+}
+
+// MARK: - #546 round 2: runtime trust and admission witnesses
+
+extension BackgroundHintTests {
+    private func closeHintTestStream(_ store: FleetStore) async throws {
+        guard let task = store.disconnect() else { return }
+        let finished = Receipt()
+        Task {
+            await task.value
+            finished.results.append(.noData)
+        }
+        try await wait { finished.results.count == 1 }
+    }
+
+    /// Establish posture through the real coordinator preflight, not a profile
+    /// flag. Park stream delivery so setup cannot populate board/cursor caches.
+    private func prepareHintCoordinator(_ f: Fixture, host: Int,
+                                        returnedKey: String? = nil) async throws {
+        let coordinator = try XCTUnwrap(f.model.coordinator)
+        let store = try XCTUnwrap(coordinator.store(profileID: f.hosts[host].id))
+        let keyGate = DriveRequestGate()
+        let events = DriveRequestGate()
+        defer { keyGate.cancel(); events.cancel() }
+        let script = try f.script(host: host, keyGate: keyGate,
+                                  returnedKey: returnedKey, eventGate: events)
+        coordinator.startSessionIfNeeded(f.hosts[host])
+        try await wait { Set(script.log.requests.compactMap { $0.url?.path }) == ["/host-key", "/events"] }
+        try await closeHintTestStream(store)
+        keyGate.release()
+        let expected: HostStreamCoordinator.KeyPosture = returnedKey == nil ? .verified : .mismatch
+        try await wait { coordinator.posture(profileID: f.hosts[host].id) == expected }
+        // A successful preflight can reopen its stream; drain that owner too.
+        try await closeHintTestStream(store)
+        XCTAssertFalse(store.isStreaming)
+    }
+
+    func testRuntimeCoordinatorMismatchRefusesHintWithoutQuota() async throws {
+        let f = try Fixture()
+        defer { f.finish() }
+        try await prepareHintCoordinator(f, host: 1, returnedKey: f.hosts[2].hostKeyB64)
+        let coordinator = try XCTUnwrap(f.model.coordinator)
+        let profile = try XCTUnwrap(f.profiles.profile(id: f.hosts[1].id))
+        let store = try XCTUnwrap(coordinator.store(profileID: profile.id))
+        XCTAssertEqual(coordinator.posture(profileID: profile.id), .mismatch)
+        XCTAssertTrue(profile.mayConnect, "persisted permission must not hide runtime mismatch")
+        XCTAssertFalse(coordinator.allowsLiveWork(profileID: profile.id))
+        let before = store.connectionState
+        // Even a now-matching response cannot repair terminal runtime mismatch.
+        let script = try f.script(host: 1)
+        let receipt = f.receive(f.hint(1))
+        try await wait { receipt.results.count == 1 }
+        XCTAssertEqual(receipt.results, [.noData])
+        XCTAssertTrue(script.log.requests.isEmpty, "runtime-mismatched host must not be re-polled")
+        XCTAssertNil(f.defaults.data(forKey: AppModel.backgroundAttemptsKey), "refusal must not burn device quota")
+        XCTAssertEqual(f.model.backgroundRefreshCount, 0)
+        XCTAssertEqual(store.connectionState, before)
+        XCTAssertTrue(store.agents.isEmpty)
+        XCTAssertNil(f.profiles.cursor(for: profile.id))
+        XCTAssertNil(f.profiles.boardCache.load(for: profile.id))
+    }
+
+    func testForeignHostSnapshotIsRefusedBeforeStoreMutation() async throws {
+        let f = try Fixture()
+        defer { f.finish() }
+        let before = f.model.fleet.connectionState
+        let script = try f.script(agentHost: f.hosts[1].hostKeyB64)
+        let receipt = f.receive()
+        try await wait { receipt.results.count == 1 }
+        XCTAssertEqual(receipt.results, [.noData])
+        XCTAssertEqual(script.log.requests.map { $0.url?.path }, ["/host-key", "/snapshot"])
+        XCTAssertTrue(f.model.fleet.agents.isEmpty)
+        XCTAssertNil(f.model.fleet.lastEventId)
+        XCTAssertNil(f.profiles.cursor(for: f.hosts[0].id))
+        XCTAssertNil(f.profiles.boardCache.load(for: f.hosts[0].id))
+        // The downstream store also rejects foreign rows, but changes its error
+        // posture. This assertion discriminates the handler's earlier fence.
+        XCTAssertEqual(f.model.fleet.connectionState, before)
+        XCTAssertEqual(f.model.backgroundRefreshCount, 0)
+    }
+
+    func testAlreadyStreamingHintHasNoRequestsOrQuota() async throws {
+        let f = try Fixture()
+        let events = DriveRequestGate()
+        defer { events.cancel(); f.finish() }
+        let script = try f.script(eventGate: events)
+        let url = try XCTUnwrap(URL(string: f.hosts[0].urlString))
+        f.model.fleet.connect(client: CorraldClient(host: url, session: f.session))
+        try await wait { script.log.requests.count == 1 }
+        XCTAssertTrue(f.model.fleet.isStreaming)
+        let receipt = f.receive()
+        try await wait { receipt.results.count == 1 }
+        XCTAssertEqual(receipt.results, [.noData])
+        XCTAssertEqual(script.log.requests.map { $0.url?.path }, ["/events"])
+        XCTAssertEqual(f.model.backgroundRefreshCount, 0)
+        XCTAssertNil(f.defaults.data(forKey: AppModel.backgroundAttemptsKey))
+        try await closeHintTestStream(f.model.fleet)
+    }
+
+    func testStreamOpenedDuringHintPreventsLateApply() async throws {
+        let f = try Fixture()
+        let snapshot = DriveRequestGate()
+        let events = DriveRequestGate()
+        defer { snapshot.cancel(); events.cancel(); f.finish() }
+        let script = try f.script(gate: snapshot, eventGate: events)
+        let receipt = f.receive()
+        try await wait { script.log.requests.count == 2 }
+        let url = try XCTUnwrap(URL(string: f.hosts[0].urlString))
+        f.model.fleet.connect(client: CorraldClient(host: url, session: f.session))
+        try await wait { script.log.requests.count == 3 }
+        XCTAssertTrue(f.model.fleet.isStreaming)
+        snapshot.release()
+        try await wait { receipt.results.count == 1 }
+        XCTAssertEqual(receipt.results, [.noData])
+        XCTAssertTrue(f.model.fleet.agents.isEmpty)
+        XCTAssertNil(f.profiles.cursor(for: f.hosts[0].id))
+        XCTAssertNil(f.profiles.boardCache.load(for: f.hosts[0].id))
+        XCTAssertEqual(f.model.backgroundRefreshCount, 0)
+        try await closeHintTestStream(f.model.fleet)
+    }
+
+    func testNonLiveModesRefuseHintWithoutQuota() async throws {
+        for mode: AppModel.Mode in [.demo, .needsSetup] {
+            let f = try Fixture()
+            defer { f.finish() }
+            // Keep a resolvable enrollment so another denial cannot mask mode.
+            f.model.mode = mode
+            let script = try f.script()
+            let receipt = f.receive()
+            try await wait { receipt.results.count == 1 }
+            XCTAssertEqual(receipt.results, [.noData])
+            XCTAssertTrue(script.log.requests.isEmpty)
+            XCTAssertNil(f.defaults.data(forKey: AppModel.backgroundAttemptsKey))
+            XCTAssertEqual(f.model.backgroundRefreshCount, 0)
+        }
+    }
+
+    func testOversizedAndMalformedQuotaBlobsFailClosed() async throws {
+        let f = try Fixture()
+        defer { f.finish() }
+        let host = try XCTUnwrap(f.hosts[0].hostKeyB64)
+        // Expired entries would all be filtered away if the count sanity guard
+        // were missing; the ordinary two-per-hour guard cannot mask this probe.
+        let expired = BackgroundHintAttempt(hostID: host, attemptedAt: f.clock.wall - 3601)
+        let oversized = try JSONEncoder().encode([expired, expired, expired])
+        let blobs = [oversized, Data("not-json".utf8),
+                     Data("[{\"hostID\":\"\(host)\",\"attemptedAt\":1e400}]".utf8),
+                     Data("[{\"hostID\":\"\(host)\",\"attemptedAt\":\"NaN\"}]".utf8)]
+        for blob in blobs {
+            f.defaults.set(blob, forKey: AppModel.backgroundAttemptsKey)
+            let script = try f.script()
+            let receipt = f.receive()
+            try await wait { receipt.results.count == 1 }
+            XCTAssertEqual(receipt.results, [.noData])
+            XCTAssertTrue(script.log.requests.isEmpty)
+            XCTAssertEqual(f.defaults.data(forKey: AppModel.backgroundAttemptsKey), blob)
+            XCTAssertEqual(f.model.backgroundRefreshCount, 0)
+            XCTAssertNil(f.profiles.cursor(for: f.hosts[0].id))
+            XCTAssertNil(f.profiles.boardCache.load(for: f.hosts[0].id))
+        }
+        // Strict decoding rejects nonfinite representations before isFinite.
+        // Do not claim those inputs can discriminate that redundant inner leg.
+        for blob in blobs.suffix(2) {
+            XCTAssertThrowsError(try JSONDecoder().decode([BackgroundHintAttempt].self, from: blob))
+        }
+    }
+
+    func testDelegateWithoutRestoredModelCompletesNoDataOnce() async throws {
+        let f = try Fixture()
+        defer { f.finish() }
+        let script = try f.script()
+        f.delegate.backgroundRefreshModel = nil
+        let receipt = f.receive()
+        try await wait { receipt.results.count == 1 }
+        XCTAssertEqual(receipt.results, [.noData])
+        XCTAssertTrue(script.log.requests.isEmpty)
+        XCTAssertNil(f.defaults.data(forKey: AppModel.backgroundAttemptsKey))
+        XCTAssertEqual(f.model.backgroundRefreshCount, 0)
     }
 }

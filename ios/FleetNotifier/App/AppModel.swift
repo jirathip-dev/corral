@@ -3146,6 +3146,7 @@ final class AppModel: ObservableObject {
               let hint = BackgroundHint.parse(info),
               let profile = profileStore?.orderedProfiles.first(where: { $0.hostKeyB64 == hint.hostID }),
               profile.mayConnect, let key = profile.keyId, !key.isEmpty, signer != nil,
+              (profile.id == activeProfileID || coordinator?.allowsLiveWork(profileID: profile.id) != false),
               profile.expiryTs.map({ Double($0) > backgroundNow() }) ?? true,
               let target = backgroundStore(profileID: profile.id),
               !target.isStreaming,

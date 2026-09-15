@@ -1,0 +1,172 @@
+[
+  {
+    "path": "docs/evidence/issue-548/base/day-empty-large.png",
+    "original": "/tmp/g548-evidence/base/day-empty-large.png",
+    "sha256": "acf6557308f29576c688ff5c06697b5e8bfb1a69c9606ac95da76ceff7b23397",
+    "pixels": [
+      390,
+      844
+    ],
+    "device": "iPhone 16"
+  },
+  {
+    "path": "docs/evidence/issue-548/base/night-empty-large.png",
+    "original": "/tmp/g548-evidence/base/night-empty-large.png",
+    "sha256": "709676c515566c4aac62c29d7c1ee98659f2e73e345757138cf6aa2a982b53cd",
+    "pixels": [
+      390,
+      844
+    ],
+    "device": "iPhone 16"
+  },
+  {
+    "path": "docs/evidence/issue-548/head/day-empty-large.png",
+    "original": "/tmp/g548-evidence/head/day-empty-large.png",
+    "sha256": "6c6370dbeec91b6ba348129f161c5813b3806268d4bed83fe865d1debd032dc1",
+    "pixels": [
+      390,
+      844
+    ],
+    "device": "iPhone 16"
+  },
+  {
+    "path": "docs/evidence/issue-548/head/night-empty-large.png",
+    "original": "/tmp/g548-evidence/head/night-empty-large.png",
+    "sha256": "dfa44777705b2b4525a4a1500c761530b6ed855e1e2a362000b7ccfd5687cbd4",
+    "pixels": [
+      390,
+      844
+    ],
+    "device": "iPhone 16"
+  },
+  {
+    "path": "docs/evidence/issue-548/native/day-blocked-accessibility3.png",
+    "original": "/tmp/g548-evidence/native/day-blocked-accessibility3.png",
+    "sha256": "db90b5b0287dd43652a4d0ade2f730575d372dea6bba496f55becf17654cba7b",
+    "pixels": [
+      390,
+      844
+    ],
+    "device": "g548-iPhone14"
+  },
+  {
+    "path": "docs/evidence/issue-548/native/day-blocked-accessibility3-scrolled.png",
+    "original": "/tmp/g548-evidence/native/day-blocked-accessibility3-scrolled.png",
+    "sha256": "d0e1d2e123d19003d08cb9502a55c46f2887e93cc5be3f6d97d6286258f9fe41",
+    "pixels": [
+      390,
+      844
+    ],
+    "device": "g548-iPhone14"
+  },
+  {
+    "path": "docs/evidence/issue-548/native/day-blocked-large.png",
+    "original": "/tmp/g548-evidence/native/day-blocked-large.png",
+    "sha256": "2fe9a31751f7dfda17e346cb4d030878105b8e26414fcb91f5525d7369262dbe",
+    "pixels": [
+      390,
+      844
+    ],
+    "device": "g548-iPhone14"
+  },
+  {
+    "path": "docs/evidence/issue-548/native/day-empty-accessibility3.png",
+    "original": "/tmp/g548-evidence/native/day-empty-accessibility3.png",
+    "sha256": "682cda6c103704b1701b7dda1c556f9d972332c79347382d95892122025216a5",
+    "pixels": [
+      390,
+      844
+    ],
+    "device": "g548-iPhone14"
+  },
+  {
+    "path": "docs/evidence/issue-548/native/day-empty-large.png",
+    "original": "/tmp/g548-evidence/native/day-empty-large.png",
+    "sha256": "9745e1dff7a26283768a7afcae5abe5ae18dc981f66c158b365e8cc9c82cf233",
+    "pixels": [
+      390,
+      844
+    ],
+    "device": "g548-iPhone14"
+  },
+  {
+    "path": "docs/evidence/issue-548/native/day-last-known-accessibility3.png",
+    "original": "/tmp/g548-evidence/native/day-last-known-accessibility3.png",
+    "sha256": "ded5daa98dc8799efd818e5c48c69c8caef6195808a5497f67f2d9807dca41b6",
+    "pixels": [
+      390,
+      844
+    ],
+    "device": "g548-iPhone14"
+  },
+  {
+    "path": "docs/evidence/issue-548/native/day-last-known-large.png",
+    "original": "/tmp/g548-evidence/native/day-last-known-large.png",
+    "sha256": "29266e5b291269fecc1804413e03fc8abb07464bcc266f1ab02dda08fa318f52",
+    "pixels": [
+      390,
+      844
+    ],
+    "device": "g548-iPhone14"
+  },
+  {
+    "path": "docs/evidence/issue-548/native/night-blocked-accessibility3.png",
+    "original": "/tmp/g548-evidence/native/night-blocked-accessibility3.png",
+    "sha256": "bbe5fe21f5f27857b8d310f3efade7f72f92aa996eeaf173cd4a93a76a921a0f",
+    "pixels": [
+      390,
+      844
+    ],
+    "device": "g548-iPhone14"
+  },
+  {
+    "path": "docs/evidence/issue-548/native/night-blocked-large.png",
+    "original": "/tmp/g548-evidence/native/night-blocked-large.png",
+    "sha256": "67482f39c969349be18f9ac964dc9d5cce0ec60b83fd098ead8f2ccc971833be",
+    "pixels": [
+      390,
+      844
+    ],
+    "device": "g548-iPhone14"
+  },
+  {
+    "path": "docs/evidence/issue-548/native/night-empty-accessibility3.png",
+    "original": "/tmp/g548-evidence/native/night-empty-accessibility3.png",
+    "sha256": "965109d8d69076cbab2f46a5cb0b33a7b81ab33372d56035ef93729de59c17b1",
+    "pixels": [
+      390,
+      844
+    ],
+    "device": "g548-iPhone14"
+  },
+  {
+    "path": "docs/evidence/issue-548/native/night-empty-large.png",
+    "original": "/tmp/g548-evidence/native/night-empty-large.png",
+    "sha256": "3ba400f5b4fcbad4746a4841940c9e3c0d2089e909965a0a737be6cc0ccf8989",
+    "pixels": [
+      390,
+      844
+    ],
+    "device": "g548-iPhone14"
+  },
+  {
+    "path": "docs/evidence/issue-548/native/night-last-known-accessibility3.png",
+    "original": "/tmp/g548-evidence/native/night-last-known-accessibility3.png",
+    "sha256": "e5d84a16a674819cfbdcaed8bee92d7c9edd9fb1864a78a4a76083b5d147e6a5",
+    "pixels": [
+      390,
+      844
+    ],
+    "device": "g548-iPhone14"
+  },
+  {
+    "path": "docs/evidence/issue-548/native/night-last-known-large.png",
+    "original": "/tmp/g548-evidence/native/night-last-known-large.png",
+    "sha256": "d82ccce0d398dc871e2c18a3fa137e0beb75a83ec457a81893a2e6ee9f75e018",
+    "pixels": [
+      390,
+      844
+    ],
+    "device": "g548-iPhone14"
+  }
+]

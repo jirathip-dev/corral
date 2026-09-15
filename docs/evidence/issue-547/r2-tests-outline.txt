@@ -1,0 +1,23 @@
+ios/FleetNotifierTests/FleetNotifierTests.swift
+14670: final class ForegroundReconnectTests: XCTestCase {
+14689:   func finish() {
+14696:   func start() {
+14700:   func count(_ path: String, host: Int = 0) -> Int {
+14707:   private func frame(_ kind: String, rev: UInt64, epoch: String,
+14724:   private func wire(_ frames: [SSEFrame]) -> Data {
+14730:   private func fixture(hosts: Int = 1, frames: Int = 2,
+14780:   private func wait(_ predicate: () -> Bool, timeout: TimeInterval = 5,
+14787:   func testSceneOpensBeforeKeyAndAppliesBufferedDeltasInOrder() async throws {
+14819:   func testMismatchDiscardsBufferedFramesAndNeverRevivesLiveWork() async throws {
+14842:   func testCapDiscardsWholeWindowAndResumesOnlyAfterVerification() async throws {
+14862:   func testExpiryBoundsASlowKeyEvenWhenNoMoreFramesArrive() async throws {
+14877:   func testByteCapRejectsOneOversizedFrameBeforeApplication() async throws {
+14886:   func testBackgroundRaceCancelsKeyAndStreamAndRechecksOnReturn() async throws {
+14911:   func testSlowActiveHostDoesNotDelayHealthyCoordinatorAndRowsStayStale() async throws {
+14930:   func testSlowCoordinatorDoesNotDelayHealthyActiveHost() async throws {
+14943:   func testEpochChangeReplacesTheDeltaBaseWithAFullStreamSnapshot() async throws {
+14959:   func testNeverVerifiedColdStartBuffersItsFirstSnapshot() async throws {
+14976:   func testBufferedFramesFromAnEndedTransportNeverClaimLive() async throws {
+14992:   func testRowVisibilityHookIsWiredToBothProductionRowBodies() throws {
+15015:   private func attachBoard(_ window: UIWindow, name: String) {
+15025:   func testNativeRetainedBoardAndSimulatorStageMeasurements() async throws {

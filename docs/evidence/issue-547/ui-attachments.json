@@ -1,0 +1,26 @@
+[
+  {
+    "attachments" : [
+      {
+        "configurationName" : "Test Scheme Action",
+        "deviceId" : "59DDC0C5-891E-4EC0-91AF-4F50DF68D793",
+        "deviceName" : "iPhone 16",
+        "exportedFileName" : "0C1193BC-3B1B-4ECA-9B13-6C106AAF0914.png",
+        "isAssociatedWithFailure" : false,
+        "suggestedHumanReadableName" : "547-applied-verified_0_E3B4075F-3D50-440B-A33A-36A67E4F2620.png",
+        "timestamp" : 1789434500.262
+      },
+      {
+        "configurationName" : "Test Scheme Action",
+        "deviceId" : "59DDC0C5-891E-4EC0-91AF-4F50DF68D793",
+        "deviceName" : "iPhone 16",
+        "exportedFileName" : "0E8E332E-6836-48B0-88C6-44161244CD7C.png",
+        "isAssociatedWithFailure" : false,
+        "suggestedHumanReadableName" : "547-retained-unverified_0_4159B5A4-9890-4AF0-8CD4-16F3BA9430AA.png",
+        "timestamp" : 1789434500.012
+      }
+    ],
+    "testIdentifier" : "ForegroundReconnectTests/testNativeRetainedBoardAndSimulatorStageMeasurements()",
+    "testIdentifierURL" : "test://com.apple.xcode/FleetNotifier/FleetNotifierTests/ForegroundReconnectTests/testNativeRetainedBoardAndSimulatorStageMeasurements"
+  }
+]

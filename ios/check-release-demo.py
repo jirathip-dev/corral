@@ -539,7 +539,14 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # #397 = 9be9bacf…, integration = 1978fc18…); recomputed by the
     # canonical algorithm over THIS merged working tree — membership check
     # still 40/40.
-    "62e3592585b5c06dcbccbec753317e658df7b287dd2092b0ba9dad918e88475f"
+    # 2026-09-15 #547: parallel verified reconnect, bounded ingress and row timing.
+    # 2026-09-15 integration merge (eafebfb #547 + #548): the merged tree unions
+    # the #547 AppModel/FleetStore/HostStreamCoordinator/FleetViews delta with the
+    # #548 Herd/UI delta, so the digest is recomputed over THIS merged tree by the
+    # canonical algorithm; membership check still 40/40. The #548 branch carried
+    # its own branch-local literal (6d553d20…) and this merge is where the single
+    # merged value is re-derived.
+    "d8997fa8b255ffdf4f2042179517bb0d84dec9ddd083276be2e2150c513e247e"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -766,7 +773,8 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # neither parent value is right (parents: #397 = d62b6469…, integration
     # = dc04b35b…); recomputed as the plain sha256 of the merged
     # FleetNotifierTests.swift over THIS merged working tree.
-    "6a4905105879547571661d128fc06ac654ae2aef9c7bfcee815d5f2f5a89e5e7"
+    # 2026-09-15 #547: parallel verified reconnect, bounded ingress and row timing.
+    "f8e9b422d92286d58065a6900c7907b635900ba5b7c6b90b923bef9f43eec034"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

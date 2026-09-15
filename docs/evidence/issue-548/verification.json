@@ -1,0 +1,98 @@
+{
+  "comparison": {
+    "day": {
+      "base_first_row_points": [
+        360.99999999999994,
+        546.0,
+        546.0
+      ],
+      "head_first_row_points": [
+        349.3333333333333,
+        349.3333333333333,
+        349.3333333333333
+      ],
+      "upward_delta_points": 11.666666666666629,
+      "fence_crop": [
+        0,
+        328,
+        10,
+        388
+      ],
+      "fence_changed_pixels": 0
+    },
+    "night": {
+      "base_first_row_points": [
+        360.99999999999994,
+        546.0,
+        546.0
+      ],
+      "head_first_row_points": [
+        349.3333333333333,
+        349.3333333333333,
+        349.3333333333333
+      ],
+      "upward_delta_points": 11.666666666666629,
+      "fence_crop": [
+        0,
+        328,
+        10,
+        388
+      ],
+      "fence_changed_pixels": 0
+    }
+  },
+  "native": {
+    "day-large": {
+      "first_row_points": [
+        337.3333333333333,
+        337.3333333333333,
+        337.3333333333333
+      ],
+      "reserved_height_points": [
+        175.66666666666669,
+        175.66666666666669,
+        175.66666666666669
+      ],
+      "last_known_card_height_points": 175.66666666666666
+    },
+    "day-accessibility3": {
+      "first_row_points": [
+        524.3333333333333,
+        524.3333333333333,
+        524.3333333333333
+      ],
+      "reserved_height_points": [
+        259.66666666666663,
+        259.66666666666663,
+        259.66666666666663
+      ],
+      "last_known_card_height_points": 259.66666666666663
+    },
+    "night-large": {
+      "first_row_points": [
+        337.3333333333333,
+        337.3333333333333,
+        337.3333333333333
+      ],
+      "reserved_height_points": [
+        175.66666666666669,
+        175.66666666666669,
+        175.66666666666669
+      ],
+      "last_known_card_height_points": 175.66666666666666
+    },
+    "night-accessibility3": {
+      "first_row_points": [
+        524.3333333333333,
+        524.3333333333333,
+        524.3333333333333
+      ],
+      "reserved_height_points": [
+        259.66666666666663,
+        259.66666666666663,
+        259.66666666666663
+      ],
+      "last_known_card_height_points": 259.66666666666663
+    }
+  }
+}

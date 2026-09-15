@@ -377,7 +377,7 @@ final class HostStreamCoordinator: ObservableObject {
     func startSessionIfNeeded(_ profile: HostProfile) {
         guard profile.id != activeProfileID, profile.mayConnect,
               let session = sessions[profile.id] else { return }
-        if session.store.isStreaming { return }
+        if session.store.isStreaming && session.posture != .verifying { return }
         if session.continuityTask != nil { return }
         guard session.posture != .mismatch else { return }
         guard let url = URL(string: profile.urlString) else { return }
@@ -387,7 +387,10 @@ final class HostStreamCoordinator: ObservableObject {
             openStream(profile: profile, session: session, client: client)
             return
         }
+        if !session.store.isStreaming { session.store.beginReconnectTiming() }
         session.posture = .verifying
+        session.store.requireHostVerification()
+        openStream(profile: profile, session: session, client: client)
         session.continuityGeneration += 1
         let ladder = session.continuityGeneration
         session.continuityTask = Task { @MainActor [weak self] in
@@ -413,15 +416,22 @@ final class HostStreamCoordinator: ObservableObject {
                 // interruptible.
                 session.continuityWaiting = false
                 do {
+                    session.store.reconnectTiming.mark(.keyRequest)
                     let response = try await client.fetchHostKey()
                     guard !Task.isCancelled,
                           self.sessions[profile.id] === session else { return }
+                    session.store.reconnectTiming.mark(.keyResponse)
                     if HostKeyTrust.matches(response, pinnedKeyB64: pinned) {
                         session.posture = .verified
-                        self.openStream(profile: profile, session: session, client: client)
+                        session.store.verifyHostKey()
+                        if session.posture == .verified {
+                            self.openStream(profile: profile, session: session, client: client)
+                        }
                     } else {
-                        Self.log.error("host \(profile.displayName, privacy: .public): pinned key mismatch — stream stays closed")
+                        Self.log.error("host \(profile.displayName, privacy: .public): pinned key mismatch — speculative stream closed")
                         session.posture = .mismatch
+                        session.store.requireHostVerification()
+                        session.store.disconnect()
                         session.store.noteConnectionError("host key mismatch — pairing must be re-done")
                         self.objectWillChange.send()
                     }
@@ -464,6 +474,7 @@ final class HostStreamCoordinator: ObservableObject {
         session.store.onHostIntegrityMismatch = { @MainActor [weak self] in
             guard let self, let session = self.sessions[profile.id] else { return }
             session.posture = .mismatch
+            session.store.requireHostVerification()
             session.store.disconnect()
             self.objectWillChange.send()
         }
@@ -506,7 +517,7 @@ final class HostStreamCoordinator: ObservableObject {
     /// - a pinned host whose preflight ladder is WAITING between attempts
     ///   gets its ladder re-driven (cancel + fresh single owner — the
     ///   existing #451 pattern, never a bypass: the ladder re-checks
-    ///   `/host-key` before any stream opens);
+    ///   `/host-key` before any data is applied);
     /// - every other host goes through the store's #425
     ///   `reconnectIfNeeded` seam: exactly one replacement for a
     ///   stale/disconnected stream, nothing stacked.
@@ -543,6 +554,10 @@ final class HostStreamCoordinator: ObservableObject {
             session.refreshTask?.cancel()
             session.refreshTask = nil
             session.store.disconnect()
+            if session.posture != .unpinned, session.posture != .mismatch {
+                session.posture = .verifying
+                session.store.requireHostVerification(resetWindow: true)
+            }
         }
         objectWillChange.send()
     }

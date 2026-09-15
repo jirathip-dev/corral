@@ -1259,6 +1259,7 @@ final class AppModel: ObservableObject {
         guard keyContinuityTask == nil else { return }
         let context = lifecycleContext()
         keyContinuityState = .pending
+        fleet.requireHostVerification()
         guard let url = URL(string: profile.urlString),
               let pinned = profile.hostKeyB64 else { return }
         let client = CorraldClient(host: url, session: session)
@@ -1286,10 +1287,13 @@ final class AppModel: ObservableObject {
                 // interruptible.
                 self.keyContinuityWaiting = false
                 do {
+                    self.fleet.reconnectTiming.mark(.keyRequest)
                     let response = try await client.fetchHostKey()
                     guard !Task.isCancelled, self.isCurrent(context) else { return }
+                    self.fleet.reconnectTiming.mark(.keyResponse)
                     if HostKeyTrust.matches(response, pinnedKeyB64: pinned) {
                         self.keyContinuityState = .verified
+                        self.fleet.verifyHostKey()
                         self.profileStore?.noteLastSuccessfulConnection(id: profile.id)
                         // #451: the retry notice (if one was shown) is no
                         // longer true — the host verified.
@@ -1332,6 +1336,7 @@ final class AppModel: ObservableObject {
     /// records the mismatch. Only Remove Host + fresh pairing recovers.
     private func failKeyContinuity(_ profile: HostProfile) {
         keyContinuityState = .mismatch
+        fleet.requireHostVerification()
         profileStore?.noteConnectionState(id: profile.id, .keyMismatch)
         fleet.acceptedHostIdentity = nil
         fleet.disconnect()
@@ -2678,6 +2683,7 @@ final class AppModel: ObservableObject {
 
     func startLive() {
         guard let hostURL else { return }
+        if !fleet.isStreaming, keyContinuityTask == nil { fleet.beginReconnectTiming() }
         // #400 C3: start/reconnect every OTHER configured host
         // concurrently — independent of the ACTIVE profile's gates below
         // (a paused or mismatched active host must never freeze the rest
@@ -2706,10 +2712,9 @@ final class AppModel: ObservableObject {
                     _ = keyContinuityDeniedBanner()
                     return
                 }
-                // B4: pinned but not yet re-verified since launch —
-                // re-check /host-key before opening the stream.
+                // #547: verification and transport setup overlap. The store's
+                // bounded inbox is closed to application until the key matches.
                 beginKeyContinuityCheck(for: profile)
-                return
             }
         }
         let client = CorraldClient(host: hostURL, session: session)
@@ -2773,6 +2778,7 @@ final class AppModel: ObservableObject {
         // transitional daemon still pass).
         fleet.acceptedHostIdentity = activeProfile?.hostKeyB64
         fleet.connect(client: client)
+        guard keyContinuityAllowsLiveWork else { return }
         // #397 follow-up: this startLive pass proved the ACTIVE host's
         // identity (verified) and (re)opened its stream — the moment a tap
         // deferred while the host was cold/reconnecting can route. A
@@ -2817,6 +2823,20 @@ final class AppModel: ObservableObject {
         // only (the Settings opt-in toggle — setNotificationsEnabled), so
         // a fresh install, pairing, first live board, or relaunch never
         // prompts, registers APNs, or needs push secrets.
+    }
+
+    /// Called only by a row's SwiftUI appearance/update lifecycle, never by
+    /// publication or a queued surrogate for rendering.
+    func noteRowVisible(agentID: String, revision: UInt64?, hostProfileID: UUID?) {
+        let store = hostProfileID.flatMap { id in
+            id == activeProfileID ? fleet : coordinator?.store(profileID: id)
+        } ?? fleet
+        store.noteRowVisible(agentID: agentID, revision: revision)
+    }
+
+    func rowRevision(hostProfileID: UUID?) -> UInt64? {
+        guard let id = hostProfileID, id != activeProfileID else { return fleet.lastEventId }
+        return coordinator?.store(profileID: id)?.lastEventId
     }
 
     func stopLive() {
@@ -2867,6 +2887,7 @@ final class AppModel: ObservableObject {
         // A confirmed mismatch stays failed closed (Remove Host only).
         if activeProfile?.hostKeyB64 != nil, keyContinuityState != .mismatch {
             keyContinuityState = .pending
+            fleet.requireHostVerification(resetWindow: true)
         }
     }
 
@@ -2966,6 +2987,10 @@ final class AppModel: ObservableObject {
             pathHintTask = nil
             pathHintTaskId = nil
             return
+        }
+        fleet.reconnectTiming.mark(.pathReady)
+        for session in coordinator?.sessions.values ?? Dictionary<UUID, HostStreamCoordinator.Session>().values {
+            session.store.reconnectTiming.mark(.pathReady)
         }
         guard pathWasUnsatisfied else { return }
         pathWasUnsatisfied = false

@@ -1,0 +1,298 @@
+{
+  "source_log": "/tmp/g547-focused.log",
+  "environment": "iPhone 16 iOS Simulator; local URLProtocol; controlled key gates",
+  "sample_count": 10,
+  "samples": [
+    {
+      "sample": 0,
+      "uptime_seconds": {
+        "frame_applied": 986749.3847181251,
+        "frame_received": 986749.0340189583,
+        "key_request": 986749.03334125,
+        "key_response": 986749.3845688751,
+        "path_ready": 986749.0334365834,
+        "retained_row_visible": 986749.1076029168,
+        "row_visible": 986749.3876819167,
+        "sse_200": 986749.0338265834
+      }
+    },
+    {
+      "sample": 1,
+      "uptime_seconds": {
+        "frame_applied": 986749.7045489583,
+        "frame_received": 986749.6644032501,
+        "key_request": 986749.6637059167,
+        "key_response": 986749.7044092084,
+        "path_ready": 986749.6638484584,
+        "retained_row_visible": 986749.6985310001,
+        "row_visible": 986749.7066986667,
+        "sse_200": 986749.6642941667
+      }
+    },
+    {
+      "sample": 2,
+      "uptime_seconds": {
+        "frame_applied": 986749.7670477084,
+        "frame_received": 986749.73349,
+        "key_request": 986749.732954625,
+        "key_response": 986749.7669164584,
+        "path_ready": 986749.7330453334,
+        "retained_row_visible": 986749.7584161668,
+        "row_visible": 986749.769160125,
+        "sse_200": 986749.7333649584
+      }
+    },
+    {
+      "sample": 3,
+      "uptime_seconds": {
+        "frame_applied": 986749.8342475,
+        "frame_received": 986749.7975896667,
+        "key_request": 986749.7970007918,
+        "key_response": 986749.8341064167,
+        "path_ready": 986749.79709775,
+        "retained_row_visible": 986749.8258207084,
+        "row_visible": 986749.8362840834,
+        "sse_200": 986749.7974787917
+      }
+    },
+    {
+      "sample": 4,
+      "uptime_seconds": {
+        "frame_applied": 986749.8984565417,
+        "frame_received": 986749.8640688334,
+        "key_request": 986749.8635261668,
+        "key_response": 986749.8983224584,
+        "path_ready": 986749.8636101667,
+        "retained_row_visible": 986749.8898265834,
+        "row_visible": 986749.900493875,
+        "sse_200": 986749.8639762084
+      }
+    },
+    {
+      "sample": 5,
+      "uptime_seconds": {
+        "frame_applied": 986749.9692977917,
+        "frame_received": 986749.9268830001,
+        "key_request": 986749.9263544584,
+        "key_response": 986749.9691650417,
+        "path_ready": 986749.9264823333,
+        "retained_row_visible": 986749.9607449584,
+        "row_visible": 986749.9715442917,
+        "sse_200": 986749.9267751668
+      }
+    },
+    {
+      "sample": 6,
+      "uptime_seconds": {
+        "frame_applied": 986750.0326831251,
+        "frame_received": 986749.9988287501,
+        "key_request": 986749.9982765417,
+        "key_response": 986750.0325555834,
+        "path_ready": 986749.998362625,
+        "retained_row_visible": 986750.0243683334,
+        "row_visible": 986750.0346427917,
+        "sse_200": 986749.9986941251
+      }
+    },
+    {
+      "sample": 7,
+      "uptime_seconds": {
+        "frame_applied": 986750.1003897501,
+        "frame_received": 986750.0613670001,
+        "key_request": 986750.0606918334,
+        "key_response": 986750.1002265001,
+        "path_ready": 986750.0607963334,
+        "retained_row_visible": 986750.091524375,
+        "row_visible": 986750.1028754584,
+        "sse_200": 986750.0612433751
+      }
+    },
+    {
+      "sample": 8,
+      "uptime_seconds": {
+        "frame_applied": 986750.1736136251,
+        "frame_received": 986750.1317720417,
+        "key_request": 986750.1306749167,
+        "key_response": 986750.1734580001,
+        "path_ready": 986750.1309839584,
+        "retained_row_visible": 986750.1623460418,
+        "row_visible": 986750.1764800834,
+        "sse_200": 986750.1315654584
+      }
+    },
+    {
+      "sample": 9,
+      "uptime_seconds": {
+        "frame_applied": 986750.2833944167,
+        "frame_received": 986750.2120065833,
+        "key_request": 986750.2110473751,
+        "key_response": 986750.2832496667,
+        "path_ready": 986750.2111909584,
+        "retained_row_visible": 986750.2461500417,
+        "row_visible": 986750.28728475,
+        "sse_200": 986750.2116714168
+      }
+    }
+  ],
+  "metrics": [
+    {
+      "metric": "key_dispatch_minus_path_observed",
+      "start": "path_ready",
+      "end": "key_request",
+      "n": 10,
+      "milliseconds": [
+        -0.09533332195132971,
+        -0.14254171401262283,
+        -0.09070837404578924,
+        -0.09695824701339006,
+        -0.08399994112551212,
+        -0.1278748968616128,
+        -0.08608330972492695,
+        -0.10449998080730438,
+        -0.30904170125722885,
+        -0.14358328189700842
+      ],
+      "median_ms": -0.10072911391034722
+    },
+    {
+      "metric": "key_round_trip",
+      "start": "key_request",
+      "end": "key_response",
+      "n": 10,
+      "milliseconds": [
+        351.22762504033744,
+        40.703291655518115,
+        33.9618333382532,
+        37.10562491323799,
+        34.79629161302,
+        42.81058325432241,
+        34.27904169075191,
+        39.53466669190675,
+        42.78308339416981,
+        72.20229157246649
+      ],
+      "median_ms": 40.11897917371243
+    },
+    {
+      "metric": "path_observed_to_sse_200",
+      "start": "path_ready",
+      "end": "sse_200",
+      "n": 10,
+      "milliseconds": [
+        0.39000005926936865,
+        0.44570828322321177,
+        0.3196250181645155,
+        0.38104166742414236,
+        0.36604166962206364,
+        0.29283342882990837,
+        0.3315000794827938,
+        0.4470417043194175,
+        0.5815000040456653,
+        0.48045837320387363
+      ],
+      "median_ms": 0.3855208633467555
+    },
+    {
+      "metric": "sse_200_to_frame_received",
+      "start": "sse_200",
+      "end": "frame_received",
+      "n": 10,
+      "milliseconds": [
+        0.19237492233514786,
+        0.10908336844295263,
+        0.12504158075898886,
+        0.11087500024586916,
+        0.0926250359043479,
+        0.107833300717175,
+        0.13462500646710396,
+        0.12362503912299871,
+        0.20658329594880342,
+        0.3351665800437331
+      ],
+      "median_ms": 0.12433330994099379
+    },
+    {
+      "metric": "frame_received_to_applied",
+      "start": "frame_received",
+      "end": "frame_applied",
+      "n": 10,
+      "milliseconds": [
+        350.6991667672992,
+        40.14570824801922,
+        33.557708375155926,
+        36.657833377830684,
+        34.38770829234272,
+        42.41479164920747,
+        33.85437501128763,
+        39.02274998836219,
+        41.84158344287425,
+        71.38783333357424
+      ],
+      "median_ms": 39.584229118190706
+    },
+    {
+      "metric": "key_response_to_applied",
+      "start": "key_response",
+      "end": "frame_applied",
+      "n": 10,
+      "milliseconds": [
+        0.14925003051757812,
+        0.1397499581798911,
+        0.1312500098720193,
+        0.14108337927609682,
+        0.13408332597464323,
+        0.13275002129375935,
+        0.1275417162105441,
+        0.16325002070516348,
+        0.1556250499561429,
+        0.14474999625235796
+      ],
+      "median_ms": 0.14041666872799397
+    },
+    {
+      "metric": "applied_to_row_visible",
+      "start": "frame_applied",
+      "end": "row_visible",
+      "n": 10,
+      "milliseconds": [
+        2.963791601359844,
+        2.1497083362191916,
+        2.112416666932404,
+        2.0365833770483732,
+        2.0373333245515823,
+        2.2464999929070473,
+        1.9596666097640991,
+        2.4857083335518837,
+        2.8664582641795278,
+        3.890333347953856
+      ],
+      "median_ms": 2.1981041645631194
+    },
+    {
+      "metric": "path_observed_to_retained_row_visible",
+      "start": "path_ready",
+      "end": "retained_row_visible",
+      "n": 10,
+      "milliseconds": [
+        74.16633341927081,
+        34.682541619986296,
+        25.370833347551525,
+        28.722958406433463,
+        26.216416736133397,
+        34.26262503489852,
+        26.005708379670978,
+        30.728041660040617,
+        31.362083391286433,
+        34.959083306603134
+      ],
+      "median_ms": 31.045062525663525
+    }
+  ],
+  "non_claims": [
+    "Not physical-device, real-network, Mac-server or loaded-Bazzite timings.",
+    "No instrumented serial-control performance comparison was run.",
+    "Path-ready observation may arrive AFTER key dispatch; negative differences are retained.",
+    "Sample 0 includes attachment capture before key release. All 10 samples are included.",
+    "Row marks are SwiftUI appearance/update callbacks, not GPU scan-out."
+  ]
+}

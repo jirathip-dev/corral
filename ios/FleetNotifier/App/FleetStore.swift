@@ -102,6 +102,138 @@ final class TransportHeartbeat: @unchecked Sendable {
     }
 }
 
+/// #547: one bounded, privacy-safe timing record per reconnect. The random
+/// attempt ID is ephemeral; no profile, URL, key, row ID or payload is logged.
+final class ReconnectTiming: @unchecked Sendable {
+    enum Stage: String, CaseIterable {
+        case pathReady = "path_ready", keyRequest = "key_request", keyResponse = "key_response"
+        case sse200 = "sse_200", frameReceived = "frame_received"
+        case frameApplied = "frame_applied", rowVisible = "row_visible"
+        case retainedRowVisible = "retained_row_visible"
+    }
+    private static let log = Logger(subsystem: "com.corral.fleetnotifier", category: "foreground-reconnect")
+    private let lock = NSLock()
+    private let attempt = UUID()
+    private var stamps: [Stage: TimeInterval] = [:]
+
+    @discardableResult
+    func mark(_ stage: Stage) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard stamps[stage] == nil else { return false }
+        let now = ProcessInfo.processInfo.systemUptime
+        stamps[stage] = now
+        Self.log.info("attempt=\(self.attempt.uuidString, privacy: .public) stage=\(stage.rawValue, privacy: .public) uptime=\(now, privacy: .public)")
+        return true
+    }
+
+    var measurements: [Stage: TimeInterval] {
+        lock.lock()
+        defer { lock.unlock() }
+        return stamps
+    }
+}
+
+struct VerificationBufferPolicy {
+    var maxFrames = 32
+    var maxBytes = 1_048_576
+    var lifetime: TimeInterval = 10
+}
+
+/// #547: ordered ingress BEFORE the main-actor hop. While verification is
+/// pending no frame tasks are enqueued. Both frames and their byte storage are
+/// capped, including when the main actor is busy. Overflow discards the WHOLE
+/// window (never a delta prefix); recovery resumes from the last APPLIED cursor.
+final class VerifiedStreamInbox: @unchecked Sendable {
+    enum Delivery {
+        case frame(CorraldClient.DecodeOutcome, Int)
+        case connected, ended, overflow
+        case error(String)
+    }
+    private let lock = NSLock()
+    private let policy: VerificationBufferPolicy
+    private var deliveries: [Delivery] = []
+    private var frames = 0
+    private var bytes = 0
+    private var ready: Bool
+    private var scheduled = false
+    private var closed = false
+    private var connected = false
+
+    init(ready: Bool, policy: VerificationBufferPolicy) {
+        self.ready = ready
+        self.policy = policy
+    }
+
+    var bufferedFrames: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return frames
+    }
+
+    var isConnected: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return connected && !closed
+    }
+
+    /// True means the caller owns the one required main-actor drain.
+    func append(_ delivery: Delivery) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !closed else { return false }
+        switch delivery {
+        case .connected: connected = true
+        case .ended, .error: connected = false
+        case .frame(_, let size):
+            frames += 1
+            bytes += size
+        case .overflow: break
+        }
+        if frames > policy.maxFrames || bytes > policy.maxBytes
+            || deliveries.count >= policy.maxFrames + 8 {
+            deliveries = [.overflow]
+            frames = 0
+            bytes = 0
+            closed = true
+            ready = true
+        } else {
+            deliveries.append(delivery)
+        }
+        guard ready, !scheduled else { return false }
+        scheduled = true
+        return true
+    }
+
+    func verify() {
+        lock.lock()
+        ready = true
+        lock.unlock()
+    }
+
+    func take() -> [Delivery] {
+        lock.lock()
+        defer { lock.unlock() }
+        guard ready else { return [] }
+        let batch = deliveries
+        deliveries.removeAll(keepingCapacity: true)
+        frames = 0
+        bytes = 0
+        scheduled = false
+        return batch
+    }
+
+    func close() {
+        lock.lock()
+        closed = true
+        connected = false
+        deliveries.removeAll()
+        frames = 0
+        bytes = 0
+        lock.unlock()
+    }
+}
+
 /// Fleet read-model store: applies snapshot/delta events from the SSE stream
 /// (R2) and reports agent state transitions for the notification hooks.
 ///
@@ -191,6 +323,83 @@ final class FleetStore: ObservableObject {
     private static let log = Logger(subsystem: "com.corral.fleetnotifier", category: "stream")
 
     private var streamTask: Task<Void, Never>?
+    private(set) var reconnectTiming = ReconnectTiming()
+    var verificationBufferPolicy = VerificationBufferPolicy()
+    private(set) var awaitingHostVerification = false
+    private var verificationWindowClosed = false
+    private var streamInbox: VerifiedStreamInbox?
+    private var verificationExpiryTask: Task<Void, Never>?
+    private var visibleRevision: UInt64?
+    private var visibleAgentIDs: Set<String> = []
+    var bufferedFrameCount: Int { streamInbox?.bufferedFrames ?? 0 }
+
+    func beginReconnectTiming() {
+        reconnectTiming = ReconnectTiming()
+        visibleRevision = nil
+        visibleAgentIDs.removeAll()
+    }
+
+    func noteRowVisible(agentID: String, revision: UInt64?) {
+        if awaitingHostVerification, agents[agentID] != nil {
+            reconnectTiming.mark(.retainedRowVisible)
+        }
+        guard let revision, revision == visibleRevision,
+              visibleAgentIDs.contains(agentID) else { return }
+        if reconnectTiming.mark(.rowVisible) { visibleAgentIDs.removeAll() }
+    }
+
+    func requireHostVerification(resetWindow: Bool = false) {
+        if resetWindow { verificationWindowClosed = false }
+        awaitingHostVerification = true
+        if connectionState == .connected { connectionState = .connecting }
+    }
+
+    func verifyHostKey() {
+        verificationWindowClosed = false
+        awaitingHostVerification = false
+        verificationExpiryTask?.cancel()
+        verificationExpiryTask = nil
+        guard let inbox = streamInbox else { return }
+        inbox.verify()
+        drain(inbox, generation: connectionGeneration)
+    }
+
+    private func expireVerificationBuffer(generation: Int) {
+        guard awaitingHostVerification, connectionGeneration == generation else { return }
+        disconnect()
+        verificationWindowClosed = true
+        connectionState = .connecting
+    }
+
+    nonisolated private func receive(_ delivery: VerifiedStreamInbox.Delivery,
+                                     inbox: VerifiedStreamInbox, generation: Int) {
+        guard inbox.append(delivery) else { return }
+        Task { @MainActor [weak self] in self?.drain(inbox, generation: generation) }
+    }
+
+    private func drain(_ inbox: VerifiedStreamInbox, generation: Int) {
+        guard streamTask != nil, streamInbox === inbox,
+              connectionGeneration == generation else { return }
+        for delivery in inbox.take() {
+            guard streamInbox === inbox, streamTask != nil else { return }
+            switch delivery {
+            case .frame(let outcome, _):
+                guard !awaitingHostVerification else { return }
+                applyDecoded(outcome)
+            case .connected:
+                if inbox.isConnected, !isTransportStale { noteConnected() }
+            case .ended: noteStreamEnded()
+            case .error(let reason): noteConnectionError(reason)
+            case .overflow:
+                let client = streamClient
+                disconnect()
+                verificationWindowClosed = awaitingHostVerification
+                connectionState = .connecting
+                if !awaitingHostVerification, let client { connect(client: client) }
+                return
+            }
+        }
+    }
     /// #425: this host's transport-liveness policy. Re-derived from the
     /// connecting client's own session configuration on every `connect()`
     /// (see `StreamLiveness`); the owner may override it afterwards to pin a
@@ -299,7 +508,8 @@ final class FleetStore: ObservableObject {
     /// daemon's lower/equal-rev snapshot replaces the retained state. Only
     /// `ingest` reaches this method.
     private func applyStreamFrame(_ event: FleetEvent) {
-        apply(withoutDiff: event, marksConnected: true, allowsEpochReset: true)
+        let live = streamInbox.map { $0.isConnected && !isTransportStale } ?? true
+        apply(withoutDiff: event, marksConnected: live, allowsEpochReset: true)
     }
 
     /// Issue #219: authoritative pull/toolbar refresh application.
@@ -322,6 +532,9 @@ final class FleetStore: ObservableObject {
 
     private func apply(withoutDiff event: FleetEvent, marksConnected: Bool,
                        allowsEpochReset: Bool) {
+        // #547: every application route (including a racing HTTP refresh)
+        // stays closed until THIS foreground session's key check succeeds.
+        guard !awaitingHostVerification else { return }
         // #399 B4/C1: fail closed when the frame carries records from a
         // DIFFERENT host identity than the one this store was pinned to.
         // The prior (stale) snapshot stays untouched — nothing is applied.
@@ -367,6 +580,13 @@ final class FleetStore: ObservableObject {
         // 200 ack (`noteConnected`), never to a snapshot fetch.
         if marksConnected {
             connectionState = .connected
+        }
+        if allowsEpochReset, reconnectTiming.mark(.frameApplied) {
+            visibleRevision = lastEventId
+            switch event {
+            case .snapshot(let snapshot): visibleAgentIDs = Set(snapshot.agents.keys)
+            case .delta(let delta): visibleAgentIDs = Set(delta.upd.map(\.agentId))
+            }
         }
         // #397 follow-up: an accepted frame mutated the read model — the
         // owning model replays any deferred notification tap whose target
@@ -576,6 +796,7 @@ final class FleetStore: ObservableObject {
     /// and arms the per-host staleness watchdog.
     func connect(client: CorraldClient) {
         guard streamTask == nil else { return }
+        guard !(awaitingHostVerification && verificationWindowClosed) else { return }
         connectionState = .connecting
         connectionGeneration += 1
         lastConnectionErrorReason = nil
@@ -597,48 +818,41 @@ final class FleetStore: ObservableObject {
         }
         cursorBox.write(rev: lastEventId, epoch: lastEventEpoch)
         let generation = connectionGeneration
+        let inbox = VerifiedStreamInbox(ready: !awaitingHostVerification,
+                                        policy: verificationBufferPolicy)
+        streamInbox = inbox
+        if awaitingHostVerification {
+            let lifetime = verificationBufferPolicy.lifetime
+            verificationExpiryTask = Task { @MainActor [weak self] in
+                do { try await Task.sleep(for: .seconds(lifetime)) } catch { return }
+                self?.expireVerificationBuffer(generation: generation)
+            }
+        }
         // CorraldClient.stream() is a nonisolated async operation on a
         // Sendable value, so its URLSession transport, retry loop, and
         // callbacks are not MainActor-isolated. The store state transitions
         // below still return to MainActor explicitly.
         let cursorBox = self.cursorBox
-        streamTask = Task { [weak self, cursorBox] in
+        let timing = reconnectTiming
+        let heartbeat = self.heartbeat
+        streamTask = Task { [weak self, cursorBox, inbox, timing] in
             await client.stream(lastEventId: {
                 cursorBox.read()
             }, onEvent: { [weak self] frame in
-                // The stream callback can race disconnect/demo after the
-                // frame has been decoded. Pass the connection identity into
-                // the main-actor hop so a late frame cannot overwrite the
-                // replacement fleet.
-                self?.ingest(frame, generation: generation)
-            }, onConnected: { [weak self] in
-                // The stream callback runs off the main actor; hop once.
-                // F3: guard the hop — it must not land after disconnect()
-                // (or on a newer connection) and flip the state back.
-                Task { @MainActor in
-                    guard let self, self.streamTask != nil,
-                          self.connectionGeneration == generation else { return }
-                    self.noteConnected()
-                }
+                timing.mark(.frameReceived)
+                let size = frame.data.utf8.count
+                // A single oversized frame is refused before JSON decoding.
+                let outcome: CorraldClient.DecodeOutcome = size > 1_048_576
+                    ? .ignored : CorraldClient.decode(frame)
+                self?.receive(.frame(outcome, size), inbox: inbox, generation: generation)
+            }, onConnected: { [weak self, heartbeat] in
+                timing.mark(.sse200)
+                heartbeat.mark()
+                self?.receive(.connected, inbox: inbox, generation: generation)
             }, onConnectionError: { [weak self] reason in
-                // The stream callback runs off the main actor; hop once.
-                // F3: guard the hop — it must not land after disconnect()
-                // (or on a newer connection) and re-raise .error + banner.
-                Task { @MainActor in
-                    guard let self, self.streamTask != nil,
-                          self.connectionGeneration == generation else { return }
-                    self.noteConnectionError(reason)
-                }
+                self?.receive(.error(reason), inbox: inbox, generation: generation)
             }, onStreamEnded: { [weak self] in
-                // #425: a clean server EOF ends the live posture NOW (the
-                // backoff wait before the retry is not a live connection).
-                // Same generation guard as the other hops, so a late report
-                // from an obsolete stream can never revive it.
-                Task { @MainActor in
-                    guard let self, self.streamTask != nil,
-                          self.connectionGeneration == generation else { return }
-                    self.noteStreamEnded()
-                }
+                self?.receive(.ended, inbox: inbox, generation: generation)
             }, onActivity: { [heartbeat] in
                 // #425: received bytes — comment keep-alives included — are
                 // THE liveness signal the watchdog measures. Runs off the
@@ -655,7 +869,8 @@ final class FleetStore: ObservableObject {
             // disconnect that already nil-ed the handle) is never
             // disturbed by this late cleanup.
             Task { @MainActor [weak self] in
-                guard let self, self.connectionGeneration == generation else { return }
+                guard let self, self.connectionGeneration == generation,
+                      self.streamInbox === inbox else { return }
                 self.streamTask = nil
                 if self.connectionState != .disconnected {
                     self.connectionState = .disconnected
@@ -678,6 +893,7 @@ final class FleetStore: ObservableObject {
     /// Fire-and-forget: the pull indicator is governed by the caller's own
     /// awaits, never by the (re)connect.
     func reconnectIfNeeded(client: CorraldClient) {
+        guard !awaitingHostVerification else { return }
         if connectionState == .connected, !isTransportStale { return }
         // #425: a replacement that is still inside its own freshness window
         // is already the one recovery attempt for this stale episode — do
@@ -783,9 +999,11 @@ final class FleetStore: ObservableObject {
     /// watchdog's clock) and it settles any in-flight replacement, so a
     /// later pull sees a healthy stream and stays snapshot-only.
     func noteConnected() {
+        guard !awaitingHostVerification else { return }
         lastConnectionErrorReason = nil
         replacementInFlight = false
-        heartbeat.mark()
+        // A delayed verification must not fabricate a fresh transport byte.
+        if streamInbox == nil { heartbeat.mark() }
         connectionState = .connected
         onConnected?()
     }
@@ -819,19 +1037,15 @@ final class FleetStore: ObservableObject {
                 guard self.streamTask != nil,
                       self.connectionGeneration == generation else { return }
             }
-            switch outcome {
-            case .event(let event):
-                self.applyStreamFrame(event)
-            case .ignored:
-                break
-            case .failed(let reason):
-                // #79 defect 2: an undecodable/unrecognized frame used
-                // to vanish silently — the spinner spun forever with no
-                // diagnostic. Surface it; a later good frame's apply()
-                // returns the state to .connected (one torn frame is
-                // visible, not fatal to the stream).
-                self.noteDecodeFailure(reason)
-            }
+            self.applyDecoded(outcome)
+        }
+    }
+
+    private func applyDecoded(_ outcome: CorraldClient.DecodeOutcome) {
+        switch outcome {
+        case .event(let event): applyStreamFrame(event)
+        case .ignored: break
+        case .failed(let reason): noteDecodeFailure(reason)
         }
     }
 
@@ -855,6 +1069,10 @@ final class FleetStore: ObservableObject {
     /// obsolete state.
     @discardableResult
     func disconnect() -> Task<Void, Never>? {
+        streamInbox?.close()
+        streamInbox = nil
+        verificationExpiryTask?.cancel()
+        verificationExpiryTask = nil
         let task = streamTask
         task?.cancel()
         streamTask = nil
@@ -868,6 +1086,8 @@ final class FleetStore: ObservableObject {
 
     func reset() {
         disconnect()
+        awaitingHostVerification = false
+        verificationWindowClosed = false
         agents = [:]
         tails = [:]
         tailPanes = [:]

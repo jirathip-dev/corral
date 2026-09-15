@@ -822,6 +822,33 @@ private struct ConnectionDetailList: View {
 
 // MARK: - Fleet board (home)
 
+/// #547: telemetry only. Appearance/disappearance comes from the actual
+/// SwiftUI row lifecycle; an applied revision is observed only while mounted.
+/// This marks SwiftUI visibility/update, not GPU scan-out or model publication.
+struct ReconnectRowVisibility: ViewModifier {
+    let model: AppModel
+    let agentID: String
+    let revision: UInt64?
+    let hostProfileID: UUID?
+    @State private var appeared = false
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear {
+                appeared = true
+                model.noteRowVisible(agentID: agentID, revision: revision,
+                                     hostProfileID: hostProfileID)
+            }
+            .onDisappear { appeared = false }
+            .onChange(of: revision) { _, value in
+                if appeared {
+                    model.noteRowVisible(agentID: agentID, revision: value,
+                                         hostProfileID: hostProfileID)
+                }
+            }
+    }
+}
+
 struct FleetView: View {
     @ObservedObject var model: AppModel
     @EnvironmentObject private var theme: ThemeStore
@@ -1520,6 +1547,9 @@ struct FleetView: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(rowSummary(agent))
         .accessibilityHint("Double tap to open recent output")
+        .modifier(ReconnectRowVisibility(model: model, agentID: agent.agentId,
+                                         revision: model.fleet.lastEventId,
+                                         hostProfileID: nil))
     }
 
     /// #401 D5/D6/C6/C7 multi-host board renderer: status sections first,
@@ -1672,6 +1702,9 @@ struct FleetView: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(hostRowSummary(row, hostName: hostName))
         .accessibilityHint("Double tap to open recent output")
+        .modifier(ReconnectRowVisibility(model: model, agentID: row.agent.agentId,
+                                         revision: model.rowRevision(hostProfileID: row.identity.hostProfileID),
+                                         hostProfileID: row.identity.hostProfileID))
     }
 
     /// The display name of a row's owning host (D6 badge text). Rows always

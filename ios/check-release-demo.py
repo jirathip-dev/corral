@@ -546,6 +546,7 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # canonical algorithm; membership check still 40/40. The #548 branch carried
     # its own branch-local literal (6d553d20…) and this merge is where the single
     # merged value is re-derived.
+    # 2026-09-15 #545: recomputed unchanged; feasibility retains immediate disconnect.
     "d8997fa8b255ffdf4f2042179517bb0d84dec9ddd083276be2e2150c513e247e"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
@@ -774,7 +775,8 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # = dc04b35b…); recomputed as the plain sha256 of the merged
     # FleetNotifierTests.swift over THIS merged working tree.
     # 2026-09-15 #547: parallel verified reconnect, bounded ingress and row timing.
-    "f8e9b422d92286d58065a6900c7907b635900ba5b7c6b90b923bef9f43eec034"
+    # 2026-09-15 #545: foreground/background finite-snapshot feasibility characterization.
+    "2d1cfded2067fa9022e1b77afd0e28e66919f5e09c47e0a2a74d4ac7285f7498"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

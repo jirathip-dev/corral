@@ -14883,6 +14883,56 @@ final class ForegroundReconnectTests: XCTestCase {
         XCTAssertEqual(f.model.fleet.lastEventId, 5)
     }
 
+    /// #545 feasibility: the useful finite candidate is a pull snapshot, not
+    /// the endless SSE/preflight owners. A response can finish after background,
+    /// but the production trust boundary correctly denies apply/reconnect then.
+    /// Keeping that request alive alone cannot improve the retained board.
+    func testFiniteSnapshotCompletionAcrossBackgroundHasNoRetainedBoardBenefit() async throws {
+        var f = try await fixture(frames: 0)
+        let gate = DriveRequestGate()
+        defer { gate.cancel(); f.finish() }
+        f.start()
+        f.gates[0].release()
+        await wait { f.model.keyContinuityState == .verified && f.model.fleet.connectionState == .connected }
+        let snapshotURL = f.urls[0].appendingPathComponent("snapshot")
+        let foreground = try frame("snapshot", rev: 8, epoch: epoch)
+        f.script[snapshotURL] = .init(body: Data(foreground.data.utf8))
+        ForegroundReconnectURLProtocol.configure(f.script, reset: false)
+
+        // Positive control: the identical finite path is useful while verified.
+        await f.model.refreshFleet()
+        XCTAssertEqual(f.count("snapshot"), 1)
+        XCTAssertEqual(f.model.fleet.lastEventId, 8)
+        XCTAssertEqual(f.model.fleet.agent("retained")?.title, "revision 8")
+        XCTAssertEqual(f.count("events"), 1)
+
+        let late = try frame("snapshot", rev: 9, epoch: epoch)
+        f.script[snapshotURL] = .init(body: Data(late.data.utf8), gate: gate)
+        ForegroundReconnectURLProtocol.configure(f.script, reset: false)
+        let refresh = Task { await f.model.refreshFleet() }
+        await wait { f.count("snapshot") == 2 }
+        XCTAssertTrue(f.model.isRefreshingFleet, "the finite request already reached the transport")
+        f.model.handleScenePhaseChange(.background)
+        XCTAssertFalse(f.model.fleet.isStreaming)
+        XCTAssertEqual(f.model.keyContinuityState, .pending)
+        XCTAssertEqual(f.profileStore.cursor(for: f.profiles[0].id), 8)
+        XCTAssertEqual(f.profileStore.cursorEpoch(for: f.profiles[0].id), epoch)
+
+        gate.release()
+        await refresh.value
+        XCTAssertFalse(f.model.isRefreshingFleet)
+        XCTAssertEqual(f.model.fleet.lastEventId, 8, "background completion cannot apply past the re-armed key gate")
+        XCTAssertEqual(f.model.fleet.agent("retained")?.title, "revision 8")
+        XCTAssertEqual(f.model.fleet.lastEventEpoch, epoch)
+        XCTAssertEqual(f.profileStore.cursor(for: f.profiles[0].id), 8)
+        XCTAssertFalse(f.model.fleet.isStreaming, "finite completion must not create an unbounded stream")
+        XCTAssertEqual(f.model.fleet.connectionState, .disconnected)
+        XCTAssertEqual(f.model.keyContinuityState, .pending)
+        XCTAssertEqual(f.count("events"), 1)
+        XCTAssertEqual(f.count("host-key"), 1)
+        XCTAssertEqual(f.count("snapshot"), 2)
+    }
+
     func testBackgroundRaceCancelsKeyAndStreamAndRechecksOnReturn() async throws {
         var f = try await fixture()
         defer { f.finish() }

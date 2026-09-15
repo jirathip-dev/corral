@@ -8709,6 +8709,9 @@ final class RecentsCompositeRouteTests: XCTestCase {
 
     private func seed(model: AppModel, profileA: HostProfile, profileB: HostProfile,
                       seedAgentInB: Bool) async {
+        // #547: seed trusted fixture data only after both key checks finish.
+        await waitUntil(model.keyContinuityState == .verified)
+        await waitUntil(model.coordinator?.allowsLiveWork(profileID: profileB.id) == true)
         // Active host A holds the equal raw id too.
         model.fleet.apply(.snapshot(Snapshot(schemaVersion: 5, rev: 5, generatedAt: 0,
                                              agents: ["herdr:dup": agent("herdr:dup",
@@ -11821,6 +11824,8 @@ final class PerHostGrantsRefreshTests: XCTestCase {
     /// Wait until BOTH hosts are live (ACTIVE verified, B verified and
     /// streaming) and seed the equal raw agent id into both stores.
     private func seed(model: AppModel, profileA: HostProfile, profileB: HostProfile) async {
+        // #547: the active-host fixture also waits for verification before apply.
+        await waitUntil(model.keyContinuityState == .verified)
         model.fleet.apply(.snapshot(Snapshot(schemaVersion: 5, rev: 5, generatedAt: 0,
                                              agents: ["herdr:dup": agent("herdr:dup",
                                                                          state: .working,
@@ -13406,6 +13411,7 @@ final class NetworkPathHintTests: XCTestCase {
         // released 200 carries no valid key body, so verification fails and
         // the ladder moves to its (30 s) wait.
         PathHintURLProtocol.script([.releaseJSON], for: hostKey)
+        PathHintURLProtocol.script([.sseComments(TimeInterval(0.2))], for: wedgedEvents)
 
         fixture.model.startLive()
         let verifying = await waitFor {
@@ -13419,8 +13425,12 @@ final class NetworkPathHintTests: XCTestCase {
         await settle(0.4)
         XCTAssertEqual(PathHintURLProtocol.requestCount(for: hostKey), 1,
                        "an in-flight preflight attempt must never be cancelled/restarted by a hint (#454)")
-        XCTAssertEqual(PathHintURLProtocol.requestCount(for: wedgedEvents), 0,
-                       "the unverified coordinator host must not open a stream (#454 AC4)")
+        XCTAssertEqual(PathHintURLProtocol.requestCount(for: wedgedEvents), 1,
+                       "#547: a path hint must not stack speculative streams")
+        XCTAssertEqual(fixture.model.coordinator?.store(profileID: fixture.profiles[1].id)?.agents.count, 0)
+        XCTAssertNil(fixture.model.coordinator?.store(profileID: fixture.profiles[1].id)?.lastEventId)
+        XCTAssertNotEqual(fixture.model.coordinator?.store(profileID: fixture.profiles[1].id)?.connectionState, .connected)
+        XCTAssertEqual(fixture.model.coordinator?.allowsLiveWork(profileID: fixture.profiles[1].id), false)
 
         // Let the attempt complete and fail: the ladder is WAITING now.
         PathHintURLProtocol.releaseHeld()
@@ -13432,8 +13442,12 @@ final class NetworkPathHintTests: XCTestCase {
                                      timeout: 1.5)
         XCTAssertTrue(redriven,
                       "a waiting coordinator preflight ladder must be re-driven exactly once (#454 AC4)")
-        XCTAssertEqual(PathHintURLProtocol.requestCount(for: wedgedEvents), 0,
-                       "the trust gate must never be bypassed by a hint (#454 AC4)")
+        XCTAssertEqual(PathHintURLProtocol.requestCount(for: wedgedEvents), 1,
+                       "#547: a path hint must not stack speculative streams")
+        XCTAssertEqual(fixture.model.coordinator?.store(profileID: fixture.profiles[1].id)?.agents.count, 0)
+        XCTAssertNil(fixture.model.coordinator?.store(profileID: fixture.profiles[1].id)?.lastEventId)
+        XCTAssertNotEqual(fixture.model.coordinator?.store(profileID: fixture.profiles[1].id)?.connectionState, .connected)
+        XCTAssertEqual(fixture.model.coordinator?.allowsLiveWork(profileID: fixture.profiles[1].id), false)
         await settle(0.5)
         XCTAssertEqual(PathHintURLProtocol.requestCount(for: hostKey), 2,
                        "no restart loop: one re-drive for the waiting ladder (#454)")

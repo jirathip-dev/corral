@@ -152,5 +152,40 @@
     "old": "        XCTAssertEqual(requestCount(eventsA), 0,\n                       \"returning to active must never bypass the trust check (#453)\")",
     "new": "        XCTAssertEqual(requestCount(eventsA), eventsAtMismatch,\n                       \"returning to active must never reopen after mismatch (#453)\")",
     "why": "Parallel transport replaces serial waiting; verification, no application/no Live, and single ownership remain mandatory."
+  },
+  {
+    "file": "ios/FleetNotifierTests/FleetNotifierTests.swift",
+    "base_line": 13408,
+    "old_assertion": "        PathHintURLProtocol.script([.releaseJSON], for: hostKey)\n\n        fixture.model.startLive()",
+    "new_assertion": "        PathHintURLProtocol.script([.releaseJSON], for: hostKey)\n        PathHintURLProtocol.script([.sseComments(TimeInterval(0.2))], for: wedgedEvents)\n\n        fixture.model.startLive()",
+    "why": "Provide an open speculative transport instead of an unscripted failure; retain both exact preflight cadence assertions."
+  },
+  {
+    "file": "ios/FleetNotifierTests/FleetNotifierTests.swift",
+    "base_line": 13422,
+    "old_assertion": "        XCTAssertEqual(PathHintURLProtocol.requestCount(for: wedgedEvents), 0,\n                       \"the unverified coordinator host must not open a stream (#454 AC4)\")",
+    "new_assertion": "        XCTAssertEqual(PathHintURLProtocol.requestCount(for: wedgedEvents), 1,\n                       \"#547: a path hint must not stack speculative streams\")\n        XCTAssertEqual(fixture.model.coordinator?.store(profileID: fixture.profiles[1].id)?.agents.count, 0)\n        XCTAssertNil(fixture.model.coordinator?.store(profileID: fixture.profiles[1].id)?.lastEventId)\n        XCTAssertNotEqual(fixture.model.coordinator?.store(profileID: fixture.profiles[1].id)?.connectionState, .connected)\n        XCTAssertEqual(fixture.model.coordinator?.allowsLiveWork(profileID: fixture.profiles[1].id), false)",
+    "why": "Superseded zero-request assertion; now exactly one stream both before/after path hint, no application/cursor/Live, unchanged key retry counts."
+  },
+  {
+    "file": "ios/FleetNotifierTests/FleetNotifierTests.swift",
+    "base_line": 13435,
+    "old_assertion": "        XCTAssertEqual(PathHintURLProtocol.requestCount(for: wedgedEvents), 0,\n                       \"the trust gate must never be bypassed by a hint (#454 AC4)\")",
+    "new_assertion": "        XCTAssertEqual(PathHintURLProtocol.requestCount(for: wedgedEvents), 1,\n                       \"#547: a path hint must not stack speculative streams\")\n        XCTAssertEqual(fixture.model.coordinator?.store(profileID: fixture.profiles[1].id)?.agents.count, 0)\n        XCTAssertNil(fixture.model.coordinator?.store(profileID: fixture.profiles[1].id)?.lastEventId)\n        XCTAssertNotEqual(fixture.model.coordinator?.store(profileID: fixture.profiles[1].id)?.connectionState, .connected)\n        XCTAssertEqual(fixture.model.coordinator?.allowsLiveWork(profileID: fixture.profiles[1].id), false)",
+    "why": "Superseded zero-request assertion; now exactly one stream both before/after path hint, no application/cursor/Live, unchanged key retry counts."
+  },
+  {
+    "file": "ios/FleetNotifierTests/FleetNotifierTests.swift",
+    "base_line": 8712,
+    "old_assertion": "        // Active host A holds the equal raw id too.\n        model.fleet.apply",
+    "new_assertion": "        // #547: seed trusted fixture data only after both key checks finish.\n        await waitUntil(model.keyContinuityState == .verified)\n        await waitUntil(model.coordinator?.allowsLiveWork(profileID: profileB.id) == true)\n        // Active host A holds the equal raw id too.\n        model.fleet.apply",
+    "why": "Fixture ordering only: pre-verification application is now deliberately refused; preserve every read_tail authorization, host routing and missing-target assertion unchanged."
+  },
+  {
+    "file": "ios/FleetNotifierTests/FleetNotifierTests.swift",
+    "base_line": 11823,
+    "old_assertion": "    private func seed(model: AppModel, profileA: HostProfile, profileB: HostProfile) async {\n        model.fleet.apply",
+    "new_assertion": "    private func seed(model: AppModel, profileA: HostProfile, profileB: HostProfile) async {\n        // #547: the active-host fixture also waits for verification before apply.\n        await waitUntil(model.keyContinuityState == .verified)\n        model.fleet.apply",
+    "why": "Fixture ordering only, all grant and drive authorization assertions unchanged. Generic apply remains fail-closed before key verification."
   }
 ]

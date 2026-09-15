@@ -768,7 +768,7 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # = dc04b35b…); recomputed as the plain sha256 of the merged
     # FleetNotifierTests.swift over THIS merged working tree.
     # 2026-09-15 #547: parallel verified reconnect, bounded ingress and row timing.
-    "5568058766f44e54cf9bbe5e59645c6202d8af6dff9186f68e940d06fd073426"
+    "f8e9b422d92286d58065a6900c7907b635900ba5b7c6b90b923bef9f43eec034"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

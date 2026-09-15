@@ -1,0 +1,1036 @@
+{
+  "head": "8b8e2fe6d80d32cf6eadbcab25d702e4a8c52ad0",
+  "scratch": "/tmp/g546-r2-scratch",
+  "results": [
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests",
+      "log": "/tmp/g546-r2-probe-initial_green.log",
+      "exit": 0,
+      "timed_out": false,
+      "seconds": 40.48,
+      "name": "INITIAL_GREEN",
+      "log_sha256": "7191d583848a356b3455dfa5567f3bea930a7e13c8665a5d9dcaaf6a06a2d792",
+      "summary": "Executed 26 tests, with 0 failures (0 unexpected) in 0.476 (0.482) seconds",
+      "failure_diagnostics": []
+    },
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests/testOffByDefaultAndIndependentOfVisiblePreference",
+      "log": "/tmp/g546-r2-probe-M01-opt-out.log",
+      "exit": 65,
+      "timed_out": false,
+      "seconds": 32.92,
+      "name": "M01-opt-out",
+      "file": "ios/FleetNotifier/App/AppModel.swift",
+      "replacements": [
+        [
+          "guard backgroundRefreshEnabled, backgroundAllowed(), mode == .live,",
+          "guard backgroundAllowed(), mode == .live,"
+        ],
+        [
+          "!request.finished && self.backgroundRefreshEnabled && self.backgroundAllowed()",
+          "!request.finished && self.backgroundAllowed()"
+        ]
+      ],
+      "test": "testOffByDefaultAndIndependentOfVisiblePreference",
+      "assertion_red": true,
+      "observed_green": false,
+      "expected": "assertion RED",
+      "masking": null,
+      "matched": true,
+      "before_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "after_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "log_sha256": "2e93907e741d052489920100afbf6e51f1b405e422c3de9f690e4ae17c00c255",
+      "summary": "Executed 1 test, with 3 failures (0 unexpected) in 0.120 (0.122) seconds",
+      "failure_diagnostics": [
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15177: error: -[FleetNotifierTests.BackgroundHintTests testOffByDefaultAndIndependentOfVisiblePreference] : XCTAssertEqual failed: (\"[]\") is not equal to (\"[__C.UIBackgroundFetchResult]\")",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15179: error: -[FleetNotifierTests.BackgroundHintTests testOffByDefaultAndIndependentOfVisiblePreference] : XCTAssertNil failed: \"79 bytes\"",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15184: error: -[FleetNotifierTests.BackgroundHintTests testOffByDefaultAndIndependentOfVisiblePreference] : XCTAssertEqual failed: (\"[__C.UIBackgroundFetchResult]\") is not equal to (\"[__C.UIBackgroundFetchResult]\")"
+      ]
+    },
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests/testUnknownRemovedUnenrolledAndTrustDeniedDoNotFetch",
+      "log": "/tmp/g546-r2-probe-M02-unknown-host.log",
+      "exit": 65,
+      "timed_out": false,
+      "seconds": 31.06,
+      "name": "M02-unknown-host",
+      "file": "ios/FleetNotifier/App/AppModel.swift",
+      "replacements": [
+        [
+          "orderedProfiles.first(where: { $0.hostKeyB64 == hint.hostID })",
+          "orderedProfiles.first"
+        ]
+      ],
+      "test": "testUnknownRemovedUnenrolledAndTrustDeniedDoNotFetch",
+      "assertion_red": true,
+      "observed_green": false,
+      "expected": "assertion RED",
+      "masking": null,
+      "matched": true,
+      "before_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "after_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "log_sha256": "292b55dfc9c1c9b1f43a6011eec4a73e770fad4664434b8ec5390094fb88b738",
+      "summary": "Executed 1 test, with 2 failures (0 unexpected) in 0.050 (0.051) seconds",
+      "failure_diagnostics": [
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15194: error: -[FleetNotifierTests.BackgroundHintTests testUnknownRemovedUnenrolledAndTrustDeniedDoNotFetch] : XCTAssertEqual failed: (\"[]\") is not equal to (\"[__C.UIBackgroundFetchResult]\")",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15202: error: -[FleetNotifierTests.BackgroundHintTests testUnknownRemovedUnenrolledAndTrustDeniedDoNotFetch] : XCTAssertNil failed: \"79 bytes\""
+      ]
+    },
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests/testUnknownRemovedUnenrolledAndTrustDeniedDoNotFetch",
+      "log": "/tmp/g546-r2-probe-M03-local-trust.log",
+      "exit": 65,
+      "timed_out": false,
+      "seconds": 33.97,
+      "name": "M03-local-trust",
+      "file": "ios/FleetNotifier/App/AppModel.swift",
+      "replacements": [
+        [
+          "profile.mayConnect, let key = profile.keyId, !key.isEmpty, signer != nil,",
+          "let key = profile.keyId, !key.isEmpty, signer != nil,"
+        ]
+      ],
+      "test": "testUnknownRemovedUnenrolledAndTrustDeniedDoNotFetch",
+      "assertion_red": true,
+      "observed_green": false,
+      "expected": "assertion RED",
+      "masking": null,
+      "matched": true,
+      "before_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "after_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "log_sha256": "24d1f0f9b3630ac3bc56be9273c09daf48ecce05f450ad66ffd85eb78e2b0639",
+      "summary": "Executed 1 test, with 2 failures (0 unexpected) in 0.050 (0.051) seconds",
+      "failure_diagnostics": [
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15196: error: -[FleetNotifierTests.BackgroundHintTests testUnknownRemovedUnenrolledAndTrustDeniedDoNotFetch] : XCTAssertEqual failed: (\"[]\") is not equal to (\"[__C.UIBackgroundFetchResult]\")",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15202: error: -[FleetNotifierTests.BackgroundHintTests testUnknownRemovedUnenrolledAndTrustDeniedDoNotFetch] : XCTAssertNil failed: \"79 bytes\""
+      ]
+    },
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests/testUnenrolledHostHasNoFetchOrPersistence",
+      "log": "/tmp/g546-r2-probe-M04-enrollment.log",
+      "exit": 65,
+      "timed_out": false,
+      "seconds": 60.46,
+      "name": "M04-enrollment",
+      "file": "ios/FleetNotifier/App/AppModel.swift",
+      "replacements": [
+        [
+          "profile.mayConnect, let key = profile.keyId, !key.isEmpty, signer != nil,",
+          "profile.mayConnect, signer != nil,"
+        ]
+      ],
+      "test": "testUnenrolledHostHasNoFetchOrPersistence",
+      "assertion_red": true,
+      "observed_green": false,
+      "expected": "assertion RED",
+      "masking": null,
+      "matched": true,
+      "before_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "after_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "log_sha256": "e1cc663af32e60f1adc7987bfa9d780dfa0ab1eb15fa44a142f0a97b8568805d",
+      "summary": "Executed 1 test, with 2 failures (0 unexpected) in 0.051 (0.053) seconds",
+      "failure_diagnostics": [
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15210: error: -[FleetNotifierTests.BackgroundHintTests testUnenrolledHostHasNoFetchOrPersistence] : XCTAssertEqual failed: (\"[]\") is not equal to (\"[__C.UIBackgroundFetchResult]\")",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15212: error: -[FleetNotifierTests.BackgroundHintTests testUnenrolledHostHasNoFetchOrPersistence] : XCTAssertNil failed: \"79 bytes\""
+      ]
+    },
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests/testFreshKeyMismatchStopsBeforeSnapshot",
+      "log": "/tmp/g546-r2-probe-M05-fresh-pin.log",
+      "exit": 65,
+      "timed_out": false,
+      "seconds": 48.38,
+      "name": "M05-fresh-pin",
+      "file": "ios/FleetNotifier/App/AppModel.swift",
+      "replacements": [
+        [
+          "HostKeyTrust.matches(keyResponse, pinnedKeyB64: hint.hostID)",
+          "true"
+        ]
+      ],
+      "test": "testFreshKeyMismatchStopsBeforeSnapshot",
+      "assertion_red": true,
+      "observed_green": false,
+      "expected": "assertion RED",
+      "masking": null,
+      "matched": true,
+      "before_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "after_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "log_sha256": "c027e64076de5cb7c43a6e3bf38ffeab28eb4d4278842ff98370a437068770d2",
+      "summary": "Executed 1 test, with 3 failures (0 unexpected) in 0.056 (0.057) seconds",
+      "failure_diagnostics": [
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15247: error: -[FleetNotifierTests.BackgroundHintTests testFreshKeyMismatchStopsBeforeSnapshot] : XCTAssertEqual failed: (\"[__C.UIBackgroundFetchResult]\") is not equal to (\"[__C.UIBackgroundFetchResult]\")",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15248: error: -[FleetNotifierTests.BackgroundHintTests testFreshKeyMismatchStopsBeforeSnapshot] : XCTAssertEqual failed: (\"[Optional(\"/host-key\"), Optional(\"/snapshot\")]\") is not equal to (\"[Optional(\"/host-key\")]\")",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15250: error: -[FleetNotifierTests.BackgroundHintTests testFreshKeyMismatchStopsBeforeSnapshot] : XCTAssertNil failed: \"[FleetNotifier.BoardCacheRow(compositeIdentity: \"B4329721-C56A-4606-9192-353CC22BAD91::row\", hostProfileID: B4329721-C56A-4606-9192-353CC22BAD91, agentID: \"row\", state: \"working\", ts: 1, stateEnteredAt: 1, displayName: nil, title: Optional(\"Allowed board title\"), reason: nil, tool: Optional(\"claude\"), paneReference: nil, repo: nil, branch: nil, basename: nil, lastSeen: 10000000)]\""
+      ]
+    },
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests/testClosedSchemaRejectsMalformedAndAllExtraContent",
+      "log": "/tmp/g546-r2-probe-M06-closed-top-level.log",
+      "exit": 65,
+      "timed_out": false,
+      "seconds": 30.02,
+      "name": "M06-closed-top-level",
+      "file": "ios/FleetNotifier/Notifications/AppDelegate.swift",
+      "replacements": [
+        [
+          "Set(info.keys) == Set([\"v\", \"type\", \"host_id\", \"aps\"])",
+          "true"
+        ]
+      ],
+      "test": "testClosedSchemaRejectsMalformedAndAllExtraContent",
+      "assertion_red": true,
+      "observed_green": false,
+      "expected": "assertion RED",
+      "masking": null,
+      "matched": true,
+      "before_sha256": "da8db4befa10782b15d30b6635a50bc0086e4c2a0cfa7826605f02901b033244",
+      "after_sha256": "da8db4befa10782b15d30b6635a50bc0086e4c2a0cfa7826605f02901b033244",
+      "log_sha256": "9623ddd7d44567d4ba44e4d2e633777adbcaad6658b28a616d873bf1b484fe73",
+      "summary": "Executed 1 test, with 3 failures (0 unexpected) in 0.048 (0.050) seconds",
+      "failure_diagnostics": [
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15277: error: -[FleetNotifierTests.BackgroundHintTests testClosedSchemaRejectsMalformedAndAllExtraContent] : XCTAssertEqual failed: (\"[]\") is not equal to (\"[__C.UIBackgroundFetchResult]\") - closed hint schema must refuse extra content",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15280: error: -[FleetNotifierTests.BackgroundHintTests testClosedSchemaRejectsMalformedAndAllExtraContent] : XCTAssertNil failed: \"79 bytes\"",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15281: error: -[FleetNotifierTests.BackgroundHintTests testClosedSchemaRejectsMalformedAndAllExtraContent] : XCTAssertEqual failed: (\"1\") is not equal to (\"0\")"
+      ]
+    },
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests/testClosedSchemaRejectsMalformedAndAllExtraContent",
+      "log": "/tmp/g546-r2-probe-M07-closed-aps.log",
+      "exit": 65,
+      "timed_out": false,
+      "seconds": 25.45,
+      "name": "M07-closed-aps",
+      "file": "ios/FleetNotifier/Notifications/AppDelegate.swift",
+      "replacements": [
+        [
+          "Set(aps.keys) == Set([\"content-available\"])",
+          "true"
+        ]
+      ],
+      "test": "testClosedSchemaRejectsMalformedAndAllExtraContent",
+      "assertion_red": true,
+      "observed_green": false,
+      "expected": "assertion RED",
+      "masking": null,
+      "matched": true,
+      "before_sha256": "da8db4befa10782b15d30b6635a50bc0086e4c2a0cfa7826605f02901b033244",
+      "after_sha256": "da8db4befa10782b15d30b6635a50bc0086e4c2a0cfa7826605f02901b033244",
+      "log_sha256": "841a723ded0adeee86c6994218db4ac566f0de8412d0e32c3bf58a9190be4a6a",
+      "summary": "Executed 1 test, with 3 failures (0 unexpected) in 0.056 (0.057) seconds",
+      "failure_diagnostics": [
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15277: error: -[FleetNotifierTests.BackgroundHintTests testClosedSchemaRejectsMalformedAndAllExtraContent] : XCTAssertEqual failed: (\"[]\") is not equal to (\"[__C.UIBackgroundFetchResult]\") - closed hint schema must refuse extra content",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15280: error: -[FleetNotifierTests.BackgroundHintTests testClosedSchemaRejectsMalformedAndAllExtraContent] : XCTAssertNil failed: \"79 bytes\"",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15281: error: -[FleetNotifierTests.BackgroundHintTests testClosedSchemaRejectsMalformedAndAllExtraContent] : XCTAssertEqual failed: (\"1\") is not equal to (\"0\")"
+      ]
+    },
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests/testClosedSchemaRejectsMalformedAndAllExtraContent",
+      "log": "/tmp/g546-r2-probe-M08-numeric-schema.log",
+      "exit": 65,
+      "timed_out": false,
+      "seconds": 24.74,
+      "name": "M08-numeric-schema",
+      "file": "ios/FleetNotifier/Notifications/AppDelegate.swift",
+      "replacements": [
+        [
+          "return number == 1",
+          "return true"
+        ]
+      ],
+      "test": "testClosedSchemaRejectsMalformedAndAllExtraContent",
+      "assertion_red": true,
+      "observed_green": false,
+      "expected": "assertion RED",
+      "masking": null,
+      "matched": true,
+      "before_sha256": "da8db4befa10782b15d30b6635a50bc0086e4c2a0cfa7826605f02901b033244",
+      "after_sha256": "da8db4befa10782b15d30b6635a50bc0086e4c2a0cfa7826605f02901b033244",
+      "log_sha256": "48f0e7b43bf27593afb145c5d92838efe4273a9684013a861c4e65a21c150e0c",
+      "summary": "Executed 1 test, with 3 failures (0 unexpected) in 0.051 (0.053) seconds",
+      "failure_diagnostics": [
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15277: error: -[FleetNotifierTests.BackgroundHintTests testClosedSchemaRejectsMalformedAndAllExtraContent] : XCTAssertEqual failed: (\"[]\") is not equal to (\"[__C.UIBackgroundFetchResult]\") - closed hint schema must refuse extra content",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15280: error: -[FleetNotifierTests.BackgroundHintTests testClosedSchemaRejectsMalformedAndAllExtraContent] : XCTAssertNil failed: \"79 bytes\"",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15281: error: -[FleetNotifierTests.BackgroundHintTests testClosedSchemaRejectsMalformedAndAllExtraContent] : XCTAssertEqual failed: (\"1\") is not equal to (\"0\")"
+      ]
+    },
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests/testHostThirtyMinuteCeilingAndDeviceHourlyCeiling",
+      "log": "/tmp/g546-r2-probe-M09-host-ceiling.log",
+      "exit": 65,
+      "timed_out": false,
+      "seconds": 29.85,
+      "name": "M09-host-ceiling",
+      "file": "ios/FleetNotifier/App/AppModel.swift",
+      "replacements": [
+        [
+          "backgroundNow() - $0.attemptedAt < 1800",
+          "backgroundNow() - $0.attemptedAt < 0"
+        ]
+      ],
+      "test": "testHostThirtyMinuteCeilingAndDeviceHourlyCeiling",
+      "assertion_red": true,
+      "observed_green": false,
+      "expected": "assertion RED",
+      "masking": null,
+      "matched": true,
+      "before_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "after_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "log_sha256": "5f9e2302d888b978e025b8649fd5c6cb366ea6acc4ec66b01b3ab7a8399e1bcf",
+      "summary": "Executed 1 test, with 4 failures (0 unexpected) in 0.092 (0.094) seconds",
+      "failure_diagnostics": [
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15340: error: -[FleetNotifierTests.BackgroundHintTests testHostThirtyMinuteCeilingAndDeviceHourlyCeiling] : XCTAssertEqual failed: (\"[]\") is not equal to (\"[__C.UIBackgroundFetchResult]\") - host ceiling must refuse before thirty minutes",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15345: error: -[FleetNotifierTests.BackgroundHintTests testHostThirtyMinuteCeilingAndDeviceHourlyCeiling] : XCTAssertEqual failed: (\"[__C.UIBackgroundFetchResult]\") is not equal to (\"[__C.UIBackgroundFetchResult]\")",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15346: error: -[FleetNotifierTests.BackgroundHintTests testHostThirtyMinuteCeilingAndDeviceHourlyCeiling] : XCTAssertEqual failed: (\"0\") is not equal to (\"2\")",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15354: error: -[FleetNotifierTests.BackgroundHintTests testHostThirtyMinuteCeilingAndDeviceHourlyCeiling] : XCTAssertEqual failed: (\"[Optional(\"hint-1.example\"), Optional(\"hint-2.example\"), Optional(\"hint-2.example\")]\") is not equal to (\"[Optional(\"hint-2.example\"), Optional(\"hint-2.example\")]\")"
+      ]
+    },
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests/testHostThirtyMinuteCeilingAndDeviceHourlyCeiling",
+      "log": "/tmp/g546-r2-probe-M10-device-ceiling.log",
+      "exit": 65,
+      "timed_out": false,
+      "seconds": 26.32,
+      "name": "M10-device-ceiling",
+      "file": "ios/FleetNotifier/App/AppModel.swift",
+      "replacements": [
+        [
+          "attempts.count < 2,",
+          "attempts.count < 3,"
+        ]
+      ],
+      "test": "testHostThirtyMinuteCeilingAndDeviceHourlyCeiling",
+      "assertion_red": true,
+      "observed_green": false,
+      "expected": "assertion RED",
+      "masking": null,
+      "matched": true,
+      "before_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "after_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "log_sha256": "6c3705ba7495d8163695afcdc5017ccb99fa16e10b2730311c4dd2d3f0291b9e",
+      "summary": "Executed 1 test, with 4 failures (0 unexpected) in 0.095 (0.096) seconds",
+      "failure_diagnostics": [
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15348: error: -[FleetNotifierTests.BackgroundHintTests testHostThirtyMinuteCeilingAndDeviceHourlyCeiling] : XCTAssertEqual failed: (\"[]\") is not equal to (\"[__C.UIBackgroundFetchResult]\") - device ceiling must refuse a third attempt",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15353: error: -[FleetNotifierTests.BackgroundHintTests testHostThirtyMinuteCeilingAndDeviceHourlyCeiling] : XCTAssertEqual failed: (\"[__C.UIBackgroundFetchResult]\") is not equal to (\"[__C.UIBackgroundFetchResult]\")",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15354: error: -[FleetNotifierTests.BackgroundHintTests testHostThirtyMinuteCeilingAndDeviceHourlyCeiling] : XCTAssertEqual failed: (\"[]\") is not equal to (\"[Optional(\"hint-2.example\"), Optional(\"hint-2.example\")]\")",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15356: error: -[FleetNotifierTests.BackgroundHintTests testHostThirtyMinuteCeilingAndDeviceHourlyCeiling] : XCTAssertEqual failed: (\"nil\") is not equal to (\"Optional(5)\")"
+      ]
+    },
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests/testCoalescesInflightEvenAfterRateWindow",
+      "log": "/tmp/g546-r2-probe-M11-inflight.log",
+      "exit": 65,
+      "timed_out": false,
+      "seconds": 27.4,
+      "name": "M11-inflight",
+      "file": "ios/FleetNotifier/App/AppModel.swift",
+      "replacements": [
+        [
+          "              backgroundRefreshes[profile.id] == nil,\n",
+          ""
+        ]
+      ],
+      "test": "testCoalescesInflightEvenAfterRateWindow",
+      "assertion_red": true,
+      "observed_green": false,
+      "expected": "assertion RED",
+      "masking": null,
+      "matched": true,
+      "before_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "after_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "log_sha256": "ad161adc9d6ed3b5b356ff92f23149fb38ef15d3b2f352bc6177fe2e77ab361e",
+      "summary": "Executed 1 test, with 1 failure (0 unexpected) in 0.065 (0.067) seconds",
+      "failure_diagnostics": [
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15324: error: -[FleetNotifierTests.BackgroundHintTests testCoalescesInflightEvenAfterRateWindow] : XCTAssertEqual failed: (\"[]\") is not equal to (\"[__C.UIBackgroundFetchResult]\")"
+      ]
+    },
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests/testCompletionOwnerIsExactlyOnceAcrossTerminalPaths",
+      "log": "/tmp/g546-r2-probe-M12-exactly-once.log",
+      "exit": 65,
+      "timed_out": false,
+      "seconds": 30.9,
+      "name": "M12-exactly-once",
+      "file": "ios/FleetNotifier/Notifications/AppDelegate.swift",
+      "replacements": [
+        [
+          "        guard !finished else { return }\n",
+          ""
+        ]
+      ],
+      "test": "testCompletionOwnerIsExactlyOnceAcrossTerminalPaths",
+      "assertion_red": true,
+      "observed_green": false,
+      "expected": "assertion RED",
+      "masking": null,
+      "matched": true,
+      "before_sha256": "da8db4befa10782b15d30b6635a50bc0086e4c2a0cfa7826605f02901b033244",
+      "after_sha256": "da8db4befa10782b15d30b6635a50bc0086e4c2a0cfa7826605f02901b033244",
+      "log_sha256": "fb51ef6fac3ee7cd204a38a27c05b6437d8dbc8dd76bb84a7a478f95d7fc32eb",
+      "summary": "Executed 1 test, with 1 failure (0 unexpected) in 0.028 (0.030) seconds",
+      "failure_diagnostics": [
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15221: error: -[FleetNotifierTests.BackgroundHintTests testCompletionOwnerIsExactlyOnceAcrossTerminalPaths] : XCTAssertEqual failed: (\"[__C.UIBackgroundFetchResult, __C.UIBackgroundFetchResult, __C.UIBackgroundFetchResult]\") is not equal to (\"[__C.UIBackgroundFetchResult]\") - every terminal path shares the exactly-once guard"
+      ]
+    },
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests/testLocalDeadlineCompletesOnceWithoutHostResponseAndCancels",
+      "log": "/tmp/g546-r2-probe-M13-local-deadline.log",
+      "exit": 65,
+      "timed_out": false,
+      "seconds": 66.88,
+      "name": "M13-local-deadline",
+      "file": "ios/FleetNotifier/App/AppModel.swift",
+      "replacements": [
+        [
+          "do { try await sleep(remaining) } catch { return }\n            request.finish(.failed)",
+          "do { try await sleep(remaining) } catch { return }\n            return"
+        ]
+      ],
+      "test": "testLocalDeadlineCompletesOnceWithoutHostResponseAndCancels",
+      "assertion_red": true,
+      "observed_green": false,
+      "expected": "assertion RED",
+      "masking": null,
+      "matched": true,
+      "before_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "after_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "log_sha256": "e0f402e7ab5e3998f25826613a41f2b441b9c741577687781165c1004dcc4b76",
+      "summary": "Executed 1 test, with 2 failures (1 unexpected) in 3.092 (3.094) seconds",
+      "failure_diagnostics": [
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15391: error: -[FleetNotifierTests.BackgroundHintTests testLocalDeadlineCompletesOnceWithoutHostResponseAndCancels] : XCTAssertTrue failed - bounded handler observation timed out",
+        "<unknown>:0: error: -[FleetNotifierTests.BackgroundHintTests testLocalDeadlineCompletesOnceWithoutHostResponseAndCancels] : failed: caught error: \"Error Domain=NSURLErrorDomain Code=-999 \"cancelled\" UserInfo={NSErrorFailingURLStringKey=https://hint-1.example/host-key, NSErrorFailingURLKey=https://hint-1.example/host-key, _NSURLErrorRelatedURLSessionTaskErrorKey=("
+      ]
+    },
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests/testDisableCancelsAndLateResultCannotApply",
+      "log": "/tmp/g546-r2-probe-M14-cancel-opt-out.log",
+      "exit": 65,
+      "timed_out": false,
+      "seconds": 74.61,
+      "name": "M14-cancel-opt-out",
+      "file": "ios/FleetNotifier/App/AppModel.swift",
+      "replacements": [
+        [
+          "        if !enabled { cancelBackgroundRefreshes() }",
+          "        if !enabled { return }"
+        ]
+      ],
+      "test": "testDisableCancelsAndLateResultCannotApply",
+      "assertion_red": true,
+      "observed_green": false,
+      "expected": "assertion RED",
+      "masking": null,
+      "matched": true,
+      "before_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "after_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "log_sha256": "591ee8ef104448d90c6561a87411cc7d2e7b1eb0cf9c5186c1a9204cc932fcab",
+      "summary": "Executed 1 test, with 3 failures (0 unexpected) in 0.072 (0.073) seconds",
+      "failure_diagnostics": [
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15428: error: -[FleetNotifierTests.BackgroundHintTests testDisableCancelsAndLateResultCannotApply] : XCTAssertEqual failed: (\"[]\") is not equal to (\"[__C.UIBackgroundFetchResult]\")",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15429: error: -[FleetNotifierTests.BackgroundHintTests testDisableCancelsAndLateResultCannotApply] : XCTAssertEqual failed: (\"1\") is not equal to (\"0\")",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15433: error: -[FleetNotifierTests.BackgroundHintTests testDisableCancelsAndLateResultCannotApply] : XCTAssertEqual failed: (\"[__C.UIBackgroundFetchResult]\") is not equal to (\"[__C.UIBackgroundFetchResult]\") - cancel must complete exactly once"
+      ]
+    },
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests/testForegroundNotificationCancelsWithoutSceneHandlerChanges",
+      "log": "/tmp/g546-r2-probe-M15-foreground.log",
+      "exit": 65,
+      "timed_out": false,
+      "seconds": 82.32,
+      "name": "M15-foreground",
+      "file": "ios/FleetNotifier/App/AppModel.swift",
+      "replacements": [
+        [
+          "                self?.cancelBackgroundRefreshes()",
+          "                _ = self"
+        ]
+      ],
+      "test": "testForegroundNotificationCancelsWithoutSceneHandlerChanges",
+      "assertion_red": true,
+      "observed_green": false,
+      "expected": "assertion RED",
+      "masking": null,
+      "matched": true,
+      "before_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "after_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "log_sha256": "ca74c3ad58a1e0531fe28cf39fa216cdb8a37f24eaadccbdb8e0c76cb83a02e2",
+      "summary": "Executed 1 test, with 3 failures (0 unexpected) in 0.073 (0.074) seconds",
+      "failure_diagnostics": [
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15447: error: -[FleetNotifierTests.BackgroundHintTests testForegroundNotificationCancelsWithoutSceneHandlerChanges] : XCTAssertEqual failed: (\"[]\") is not equal to (\"[__C.UIBackgroundFetchResult]\") - foreground notification must cancel immediately",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15450: error: -[FleetNotifierTests.BackgroundHintTests testForegroundNotificationCancelsWithoutSceneHandlerChanges] : XCTAssertTrue failed",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15451: error: -[FleetNotifierTests.BackgroundHintTests testForegroundNotificationCancelsWithoutSceneHandlerChanges] : XCTAssertNil failed: \"5\""
+      ]
+    },
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests/testLateSnapshotIsRefusedEvenBeforeDeadlineTaskRuns",
+      "log": "/tmp/g546-r2-probe-M16-late-budget.log",
+      "exit": 65,
+      "timed_out": false,
+      "seconds": 71.19,
+      "name": "M16-late-budget",
+      "file": "ios/FleetNotifier/App/AppModel.swift",
+      "replacements": [
+        [
+          " && self.backgroundUptime() - started < 15",
+          ""
+        ]
+      ],
+      "test": "testLateSnapshotIsRefusedEvenBeforeDeadlineTaskRuns",
+      "assertion_red": true,
+      "observed_green": false,
+      "expected": "assertion RED",
+      "masking": null,
+      "matched": true,
+      "before_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "after_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "log_sha256": "a06f59795dc05422c40db9e019d5a79525d8c7c2950a68ed8443d10fad8d39a1",
+      "summary": "Executed 1 test, with 3 failures (0 unexpected) in 0.060 (0.061) seconds",
+      "failure_diagnostics": [
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15413: error: -[FleetNotifierTests.BackgroundHintTests testLateSnapshotIsRefusedEvenBeforeDeadlineTaskRuns] : XCTAssertEqual failed: (\"[__C.UIBackgroundFetchResult]\") is not equal to (\"[__C.UIBackgroundFetchResult]\") - elapsed budget must prevent late apply",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15414: error: -[FleetNotifierTests.BackgroundHintTests testLateSnapshotIsRefusedEvenBeforeDeadlineTaskRuns] : XCTAssertTrue failed",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15415: error: -[FleetNotifierTests.BackgroundHintTests testLateSnapshotIsRefusedEvenBeforeDeadlineTaskRuns] : XCTAssertNil failed: \"5\""
+      ]
+    },
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests/testNewerStreamDataAndNewEpochWinEvenOverHigherHintRev",
+      "log": "/tmp/g546-r2-probe-M17-newer-stream.log",
+      "exit": 65,
+      "timed_out": false,
+      "seconds": 71.01,
+      "name": "M17-newer-stream",
+      "file": "ios/FleetNotifier/App/AppModel.swift",
+      "replacements": [
+        [
+          "&& target.lastEventId == revision && target.lastEventEpoch == epoch\n                && target.agents == agents",
+          "&& true"
+        ]
+      ],
+      "test": "testNewerStreamDataAndNewEpochWinEvenOverHigherHintRev",
+      "assertion_red": true,
+      "observed_green": false,
+      "expected": "assertion RED",
+      "masking": null,
+      "matched": true,
+      "before_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "after_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "log_sha256": "1612ee4802f9a7e37eebf2081b4e1d4e8c5eb9c0877c1af56540493adde1f3a2",
+      "summary": "Executed 1 test, with 4 failures (0 unexpected) in 0.102 (0.103) seconds",
+      "failure_diagnostics": [
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15490: error: -[FleetNotifierTests.BackgroundHintTests testNewerStreamDataAndNewEpochWinEvenOverHigherHintRev] : XCTAssertEqual failed: (\"[__C.UIBackgroundFetchResult]\") is not equal to (\"[__C.UIBackgroundFetchResult]\") - new stream data takes precedence regardless of hint revision",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15491: error: -[FleetNotifierTests.BackgroundHintTests testNewerStreamDataAndNewEpochWinEvenOverHigherHintRev] : XCTAssertEqual failed: (\"[\"row\"]\") is not equal to (\"[\"fresh\"]\")",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15492: error: -[FleetNotifierTests.BackgroundHintTests testNewerStreamDataAndNewEpochWinEvenOverHigherHintRev] : XCTAssertEqual failed: (\"Optional(100)\") is not equal to (\"Optional(10)\")",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15494: error: -[FleetNotifierTests.BackgroundHintTests testNewerStreamDataAndNewEpochWinEvenOverHigherHintRev] : XCTAssertNil failed: \"100\""
+      ]
+    },
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests/testOlderAndCrossEpochSnapshotsCannotResetCursor",
+      "log": "/tmp/g546-r2-probe-M18-epoch-downgrade.log",
+      "exit": 65,
+      "timed_out": false,
+      "seconds": 38.75,
+      "name": "M18-epoch-downgrade",
+      "file": "ios/FleetNotifier/App/AppModel.swift",
+      "replacements": [
+        [
+          "epoch == nil || snapshot.epoch == epoch",
+          "true"
+        ]
+      ],
+      "test": "testOlderAndCrossEpochSnapshotsCannotResetCursor",
+      "assertion_red": true,
+      "observed_green": false,
+      "expected": "assertion RED",
+      "masking": null,
+      "matched": true,
+      "before_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "after_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "log_sha256": "34ac335f71f151c25206795849711a0c067224178ae25d2ab88fab258a677f06",
+      "summary": "Executed 1 test, with 4 failures (0 unexpected) in 0.085 (0.086) seconds",
+      "failure_diagnostics": [
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15506: error: -[FleetNotifierTests.BackgroundHintTests testOlderAndCrossEpochSnapshotsCannotResetCursor] : XCTAssertEqual failed: (\"[__C.UIBackgroundFetchResult]\") is not equal to (\"[__C.UIBackgroundFetchResult]\") - hint cannot reset epoch or roll cursor backwards",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15507: error: -[FleetNotifierTests.BackgroundHintTests testOlderAndCrossEpochSnapshotsCannotResetCursor] : XCTAssertEqual failed: (\"Optional(100)\") is not equal to (\"Optional(10)\")",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15508: error: -[FleetNotifierTests.BackgroundHintTests testOlderAndCrossEpochSnapshotsCannotResetCursor] : XCTAssertEqual failed: (\"nil\") is not equal to (\"Optional(\"A\")\")",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15509: error: -[FleetNotifierTests.BackgroundHintTests testOlderAndCrossEpochSnapshotsCannotResetCursor] : XCTAssertTrue failed"
+      ]
+    },
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests/testOlderAndCrossEpochSnapshotsCannotResetCursor",
+      "log": "/tmp/g546-r2-probe-M19-older-snapshot.log",
+      "exit": 65,
+      "timed_out": false,
+      "seconds": 30.55,
+      "name": "M19-older-snapshot",
+      "file": "ios/FleetNotifier/App/AppModel.swift",
+      "replacements": [
+        [
+          "                target.applyRefresh(snapshot)",
+          "                target.restoreCursor(rev: nil)\n                target.applyRefresh(snapshot)"
+        ]
+      ],
+      "test": "testOlderAndCrossEpochSnapshotsCannotResetCursor",
+      "assertion_red": true,
+      "observed_green": false,
+      "expected": "assertion RED",
+      "masking": null,
+      "matched": true,
+      "before_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "after_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "log_sha256": "f617d1f3c81b9e80f251fcb7f6e7732207c5c405cfc001908e4d41f1daa412ae",
+      "summary": "Executed 1 test, with 3 failures (0 unexpected) in 0.085 (0.086) seconds",
+      "failure_diagnostics": [
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15506: error: -[FleetNotifierTests.BackgroundHintTests testOlderAndCrossEpochSnapshotsCannotResetCursor] : XCTAssertEqual failed: (\"[__C.UIBackgroundFetchResult]\") is not equal to (\"[__C.UIBackgroundFetchResult]\") - hint cannot reset epoch or roll cursor backwards",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15507: error: -[FleetNotifierTests.BackgroundHintTests testOlderAndCrossEpochSnapshotsCannotResetCursor] : XCTAssertEqual failed: (\"Optional(9)\") is not equal to (\"Optional(10)\")",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15509: error: -[FleetNotifierTests.BackgroundHintTests testOlderAndCrossEpochSnapshotsCannotResetCursor] : XCTAssertTrue failed"
+      ]
+    },
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests/testOneSnapshotPersistsOnlyBoardMetadataAndNeverMarksLive",
+      "log": "/tmp/g546-r2-probe-M20-no-live.log",
+      "exit": 65,
+      "timed_out": false,
+      "seconds": 29.59,
+      "name": "M20-no-live",
+      "file": "ios/FleetNotifier/App/AppModel.swift",
+      "replacements": [
+        [
+          "                request.finish(.newData)",
+          "                target.verifyHostKey()\n                target.apply(.snapshot(snapshot))\n                request.finish(.newData)"
+        ]
+      ],
+      "test": "testOneSnapshotPersistsOnlyBoardMetadataAndNeverMarksLive",
+      "assertion_red": true,
+      "observed_green": false,
+      "expected": "assertion RED",
+      "masking": null,
+      "matched": true,
+      "before_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "after_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "log_sha256": "cae91f9a35b60583b7bea07fa69e8a39eb074064b883c148cd042eb4c96f0384",
+      "summary": "Executed 1 test, with 2 failures (0 unexpected) in 0.063 (0.064) seconds",
+      "failure_diagnostics": [
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15297: error: -[FleetNotifierTests.BackgroundHintTests testOneSnapshotPersistsOnlyBoardMetadataAndNeverMarksLive] : XCTAssertNotEqual failed: (\"connected\") is equal to (\"connected\") - snapshot-only path must never mark Live",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15298: error: -[FleetNotifierTests.BackgroundHintTests testOneSnapshotPersistsOnlyBoardMetadataAndNeverMarksLive] : XCTAssertTrue failed - hint must not release foreground trust gate"
+      ]
+    },
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests/testOneSnapshotPersistsOnlyBoardMetadataAndNeverMarksLive",
+      "log": "/tmp/g546-r2-probe-M21-one-snapshot.log",
+      "exit": 65,
+      "timed_out": false,
+      "seconds": 29.12,
+      "name": "M21-one-snapshot",
+      "file": "ios/FleetNotifier/App/AppModel.swift",
+      "replacements": [
+        [
+          "                let snapshot = try await client.fetchSnapshot()\n                guard current(),",
+          "                _ = try await client.fetchSnapshot()\n                let snapshot = try await client.fetchSnapshot()\n                guard current(),"
+        ]
+      ],
+      "test": "testOneSnapshotPersistsOnlyBoardMetadataAndNeverMarksLive",
+      "assertion_red": true,
+      "observed_green": false,
+      "expected": "assertion RED",
+      "masking": null,
+      "matched": true,
+      "before_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "after_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "log_sha256": "c1b402c2b8daeb88699dd9b0135accef5e8dc0f9e2a801e051001b8f713cd25b",
+      "summary": "Executed 1 test, with 1 failure (0 unexpected) in 0.063 (0.064) seconds",
+      "failure_diagnostics": [
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15293: error: -[FleetNotifierTests.BackgroundHintTests testOneSnapshotPersistsOnlyBoardMetadataAndNeverMarksLive] : XCTAssertEqual failed: (\"[Optional(\"/host-key\"), Optional(\"/snapshot\"), Optional(\"/snapshot\")]\") is not equal to (\"[Optional(\"/host-key\"), Optional(\"/snapshot\")]\")"
+      ]
+    },
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests/testRemovedHostCannotBeRecreatedByLateSnapshot",
+      "log": "/tmp/g546-r2-probe-M22-removed-host.log",
+      "exit": 65,
+      "timed_out": false,
+      "seconds": 67.44,
+      "name": "M22-removed-host",
+      "file": "ios/FleetNotifier/App/AppModel.swift",
+      "replacements": [
+        [
+          " && self.profileStore?.profile(id: profile.id) == profile",
+          ""
+        ]
+      ],
+      "test": "testRemovedHostCannotBeRecreatedByLateSnapshot",
+      "assertion_red": true,
+      "observed_green": false,
+      "expected": "assertion RED",
+      "masking": null,
+      "matched": true,
+      "before_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "after_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "log_sha256": "46847319567577b6e1bcfab2e9ac93f92902702a1673d477119d436adb2845c2",
+      "summary": "Executed 1 test, with 2 failures (0 unexpected) in 0.092 (0.093) seconds",
+      "failure_diagnostics": [
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15468: error: -[FleetNotifierTests.BackgroundHintTests testRemovedHostCannotBeRecreatedByLateSnapshot] : XCTAssertEqual failed: (\"[__C.UIBackgroundFetchResult]\") is not equal to (\"[__C.UIBackgroundFetchResult]\")",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15470: error: -[FleetNotifierTests.BackgroundHintTests testRemovedHostCannotBeRecreatedByLateSnapshot] : XCTAssertNil failed: \"[FleetNotifier.BoardCacheRow(compositeIdentity: \"3ABCB01E-60C5-4F22-B8C9-C5D26DA0E163::row\", hostProfileID: 3ABCB01E-60C5-4F22-B8C9-C5D26DA0E163, agentID: \"row\", state: \"working\", ts: 1, stateEnteredAt: 1, displayName: nil, title: Optional(\"Allowed board title\"), reason: nil, tool: Optional(\"claude\"), paneReference: nil, repo: nil, branch: nil, basename: nil, lastSeen: 10000000)]\""
+      ]
+    },
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests/testOSUnavailableAndNetworkErrorStayStaleWithoutRetry",
+      "log": "/tmp/g546-r2-probe-M23-os-availability.log",
+      "exit": 65,
+      "timed_out": false,
+      "seconds": 106.04,
+      "name": "M23-os-availability",
+      "file": "ios/FleetNotifier/App/AppModel.swift",
+      "replacements": [
+        [
+          "guard backgroundRefreshEnabled, backgroundAllowed(), mode == .live,",
+          "guard backgroundRefreshEnabled, mode == .live,"
+        ],
+        [
+          "!request.finished && self.backgroundRefreshEnabled && self.backgroundAllowed()",
+          "!request.finished && self.backgroundRefreshEnabled"
+        ]
+      ],
+      "test": "testOSUnavailableAndNetworkErrorStayStaleWithoutRetry",
+      "assertion_red": true,
+      "observed_green": false,
+      "expected": "assertion RED",
+      "masking": null,
+      "matched": true,
+      "before_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "after_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "log_sha256": "f0e846ac9390e296cd62e7c3874a11de49934cffd3927a070aff17b882cb9859",
+      "summary": "Executed 1 test, with 4 failures (0 unexpected) in 0.061 (0.062) seconds",
+      "failure_diagnostics": [
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15519: error: -[FleetNotifierTests.BackgroundHintTests testOSUnavailableAndNetworkErrorStayStaleWithoutRetry] : XCTAssertEqual failed: (\"[]\") is not equal to (\"[__C.UIBackgroundFetchResult]\")",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15524: error: -[FleetNotifierTests.BackgroundHintTests testOSUnavailableAndNetworkErrorStayStaleWithoutRetry] : XCTAssertEqual failed: (\"[__C.UIBackgroundFetchResult]\") is not equal to (\"[__C.UIBackgroundFetchResult]\")",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15525: error: -[FleetNotifierTests.BackgroundHintTests testOSUnavailableAndNetworkErrorStayStaleWithoutRetry] : XCTAssertEqual failed: (\"0\") is not equal to (\"2\")",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15526: error: -[FleetNotifierTests.BackgroundHintTests testOSUnavailableAndNetworkErrorStayStaleWithoutRetry] : XCTAssertEqual failed: (\"1\") is not equal to (\"0\")"
+      ]
+    },
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests/testSettingsUsesIndependentRefreshBindingAndTruthfulGuidance",
+      "log": "/tmp/g546-r2-probe-M24-settings-wiring.log",
+      "exit": 65,
+      "timed_out": false,
+      "seconds": 55.32,
+      "name": "M24-settings-wiring",
+      "file": "ios/FleetNotifier/UI/FleetViews.swift",
+      "replacements": [
+        [
+          "set: { model.setBackgroundRefreshEnabled($0) }",
+          "set: { model.setNotificationsEnabled($0) }"
+        ]
+      ],
+      "test": "testSettingsUsesIndependentRefreshBindingAndTruthfulGuidance",
+      "assertion_red": true,
+      "observed_green": false,
+      "expected": "assertion RED",
+      "masking": null,
+      "matched": true,
+      "before_sha256": "22ad54ab5f29a20699eb10dc3912a51fdfb3c169f0421ea2f6f259e939647262",
+      "after_sha256": "22ad54ab5f29a20699eb10dc3912a51fdfb3c169f0421ea2f6f259e939647262",
+      "log_sha256": "10561235eea4a21a1d0feb6997e0e402e57f65611db1195cafcece8b04aba4af",
+      "summary": "Executed 1 test, with 1 failure (0 unexpected) in 0.075 (0.078) seconds",
+      "failure_diagnostics": [
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15234: error: -[FleetNotifierTests.BackgroundHintTests testSettingsUsesIndependentRefreshBindingAndTruthfulGuidance] : XCTAssertTrue failed"
+      ]
+    },
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests/testRuntimeCoordinatorMismatchRefusesHintWithoutQuota",
+      "log": "/tmp/g546-r2-probe-R201-runtime-posture.log",
+      "exit": 65,
+      "timed_out": false,
+      "seconds": 51.81,
+      "name": "R201-runtime-posture",
+      "file": "ios/FleetNotifier/App/AppModel.swift",
+      "replacements": [
+        [
+          "              (profile.id == activeProfileID || coordinator?.allowsLiveWork(profileID: profile.id) != false),\n",
+          ""
+        ]
+      ],
+      "test": "testRuntimeCoordinatorMismatchRefusesHintWithoutQuota",
+      "assertion_red": true,
+      "observed_green": false,
+      "expected": "assertion RED",
+      "masking": null,
+      "matched": true,
+      "before_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "after_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "log_sha256": "d36c1ac45d0534abba003adbc7c1f6363e9e24af130402a90c240edfb1ec5e41",
+      "summary": "Executed 1 test, with 6 failures (0 unexpected) in 0.203 (0.206) seconds",
+      "failure_diagnostics": [
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15583: error: -[FleetNotifierTests.BackgroundHintTests testRuntimeCoordinatorMismatchRefusesHintWithoutQuota] : XCTAssertEqual failed: (\"[__C.UIBackgroundFetchResult]\") is not equal to (\"[__C.UIBackgroundFetchResult]\")",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15584: error: -[FleetNotifierTests.BackgroundHintTests testRuntimeCoordinatorMismatchRefusesHintWithoutQuota] : XCTAssertTrue failed - runtime-mismatched host must not be re-polled",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15585: error: -[FleetNotifierTests.BackgroundHintTests testRuntimeCoordinatorMismatchRefusesHintWithoutQuota] : XCTAssertNil failed: \"79 bytes\" - refusal must not burn device quota",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15588: error: -[FleetNotifierTests.BackgroundHintTests testRuntimeCoordinatorMismatchRefusesHintWithoutQuota] : XCTAssertTrue failed",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15589: error: -[FleetNotifierTests.BackgroundHintTests testRuntimeCoordinatorMismatchRefusesHintWithoutQuota] : XCTAssertNil failed: \"5\"",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15590: error: -[FleetNotifierTests.BackgroundHintTests testRuntimeCoordinatorMismatchRefusesHintWithoutQuota] : XCTAssertNil failed: \"[FleetNotifier.BoardCacheRow(compositeIdentity: \"6335567A-D8D9-498D-B66A-D151816D256C::row\", hostProfileID: 6335567A-D8D9-498D-B66A-D151816D256C, agentID: \"row\", state: \"working\", ts: 1, stateEnteredAt: 1, displayName: nil, title: Optional(\"Allowed board title\"), reason: nil, tool: Optional(\"claude\"), paneReference: nil, repo: nil, branch: nil, basename: nil, lastSeen: 10000000)]\""
+      ]
+    },
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests/testForeignHostSnapshotIsRefusedBeforeStoreMutation",
+      "log": "/tmp/g546-r2-probe-R202-foreign-stamp.log",
+      "exit": 65,
+      "timed_out": false,
+      "seconds": 40.83,
+      "name": "R202-foreign-stamp",
+      "file": "ios/FleetNotifier/App/AppModel.swift",
+      "replacements": [
+        [
+          "                      FleetStore.conformsToPinnedHost(.snapshot(snapshot), pin: hint.hostID),\n",
+          ""
+        ]
+      ],
+      "test": "testForeignHostSnapshotIsRefusedBeforeStoreMutation",
+      "assertion_red": true,
+      "observed_green": false,
+      "expected": "assertion RED",
+      "masking": null,
+      "matched": true,
+      "before_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "after_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "log_sha256": "ddbccc638742151f1da37bd6f2c8c10aed1aa9c322a9fa1a73252da248465f99",
+      "summary": "Executed 1 test, with 1 failure (0 unexpected) in 0.138 (0.141) seconds",
+      "failure_diagnostics": [
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15608: error: -[FleetNotifierTests.BackgroundHintTests testForeignHostSnapshotIsRefusedBeforeStoreMutation] : XCTAssertEqual failed: (\"error(\"host_identity_mismatch\")\") is not equal to (\"disconnected\")"
+      ]
+    },
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests/testAlreadyStreamingHintHasNoRequestsOrQuota",
+      "log": "/tmp/g546-r2-probe-R203-stream-admission.log",
+      "exit": 65,
+      "timed_out": false,
+      "seconds": 46.27,
+      "name": "R203-stream-admission",
+      "file": "ios/FleetNotifier/App/AppModel.swift",
+      "replacements": [
+        [
+          "              !target.isStreaming,\n",
+          ""
+        ]
+      ],
+      "test": "testAlreadyStreamingHintHasNoRequestsOrQuota",
+      "assertion_red": true,
+      "observed_green": false,
+      "expected": "assertion RED",
+      "masking": null,
+      "matched": true,
+      "before_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "after_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "log_sha256": "7cd499f885c01a1a890bf42e39f738414de50ec9ee7abf03ff40b3451dfc8c91",
+      "summary": "Executed 1 test, with 1 failure (0 unexpected) in 0.128 (0.131) seconds",
+      "failure_diagnostics": [
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15626: error: -[FleetNotifierTests.BackgroundHintTests testAlreadyStreamingHintHasNoRequestsOrQuota] : XCTAssertNil failed: \"79 bytes\""
+      ]
+    },
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests/testNonLiveModesRefuseHintWithoutQuota",
+      "log": "/tmp/g546-r2-probe-R204-live-mode.log",
+      "exit": 65,
+      "timed_out": false,
+      "seconds": 134.15,
+      "name": "R204-live-mode",
+      "file": "ios/FleetNotifier/App/AppModel.swift",
+      "replacements": [
+        [
+          "guard backgroundRefreshEnabled, backgroundAllowed(), mode == .live,",
+          "guard backgroundRefreshEnabled, backgroundAllowed(),"
+        ]
+      ],
+      "test": "testNonLiveModesRefuseHintWithoutQuota",
+      "assertion_red": true,
+      "observed_green": false,
+      "expected": "assertion RED",
+      "masking": null,
+      "matched": true,
+      "before_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "after_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "log_sha256": "8916af567b4440c8168b066e442fb07805c61d544bd1d13dfc7a6f5da98d2b71",
+      "summary": "Executed 1 test, with 6 failures (0 unexpected) in 0.131 (0.133) seconds",
+      "failure_diagnostics": [
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15661: error: -[FleetNotifierTests.BackgroundHintTests testNonLiveModesRefuseHintWithoutQuota] : XCTAssertEqual failed: (\"[__C.UIBackgroundFetchResult]\") is not equal to (\"[__C.UIBackgroundFetchResult]\")",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15662: error: -[FleetNotifierTests.BackgroundHintTests testNonLiveModesRefuseHintWithoutQuota] : XCTAssertTrue failed",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15663: error: -[FleetNotifierTests.BackgroundHintTests testNonLiveModesRefuseHintWithoutQuota] : XCTAssertNil failed: \"79 bytes\"",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15661: error: -[FleetNotifierTests.BackgroundHintTests testNonLiveModesRefuseHintWithoutQuota] : XCTAssertEqual failed: (\"[__C.UIBackgroundFetchResult]\") is not equal to (\"[__C.UIBackgroundFetchResult]\")",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15662: error: -[FleetNotifierTests.BackgroundHintTests testNonLiveModesRefuseHintWithoutQuota] : XCTAssertTrue failed",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15663: error: -[FleetNotifierTests.BackgroundHintTests testNonLiveModesRefuseHintWithoutQuota] : XCTAssertNil failed: \"79 bytes\""
+      ]
+    },
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests/testOversizedAndMalformedQuotaBlobsFailClosed",
+      "log": "/tmp/g546-r2-probe-R205-quota-count.log",
+      "exit": 65,
+      "timed_out": false,
+      "seconds": 74.25,
+      "name": "R205-quota-count",
+      "file": "ios/FleetNotifier/App/AppModel.swift",
+      "replacements": [
+        [
+          "              attempts.count <= 2,\n",
+          ""
+        ]
+      ],
+      "test": "testOversizedAndMalformedQuotaBlobsFailClosed",
+      "assertion_red": true,
+      "observed_green": false,
+      "expected": "assertion RED",
+      "masking": null,
+      "matched": true,
+      "before_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "after_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "log_sha256": "f83fcf63c3060a3cd16e275cb6d497cf6d21f0472a14cd31a638de018fcf1bd0",
+      "summary": "Executed 1 test, with 11 failures (0 unexpected) in 0.170 (0.173) seconds",
+      "failure_diagnostics": [
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15684: error: -[FleetNotifierTests.BackgroundHintTests testOversizedAndMalformedQuotaBlobsFailClosed] : XCTAssertEqual failed: (\"[__C.UIBackgroundFetchResult]\") is not equal to (\"[__C.UIBackgroundFetchResult]\")",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15685: error: -[FleetNotifierTests.BackgroundHintTests testOversizedAndMalformedQuotaBlobsFailClosed] : XCTAssertTrue failed",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15686: error: -[FleetNotifierTests.BackgroundHintTests testOversizedAndMalformedQuotaBlobsFailClosed] : XCTAssertEqual failed: (\"Optional(79 bytes)\") is not equal to (\"Optional(232 bytes)\")",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15688: error: -[FleetNotifierTests.BackgroundHintTests testOversizedAndMalformedQuotaBlobsFailClosed] : XCTAssertNil failed: \"5\"",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15689: error: -[FleetNotifierTests.BackgroundHintTests testOversizedAndMalformedQuotaBlobsFailClosed] : XCTAssertNil failed: \"[FleetNotifier.BoardCacheRow(compositeIdentity: \"BABEC81B-3464-4BE3-BA82-B02CCC2A979C::row\", hostProfileID: BABEC81B-3464-4BE3-BA82-B02CCC2A979C, agentID: \"row\", state: \"working\", ts: 1, stateEnteredAt: 1, displayName: nil, title: Optional(\"Allowed board title\"), reason: nil, tool: Optional(\"claude\"), paneReference: nil, repo: nil, branch: nil, basename: nil, lastSeen: 10000000)]\"",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15688: error: -[FleetNotifierTests.BackgroundHintTests testOversizedAndMalformedQuotaBlobsFailClosed] : XCTAssertNil failed: \"5\"",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15689: error: -[FleetNotifierTests.BackgroundHintTests testOversizedAndMalformedQuotaBlobsFailClosed] : XCTAssertNil failed: \"[FleetNotifier.BoardCacheRow(compositeIdentity: \"BABEC81B-3464-4BE3-BA82-B02CCC2A979C::row\", hostProfileID: BABEC81B-3464-4BE3-BA82-B02CCC2A979C, agentID: \"row\", state: \"working\", ts: 1, stateEnteredAt: 1, displayName: nil, title: Optional(\"Allowed board title\"), reason: nil, tool: Optional(\"claude\"), paneReference: nil, repo: nil, branch: nil, basename: nil, lastSeen: 10000000)]\"",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15688: error: -[FleetNotifierTests.BackgroundHintTests testOversizedAndMalformedQuotaBlobsFailClosed] : XCTAssertNil failed: \"5\"",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15689: error: -[FleetNotifierTests.BackgroundHintTests testOversizedAndMalformedQuotaBlobsFailClosed] : XCTAssertNil failed: \"[FleetNotifier.BoardCacheRow(compositeIdentity: \"BABEC81B-3464-4BE3-BA82-B02CCC2A979C::row\", hostProfileID: BABEC81B-3464-4BE3-BA82-B02CCC2A979C, agentID: \"row\", state: \"working\", ts: 1, stateEnteredAt: 1, displayName: nil, title: Optional(\"Allowed board title\"), reason: nil, tool: Optional(\"claude\"), paneReference: nil, repo: nil, branch: nil, basename: nil, lastSeen: 10000000)]\"",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15688: error: -[FleetNotifierTests.BackgroundHintTests testOversizedAndMalformedQuotaBlobsFailClosed] : XCTAssertNil failed: \"5\"",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15689: error: -[FleetNotifierTests.BackgroundHintTests testOversizedAndMalformedQuotaBlobsFailClosed] : XCTAssertNil failed: \"[FleetNotifier.BoardCacheRow(compositeIdentity: \"BABEC81B-3464-4BE3-BA82-B02CCC2A979C::row\", hostProfileID: BABEC81B-3464-4BE3-BA82-B02CCC2A979C, agentID: \"row\", state: \"working\", ts: 1, stateEnteredAt: 1, displayName: nil, title: Optional(\"Allowed board title\"), reason: nil, tool: Optional(\"claude\"), paneReference: nil, repo: nil, branch: nil, basename: nil, lastSeen: 10000000)]\""
+      ]
+    },
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests/testDelegateWithoutRestoredModelCompletesNoDataOnce",
+      "log": "/tmp/g546-r2-probe-R206-model-absent-completion.log",
+      "exit": 65,
+      "timed_out": false,
+      "seconds": 39.03,
+      "name": "R206-model-absent-completion",
+      "file": "ios/FleetNotifier/Notifications/AppDelegate.swift",
+      "replacements": [
+        [
+          "guard let model = backgroundRefreshModel else {\n            completionHandler(.noData)\n            return",
+          "guard let model = backgroundRefreshModel else {\n            return"
+        ]
+      ],
+      "test": "testDelegateWithoutRestoredModelCompletesNoDataOnce",
+      "assertion_red": true,
+      "observed_green": false,
+      "expected": "assertion RED",
+      "masking": null,
+      "matched": true,
+      "before_sha256": "da8db4befa10782b15d30b6635a50bc0086e4c2a0cfa7826605f02901b033244",
+      "after_sha256": "da8db4befa10782b15d30b6635a50bc0086e4c2a0cfa7826605f02901b033244",
+      "log_sha256": "5060156a40437c31fa91c2f62ff9f4224e0e7c5c61be136dcaa7fa662c4bf4e9",
+      "summary": "Executed 1 test, with 2 failures (1 unexpected) in 3.078 (3.080) seconds",
+      "failure_diagnostics": [
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15704: error: -[FleetNotifierTests.BackgroundHintTests testDelegateWithoutRestoredModelCompletesNoDataOnce] : XCTAssertTrue failed - bounded handler observation timed out",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15167: error: -[FleetNotifierTests.BackgroundHintTests testDelegateWithoutRestoredModelCompletesNoDataOnce] : failed: caught error: \"Error Domain=NSURLErrorDomain Code=-1001 \"(null)\"\""
+      ]
+    },
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests/testOversizedAndMalformedQuotaBlobsFailClosed",
+      "log": "/tmp/g546-r2-probe-R207-finite-masked-by-decoder.log",
+      "exit": 0,
+      "timed_out": false,
+      "seconds": 10.5,
+      "name": "R207-finite-masked-by-decoder",
+      "file": "ios/FleetNotifier/App/AppModel.swift",
+      "replacements": [
+        [
+          "attempts.allSatisfy({ $0.attemptedAt.isFinite })",
+          "true"
+        ]
+      ],
+      "test": "testOversizedAndMalformedQuotaBlobsFailClosed",
+      "assertion_red": false,
+      "observed_green": true,
+      "expected": "GREEN (masked)",
+      "masking": "JSONDecoder rejects nonfinite values before isFinite.",
+      "matched": true,
+      "before_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "after_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "log_sha256": "2d23059fb4848bf9b75f9590ee2a8ddbd93dd1d5be83253ec80ec9968e534b77",
+      "summary": "Executed 1 test, with 0 failures (0 unexpected) in 0.032 (0.034) seconds",
+      "failure_diagnostics": []
+    },
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests/testStreamOpenedDuringHintPreventsLateApply",
+      "log": "/tmp/g546-r2-probe-R208-stream-masked-by-generation.log",
+      "exit": 0,
+      "timed_out": false,
+      "seconds": 10.41,
+      "name": "R208-stream-masked-by-generation",
+      "file": "ios/FleetNotifier/App/AppModel.swift",
+      "replacements": [
+        [
+          "&& !target.isStreaming && target.connectionGeneration == generation",
+          "&& target.connectionGeneration == generation"
+        ]
+      ],
+      "test": "testStreamOpenedDuringHintPreventsLateApply",
+      "assertion_red": false,
+      "observed_green": true,
+      "expected": "GREEN (masked)",
+      "masking": "Opening a stream also changes connectionGeneration.",
+      "matched": true,
+      "before_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "after_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "log_sha256": "5bdd1080bca31b297517ee4146c389f41a152b5bbc38e13c7cfee89d84ec4a47",
+      "summary": "Executed 1 test, with 0 failures (0 unexpected) in 0.072 (0.075) seconds",
+      "failure_diagnostics": []
+    },
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests/testStreamOpenedDuringHintPreventsLateApply",
+      "log": "/tmp/g546-r2-probe-R209-stream-and-generation.log",
+      "exit": 65,
+      "timed_out": false,
+      "seconds": 34.73,
+      "name": "R209-stream-and-generation",
+      "file": "ios/FleetNotifier/App/AppModel.swift",
+      "replacements": [
+        [
+          "&& !target.isStreaming && target.connectionGeneration == generation",
+          "&& true"
+        ]
+      ],
+      "test": "testStreamOpenedDuringHintPreventsLateApply",
+      "assertion_red": true,
+      "observed_green": false,
+      "expected": "assertion RED",
+      "masking": null,
+      "matched": true,
+      "before_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "after_sha256": "9dc506e43fb410f3fc1c5bf0ce5834ba8ab725955b06547f98a4407947bfbcac",
+      "log_sha256": "5f9c4683bf4328d7d4368f215b08a770769319070cb6c2ca20607733124603c8",
+      "summary": "Executed 1 test, with 4 failures (0 unexpected) in 0.141 (0.144) seconds",
+      "failure_diagnostics": [
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15644: error: -[FleetNotifierTests.BackgroundHintTests testStreamOpenedDuringHintPreventsLateApply] : XCTAssertEqual failed: (\"[__C.UIBackgroundFetchResult]\") is not equal to (\"[__C.UIBackgroundFetchResult]\")",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15645: error: -[FleetNotifierTests.BackgroundHintTests testStreamOpenedDuringHintPreventsLateApply] : XCTAssertTrue failed",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15646: error: -[FleetNotifierTests.BackgroundHintTests testStreamOpenedDuringHintPreventsLateApply] : XCTAssertNil failed: \"5\"",
+        "/tmp/g546-r2-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:15647: error: -[FleetNotifierTests.BackgroundHintTests testStreamOpenedDuringHintPreventsLateApply] : XCTAssertNil failed: \"[FleetNotifier.BoardCacheRow(compositeIdentity: \"664DA70A-F2AB-4289-AE23-9AA79B396612::row\", hostProfileID: 664DA70A-F2AB-4289-AE23-9AA79B396612, agentID: \"row\", state: \"working\", ts: 1, stateEnteredAt: 1, displayName: nil, title: Optional(\"Allowed board title\"), reason: nil, tool: Optional(\"claude\"), paneReference: nil, repo: nil, branch: nil, basename: nil, lastSeen: 10000000)]\""
+      ]
+    },
+    {
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-r2-probe-dd -only-testing:FleetNotifierTests/BackgroundHintTests -only-testing:FleetNotifierTests/PushPayloadTests -only-testing:FleetNotifierTests/EpochRecoveryTests",
+      "log": "/tmp/g546-r2-probe-final_green.log",
+      "exit": 0,
+      "timed_out": false,
+      "seconds": 14.99,
+      "name": "FINAL_GREEN",
+      "log_sha256": "eab5b6cd7370caf6261fbfb23a77705f36084ce932ef04f003dee9b1680da445",
+      "summary": "Executed 42 tests, with 0 failures (0 unexpected) in 1.193 (1.218) seconds",
+      "failure_diagnostics": []
+    }
+  ],
+  "closeout": [
+    {
+      "command": "git -C /tmp/g546-r2-scratch diff --exit-code",
+      "log": "/tmp/g546-r2-scratch-clean.log",
+      "exit": 0
+    },
+    {
+      "command": "git worktree remove /tmp/g546-r2-scratch",
+      "log": "/tmp/g546-r2-scratch-remove.log",
+      "exit": 0
+    },
+    {
+      "command": "git diff --exit-code 8b8e2fe6d80d32cf6eadbcab25d702e4a8c52ad0 -- ios/",
+      "log": "/tmp/g546-r2-source-identity.log",
+      "exit": 0
+    }
+  ]
+}

@@ -1,0 +1,152 @@
+[
+  {
+    "head": "8b8e2fe6d80d32cf6eadbcab25d702e4a8c52ad0",
+    "name": "FOCUSED",
+    "command": "flock /tmp/n.lock env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-dd -only-testing:FleetNotifierTests/PushPayloadTests -only-testing:FleetNotifierTests/BackgroundHintTests -only-testing:FleetNotifierTests/HostAwarePushModelTests -only-testing:FleetNotifierTests/NotificationOptInRuntimeTests -only-testing:FleetNotifierTests/NotificationTapDeferredLifecycleTests -only-testing:FleetNotifierTests/NotificationEnableModelTests",
+    "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl546-push-refresh",
+    "log": "/tmp/g546-r2-focused.log",
+    "exit": 0,
+    "timed_out": false,
+    "seconds": 11.11,
+    "log_sha256": "2c816a694fa475b061f7b725d2ecac9dda6179882caf31fc2890cb0585559527",
+    "summary": [
+      "Executed 67 tests, with 0 failures (0 unexpected) in 3.842 (3.869) seconds"
+    ]
+  },
+  {
+    "head": "8b8e2fe6d80d32cf6eadbcab25d702e4a8c52ad0",
+    "name": "FULL",
+    "command": "flock /tmp/n.lock env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g546-dd -only-testing:FleetNotifierTests",
+    "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl546-push-refresh",
+    "log": "/tmp/g546-r2-full.log",
+    "exit": 0,
+    "timed_out": false,
+    "seconds": 153.99,
+    "log_sha256": "76b3203fbcba3d18606d62719117929a5fc3e951e00011aa97046c1727c2e816",
+    "summary": [
+      "Executed 656 tests, with 0 failures (0 unexpected) in 146.085 (146.320) seconds"
+    ]
+  },
+  {
+    "head": "8b8e2fe6d80d32cf6eadbcab25d702e4a8c52ad0",
+    "name": "CHECK_RELEASE",
+    "command": "python3 ios/check-release-demo.py",
+    "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl546-push-refresh",
+    "log": "/tmp/g546-r2-check-release.log",
+    "exit": 0,
+    "timed_out": false,
+    "seconds": 1.29,
+    "log_sha256": "9722dcbb245d69d5e4ecfee641d171780e079d8fefd6111089965e862f3199c5",
+    "summary": [
+      "source PASS: 7 native Swift renderer files; 8 unchanged approved icon inputs",
+      "release-demo check: PASS (Debug source preserved; Release boundary verified)"
+    ]
+  },
+  {
+    "head": "8b8e2fe6d80d32cf6eadbcab25d702e4a8c52ad0",
+    "name": "SELF_TEST",
+    "command": "python3 ios/check-release-demo.py --self-test",
+    "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl546-push-refresh",
+    "log": "/tmp/g546-r2-self-test.log",
+    "exit": 0,
+    "timed_out": false,
+    "seconds": 66.68,
+    "log_sha256": "9722dcbb245d69d5e4ecfee641d171780e079d8fefd6111089965e862f3199c5",
+    "summary": [
+      "source PASS: 7 native Swift renderer files; 8 unchanged approved icon inputs",
+      "release-demo check: PASS (Debug source preserved; Release boundary verified)"
+    ]
+  },
+  {
+    "head": "8b8e2fe6d80d32cf6eadbcab25d702e4a8c52ad0",
+    "name": "DEBUG",
+    "command": "flock /tmp/n.lock env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild build -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -configuration Debug -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/g546-debug-dd",
+    "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl546-push-refresh",
+    "log": "/tmp/g546-r2-debug.log",
+    "exit": 0,
+    "timed_out": false,
+    "seconds": 14.6,
+    "log_sha256": "984310da588f712ee049d48447986c3ab05b2d071f94b9b937a0552a99c1092a",
+    "summary": [
+      "** BUILD SUCCEEDED **"
+    ]
+  },
+  {
+    "head": "8b8e2fe6d80d32cf6eadbcab25d702e4a8c52ad0",
+    "name": "RELEASE",
+    "command": "flock /tmp/n.lock env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild build -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -configuration Release -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/g546-release-dd CODE_SIGNING_ALLOWED=NO",
+    "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl546-push-refresh",
+    "log": "/tmp/g546-r2-release.log",
+    "exit": 0,
+    "timed_out": false,
+    "seconds": 49.92,
+    "log_sha256": "a8615c5329a00870abb454bd83b4d76f50df097a8831a5cbff9f7298fb0c9a01",
+    "summary": [
+      "** BUILD SUCCEEDED **"
+    ]
+  },
+  {
+    "head": "8b8e2fe6d80d32cf6eadbcab25d702e4a8c52ad0",
+    "name": "BINARY",
+    "command": "python3 ios/check-release-demo.py --binary /tmp/g546-release-dd/Build/Products/Release-iphonesimulator/FleetNotifier.app/FleetNotifier",
+    "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl546-push-refresh",
+    "log": "/tmp/g546-r2-binary.log",
+    "exit": 0,
+    "timed_out": false,
+    "seconds": 2.74,
+    "log_sha256": "4bd3df39db6fdc3588556e5f9f36dc3db8b0fb2c3f6979a56d891a7acbad948d",
+    "summary": [
+      "source PASS: 7 native Swift renderer files; 8 unchanged approved icon inputs",
+      "bundle PASS: Mach-O /tmp/g546-release-dd/Build/Products/Release-iphonesimulator/FleetNotifier.app/FleetNotifier; 6 product files; catalog names ['AppIcon', 'BayPreview', 'Black', 'BlackPreview', 'Grey', 'GreyPreview', 'Palomino', 'PalominoPreview']",
+      "release-demo check: PASS (Debug source preserved; Release boundary verified)"
+    ]
+  },
+  {
+    "head": "8b8e2fe6d80d32cf6eadbcab25d702e4a8c52ad0",
+    "name": "XCODEGEN",
+    "command": "xcodegen generate --spec project.yml",
+    "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl546-push-refresh/ios",
+    "log": "/tmp/g546-r2-xcodegen.log",
+    "exit": 0,
+    "timed_out": false,
+    "seconds": 0.27,
+    "log_sha256": "d239eb4b57f2fbadbb301ebb4bf41297c610b3cfdd42746c8cda426d0e7e76e8",
+    "summary": []
+  },
+  {
+    "head": "8b8e2fe6d80d32cf6eadbcab25d702e4a8c52ad0",
+    "name": "XCODEGEN_DIFF",
+    "command": "git diff --exit-code -- ios/",
+    "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl546-push-refresh",
+    "log": "/tmp/g546-r2-xcodegen-diff.log",
+    "exit": 0,
+    "timed_out": false,
+    "seconds": 0.05,
+    "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "summary": []
+  },
+  {
+    "head": "8b8e2fe6d80d32cf6eadbcab25d702e4a8c52ad0",
+    "name": "ASLOP",
+    "command": "swift run --package-path ios/tools/anti-slop-swift anti-slop ios/FleetNotifier ios/FleetNotifierTests",
+    "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl546-push-refresh",
+    "log": "/tmp/g546-r2-aslop-head.log",
+    "exit": 1,
+    "timed_out": false,
+    "seconds": 39.12,
+    "log_sha256": "d33649a9ff9e5e529535b4174352ded179408b35c6428908558518ffe6043169",
+    "summary": []
+  },
+  {
+    "head": "8b8e2fe6d80d32cf6eadbcab25d702e4a8c52ad0",
+    "name": "DIFFCHECK",
+    "command": "git diff --check",
+    "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl546-push-refresh",
+    "log": "/tmp/g546-r2-diffcheck.log",
+    "exit": 0,
+    "timed_out": false,
+    "seconds": 0.04,
+    "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "summary": []
+  }
+]

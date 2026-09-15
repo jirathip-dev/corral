@@ -1,0 +1,151 @@
+{
+  "base_commit": "b6b69f377883d6b2507f8418b6b4dc34f7452145",
+  "reviewed_commit": "b5d0da7945d072ff79453c2202318989d5b74584",
+  "source_commit": "8b8e2fe6d80d32cf6eadbcab25d702e4a8c52ad0",
+  "base_exit": 1,
+  "head_exit": 1,
+  "base_count": 24,
+  "head_count": 24,
+  "added": [],
+  "removed": [],
+  "rules": {
+    "no-force-unwrap": 18,
+    "no-swallowed-errors": 1,
+    "no-shape-in-symbol-names": 4,
+    "no-force-try": 1
+  },
+  "identities": [
+    {
+      "file": "ios/FleetNotifier/App/AppModel.swift",
+      "rule": "no-force-unwrap",
+      "message": "Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.",
+      "source": "DriveClient(host: hostURL ?? URL(string: \"http://127.0.0.1:8474\")!)",
+      "base": 1,
+      "head": 1
+    },
+    {
+      "file": "ios/FleetNotifier/App/AppModel.swift",
+      "rule": "no-swallowed-errors",
+      "message": "Empty catch block swallows the error entirely; failures become invisible. Bind the error, log it, recover deliberately, or rethrow.",
+      "source": "} catch {",
+      "base": 1,
+      "head": 1
+    },
+    {
+      "file": "ios/FleetNotifierTests/EnrollmentClientTests.swift",
+      "rule": "no-shape-in-symbol-names",
+      "message": "Rename \"testStatusDecodesTheApprovedShapeWithGrantsVerbatim\" for its domain role; \"shape\" describes structure rather than ownership.",
+      "source": "func testStatusDecodesTheApprovedShapeWithGrantsVerbatim() async throws {",
+      "base": 1,
+      "head": 1
+    },
+    {
+      "file": "ios/FleetNotifierTests/FleetNotifierTests.swift",
+      "rule": "no-force-try",
+      "message": "`try!` discards the error channel without stating why it cannot fire. Add a // SAFETY: comment documenting the invariant, or propagate/handle the error.",
+      "source": "UserDefaults.standard.set(try! JSONEncoder().encode(meta), forKey: \"fleetnotifier.deviceMeta\")",
+      "base": 1,
+      "head": 1
+    },
+    {
+      "file": "ios/FleetNotifierTests/FleetNotifierTests.swift",
+      "rule": "no-force-unwrap",
+      "message": "Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.",
+      "source": "headerFields: [\"Content-Type\": \"text/event-stream\"])!",
+      "base": 3,
+      "head": 3
+    },
+    {
+      "file": "ios/FleetNotifierTests/FleetNotifierTests.swift",
+      "rule": "no-force-unwrap",
+      "message": "Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.",
+      "source": "headerFields: nil)!",
+      "base": 1,
+      "head": 1
+    },
+    {
+      "file": "ios/FleetNotifierTests/FleetNotifierTests.swift",
+      "rule": "no-force-unwrap",
+      "message": "Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.",
+      "source": "httpVersion: nil, headerFields: nil)!,",
+      "base": 1,
+      "head": 1
+    },
+    {
+      "file": "ios/FleetNotifierTests/FleetNotifierTests.swift",
+      "rule": "no-force-unwrap",
+      "message": "Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.",
+      "source": "let client = CorraldClient(host: URL(string: \"https://sse.test\")!, session: session)",
+      "base": 6,
+      "head": 6
+    },
+    {
+      "file": "ios/FleetNotifierTests/FleetNotifierTests.swift",
+      "rule": "no-force-unwrap",
+      "message": "Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.",
+      "source": "let defaults = UserDefaults(suiteName: suiteName)!",
+      "base": 2,
+      "head": 2
+    },
+    {
+      "file": "ios/FleetNotifierTests/FleetNotifierTests.swift",
+      "rule": "no-force-unwrap",
+      "message": "Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.",
+      "source": "let grantsURL = URL(string: \"http://daemon/grants-read\")!",
+      "base": 1,
+      "head": 1
+    },
+    {
+      "file": "ios/FleetNotifierTests/FleetNotifierTests.swift",
+      "rule": "no-force-unwrap",
+      "message": "Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.",
+      "source": "let scripted = Self.responsesStorage[request.url!]",
+      "base": 1,
+      "head": 1
+    },
+    {
+      "file": "ios/FleetNotifierTests/FleetNotifierTests.swift",
+      "rule": "no-force-unwrap",
+      "message": "Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.",
+      "source": "self.continuation = continuation!",
+      "base": 1,
+      "head": 1
+    },
+    {
+      "file": "ios/FleetNotifierTests/FleetNotifierTests.swift",
+      "rule": "no-force-unwrap",
+      "message": "Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.",
+      "source": "url: url, statusCode: 500, httpVersion: \"HTTP/1.1\", headerFields: nil)!",
+      "base": 1,
+      "head": 1
+    },
+    {
+      "file": "ios/FleetNotifierTests/FleetNotifierTests.swift",
+      "rule": "no-shape-in-symbol-names",
+      "message": "Rename \"testGrantsReadBodyCanonicalShape\" for its domain role; \"shape\" describes structure rather than ownership.",
+      "source": "func testGrantsReadBodyCanonicalShape() {",
+      "base": 1,
+      "head": 1
+    },
+    {
+      "file": "ios/FleetNotifierTests/FleetNotifierTests.swift",
+      "rule": "no-shape-in-symbol-names",
+      "message": "Rename \"testReadTailEnvelopeBytesMatchRustShape\" for its domain role; \"shape\" describes structure rather than ownership.",
+      "source": "func testReadTailEnvelopeBytesMatchRustShape() {",
+      "base": 1,
+      "head": 1
+    },
+    {
+      "file": "ios/FleetNotifierTests/FleetNotifierTests.swift",
+      "rule": "no-shape-in-symbol-names",
+      "message": "Rename \"testRegisterBodyShape\" for its domain role; \"shape\" describes structure rather than ownership.",
+      "source": "func testRegisterBodyShape() {",
+      "base": 1,
+      "head": 1
+    }
+  ],
+  "base_log": "/tmp/g546-aslop-base.log",
+  "head_log": "/tmp/g546-r2-aslop-head.log",
+  "base_log_sha256": "ff7241ddb34bee292d744d09b711a545a2235212c93d9d4c628d3a231778bea1",
+  "head_log_sha256": "d33649a9ff9e5e529535b4174352ded179408b35c6428908558518ffe6043169"
+}

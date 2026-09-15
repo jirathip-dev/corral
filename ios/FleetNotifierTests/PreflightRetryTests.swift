@@ -1263,6 +1263,17 @@ final class LiveSessionTransportTests: XCTestCase {
         let started = PreflightRetryURLProtocol.startedTotal
         let stopped = PreflightRetryURLProtocol.stoppedTotal
         print("ISSUE554_TASKS started=\(started) stopped=\(stopped)")
-        XCTAssertEqual(started, stopped, "(e) zero leaked transport tasks across the flap")
+        // A LEAK is a dispatched request that never came back. URLSession may
+        // ALSO tear down a task that was cancelled before its transport ever
+        // started (measured: a leg after a fresh simulator erase reported more
+        // teardowns than dispatches), so the sound invariant is "no dispatch is
+        // left unmatched", not strict equality.
+        XCTAssertGreaterThanOrEqual(stopped, started,
+                                    "(e) zero leaked transport tasks across the flap")
+        XCTAssertGreaterThanOrEqual(PreflightRetryURLProtocol.stopCount(to: probe),
+                                    PreflightRetryURLProtocol.startCount(to: probe),
+                                    "(e) every probe request dispatched on a retired session must be torn down")
+        XCTAssertGreaterThan(PreflightRetryURLProtocol.startCount(to: probe), 0,
+                             "(e) premise: the flapping dispatched real transport work")
     }
 }

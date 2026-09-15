@@ -45,7 +45,9 @@ if [ "$SELECT" = chain ] || [ "$SELECT" = all ]; then
   echo "--- G3 boundary + self-test ---"
   python3 ios/check-release-demo.py > /tmp/g554-check-release.log 2>&1; echo "CHECK_RELEASE_EXIT=$?"
   python3 ios/check-release-demo.py --self-test > /tmp/g554-self-test.log 2>&1; echo "SELF_TEST_EXIT=$?"
+fi
 
+if [ "$SELECT" = g4 ] || [ "$SELECT" = chain ] || [ "$SELECT" = all ]; then
   echo "--- G4 Debug + Release builds + binary check ---"
   rm -rf /tmp/g554-dd /tmp/g554-debug-dd /tmp/g554-release-dd
   echo "DF_BEFORE_G4: $(df -h / | tail -1)"
@@ -60,18 +62,24 @@ if [ "$SELECT" = chain ] || [ "$SELECT" = all ]; then
     > /tmp/g554-binary.log 2>&1; echo "BINARY_EXIT=$?"
   rm -rf /tmp/g554-debug-dd /tmp/g554-release-dd
   echo "DF_AFTER_G4: $(df -h / | tail -1)"
+fi
 
+if [ "$SELECT" = chain ] || [ "$SELECT" = all ]; then
   echo "--- G5 project-generation drift ---"
   (cd ios && xcodegen generate --spec project.yml) > /tmp/g554-xcodegen.log 2>&1
   echo "XCODEGEN_EXIT=$?"
   git diff --exit-code -- ios/ > /tmp/g554-xcodegen-diff.log 2>&1
   echo "XCODEGEN_DIFF_EXIT=$?"
+fi
 
+if [ "$SELECT" = g6 ] || [ "$SELECT" = chain ] || [ "$SELECT" = all ]; then
   echo "--- G6 advisory anti-slop (head) ---"
   swift run --package-path ios/tools/anti-slop-swift anti-slop \
     ios/FleetNotifier ios/FleetNotifierTests > /tmp/g554-aslop-head.log 2>&1
   echo "ASLOP_EXIT=$?"
+fi
 
+if [ "$SELECT" = chain ] || [ "$SELECT" = all ]; then
   echo "--- G7 hygiene ---"
   git diff --check > /tmp/g554-diffcheck.log 2>&1; echo "DIFFCHECK_EXIT=$?"
 fi

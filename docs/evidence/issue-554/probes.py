@@ -13,6 +13,9 @@ P3  raise the production preflight bound to 60s         -> (c) RED
 P4  shrink the live session's stream timeout            -> (d) RED
 P5  drop the live-session identity guard on a completion
     path (candidate)                                    -> (b) RED
+P6  retire the live transport WITHOUT repairing the holder that still has it
+    installed in the coordinator (the round-1 behaviour the reviewer's F1
+    found)                                              -> (F1) RED, by ABORT
 
 Run via bash docs/evidence/issue-554/run-probes.sh (one /tmp/n.lock invocation).
 """
@@ -32,11 +35,12 @@ subprocess.run(['git', '-C', str(root), 'diff', '--exit-code', '--', 'ios/'], ch
 head = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip()
 subprocess.run(['git', '-C', str(root), 'worktree', 'add', '--detach', str(scratch), head], check=True)
 battery = [
-    'LiveSessionTransportTests/testForegroundCycleInstallsANewSessionAndInvalidatesTheRetiredOne',
     'LiveSessionTransportTests/testCompletionFromTheRetiredSessionIsNeverApplied',
-    'LiveSessionTransportTests/testNeverRespondingHostKeyFailsWithinTheBoundAndEngagesTheLadder',
+    'LiveSessionTransportTests/testForegroundCycleInstallsANewSessionAndInvalidatesTheRetiredOne',
     'LiveSessionTransportTests/testLiveSessionKeepsTheStreamTimeoutAndTheLivenessBudget',
+    'LiveSessionTransportTests/testNeverRespondingHostKeyFailsWithinTheBoundAndEngagesTheLadder',
     'LiveSessionTransportTests/testRapidPhaseFlappingLeavesOneLiveSessionAndNoLeakedTasks',
+    'LiveSessionTransportTests/testRetryDuringRetirementNeverDispatchesOnTheRetiredTransport',
 ]
 BATTERY_SIZE = len(battery)
 EXPECTED_GREEN = 'Executed %d tests, with 0 failures' % BATTERY_SIZE
@@ -103,8 +107,13 @@ mutations = [
      '    }',
      ['LiveSessionTransportTests/testForegroundCycleInstallsANewSessionAndInvalidatesTheRetiredOne']),
     ('P2-no-invalidate', 'ios/FleetNotifier/App/AppModel.swift',
-     '        retiring?.invalidateAndCancel()',
-     '        // Candidate defect: never invalidate the retired session.\n        _ = retiring',
+     '        coordinator?.adoptTransportSession(session)\n'
+     '        transport.invalidateAndCancel()',
+     '        // Candidate defect: retire without invalidating the transport, so\n'
+     '        // the retired session keeps its pooled connections and the\n'
+     '        // identity/leak tests cannot observe a teardown.\n'
+     '        coordinator?.adoptTransportSession(session)\n'
+     '        _ = transport',
      ['LiveSessionTransportTests/testForegroundCycleInstallsANewSessionAndInvalidatesTheRetiredOne',
       'LiveSessionTransportTests/testRapidPhaseFlappingLeavesOneLiveSessionAndNoLeakedTasks']),
     ('P3-slow-preflight', 'ios/FleetNotifier/Profiles/HostStreamCoordinator.swift',
@@ -124,6 +133,15 @@ mutations = [
      '                guard !Task.isCancelled, self.isCurrent(context) else { return }\n'
      '                self.banner = .error("fleet_refresh",',
      ['LiveSessionTransportTests/testCompletionFromTheRetiredSessionIsNeverApplied']),
+    ('P6-no-repair', 'ios/FleetNotifier/App/AppModel.swift',
+     '        coordinator?.adoptTransportSession(session)\n'
+     '        transport.invalidateAndCancel()',
+     '        // Candidate defect: retire the transport WITHOUT repairing the\n'
+     '        // holder that still has it installed (the round-1 behaviour: the\n'
+     '        // coordinator keeps the invalidated session and a live-path retry\n'
+     '        // creates a task on it -> NSGenericException abort).\n'
+     '        transport.invalidateAndCancel()',
+     ['LiveSessionTransportTests/testRetryDuringRetirementNeverDispatchesOnTheRetiredTransport']),
 ]
 for label, relative, old, new, expected in mutations:
     path = scratch / relative

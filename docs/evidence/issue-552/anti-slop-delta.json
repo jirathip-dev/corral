@@ -1,0 +1,19 @@
+{
+  "base_count": 24,
+  "head_count": 24,
+  "added": [],
+  "removed": [],
+  "base_by_rule": {
+    "no-force-unwrap": 18,
+    "no-swallowed-errors": 1,
+    "no-shape-in-symbol-names": 4,
+    "no-force-try": 1
+  },
+  "head_by_rule": {
+    "no-force-unwrap": 18,
+    "no-swallowed-errors": 1,
+    "no-shape-in-symbol-names": 4,
+    "no-force-try": 1
+  },
+  "identity": "relative path + line + column + rule + complete message"
+}

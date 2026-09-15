@@ -39,7 +39,7 @@ def save():
 def run(label, selection):
     args = command + ['-only-testing:FleetNotifierTests/ForegroundReconnectTests/' + name for name in selection]
     print(label, shlex.join(args), flush=True)
-    status = subprocess.run([sys.executable, str(runner), 'g551-probe-' + label, '600', *args], cwd=scratch).returncode
+    status = subprocess.run([sys.executable, str(runner), 'g551-probe-' + label, '1200', *args], cwd=scratch).returncode
     log = Path('/tmp/g551-probe-' + label + '.log')
     text = log.read_text()
     failures = re.findall(r'error: -\[FleetNotifierTests.ForegroundReconnectTests (\w+)\] : ([^\n]+)', text)

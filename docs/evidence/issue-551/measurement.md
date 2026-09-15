@@ -58,6 +58,50 @@ The ordinary suite skips the long measurement test unless explicitly opted in.
 No fixture result can close the physical iPhone/loaded-host gate or establish
 that the user's observed warm-return slowdown is fixed.
 
+## Result at the lane head (this lane's run)
+
+Driver re-run at the lane head with the same method (5 fresh XCTest processes,
+15/15 samples, `TIMINGS_EXIT=0`). Medians in ms, seam entry = the production
+`startLive()` / `.active` call:
+
+| Stage interval | cold_model | warm_30 | warm_300 | warm_30 / cold | warm_300 / cold |
+| --- | --- | --- | --- | --- | --- |
+| `dispatch` (path_ready → key_request; negative) | -1.008 | -0.239 | -1.310 | 0.237× | 1.301× |
+| `key_rtt` | 5.656 | 0.928 | 2.648 | 0.164× | 0.468× |
+| `path_to_sse_200` | 3.628 | 0.514 | 1.453 | 0.142× | 0.400× |
+| `sse_200_to_frame` | 0.974 | 0.274 | 0.589 | 0.281× | 0.605× |
+| `frame_to_apply` | 0.840 | 3.779 | 5.598 | 4.500× | 6.667× |
+| `key_response_to_apply` | 0.279 | 3.840 | 5.799 | 13.786× | 20.822× |
+| `apply_to_row` | 48.948 | 2.894 | 3.434 | 0.059× | 0.070× |
+| `path_to_apply` (path-relative, not trigger-relative) | 5.015 | 4.542 | 8.039 | 0.906× | 1.603× |
+| `seam_entry_to_apply` | 111.149 | 8.338 | 35.342 | 0.075× | 0.318× |
+
+An earlier run of the identical driver on the same base tree (the interrupted
+lane's preserved log) gave the same ordering with smaller absolute cold values
+(42.544 / 14.573 / 16.523 ms), the difference being host build load during this
+run; the ordering is what the driver can carry.
+
+**Implicated stage: none on the measured lane.** The seam-relative total is
+faster warm than cold in both warm scenarios, well inside the issue's
+"≤ cold + 20 %" bar. The only relatively larger warm intervals are the two
+sub-6 ms #547 buffered-apply hops (`frame_to_apply`, `key_response_to_apply`):
+the warm path holds the first frame in the bounded inbox until the key check
+completes, so the apply hop sits inside that hold window. `path_to_apply` is not
+a latency (dispatch is negative in all three scenarios: the path-monitor
+observation lands after the requests already started). No production change was
+made — see `.report.md` §2 for the per-candidate anchors and the mutation
+battery that keeps each pinned mechanism honest.
+
+### What this lane cannot measure (unchanged limitations)
+
+- No socket/TLS/daemon: `URLProtocol` cannot reproduce connection-pool reuse
+  after suspension, OS scheduling, or a loaded remote host, so a warm/cold
+  *transport* difference is outside this lane's reach.
+- `cold_model` is a fresh XCTest host + fresh `AppModel`, not a force-quit
+  process launch; `start_uptime` is the production start call.
+- Absolute milliseconds are host-load sensitive (see the two runs above) and are
+  not a device claim.
+
 ## Runtime invariants and injected defects
 
 The existing `ForegroundReconnectTests` class now checks a real failed preflight

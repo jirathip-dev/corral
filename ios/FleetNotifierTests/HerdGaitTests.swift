@@ -279,6 +279,24 @@ final class HerdGaitTests: XCTestCase {
                        "horseButton must paint with the derived gait exactly once")
     }
 
+    /// #551 r3: the row's `y:` offset must go through the FENCED `HerdHorse.bob`
+    /// (the twin of `roam`), never the inline clock-driven expression that let a
+    /// retained idle row animate. The bundled HerdView source is the file the app
+    /// target compiles, so reverting the call site turns this RED.
+    func testHorseButtonOffsetRoutesTheBobThroughTheFencedModel() throws {
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "HerdView.swift", withExtension: "txt"),
+                                "HerdView.swift.txt must ride in the test bundle")
+        let source = try String(contentsOf: url, encoding: .utf8).filter { !$0.isWhitespace }
+        let call = "privatefunchorseButton("
+        let start = try XCTUnwrap(source.range(of: call))
+        let button = String(source[start.lowerBound...])
+        let fenced = "y:horse.bob(elapsed:elapsed,reduceMotion:reduced,enabled:motionEnabled)"
+        XCTAssertEqual(button.components(separatedBy: fenced).count - 1, 1,
+                       "the row's y: offset must call horse.bob exactly once")
+        XCTAssertEqual(button.components(separatedBy: "y:horse.state==.idle").count - 1, 0,
+                       "the inline bob expression must not survive anywhere in horseButton")
+    }
+
     // MARK: #530 hoof-to-leg correspondence
 
     /// Every coat/breed combination is reachable only through the name-derived

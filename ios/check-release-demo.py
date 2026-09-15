@@ -551,7 +551,10 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # recasts a retained row's state token to `unknown` (last-known state is
     # presented as last-known, with motion withheld instead) and HerdView's
     # doctrine comment follows; re-pinned over the #551 r2 source set.
-    "29b75e2c46ccace78325f8a18fe275787822d4047297af2cf7429a6473cc2c01"
+    # 2026-09-15 #551 r3: the idle vertical bob is fenced like `roam`
+    # (HerdHorse.bob, HerdModel) and HerdView's row offset calls it — the last
+    # motion path the recast removal un-suppressed; re-pinned.
+    "c5f0013fef00cf072c34ae38f08f85febf3f6ecb1eb8242b8d17b3ff7762811d"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -784,7 +787,10 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # (testWarmReturnHerdSurfaceKeepsLastKnownStatesUntilVerified) plus the
     # inverted recast assertions in HerdTests/HerdGaitTests; re-pinned over the
     # #551 r2 test source. Only FleetNotifierTests.swift is digested here.
-    "db1f570c2eea11b4c026fc13fa82f99c8179bdc80c721e7dea59cb8a6bba8877"
+    # 2026-09-15 #551 r3: the retained-idle-row bob regression
+    # (testWarmReturnRetainedIdleRowNeverBobsWhileVerifiedIdleRowAnimates) +
+    # the seeded idle-state fixture parameter; re-pinned.
+    "823a89974d2e06567a20c897bad5f8776faa8e9cb3c04fc399a36c8e93b3b6f3"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

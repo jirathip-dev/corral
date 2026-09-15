@@ -104,6 +104,15 @@ struct HerdHorse: Identifiable, Equatable {
         // 132 pt art in a 156 pt slot leaves 12 pt inset; ±4 retains ≥8.
         return 4 * sin(elapsed * .pi / 12 + identity.phase)
     }
+    /// #551 r3: the idle vertical bob — the `y:` twin of `roam`'s `x:`. It is
+    /// fenced the same way and for the same reason: a RETAINED row must not
+    /// animate, because motion alone implies liveness. Only a verified idle row
+    /// bobs (and Reduce Motion stops it).
+    func bob(elapsed: Double, reduceMotion: Bool, enabled: Bool) -> CGFloat {
+        guard enabled, !disconnected, !reduceMotion, state == .idle, elapsed.isFinite
+        else { return 0 }
+        return sin(elapsed / 4 + identity.phase) * 0.5
+    }
 }
 
 struct HerdPaddock: Identifiable {

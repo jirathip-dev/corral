@@ -14729,6 +14729,7 @@ final class ForegroundReconnectTests: XCTestCase {
 
     private func fixture(hosts: Int = 1, frames: Int = 2,
                          mismatch: Bool = false, retained: Bool = true,
+                         seed seedState: AgentState = .working,
                          policy: VerificationBufferPolicy = .init()) async throws -> Fixture {
         let suite = "corral.547.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -14763,7 +14764,7 @@ final class ForegroundReconnectTests: XCTestCase {
             identityLoader: { (DeviceSigner(key: Curve25519.Signing.PrivateKey()), .insecureFallback) },
             loadMeta: { nil }, saveMeta: { _ in }, wipeIdentity: {}, profileStore: profileStore,
             networkPathMonitor: monitor)
-        let seed = try frame("snapshot", rev: 5, epoch: epoch)
+        let seed = try frame("snapshot", rev: 5, epoch: epoch, state: seedState)
         if retained { await model.fleet.ingest(seed).value }
         model.fleet.verificationBufferPolicy = policy
         for profile in profiles.dropFirst() {
@@ -15165,6 +15166,59 @@ final class ForegroundReconnectTests: XCTestCase {
         XCTAssertTrue(verified.allSatisfy { !$0.disconnected })
         XCTAssertEqual(herdCountsAccessibilityLabel(verified),
                        "1 blocked, 2 working, 1 idle, 0 done, 0 unknown")
+    }
+
+    /// #551 r3: a RETAINED row must not animate at all. The idle vertical bob
+    /// (`HerdView`'s `y:` offset) is the twin of `roam`, and it was the one
+    /// motion path the round-2 recast removal un-suppressed: `motionEnabled`
+    /// (`HerdView.swift:117`) is surface-level (`horses.contains { !$0.disconnected }`)
+    /// while `disconnected` is per row, so in the mixed warm-return window (one
+    /// host verified, one retained) the retained host's idle rows bobbed.
+    /// Removing the `HerdHorse.bob` fence must turn this test RED.
+    func testWarmReturnRetainedIdleRowNeverBobsWhileVerifiedIdleRowAnimates() async throws {
+        var f = try await fixture(hosts: 2, frames: 1, seed: .idle)
+        defer { f.finish() }
+        for url in f.urls {
+            f.script[url.appendingPathComponent("events")] = .init(
+                body: wire([try frame("delta", rev: 6, epoch: epoch, id: "replacement",
+                                      state: .idle)]), holdOpen: true)
+        }
+        ForegroundReconnectURLProtocol.configure(f.script, reset: false)
+        f.start()
+        let other = try XCTUnwrap(f.model.coordinator?.store(profileID: f.profiles[1].id))
+        // Warm return, both host keys held: every row is retained and idle, and
+        // the surface-level motion gate the row's `y:` receives is open, so only
+        // the per-row fence can keep the offset constant.
+        let retainedRows = try herdHorses(f)
+        XCTAssertEqual(retainedRows.count, 2)
+        XCTAssertTrue(retainedRows.allSatisfy { $0.disconnected && $0.state == .idle })
+        for horse in retainedRows { assertBobFrozen(horse, "both hosts retained") }
+        // Host 0 verifies → its idle row is live while host 1's stays retained:
+        // the mixed window a two-host fleet hits on every warm return.
+        f.gates[0].release()
+        await wait { f.model.fleet.lastEventId == 6 }
+        let mixed = try herdHorses(f)
+        let verified = try XCTUnwrap(mixed.first { !$0.disconnected && $0.state == .idle },
+                                     "the verified host must expose an idle row")
+        let retained = try XCTUnwrap(mixed.first { $0.disconnected && $0.state == .idle },
+                                     "the unverified host must keep an idle row")
+        XCTAssertGreaterThan(bobOffsets(verified).count, 1,
+                             "a verified idle row still animates")
+        assertBobFrozen(retained, "one host verified, one retained")
+    }
+
+    /// The production `y:` offset of one row, sampled across an 8 s clock sweep.
+    private func bobOffsets(_ horse: HerdHorse) -> Set<CGFloat> {
+        Set(stride(from: 0.0, through: 8.0, by: 0.5).map {
+            horse.bob(elapsed: $0, reduceMotion: false, enabled: true)
+        })
+    }
+
+    private func assertBobFrozen(_ horse: HerdHorse, _ label: String,
+                                 file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(bobOffsets(horse), [0],
+                       "a retained idle row's offset must be constant (\(label))",
+                       file: file, line: line)
     }
 
     /// The production Herd route for the multi-host board — the SAME projection

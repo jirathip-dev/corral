@@ -497,8 +497,7 @@ struct HerdView: View {
                     }
                     .frame(width:132,height:100)
                     .offset(x:horse.roam(elapsed:elapsed,enabled:motionEnabled && !dragging && !rail),
-                            y:horse.state == .idle && !reduced && motionEnabled
-                                ? sin(elapsed/4+horse.identity.phase)*0.5 : 0)
+                            y:horse.bob(elapsed:elapsed,reduceMotion:reduced,enabled:motionEnabled))
                     .saturation(horse.disconnected ? 0.25 : lighting.night ? 0.82 : 1)
                     .brightness(lighting.night ? -0.07 : 0)
                     if rail {

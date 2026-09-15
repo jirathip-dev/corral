@@ -1,0 +1,78 @@
+# G554 gate exits + per-suite counts (raw exits; logs under /tmp/g554-*.log)
+
+== chain driver output ==
+HEAD=e1431422d5147eb89f0d592178a8cccd52b54ce4
+DF_START: /dev/disk3s1s1   228Gi    12Gi   5.2Gi    70%    459k   54M    1%   /
+--- G1 focused (new #554 class + #451 ladders + scene seam/foreground) ---
+g554-focused_EXIT=0
+FOCUSED_EXIT=0
+--- G1b contract-item-4 pins: the behaviour that must stay byte-for-byte unchanged ---
+g554-pins_EXIT=0
+PINS_EXIT=0
+--- G2 full suite ---
+FULL_EXIT=0
+--- G3 boundary + self-test ---
+CHECK_RELEASE_EXIT=0
+SELF_TEST_EXIT=0
+--- G4 Debug + Release builds + binary check ---
+DF_BEFORE_G4: /dev/disk3s1s1   228Gi    12Gi   4.6Gi    72%    459k   48M    1%   /
+DEBUG_EXIT=0
+RELEASE_EXIT=0
+BINARY_EXIT=0
+DF_AFTER_G4: /dev/disk3s1s1   228Gi    12Gi   4.1Gi    75%    459k   43M    1%   /
+--- G5 project-generation drift ---
+XCODEGEN_EXIT=0
+XCODEGEN_DIFF_EXIT=0
+--- G6 advisory anti-slop (head) ---
+ASLOP_EXIT=1
+--- G7 hygiene ---
+DIFFCHECK_EXIT=0
+--- G6b anti-slop base identity compare ---
+ASLOP_COMPARE_EXIT=1
+DF_END: /dev/disk3s1s1   228Gi    12Gi   3.9Gi    76%    459k   40M    1%   /
+RAW_EXIT=0
+
+== G1 focused suite counts ==
+1673:Test Suite 'ForegroundReconnectTests' passed at 2569-09-15 10:38:30.098 PM.
+1674:	 Executed 19 tests, with 1 test skipped and 0 failures (0 unexpected) in 5.490 (5.513) seconds
+1699:ISSUE554_PREFLIGHT bound=0.3 first_failure_after=0.3243969678878784 attempts=3
+1714:ISSUE554_TASKS started=12 stopped=12
+1716:Test Suite 'LiveSessionTransportTests' passed at 2569-09-15 10:38:32.564 PM.
+1717:	 Executed 5 tests, with 0 failures (0 unexpected) in 2.463 (2.465) seconds
+1854:Test Suite 'PreflightRetryActiveHostTests' passed at 2569-09-15 10:38:38.059 PM.
+1855:	 Executed 6 tests, with 0 failures (0 unexpected) in 5.492 (5.495) seconds
+2658:Test Suite 'PreflightRetryCoordinatorTests' passed at 2569-09-15 10:38:46.539 PM.
+2659:	 Executed 9 tests, with 0 failures (0 unexpected) in 8.475 (8.479) seconds
+3068:Test Suite 'ScenePhaseLifecycleTests' passed at 2569-09-15 10:38:52.065 PM.
+3069:	 Executed 7 tests, with 0 failures (0 unexpected) in 5.523 (5.526) seconds
+3071:	 Executed 46 tests, with 1 test skipped and 0 failures (0 unexpected) in 27.442 (27.480) seconds
+3073:	 Executed 46 tests, with 1 test skipped and 0 failures (0 unexpected) in 27.442 (27.482) seconds
+3084:** TEST SUCCEEDED **
+
+== G1b pin suite counts ==
+1343:Test Suite 'EpochRecoveryTests' passed at 2569-09-15 10:39:32.696 PM.
+1344:	 Executed 7 tests, with 0 failures (0 unexpected) in 0.377 (0.381) seconds
+1353:Test Suite 'GrantsRefreshTests' passed at 2569-09-15 10:39:32.722 PM.
+1354:	 Executed 2 tests, with 0 failures (0 unexpected) in 0.025 (0.026) seconds
+1373:Test Suite 'HostKeyContinuityModelTests' passed at 2569-09-15 10:39:33.161 PM.
+1374:	 Executed 3 tests, with 0 failures (0 unexpected) in 0.437 (0.438) seconds
+1428:Test Suite 'PerHostGrantsRefreshTests' passed at 2569-09-15 10:39:33.595 PM.
+1429:	 Executed 5 tests, with 0 failures (0 unexpected) in 0.430 (0.433) seconds
+1439:Test Suite 'RecentOutputNotGrantedStateTests' passed at 2569-09-15 10:39:33.822 PM.
+1440:	 Executed 4 tests, with 0 failures (0 unexpected) in 0.225 (0.227) seconds
+1442:	 Executed 21 tests, with 0 failures (0 unexpected) in 1.494 (1.507) seconds
+1444:	 Executed 21 tests, with 0 failures (0 unexpected) in 1.494 (1.508) seconds
+1452:** TEST SUCCEEDED **
+
+== G2 full suite ==
+5772:	 Executed 644 tests, with 1 test skipped and 0 failures (0 unexpected) in 169.688 (170.322) seconds
+5774:	 Executed 644 tests, with 1 test skipped and 0 failures (0 unexpected) in 169.688 (170.323) seconds
+5785:** TEST SUCCEEDED **
+
+== G3/G4 ==
+source PASS: 7 native Swift renderer files; 8 unchanged approved icon inputs
+release-demo check: PASS (Debug source preserved; Release boundary verified)
+source PASS: 7 native Swift renderer files; 8 unchanged approved icon inputs
+release-demo check: PASS (Debug source preserved; Release boundary verified)
+release-demo check: PASS (Debug source preserved; Release boundary verified)
+release-demo check: inspected /tmp/g554-release-dd/Build/Products/Release-iphonesimulator/FleetNotifier.app/FleetNotifier

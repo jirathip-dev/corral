@@ -1037,9 +1037,12 @@ final class LiveSessionTransportTests: XCTestCase {
     func testForegroundCycleInstallsANewSessionAndInvalidatesTheRetiredOne() async throws {
         defer { cleanup() }
         let host = try hostURL()
+        let key = try keyURL()
         let probe = try probeURL()
         var script: [URL: [PreflightRetryURLProtocol.Outcome]] = [:]
-        script[host.appendingPathComponent("/host-key")] = [.holdOpen]
+        // Session #1's preflight hangs; the foreground session's own preflight
+        // is answered, so the new transport is provably functional.
+        script[key] = [.holdOpen, .ok(Self.pinnedKey)]
         script[host.appendingPathComponent("/events")] = [.holdOpen]
         script[probe] = [.holdOpen]
         let session = scriptedSession(script)
@@ -1073,6 +1076,13 @@ final class LiveSessionTransportTests: XCTestCase {
         XCTAssertEqual(failure.domain, NSURLErrorDomain)
         XCTAssertEqual(failure.code, NSURLErrorCancelled,
                        "(a) invalidateAndCancel() must tear the retired session's task down")
+        // The new session's OWN preflight is answered on the derived transport,
+        // while the retired session's attempt never delivered a response.
+        await waitUntil(PreflightRetryURLProtocol.deliveredCount(to: key) == 1, timeout: 3)
+        XCTAssertEqual(PreflightRetryURLProtocol.deliveredCount(to: key), 1,
+                       "(a) the foreground session's preflight must run on the derived transport")
+        XCTAssertEqual(model.keyContinuityState, .verified,
+                       "(a) the fresh session verifies against an empty pool")
     }
 
     /// (b) A completion belonging to the RETIRED session is dropped: a pull

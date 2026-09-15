@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -48,7 +49,7 @@ def main():
         assert result.returncode == expected, record
         if expected:
             text = log.read_text()
-            assert 'XCTAssert' in text and f'{method}' in text and '** TEST FAILED **' in text, 'require assertion RED, not build failure'
+            assert 'XCTAssert' in text and re.search(r'Test Case .*' + re.escape(method) + r'.*failed', text), 'require assertion RED, not build failure'
             assert 'error: emit-module' not in text and 'Testing cancelled because the build failed' not in text
         else:
             assert '** TEST SUCCEEDED **' in log.read_text()

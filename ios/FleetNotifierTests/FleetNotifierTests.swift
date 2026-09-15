@@ -15056,3 +15056,472 @@ final class ForegroundReconnectTests: XCTestCase {
         }
     }
 }
+
+// MARK: - #546 optional, bounded background hints (real delegate seam)
+
+@MainActor
+final class BackgroundHintTests: XCTestCase {
+    @MainActor private final class Clock {
+        var wall: TimeInterval = 10_000
+        var uptime: TimeInterval = 100
+        var allowed = true
+    }
+
+    @MainActor private final class Receipt {
+        var results: [UIBackgroundFetchResult] = []
+    }
+
+    @MainActor private final class Fixture {
+        let suite = "corral.h546.\(UUID().uuidString)"
+        let directory: URL
+        let defaults: UserDefaults
+        let profiles: HostProfileStore
+        let hosts: [HostProfile]
+        let session: URLSession
+        let delegate: AppDelegate
+        let clock = Clock()
+        let deadline = DriveRequestGate()
+        let model: AppModel
+
+        init(enabled: Bool? = true, enrolled: Bool = true) throws {
+            directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+            profiles = HostProfileStore(directory: directory, defaults: defaults)
+            let profiles = profiles
+            hosts = try (1...3).map { index in
+                try profiles.addProfile(displayName: "Fixture \(index)",
+                    urlString: "https://hint-\(index).example",
+                    hostKeyB64: Data(repeating: UInt8(index), count: 32).base64EncodedString(),
+                    keyId: enrolled ? "fixture-device" : nil, registeredAt: 1)
+            }
+            let config = URLSessionConfiguration.ephemeral
+            config.protocolClasses = [DeterministicDriveURLProtocol.self]
+            session = URLSession(configuration: config)
+            let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+            delegate = AppDelegate(session: session, defaults: defaults, identityProvider: { signer })
+            let clock = clock
+            let deadline = deadline
+            model = AppModel(session: session, defaults: defaults,
+                identityLoader: { (signer, .insecureFallback) }, loadMeta: { nil },
+                saveMeta: { _ in }, wipeIdentity: {}, profileStore: profiles,
+                registerForRemoteNotifications: { XCTFail("hint setting must not register visible alerts") },
+                backgroundNow: { clock.wall }, backgroundUptime: { clock.uptime },
+                backgroundAllowed: { clock.allowed }, backgroundSleep: { seconds in
+                    XCTAssertEqual(seconds, 15, "handler deadline must be fifteen seconds")
+                    _ = await deadline.wait()
+                })
+            if let enabled { model.setBackgroundRefreshEnabled(enabled) }
+        }
+
+        func finish() {
+            model.cancelBackgroundRefreshes()
+            deadline.cancel()
+            model.stopLive()
+            session.invalidateAndCancel()
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: directory)
+            DeterministicDriveURLProtocol.clearScript()
+            KeyContinuityGate.reset()
+        }
+
+        func hint(_ host: Int = 0) -> [AnyHashable: Any] {
+            ["v": 1, "type": "board_changed", "host_id": hosts[host].hostKeyB64 ?? "", "aps": ["content-available": 1]]
+        }
+
+        func receive(_ payload: [AnyHashable: Any]? = nil) -> Receipt {
+            let receipt = Receipt()
+            delegate.application(UIApplication.shared, didReceiveRemoteNotification: payload ?? hint()) {
+                receipt.results.append($0)
+            }
+            return receipt
+        }
+
+        func script(host: Int = 0, rev: UInt64 = 5, epoch: String? = "A",
+                    gate: DriveRequestGate? = nil, keyGate: DriveRequestGate? = nil,
+                    returnedKey: String? = nil, status: Int = 200) throws -> DeterministicDriveScript {
+            let key = try XCTUnwrap(hosts[host].hostKeyB64)
+            let agent = Agent(agentId: "row", state: .working, seq: rev, ts: 1,
+                              host: key, title: "Allowed board title")
+            let snapshot = Snapshot(schemaVersion: 5, rev: rev, generatedAt: 1,
+                                    agents: ["row": agent], epoch: epoch)
+            var gates: [String: DriveRequestGate] = [:]
+            gates["/snapshot"] = gate
+            gates["/host-key"] = keyGate
+            let script = DeterministicDriveScript(responses: [
+                "/host-key": try JSONEncoder().encode(HostKeyResponse(algorithm: "X25519", publicKey: returnedKey ?? key)),
+                "/snapshot": try JSONEncoder().encode(snapshot)
+            ], gates: gates, statuses: ["/snapshot": status])
+            DeterministicDriveURLProtocol.setScript(script)
+            return script
+        }
+    }
+
+    private func wait(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
+        let deadline = ProcessInfo.processInfo.systemUptime + 3
+        while !condition(), ProcessInfo.processInfo.systemUptime < deadline {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertTrue(condition(), "bounded handler observation timed out", file: file, line: line)
+        if !condition() { throw URLError(.timedOut) }
+    }
+
+    func testOffByDefaultAndIndependentOfVisiblePreference() async throws {
+        let f = try Fixture(enabled: nil)
+        defer { f.finish() }
+        XCTAssertNil(f.defaults.object(forKey: AppModel.backgroundRefreshKey))
+        XCTAssertFalse(f.model.backgroundRefreshEnabled)
+        let script = try f.script()
+        let receipt = f.receive()
+        XCTAssertEqual(receipt.results, [.noData])
+        XCTAssertTrue(script.log.requests.isEmpty)
+        XCTAssertNil(f.defaults.data(forKey: AppModel.backgroundAttemptsKey))
+        XCTAssertFalse(f.model.notificationsEnabled)
+        f.model.setBackgroundRefreshEnabled(true)
+        let accepted = f.receive()
+        try await wait { accepted.results.count == 1 }
+        XCTAssertEqual(accepted.results, [.newData])
+        XCTAssertFalse(f.model.notificationsEnabled, "silent refresh must not opt into visible alerts")
+    }
+
+    func testUnknownRemovedUnenrolledAndTrustDeniedDoNotFetch() throws {
+        let f = try Fixture()
+        defer { f.finish() }
+        let script = try f.script()
+        var unknown = f.hint()
+        unknown["host_id"] = Data(repeating: 99, count: 32).base64EncodedString()
+        XCTAssertEqual(f.receive(unknown).results, [.noData])
+        f.profiles.noteConnectionState(id: f.hosts[0].id, .keyMismatch)
+        XCTAssertEqual(f.receive().results, [.noData])
+        f.profiles.noteConnectionState(id: f.hosts[0].id, .awaitingFingerprintConfirmation)
+        XCTAssertEqual(f.receive().results, [.noData])
+        f.profiles.removeProfile(id: f.hosts[0].id)
+        XCTAssertEqual(f.receive().results, [.noData])
+        XCTAssertTrue(script.log.requests.isEmpty, "untrusted/unknown host must not fetch")
+        XCTAssertNil(f.defaults.data(forKey: AppModel.backgroundAttemptsKey))
+        XCTAssertTrue(f.model.fleet.agents.isEmpty)
+    }
+
+    func testUnenrolledHostHasNoFetchOrPersistence() throws {
+        let f = try Fixture(enrolled: false)
+        defer { f.finish() }
+        let script = try f.script()
+        XCTAssertEqual(f.receive().results, [.noData])
+        XCTAssertTrue(script.log.requests.isEmpty)
+        XCTAssertNil(f.defaults.data(forKey: AppModel.backgroundAttemptsKey))
+    }
+
+    func testCompletionOwnerIsExactlyOnceAcrossTerminalPaths() {
+        let receipt = Receipt()
+        let request = BackgroundRefreshRequest { receipt.results.append($0) }
+        request.finish(.newData)
+        request.finish(.failed)
+        request.finish(.noData)
+        XCTAssertEqual(receipt.results, [.newData], "every terminal path shares the exactly-once guard")
+        XCTAssertTrue(request.finished)
+        XCTAssertNil(request.work)
+        XCTAssertNil(request.deadline)
+    }
+
+    func testSettingsUsesIndependentRefreshBindingAndTruthfulGuidance() throws {
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "FleetViews", withExtension: "swift.txt"))
+        let source = try String(contentsOf: url, encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "Toggle(\"Background snapshot refresh\""))
+        let end = try XCTUnwrap(source.range(of: "if !model.pendingPushTokenClears.isEmpty", range: start.upperBound..<source.endIndex))
+        let control = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(control.contains("get: { model.backgroundRefreshEnabled }"))
+        XCTAssertTrue(control.contains("set: { model.setBackgroundRefreshEnabled($0) }"))
+        XCTAssertFalse(control.contains("notificationPermission"))
+        for guidance in ["not yet available", "iOS may delay or discard", "Low Power Mode", "force-quit", "No transcript cache"] {
+            XCTAssertTrue(control.contains(guidance))
+        }
+    }
+
+    func testFreshKeyMismatchStopsBeforeSnapshot() async throws {
+        let f = try Fixture()
+        defer { f.finish() }
+        let script = try f.script(returnedKey: f.hosts[1].hostKeyB64)
+        let receipt = f.receive()
+        try await wait { receipt.results.count == 1 }
+        XCTAssertEqual(receipt.results, [.noData])
+        XCTAssertEqual(script.log.requests.map { $0.url?.path }, ["/host-key"])
+        XCTAssertEqual(f.model.backgroundRefreshCount, 0)
+        XCTAssertNil(f.profiles.boardCache.load(for: f.hosts[0].id))
+    }
+
+    func testClosedSchemaRejectsMalformedAndAllExtraContent() throws {
+        let f = try Fixture()
+        defer { f.finish() }
+        let script = try f.script()
+        var invalid: [[AnyHashable: Any]] = [[:]]
+        for field in ["prompt", "output", "repo", "branch", "url", "agents", "title", "body", "sender", "device_id"] {
+            var payload = f.hint()
+            payload[field] = "not allowed"
+            invalid.append(payload)
+        }
+        for value: Any in [true, "1", 0, 2, 1.5, NSNull()] {
+            var payload = f.hint()
+            payload["aps"] = ["content-available": value]
+            invalid.append(payload)
+            payload = f.hint()
+            payload["v"] = value
+            invalid.append(payload)
+        }
+        for aps: [String: Any] in [["content-available": 1, "alert": "content"], ["content-available": 1, "sound": "default"]] {
+            var payload = f.hint()
+            payload["aps"] = aps
+            invalid.append(payload)
+        }
+        for payload in invalid {
+            XCTAssertEqual(f.receive(payload).results, [.noData], "closed hint schema must refuse extra content")
+        }
+        XCTAssertTrue(script.log.requests.isEmpty)
+        XCTAssertNil(f.defaults.data(forKey: AppModel.backgroundAttemptsKey))
+        XCTAssertEqual(f.model.backgroundRefreshCount, 0)
+    }
+
+    func testOneSnapshotPersistsOnlyBoardMetadataAndNeverMarksLive() async throws {
+        let f = try Fixture()
+        defer { f.finish() }
+        f.model.stopLive() // Real #547 background verification posture.
+        XCTAssertTrue(f.model.fleet.awaitingHostVerification)
+        let script = try f.script()
+        let receipt = f.receive()
+        try await wait { receipt.results.count == 1 }
+        XCTAssertEqual(receipt.results, [.newData])
+        XCTAssertEqual(script.log.requests.map { $0.url?.path }, ["/host-key", "/snapshot"])
+        XCTAssertEqual(f.model.fleet.agent("row")?.seq, 5)
+        XCTAssertEqual(f.model.fleet.lastEventId, 5)
+        XCTAssertEqual(f.model.fleet.lastEventEpoch, "A")
+        XCTAssertNotEqual(f.model.fleet.connectionState, .connected, "snapshot-only path must never mark Live")
+        XCTAssertTrue(f.model.fleet.awaitingHostVerification, "hint must not release foreground trust gate")
+        XCTAssertFalse(f.model.fleet.isStreaming)
+        XCTAssertEqual(f.model.backgroundRefreshCount, 0)
+        let reloadedDefaults = try XCTUnwrap(UserDefaults(suiteName: f.suite))
+        let reloaded = HostProfileStore(directory: f.directory, defaults: reloadedDefaults)
+        XCTAssertEqual(reloaded.cursor(for: f.hosts[0].id), 5)
+        XCTAssertEqual(reloaded.cursorEpoch(for: f.hosts[0].id), "A")
+        XCTAssertEqual(reloaded.boardCache.load(for: f.hosts[0].id)?.map(\.agentID), ["row"])
+        let url = try XCTUnwrap(reloaded.boardCache.cacheFileURL(for: f.hosts[0].id))
+        let rows = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]])
+        XCTAssertTrue(Set(rows.flatMap { $0.keys }).intersection(["agents", "lines", "blocks", "transcript", "prompt"]).isEmpty)
+        let attempts = try XCTUnwrap(f.defaults.data(forKey: AppModel.backgroundAttemptsKey))
+        let records = try XCTUnwrap(JSONSerialization.jsonObject(with: attempts) as? [[String: Any]])
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(Set(try XCTUnwrap(records.first).keys), ["hostID", "attemptedAt"])
+    }
+
+    func testCoalescesInflightEvenAfterRateWindow() async throws {
+        let f = try Fixture()
+        defer { f.finish() }
+        let gate = DriveRequestGate()
+        defer { gate.release() }
+        let script = try f.script(gate: gate)
+        let first = f.receive()
+        try await wait { script.log.requests.count == 2 }
+        f.clock.wall += 3601 // Quota cannot hide a missing in-flight guard.
+        XCTAssertEqual(f.receive().results, [.noData])
+        XCTAssertEqual(script.log.requests.count, 2)
+        gate.release()
+        try await wait { first.results.count == 1 }
+        XCTAssertEqual(first.results, [.newData])
+        XCTAssertEqual(f.model.backgroundRefreshCount, 0)
+    }
+
+    func testHostThirtyMinuteCeilingAndDeviceHourlyCeiling() async throws {
+        let f = try Fixture()
+        defer { f.finish() }
+        _ = try f.script()
+        let first = f.receive()
+        try await wait { first.results.count == 1 }
+        f.clock.wall += 1799
+        XCTAssertEqual(f.receive().results, [.noData], "host ceiling must refuse before thirty minutes")
+        f.clock.wall += 1
+        let secondScript = try f.script()
+        let second = f.receive()
+        try await wait { second.results.count == 1 }
+        XCTAssertEqual(second.results, [.newData])
+        XCTAssertEqual(secondScript.log.requests.count, 2)
+        _ = try f.script(host: 1)
+        XCTAssertEqual(f.receive(f.hint(1)).results, [.noData], "device ceiling must refuse a third attempt")
+        f.clock.wall += 1800
+        let thirdScript = try f.script(host: 1)
+        let third = f.receive(f.hint(1))
+        try await wait { third.results.count == 1 }
+        XCTAssertEqual(third.results, [.newData])
+        XCTAssertEqual(thirdScript.log.requests.map { $0.url?.host }, ["hint-2.example", "hint-2.example"])
+        XCTAssertEqual(f.model.fleet.lastEventId, 5, "other host cannot mutate active cursor")
+        XCTAssertEqual(f.profiles.cursor(for: f.hosts[1].id), 5)
+        XCTAssertNil(f.profiles.cursor(for: f.hosts[2].id))
+    }
+
+    func testQuotaSurvivesFreshModelAndOptOutRoundTrip() async throws {
+        let f = try Fixture()
+        defer { f.finish() }
+        _ = try f.script()
+        let first = f.receive()
+        try await wait { first.results.count == 1 }
+        f.model.setBackgroundRefreshEnabled(false)
+        f.model.setBackgroundRefreshEnabled(true)
+        let second = f.receive()
+        XCTAssertEqual(second.results, [.noData])
+        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        let restored = AppModel(session: f.session, defaults: try XCTUnwrap(UserDefaults(suiteName: f.suite)),
+            identityLoader: { (signer, .insecureFallback) }, loadMeta: { nil }, saveMeta: { _ in },
+            wipeIdentity: {}, profileStore: f.profiles, backgroundNow: { f.clock.wall }, backgroundAllowed: { true })
+        defer { restored.cancelBackgroundRefreshes() }
+        XCTAssertTrue(restored.backgroundRefreshEnabled)
+        XCTAssertEqual(f.receive().results, [.noData], "persisted quota must survive new model")
+        f.clock.wall -= 100
+        XCTAssertEqual(f.receive().results, [.noData], "clock rollback must not reopen quota")
+    }
+
+    func testLocalDeadlineCompletesOnceWithoutHostResponseAndCancels() async throws {
+        let f = try Fixture()
+        defer { f.finish() }
+        let gate = DriveRequestGate()
+        defer { gate.release() }
+        let script = try f.script(keyGate: gate)
+        let receipt = f.receive()
+        try await wait { script.log.requests.count == 1 }
+        f.clock.uptime += 15
+        f.deadline.release()
+        try await wait { receipt.results.count == 1 }
+        XCTAssertEqual(receipt.results, [.failed])
+        XCTAssertEqual(f.model.backgroundRefreshCount, 0)
+        try await wait { script.log.cancelled.value >= 1 }
+        gate.release()
+        try await wait { script.log.completed.value >= 1 }
+        XCTAssertEqual(receipt.results, [.failed], "timeout/late network completion must complete exactly once")
+        XCTAssertEqual(script.log.requests.count, 1)
+        XCTAssertNil(f.profiles.cursor(for: f.hosts[0].id))
+    }
+
+    func testLateSnapshotIsRefusedEvenBeforeDeadlineTaskRuns() async throws {
+        let f = try Fixture()
+        defer { f.finish() }
+        let gate = DriveRequestGate()
+        defer { gate.release() }
+        let script = try f.script(gate: gate)
+        let receipt = f.receive()
+        try await wait { script.log.requests.count == 2 }
+        f.clock.uptime += 15
+        gate.release() // Deadline wait deliberately remains parked.
+        try await wait { receipt.results.count == 1 }
+        XCTAssertEqual(receipt.results, [.noData], "elapsed budget must prevent late apply")
+        XCTAssertTrue(f.model.fleet.agents.isEmpty)
+        XCTAssertNil(f.profiles.cursor(for: f.hosts[0].id))
+        XCTAssertEqual(f.model.backgroundRefreshCount, 0)
+    }
+
+    func testDisableCancelsAndLateResultCannotApply() async throws {
+        let f = try Fixture()
+        defer { f.finish() }
+        let gate = DriveRequestGate()
+        defer { gate.release() }
+        let script = try f.script(gate: gate)
+        let receipt = f.receive()
+        try await wait { script.log.requests.count == 2 }
+        f.model.setBackgroundRefreshEnabled(false)
+        XCTAssertEqual(receipt.results, [.noData])
+        XCTAssertEqual(f.model.backgroundRefreshCount, 0)
+        f.deadline.release()
+        gate.release()
+        try await wait { script.log.completed.value >= 2 }
+        XCTAssertEqual(receipt.results, [.noData], "cancel must complete exactly once")
+        XCTAssertTrue(f.model.fleet.agents.isEmpty)
+        XCTAssertNil(f.profiles.cursor(for: f.hosts[0].id))
+    }
+
+    func testForegroundNotificationCancelsWithoutSceneHandlerChanges() async throws {
+        let f = try Fixture()
+        defer { f.finish() }
+        let gate = DriveRequestGate()
+        defer { gate.release() }
+        let script = try f.script(gate: gate)
+        let receipt = f.receive()
+        try await wait { script.log.requests.count == 2 }
+        NotificationCenter.default.post(name: UIScene.willEnterForegroundNotification, object: nil)
+        XCTAssertEqual(receipt.results, [.noData], "foreground notification must cancel immediately")
+        gate.release()
+        try await wait { script.log.completed.value >= 2 }
+        XCTAssertTrue(f.model.fleet.agents.isEmpty)
+        XCTAssertNil(f.profiles.cursor(for: f.hosts[0].id))
+        XCTAssertEqual(f.model.backgroundRefreshCount, 0)
+    }
+
+    func testRemovedHostCannotBeRecreatedByLateSnapshot() async throws {
+        let f = try Fixture()
+        defer { f.finish() }
+        let gate = DriveRequestGate()
+        defer { gate.release() }
+        let script = try f.script(host: 1, gate: gate)
+        let receipt = f.receive(f.hint(1))
+        try await wait { script.log.requests.count == 2 }
+        // Store removal is also caught even without AppModel's eager cancel.
+        f.profiles.removeProfile(id: f.hosts[1].id)
+        gate.release()
+        try await wait { receipt.results.count == 1 }
+        XCTAssertEqual(receipt.results, [.noData])
+        XCTAssertNil(f.profiles.profile(id: f.hosts[1].id))
+        XCTAssertNil(f.profiles.boardCache.load(for: f.hosts[1].id))
+        XCTAssertNil(f.profiles.cursor(for: f.hosts[1].id))
+    }
+
+    func testNewerStreamDataAndNewEpochWinEvenOverHigherHintRev() async throws {
+        for epoch in ["A", "B"] {
+            let f = try Fixture()
+            defer { f.finish() }
+            let gate = DriveRequestGate()
+            defer { gate.release() }
+            let script = try f.script(rev: 100, gate: gate)
+            let receipt = f.receive()
+            try await wait { script.log.requests.count == 2 }
+            let fresh = Snapshot(schemaVersion: 5, rev: 10, generatedAt: 1,
+                                 agents: ["fresh": Agent(agentId: "fresh", state: .idle, seq: 10, ts: 1)], epoch: epoch)
+            let data = try JSONEncoder().encode(fresh)
+            _ = f.model.fleet.ingest(SSEFrame(kind: .snapshot, id: 10, data: String(decoding: data, as: UTF8.self)))
+            try await wait { f.model.fleet.lastEventId == 10 }
+            gate.release()
+            try await wait { receipt.results.count == 1 }
+            XCTAssertEqual(receipt.results, [.noData], "new stream data takes precedence regardless of hint revision")
+            XCTAssertEqual(Set(f.model.fleet.agents.keys), ["fresh"])
+            XCTAssertEqual(f.model.fleet.lastEventId, 10)
+            XCTAssertEqual(f.model.fleet.lastEventEpoch, epoch)
+            XCTAssertNil(f.profiles.cursor(for: f.hosts[0].id))
+        }
+    }
+
+    func testOlderAndCrossEpochSnapshotsCannotResetCursor() async throws {
+        for (epoch, rev): (String?, UInt64) in [("A", 9), ("B", 100), (nil, 100)] {
+            let f = try Fixture()
+            defer { f.finish() }
+            f.model.fleet.restoreCursor(rev: 10, epoch: "A")
+            _ = try f.script(rev: rev, epoch: epoch)
+            let receipt = f.receive()
+            try await wait { receipt.results.count == 1 }
+            XCTAssertEqual(receipt.results, [.noData], "hint cannot reset epoch or roll cursor backwards")
+            XCTAssertEqual(f.model.fleet.lastEventId, 10)
+            XCTAssertEqual(f.model.fleet.lastEventEpoch, "A")
+            XCTAssertTrue(f.model.fleet.agents.isEmpty)
+            XCTAssertNotEqual(f.model.fleet.connectionState, .connected)
+        }
+    }
+
+    func testOSUnavailableAndNetworkErrorStayStaleWithoutRetry() async throws {
+        let f = try Fixture()
+        defer { f.finish() }
+        let script = try f.script(status: 503)
+        f.clock.allowed = false
+        XCTAssertEqual(f.receive().results, [.noData])
+        XCTAssertTrue(script.log.requests.isEmpty)
+        f.clock.allowed = true
+        let receipt = f.receive()
+        try await wait { receipt.results.count == 1 }
+        XCTAssertEqual(receipt.results, [.failed])
+        XCTAssertEqual(script.log.requests.count, 2)
+        XCTAssertEqual(f.model.backgroundRefreshCount, 0)
+        XCTAssertTrue(f.model.fleet.agents.isEmpty)
+        XCTAssertNotEqual(f.model.fleet.connectionState, .connected)
+        XCTAssertNil(f.profiles.boardCache.load(for: f.hosts[0].id))
+    }
+}

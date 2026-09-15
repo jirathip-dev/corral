@@ -149,6 +149,22 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     /// still retained and picked up by the next startLive() fan-out.
     var onDeviceTokenReceived: (@Sendable (String) -> Void)?
 
+    @MainActor weak var backgroundRefreshModel: AppModel?
+
+    /// One background-delivery entry point, separate from visible-alert taps.
+    /// If model restoration has not finished, fail closed; never construct a
+    /// second model or enroll a host from a notification.
+    @MainActor
+    func application(_ application: UIApplication,
+                     didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+                     fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
+        guard let model = backgroundRefreshModel else {
+            completionHandler(.noData)
+            return
+        }
+        model.receiveBackgroundHint(userInfo, completion: completionHandler)
+    }
+
     func application(_ application: UIApplication,
                      didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         let hex = deviceToken.map { String(format: "%02x", $0) }.joined()
@@ -265,6 +281,63 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                 tokenState.failed(context, token: hex)
             }
         }
+    }
+}
+
+/// Closed, content-free v1 hint. APNs push-type/priority are HTTP headers
+/// owned by the sender; iOS does not expose them in userInfo.
+struct BackgroundHint: Sendable {
+    let hostID: String
+
+    static func parse(_ info: [AnyHashable: Any]) -> BackgroundHint? {
+        guard Set(info.keys) == Set(["v", "type", "host_id", "aps"]),
+              info["type"] as? String == "board_changed",
+              isOne(info["v"]),
+              let host = info["host_id"] as? String,
+              let raw = HostKeyTrust.rawKey(from: host),
+              raw.base64EncodedString() == host,
+              let aps = info["aps"] as? [AnyHashable: Any],
+              Set(aps.keys) == Set(["content-available"]),
+              isOne(aps["content-available"]) else { return nil }
+        return BackgroundHint(hostID: host)
+    }
+
+    private static func isOne(_ value: Any?) -> Bool {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID() else { return false }
+        return number == 1
+    }
+}
+
+/// Only the two most recent admitted attempts can survive a launch. Entries
+/// expire logically after an hour; disk pruning is lazy (next launch/admission).
+/// Wall-clock rollback is conservative: future-dated entries still consume quota.
+struct BackgroundHintAttempt: Codable {
+    let hostID: String
+    let attemptedAt: TimeInterval
+}
+
+/// Unstructured deadline ownership: completion never awaits an unresponsive
+/// network task. Every terminal path cancels both owners and retires the claim.
+@MainActor
+final class BackgroundRefreshRequest {
+    var work: Task<Void, Never>?
+    var deadline: Task<Void, Never>?
+    private(set) var finished = false
+    private let completion: (UIBackgroundFetchResult) -> Void
+
+    init(completion: @escaping (UIBackgroundFetchResult) -> Void) {
+        self.completion = completion
+    }
+
+    func finish(_ result: UIBackgroundFetchResult) {
+        guard !finished else { return }
+        finished = true
+        work?.cancel()
+        deadline?.cancel()
+        work = nil
+        deadline = nil
+        completion(result)
     }
 }
 

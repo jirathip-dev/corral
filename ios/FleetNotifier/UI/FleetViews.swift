@@ -4222,6 +4222,19 @@ struct SettingsView: View {
                                 .font(.caption)
                                 .foregroundStyle(theme.subtext1)
                         }
+                        Toggle("Background snapshot refresh",
+                               isOn: Binding(get: { model.backgroundRefreshEnabled },
+                                             set: { model.setBackgroundRefreshEnabled($0) }))
+                            .accessibilityIdentifier("settings.background-refresh")
+                        Text("Optional, best-effort refresh; off by default and independent of alerts. Requires a compatible authenticated hint relay (not yet available). Data is fetched directly from your paired host over its private path, never through the relay.")
+                            .font(.caption)
+                            .foregroundStyle(theme.subtext1)
+                        Text("iOS may delay or discard hints. Background App Refresh must be enabled; Low Power Mode, force-quit, or an unavailable host/Tailscale path can prevent refresh. No always-on sync. Turning this off cancels hint-driven work.")
+                            .font(.caption)
+                            .foregroundStyle(theme.subtext1)
+                        Text("Limits: one observed attempt per host per 30 minutes, two per device per hour, and 15 seconds per handler. Only the existing board metadata and cursor are saved, plus up to two opaque host IDs and attempt times. Attempt times expire after an hour and are pruned on the next launch or admitted hint; board metadata stays until replaced or the host is removed. No transcript cache.")
+                            .font(.caption)
+                            .foregroundStyle(theme.subtext1)
                         if !model.pendingPushTokenClears.isEmpty {
                             let names = model.pendingPushClearNames()
                             Label("Notification enrollment cleanup pending for: \(names.joined(separator: ", ")). It clears when that host reconnects; a removed host that never returns must be dropped host-side.",

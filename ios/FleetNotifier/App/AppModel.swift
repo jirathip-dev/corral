@@ -551,6 +551,17 @@ final class AppModel: ObservableObject {
     /// re-renders when the fleet changes.
     private var fleetChanges: AnyCancellable?
 
+    static let backgroundRefreshKey = "fleetnotifier.backgroundRefreshEnabled"
+    static let backgroundAttemptsKey = "fleetnotifier.backgroundHintAttempts.v1"
+    @Published private(set) var backgroundRefreshEnabled: Bool
+    private var backgroundRefreshes: [UUID: BackgroundRefreshRequest] = [:]
+    var backgroundRefreshCount: Int { backgroundRefreshes.count }
+    private var backgroundForegroundObserver: AnyCancellable?
+    private let backgroundNow: () -> TimeInterval
+    private let backgroundUptime: () -> TimeInterval
+    private let backgroundSleep: @Sendable (TimeInterval) async throws -> Void
+    private let backgroundAllowed: () -> Bool
+
     static let notificationsKey = "fleetnotifier.notificationsEnabled"
     private static let log = Logger(subsystem: "com.corral.fleetnotifier", category: "host-profiles")
 
@@ -670,6 +681,16 @@ final class AppModel: ObservableObject {
          networkPathMonitor: NetworkPathMonitoring = SystemNetworkPathMonitor(),
          pathHintDebounce: TimeInterval = 0.5,
          enrollmentPollInterval: TimeInterval = 2,
+         backgroundNow: @escaping () -> TimeInterval = { Date().timeIntervalSince1970 },
+         backgroundUptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+         backgroundAllowed: @escaping () -> Bool = {
+             UIApplication.shared.applicationState == .background
+                 && UIApplication.shared.backgroundRefreshStatus == .available
+                 && !ProcessInfo.processInfo.isLowPowerModeEnabled
+         },
+         backgroundSleep: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
+             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+         },
          pathHintSleep: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
              try await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
          }) {
@@ -679,6 +700,11 @@ final class AppModel: ObservableObject {
         self.session = session
         self.identityLifecycle = identityLifecycle
         self.defaults = defaults
+        self.backgroundNow = backgroundNow
+        self.backgroundUptime = backgroundUptime
+        self.backgroundAllowed = backgroundAllowed
+        self.backgroundSleep = backgroundSleep
+        self.backgroundRefreshEnabled = defaults.bool(forKey: Self.backgroundRefreshKey)
         self.notificationPermissionProvider = notificationPermissionProvider
         self.registerForRemoteNotifications = registerForRemoteNotifications
         // #451: the same bounded preflight ladder paces the ACTIVE host's
@@ -796,6 +822,13 @@ final class AppModel: ObservableObject {
             identityLifecycle.setCurrent(mode: .needsSetup, hostURL: nil,
                                          keyId: nil, signerPublicKeyB64: nil)
         }
+        AppDelegate.shared?.backgroundRefreshModel = self
+        // A separate scene notification, not the #545 scene-phase handler.
+        backgroundForegroundObserver = NotificationCenter.default.publisher(
+            for: UIScene.willEnterForegroundNotification).sink { [weak self] _ in
+                self?.cancelBackgroundRefreshes()
+            }
+        pruneBackgroundAttempts()
     }
 
     // MARK: - #399 host profiles (B1-B7)
@@ -1356,6 +1389,7 @@ final class AppModel: ObservableObject {
     /// one, the next ordered profile activates (or the app returns to
     /// setup when none remains).
     func removeHost(profileID: UUID) {
+        backgroundRefreshes[profileID]?.finish(.noData)
         guard let store = profileStore else { return }
         // #397: capture the profile BEFORE the unlink — the token clear
         // needs its key id/URL, and a failed clear must keep its target
@@ -3056,6 +3090,140 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // MARK: - Optional APNs snapshot hints (#546)
+
+    func setBackgroundRefreshEnabled(_ enabled: Bool) {
+        backgroundRefreshEnabled = enabled
+        defaults.set(enabled, forKey: Self.backgroundRefreshKey)
+        if !enabled { cancelBackgroundRefreshes() }
+        // No permission prompt, APNs enrollment or relay write here. #544
+        // must supply authenticated, independently opted-in hint delivery.
+    }
+
+    func cancelBackgroundRefreshes() {
+        for request in Array(backgroundRefreshes.values) { request.finish(.noData) }
+    }
+
+    private func backgroundAttempts() -> [BackgroundHintAttempt]? {
+        guard let data = defaults.data(forKey: Self.backgroundAttemptsKey) else { return [] }
+        guard let attempts = try? JSONDecoder().decode([BackgroundHintAttempt].self, from: data),
+              attempts.count <= 2,
+              attempts.allSatisfy({ $0.attemptedAt.isFinite }) else { return nil }
+        return attempts.filter { backgroundNow() - $0.attemptedAt < 3600 }
+    }
+
+    private func pruneBackgroundAttempts() {
+        guard defaults.data(forKey: Self.backgroundAttemptsKey) != nil,
+              let attempts = backgroundAttempts(),
+              let data = try? JSONEncoder().encode(attempts) else { return }
+        if attempts.isEmpty {
+            defaults.removeObject(forKey: Self.backgroundAttemptsKey)
+        } else {
+            defaults.set(data, forKey: Self.backgroundAttemptsKey)
+        }
+    }
+
+    private func admitBackgroundHint(_ hint: BackgroundHint) -> Bool {
+        guard var attempts = backgroundAttempts(),
+              attempts.count < 2,
+              !attempts.contains(where: {
+                  $0.hostID == hint.hostID && backgroundNow() - $0.attemptedAt < 1800
+              }) else { return false }
+        attempts.append(BackgroundHintAttempt(hostID: hint.hostID, attemptedAt: backgroundNow()))
+        guard let data = try? JSONEncoder().encode(attempts) else { return false }
+        defaults.set(data, forKey: Self.backgroundAttemptsKey)
+        return true
+    }
+
+    private func backgroundStore(profileID: UUID) -> FleetStore? {
+        profileID == activeProfileID ? fleet : coordinator?.store(profileID: profileID)
+    }
+
+    func receiveBackgroundHint(_ info: [AnyHashable: Any],
+                               completion: @escaping (UIBackgroundFetchResult) -> Void) {
+        let started = backgroundUptime()
+        guard backgroundRefreshEnabled, backgroundAllowed(), mode == .live,
+              let hint = BackgroundHint.parse(info),
+              let profile = profileStore?.orderedProfiles.first(where: { $0.hostKeyB64 == hint.hostID }),
+              profile.mayConnect, let key = profile.keyId, !key.isEmpty, signer != nil,
+              profile.expiryTs.map({ Double($0) > backgroundNow() }) ?? true,
+              let target = backgroundStore(profileID: profile.id),
+              !target.isStreaming,
+              backgroundRefreshes[profile.id] == nil,
+              let url = URL(string: profile.urlString),
+              admitBackgroundHint(hint) else {
+            completion(.noData)
+            return
+        }
+        let context = lifecycleContext()
+        let generation = target.connectionGeneration
+        let revision = target.lastEventId
+        let epoch = target.lastEventEpoch
+        let agents = target.agents
+        let request = BackgroundRefreshRequest { [weak self] result in
+            self?.backgroundRefreshes.removeValue(forKey: profile.id)
+            completion(result)
+        }
+        backgroundRefreshes[profile.id] = request
+        let current = { [weak self] in
+            guard let self else { return false }
+            return !request.finished && self.backgroundRefreshEnabled && self.backgroundAllowed()
+                && self.isCurrent(context) && self.profileStore?.profile(id: profile.id) == profile
+                && self.backgroundStore(profileID: profile.id) === target
+                && !target.isStreaming && target.connectionGeneration == generation
+                && target.lastEventId == revision && target.lastEventEpoch == epoch
+                && target.agents == agents && self.backgroundUptime() - started < 15
+        }
+        let sleep = backgroundSleep
+        let remaining = max(0, 15 - (backgroundUptime() - started))
+        request.deadline = Task { @MainActor in
+            do { try await sleep(remaining) } catch { return }
+            request.finish(.failed)
+        }
+        let client = CorraldClient(host: url, session: session)
+        request.work = Task { @MainActor [weak self] in
+            guard let self else { request.finish(.noData); return }
+            do {
+                guard current(), !Task.isCancelled else { request.finish(.noData); return }
+                // A single fresh preflight, never the foreground retry ladder.
+                let keyResponse = try await client.fetchHostKey()
+                guard current(), !Task.isCancelled,
+                      HostKeyTrust.matches(keyResponse, pinnedKeyB64: hint.hostID) else {
+                    request.finish(.noData)
+                    return
+                }
+                let snapshot = try await client.fetchSnapshot()
+                guard current(), !Task.isCancelled,
+                      FleetStore.conformsToPinnedHost(.snapshot(snapshot), pin: hint.hostID),
+                      epoch == nil || snapshot.epoch == epoch else {
+                    request.finish(.noData)
+                    return
+                }
+                // No stream/inbox exists (checked again after each await).
+                // This fresh pin check authorizes only this synchronous apply;
+                // foreground verification posture remains required afterwards.
+                let needsVerification = target.awaitingHostVerification
+                target.acceptedHostIdentity = hint.hostID
+                target.verifyHostKey()
+                target.applyRefresh(snapshot)
+                if needsVerification { target.requireHostVerification() }
+                guard target.lastEventId == snapshot.rev,
+                      target.lastEventEpoch == snapshot.epoch else {
+                    request.finish(.noData)
+                    return
+                }
+                let rows = BoardCacheDTO.snapshot(hostProfileID: profile.id, agents: target.agents,
+                    stateEnteredAt: target.stateEnteredAt, now: UInt64(self.backgroundNow() * 1000))
+                self.profileStore?.boardCache.save(rows, for: profile.id)
+                self.profileStore?.setCursor(snapshot.rev, epoch: snapshot.epoch, for: profile.id)
+                if profile.id == self.activeProfileID { target.persistCursor() }
+                request.finish(.newData)
+            } catch {
+                request.finish(.failed)
+            }
+        }
+    }
+
     // MARK: - Fleet refresh (#219)
 
     /// Pull-to-refresh / foreground refresh: ONE authoritative snapshot,
@@ -3909,6 +4077,7 @@ final class AppModel: ObservableObject {
     /// cancellation races then fail the generation check even if URLSession
     /// delivers one final callback on another queue.
     private func cancelLifecycleTasks() {
+        cancelBackgroundRefreshes()
         lifecycleGeneration &+= 1
         for task in driveTasks.values {
             task.cancel()

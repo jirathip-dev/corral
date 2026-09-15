@@ -1,0 +1,235 @@
+{
+  "base": "2efa3577086a794ad064898d8af9d69b33a62325",
+  "tested_source_head": "f72f23de5b491b44869db87f6d069a20b9b806a6",
+  "verdict": "NO-GO: no production background assertion; keep immediate disconnect",
+  "physical_device_results": null,
+  "logs": [
+    {
+      "path": "/tmp/g545-focused.log",
+      "sha256": "e18d3e0cb2568250c1ea7fe9c2175081bf94617a5860d4462ad83b5edb5c1e89",
+      "bytes": 324475,
+      "exit": 0,
+      "receipts": [
+        "** TEST SUCCEEDED **",
+        "Executed 21 tests, with 0 failures (0 unexpected) in 7.965 (8.013) seconds"
+      ]
+    },
+    {
+      "path": "/tmp/g545-full.log",
+      "sha256": "556aeb4b1b807d5a290b1ab329f5b9c6f4f1d23c4d7822e501065cb8ddaee478",
+      "bytes": 712941,
+      "exit": 0,
+      "receipts": [
+        "** TEST SUCCEEDED **",
+        "Executed 631 tests, with 0 failures (0 unexpected) in 146.702 (146.951) seconds"
+      ]
+    },
+    {
+      "path": "/tmp/g545-check-release.log",
+      "sha256": "9722dcbb245d69d5e4ecfee641d171780e079d8fefd6111089965e862f3199c5",
+      "bytes": 154,
+      "exit": 0,
+      "receipts": [
+        "release-demo check: PASS (Debug source preserved; Release boundary verified)"
+      ]
+    },
+    {
+      "path": "/tmp/g545-self-test.log",
+      "sha256": "9722dcbb245d69d5e4ecfee641d171780e079d8fefd6111089965e862f3199c5",
+      "bytes": 154,
+      "exit": 0,
+      "receipts": [
+        "release-demo check: PASS (Debug source preserved; Release boundary verified)"
+      ]
+    },
+    {
+      "path": "/tmp/g545-debug.log",
+      "sha256": "b140abfc18624cf4c2732eabff27be813ebc1d4c7b210f8eee01be33cf3ed132",
+      "bytes": 216858,
+      "exit": 0,
+      "receipts": [
+        "** BUILD SUCCEEDED **"
+      ]
+    },
+    {
+      "path": "/tmp/g545-release.log",
+      "sha256": "f17283fac50c04075a342391c8fb5b49da5da9e80f3a5e57d11a4665ec36a783",
+      "bytes": 197262,
+      "exit": 0,
+      "receipts": [
+        "** BUILD SUCCEEDED **"
+      ]
+    },
+    {
+      "path": "/tmp/g545-binary.log",
+      "sha256": "6bc299747d63cf6486d5f394747bccc20ab42cee3e21b5c94e433c68c292554c",
+      "bytes": 525,
+      "exit": 0,
+      "receipts": [
+        "release-demo check: PASS (Debug source preserved; Release boundary verified)",
+        "release-demo check: inspected /tmp/g545-release-dd/Build/Products/Release-iphonesimulator/FleetNotifier.app/FleetNotifier"
+      ]
+    },
+    {
+      "path": "/tmp/g545-xcodegen.log",
+      "sha256": "34b24aa29908be72dfdd63ede08c6a24e7a32599aa55ae4a7e63ac8ce462c717",
+      "bytes": 189,
+      "exit": 0,
+      "receipts": []
+    },
+    {
+      "path": "/tmp/g545-xcodegen-diff.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "exit": 0,
+      "receipts": []
+    },
+    {
+      "path": "/tmp/g545-aslop-head.log",
+      "sha256": "857065ac6c332c570c368f74129b2a98369da420b79a6fe0aa686d58a9dee1b7",
+      "bytes": 14442,
+      "exit": 1,
+      "receipts": []
+    },
+    {
+      "path": "/tmp/g545-aslop-base.log",
+      "sha256": "140950244a910d775473a8db36e7802aa0ae810f181cf045de5da93523602001",
+      "bytes": 5559,
+      "exit": 1,
+      "receipts": []
+    },
+    {
+      "path": "/tmp/g545-diffcheck.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "exit": 0,
+      "receipts": []
+    },
+    {
+      "path": "/tmp/g545-m1-apply.log",
+      "sha256": "361fd699067f63f153f9aa1dd3100f68f20efecc88d79bfbefb2d602a507a89d",
+      "bytes": 254216,
+      "exit": 65,
+      "receipts": [
+        "** TEST FAILED **",
+        "Executed 1 test, with 2 failures (0 unexpected) in 0.685 (0.687) seconds",
+        "/tmp/g545-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:14924: error: -[FleetNotifierTests.ForegroundReconnectTests testFiniteSnapshotCompletionAcrossBackgroundHasNoRetainedBoardBenefit] : XCTAssertEqual failed: (\"Optional(9)\") is not equal to (\"Optional(8)\") - background completion cannot apply past the re-armed key gate",
+        "/tmp/g545-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:14925: error: -[FleetNotifierTests.ForegroundReconnectTests testFiniteSnapshotCompletionAcrossBackgroundHasNoRetainedBoardBenefit] : XCTAssertEqual failed: (\"Optional(\"revision 9\")\") is not equal to (\"Optional(\"revision 8\")\")"
+      ]
+    },
+    {
+      "path": "/tmp/g545-m2-reconnect.log",
+      "sha256": "67c36437f81acfa6492fdb26d070c1987a3da46ad3cda98ea0e3bedb2b029d8a",
+      "bytes": 141046,
+      "exit": 65,
+      "receipts": [
+        "** TEST FAILED **",
+        "Executed 1 test, with 3 failures (0 unexpected) in 0.378 (0.380) seconds",
+        "/tmp/g545-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:14928: error: -[FleetNotifierTests.ForegroundReconnectTests testFiniteSnapshotCompletionAcrossBackgroundHasNoRetainedBoardBenefit] : XCTAssertFalse failed - finite completion must not create an unbounded stream",
+        "/tmp/g545-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:14929: error: -[FleetNotifierTests.ForegroundReconnectTests testFiniteSnapshotCompletionAcrossBackgroundHasNoRetainedBoardBenefit] : XCTAssertEqual failed: (\"connecting\") is not equal to (\"disconnected\")",
+        "/tmp/g545-scratch/ios/FleetNotifierTests/FleetNotifierTests.swift:14931: error: -[FleetNotifierTests.ForegroundReconnectTests testFiniteSnapshotCompletionAcrossBackgroundHasNoRetainedBoardBenefit] : XCTAssertEqual failed: (\"2\") is not equal to (\"1\")"
+      ]
+    },
+    {
+      "path": "/tmp/g545-pristine-green.log",
+      "sha256": "af608829328488f080dc5c8369826a2bf4545cdb46a6f24a9befedddd76f31e9",
+      "bytes": 171391,
+      "exit": 0,
+      "receipts": [
+        "** TEST SUCCEEDED **",
+        "Executed 21 tests, with 0 failures (0 unexpected) in 8.739 (8.748) seconds"
+      ]
+    },
+    {
+      "path": "/tmp/g545-probes.log",
+      "sha256": "cfd20045570bf6082060ac8b36096225a09541450ce2decc2409c58090387334",
+      "bytes": 3265,
+      "exit": 0,
+      "receipts": [
+        "PROBE_BATTERY=PASS",
+        "PROBE_DRIVER_EXIT=0"
+      ]
+    },
+    {
+      "path": "/tmp/g545-focused-status.log",
+      "sha256": "9499edf71c23bc6c80edde06e6db0066c818d3e5638e4927cbdd819a137c0dc8",
+      "bytes": 28,
+      "exit": 0,
+      "receipts": [
+        "FOCUSED_EXIT=0"
+      ]
+    },
+    {
+      "path": "/tmp/g545-validation-status.log",
+      "sha256": "1f122d2ed11ca1fa8f98520b7f3422ee83c0c70bda7a3444d5b711da7c59f375",
+      "bytes": 105,
+      "exit": 0,
+      "receipts": [
+        "FULL_EXIT=0",
+        "CHECK_RELEASE_EXIT=0",
+        "SELF_TEST_EXIT=0",
+        "DEBUG_EXIT=0",
+        "RELEASE_EXIT=0",
+        "BINARY_EXIT=0"
+      ]
+    },
+    {
+      "path": "/tmp/g545-devices.log",
+      "sha256": "9a62266bcb92bcc0cf47f4cd1121133082d095f4af7a7438f377b80f863d7f5c",
+      "bytes": 18,
+      "exit": 0,
+      "receipts": [
+        "No devices found."
+      ]
+    },
+    {
+      "path": "/tmp/g545-tested-source-diff.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "exit": 0,
+      "receipts": []
+    },
+    {
+      "path": "/tmp/g545-aslop-committed.log",
+      "sha256": "f77f6e1c3fc6b26e032b435e0fc48126a6e80c30dc023289e522b01f8423e5ff",
+      "bytes": 5559,
+      "exit": 1
+    },
+    {
+      "path": "/tmp/g545-final-diffcheck.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "exit": 0
+    },
+    {
+      "path": "/tmp/g545-range-diffcheck.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "exit": 0
+    }
+  ],
+  "advisory_identity_comparison": {
+    "base": 24,
+    "head": 24,
+    "added": [],
+    "removed": [],
+    "base_per_rule": {
+      "no-force-unwrap": 18,
+      "no-swallowed-errors": 1,
+      "no-shape-in-symbol-names": 4,
+      "no-force-try": 1
+    },
+    "head_per_rule": {
+      "no-force-unwrap": 18,
+      "no-swallowed-errors": 1,
+      "no-shape-in-symbol-names": 4,
+      "no-force-try": 1
+    }
+  },
+  "committed_advisory_identity_comparison": {
+    "base": 24,
+    "head": 24,
+    "added": [],
+    "removed": []
+  }
+}

@@ -45,7 +45,10 @@ def main():
                         '--output', str(output / 'native')], check=True, timeout=90)
     finally:
         try:
-            print(call('shutdown', udid), flush=True)
+            devices = json.loads(call('list', 'devices', '--json'))
+            if any(d['udid'] == udid and d['state'] == 'Booted'
+                   for group in devices['devices'].values() for d in group):
+                print(call('shutdown', udid), flush=True)
         finally:
             print(call('delete', udid), flush=True)
             print('DELETED=' + udid, flush=True)

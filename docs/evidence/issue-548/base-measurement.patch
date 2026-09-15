@@ -2,39 +2,18 @@ diff --git a/ios/FleetNotifier/UI/Herd/HerdView.swift b/ios/FleetNotifier/UI/Her
 index 973de8c..813aaf2 100644
 --- a/ios/FleetNotifier/UI/Herd/HerdView.swift
 +++ b/ios/FleetNotifier/UI/Herd/HerdView.swift
-@@ -158,6 +158,8 @@ struct HerdView: View {
-                 }
-             }
-         }
+@@ -160,0 +161,2 @@ struct HerdView: View {
 +        .coordinateSpace(name: "g548")
 +        .onPreferenceChange(HerdRailFrames.self) { frames in print("G548_FRAMES \(frames)") }
-         .onAppear { if motionEnabled { clock.start() } }
-         // #457/#526: report the resolved lighting up to FleetView — the
-         // shared filter sheet's Herd context styles itself from this value,
-@@ -330,7 +332,8 @@ struct HerdView: View {
-             if !rail.isEmpty {
-                 ScrollView(.horizontal) {
-                     LazyHStack(alignment:.top,spacing:10) {
+@@ -333 +335,2 @@ struct HerdView: View {
 -                        ForEach(rail) { horse in horseButton(horse,rail:true) }
 +                        ForEach(rail) { horse in horseButton(horse,rail:true)
 +                            .background(GeometryReader { proxy in Color.clear.preference(key: HerdRailFrames.self, value: [horse.name: proxy.frame(in: .named("g548"))]) }) }
-                     }.padding(.horizontal,12)
-                 }.scrollIndicators(.hidden)
-             } else {
-@@ -374,7 +377,8 @@ struct HerdView: View {
-                             .ranchChromeSurface(ranchTokens, cornerRadius: 8)
-                         ScrollView(.vertical) {
-                             LazyVGrid(columns:[GridItem(.adaptive(minimum:dynamicType.isAccessibilitySize ? width-32 : 156),spacing:6)],spacing:8) {
+@@ -377 +380,2 @@ struct HerdView: View {
 -                                ForEach(paddock.field) { horse in horseButton(horse,rail:false) }
 +                                ForEach(paddock.field) { horse in horseButton(horse,rail:false)
 +                                    .background(GeometryReader { proxy in Color.clear.preference(key: HerdRailFrames.self, value: [horse.name: proxy.frame(in: .named("g548"))]) }) }
-                             }.padding(.vertical,8)
-                         }
-                     }.padding(.horizontal,12).frame(width:width).id(paddock.id)
-@@ -685,3 +689,10 @@ func herdCountsAccessibilityLabel(_ horses:[HerdHorse]) -> String {
-         .map { state in "\(horses.filter { $0.state == state }.count) \(state.rawValue)" }
-         .joined(separator:", ")
- }
+@@ -687,0 +692,7 @@ func herdCountsAccessibilityLabel(_ horses:[HerdHorse]) -> String {
 +
 +struct HerdRailFrames: PreferenceKey {
 +    static var defaultValue: [String: CGRect] { [:] }
@@ -46,10 +25,7 @@ diff --git a/ios/FleetNotifierTests/HerdTests.swift b/ios/FleetNotifierTests/Her
 index 917dfc8..bc9edec 100644
 --- a/ios/FleetNotifierTests/HerdTests.swift
 +++ b/ios/FleetNotifierTests/HerdTests.swift
-@@ -1903,3 +1903,77 @@ final class ContextualFilterSheetTests: XCTestCase {
-         }
-     }
- }
+@@ -1905,0 +1906,74 @@ final class ContextualFilterSheetTests: XCTestCase {
 +
 +// MARK: - #548 reserved rail zone
 +

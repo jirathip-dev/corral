@@ -1,0 +1,20 @@
+{
+  "base": 24,
+  "head": 24,
+  "added": [],
+  "removed": [],
+  "per_rule": {
+    "base": {
+      "no-force-unwrap": 18,
+      "no-swallowed-errors": 1,
+      "no-shape-in-symbol-names": 4,
+      "no-force-try": 1
+    },
+    "head": {
+      "no-force-unwrap": 18,
+      "no-swallowed-errors": 1,
+      "no-shape-in-symbol-names": 4,
+      "no-force-try": 1
+    }
+  }
+}

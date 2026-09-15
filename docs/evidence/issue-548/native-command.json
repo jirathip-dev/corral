@@ -1,0 +1,29 @@
+{
+  "command": [
+    "xcodebuild",
+    "test",
+    "-project",
+    "ios/FleetNotifier.xcodeproj",
+    "-scheme",
+    "FleetNotifier",
+    "-destination",
+    "platform=iOS Simulator,id=6F4F7E87-2886-49B4-AD01-FF261D7705C7",
+    "-derivedDataPath",
+    "/tmp/g548-dd",
+    "-only-testing:FleetNotifierTests/HerdRailZoneTests"
+  ],
+  "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl548-herd-rail-zone",
+  "exit": 0,
+  "seconds": 78.44,
+  "log": "/tmp/g548-native-capture.log",
+  "device": {
+    "dataPath": "/Users/jirathip/Library/Developer/CoreSimulator/Devices/6F4F7E87-2886-49B4-AD01-FF261D7705C7/data",
+    "dataPathSize": 18337792,
+    "logPath": "/Users/jirathip/Library/Logs/CoreSimulator/6F4F7E87-2886-49B4-AD01-FF261D7705C7",
+    "udid": "6F4F7E87-2886-49B4-AD01-FF261D7705C7",
+    "isAvailable": true,
+    "deviceTypeIdentifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-14",
+    "state": "Shutdown",
+    "name": "g548-iPhone14"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "base": "ed24e6f57075acf1e5b082c7cd29a931dfbfbd62",
+  "head": "d31cf77ec4012cf77e03f33aaafdb528a4d3bbb5",
+  "identity": "file, rule, severity, column, source line (trimmed), diagnostic message; multiset",
+  "base_total": 24,
+  "head_total": 24,
+  "base_per_rule": {
+    "no-force-try": 1,
+    "no-force-unwrap": 18,
+    "no-shape-in-symbol-names": 4,
+    "no-swallowed-errors": 1
+  },
+  "head_per_rule": {
+    "no-force-try": 1,
+    "no-force-unwrap": 18,
+    "no-shape-in-symbol-names": 4,
+    "no-swallowed-errors": 1
+  },
+  "added": [],
+  "removed": []
+}

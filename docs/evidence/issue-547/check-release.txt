@@ -1,0 +1,4 @@
+source PASS: 7 native Swift renderer files; 8 unchanged approved icon inputs
+release-demo check: PASS (Debug source preserved; Release boundary verified)
+
+RAW_EXIT=0

@@ -1,0 +1,6 @@
+source PASS: 7 native Swift renderer files; 8 unchanged approved icon inputs
+bundle PASS: Mach-O /tmp/g547-release-dd/Build/Products/Release-iphonesimulator/FleetNotifier.app/FleetNotifier; 6 product files; catalog names ['AppIcon', 'BayPreview', 'Black', 'BlackPreview', 'Grey', 'GreyPreview', 'Palomino', 'PalominoPreview']
+release-demo check: PASS (Debug source preserved; Release boundary verified)
+release-demo check: inspected /tmp/g547-release-dd/Build/Products/Release-iphonesimulator/FleetNotifier.app/FleetNotifier
+
+RAW_EXIT=0

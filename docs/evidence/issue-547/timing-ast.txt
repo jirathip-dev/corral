@@ -1,0 +1,11 @@
+ios/FleetNotifier/Profiles/HostStreamCoordinator.swift:419:                    session.store.reconnectTiming.mark(.keyRequest)
+ios/FleetNotifier/Profiles/HostStreamCoordinator.swift:423:                    session.store.reconnectTiming.mark(.keyResponse)
+ios/FleetNotifier/App/FleetStore.swift:344:            reconnectTiming.mark(.retainedRowVisible)
+ios/FleetNotifier/App/FleetStore.swift:348:        if reconnectTiming.mark(.rowVisible) { visibleAgentIDs.removeAll() }
+ios/FleetNotifier/App/FleetStore.swift:584:        if allowsEpochReset, reconnectTiming.mark(.frameApplied) {
+ios/FleetNotifier/App/FleetStore.swift:842:                timing.mark(.frameReceived)
+ios/FleetNotifier/App/FleetStore.swift:849:                timing.mark(.sse200)
+ios/FleetNotifier/App/AppModel.swift:1290:                    self.fleet.reconnectTiming.mark(.keyRequest)
+ios/FleetNotifier/App/AppModel.swift:1293:                    self.fleet.reconnectTiming.mark(.keyResponse)
+ios/FleetNotifier/App/AppModel.swift:2991:        fleet.reconnectTiming.mark(.pathReady)
+ios/FleetNotifier/App/AppModel.swift:2993:            session.store.reconnectTiming.mark(.pathReady)

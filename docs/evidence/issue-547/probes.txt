@@ -1,0 +1,69 @@
+Preparing worktree (detached HEAD d31cf77)
+Updating files:  70% (677/960)
+Updating files:  71% (682/960)
+Updating files:  72% (692/960)
+Updating files:  73% (701/960)
+Updating files:  74% (711/960)
+Updating files:  75% (720/960)
+Updating files:  76% (730/960)
+Updating files:  77% (740/960)
+Updating files:  78% (749/960)
+Updating files:  79% (759/960)
+Updating files:  80% (768/960)
+Updating files:  81% (778/960)
+Updating files:  82% (788/960)
+Updating files:  83% (797/960)
+Updating files:  84% (807/960)
+Updating files:  85% (816/960)
+Updating files:  86% (826/960)
+Updating files:  87% (836/960)
+Updating files:  88% (845/960)
+Updating files:  89% (855/960)
+Updating files:  90% (864/960)
+Updating files:  91% (874/960)
+Updating files:  92% (884/960)
+Updating files:  93% (893/960)
+Updating files:  94% (903/960)
+Updating files:  95% (912/960)
+Updating files:  96% (922/960)
+Updating files:  97% (932/960)
+Updating files:  98% (941/960)
+Updating files:  99% (951/960)
+Updating files: 100% (960/960)
+Updating files: 100% (960/960), done.
+HEAD is now at d31cf77 Align remaining trust fixtures with verify-before-apply reconnect
+control flock /tmp/n.lock env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g547-probe-dd -only-testing:FleetNotifierTests/ForegroundReconnectTests
+g547-probe-control_EXIT=0
+{"label": "control", "exit": 0, "log": "/tmp/g547-probe-control.log", "command": "flock /tmp/n.lock env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g547-probe-dd -only-testing:FleetNotifierTests/ForegroundReconnectTests", "assertion_failures": []}
+BEFORE M1-verify
+fa5d3907aee207a0a26e7db22a55d2f759caed376f616db769686547ea01c902  /tmp/g547-scratch/ios/FleetNotifier/App/FleetStore.swift
+M1-verify flock /tmp/n.lock env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g547-probe-dd -only-testing:FleetNotifierTests/ForegroundReconnectTests/testSceneOpensBeforeKeyAndAppliesBufferedDeltasInOrder -only-testing:FleetNotifierTests/ForegroundReconnectTests/testNeverVerifiedColdStartBuffersItsFirstSnapshot
+g547-probe-M1-verify_EXIT=65
+{"label": "M1-verify", "exit": 65, "log": "/tmp/g547-probe-M1-verify.log", "command": "flock /tmp/n.lock env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g547-probe-dd -only-testing:FleetNotifierTests/ForegroundReconnectTests/testSceneOpensBeforeKeyAndAppliesBufferedDeltasInOrder -only-testing:FleetNotifierTests/ForegroundReconnectTests/testNeverVerifiedColdStartBuffersItsFirstSnapshot", "assertion_failures": [["testNeverVerifiedColdStartBuffersItsFirstSnapshot", "XCTAssertTrue failed - condition did not arrive before deadline"], ["testNeverVerifiedColdStartBuffersItsFirstSnapshot", "XCTAssertTrue failed"], ["testNeverVerifiedColdStartBuffersItsFirstSnapshot", "XCTAssertNil failed: \"1\""], ["testNeverVerifiedColdStartBuffersItsFirstSnapshot", "XCTAssertNotEqual failed: (\"connected\") is equal to (\"connected\")"], ["testNeverVerifiedColdStartBuffersItsFirstSnapshot", "XCTAssertEqual failed: (\"pending\") is not equal to (\"verified\")"], ["testSceneOpensBeforeKeyAndAppliesBufferedDeltasInOrder", "XCTAssertTrue failed - condition did not arrive before deadline"], ["testSceneOpensBeforeKeyAndAppliesBufferedDeltasInOrder", "XCTAssertEqual failed: (\"Optional(7)\") is not equal to (\"Optional(5)\") - verify-before-apply"], ["testSceneOpensBeforeKeyAndAppliesBufferedDeltasInOrder", "XCTAssertEqual failed: (\"2\") is not equal to (\"1\")"], ["testSceneOpensBeforeKeyAndAppliesBufferedDeltasInOrder", "XCTAssertNotEqual failed: (\"connected\") is equal to (\"connected\")"], ["testSceneOpensBeforeKeyAndAppliesBufferedDeltasInOrder", "XCTAssertEqual failed: (\"pending\") is not equal to (\"verified\")"]]}
+RESTORED M1-verify
+fa5d3907aee207a0a26e7db22a55d2f759caed376f616db769686547ea01c902  /tmp/g547-scratch/ios/FleetNotifier/App/FleetStore.swift
+BEFORE M2-cap
+fa5d3907aee207a0a26e7db22a55d2f759caed376f616db769686547ea01c902  /tmp/g547-scratch/ios/FleetNotifier/App/FleetStore.swift
+M2-cap flock /tmp/n.lock env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g547-probe-dd -only-testing:FleetNotifierTests/ForegroundReconnectTests/testCapDiscardsWholeWindowAndResumesOnlyAfterVerification -only-testing:FleetNotifierTests/ForegroundReconnectTests/testByteCapRejectsOneOversizedFrameBeforeApplication
+g547-probe-M2-cap_EXIT=65
+{"label": "M2-cap", "exit": 65, "log": "/tmp/g547-probe-M2-cap.log", "command": "flock /tmp/n.lock env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g547-probe-dd -only-testing:FleetNotifierTests/ForegroundReconnectTests/testCapDiscardsWholeWindowAndResumesOnlyAfterVerification -only-testing:FleetNotifierTests/ForegroundReconnectTests/testByteCapRejectsOneOversizedFrameBeforeApplication", "assertion_failures": [["testByteCapRejectsOneOversizedFrameBeforeApplication", "XCTAssertTrue failed - condition did not arrive before deadline"], ["testByteCapRejectsOneOversizedFrameBeforeApplication", "XCTAssertEqual failed: (\"1\") is not equal to (\"0\")"], ["testCapDiscardsWholeWindowAndResumesOnlyAfterVerification", "XCTAssertTrue failed - condition did not arrive before deadline"], ["testCapDiscardsWholeWindowAndResumesOnlyAfterVerification", "XCTAssertEqual failed: (\"3\") is not equal to (\"0\") - buffer cap must discard, not drop one delta"], ["testCapDiscardsWholeWindowAndResumesOnlyAfterVerification", "XCTAssertEqual failed: (\"1\") is not equal to (\"2\")"]]}
+RESTORED M2-cap
+fa5d3907aee207a0a26e7db22a55d2f759caed376f616db769686547ea01c902  /tmp/g547-scratch/ios/FleetNotifier/App/FleetStore.swift
+BEFORE M3-active-serial
+a1585450c008daba963319a990a0743343bece41240aadb5c6a543b59bcba7ba  /tmp/g547-scratch/ios/FleetNotifier/App/AppModel.swift
+M3-active-serial flock /tmp/n.lock env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g547-probe-dd -only-testing:FleetNotifierTests/ForegroundReconnectTests/testSceneOpensBeforeKeyAndAppliesBufferedDeltasInOrder
+g547-probe-M3-active-serial_EXIT=65
+{"label": "M3-active-serial", "exit": 65, "log": "/tmp/g547-probe-M3-active-serial.log", "command": "flock /tmp/n.lock env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g547-probe-dd -only-testing:FleetNotifierTests/ForegroundReconnectTests/testSceneOpensBeforeKeyAndAppliesBufferedDeltasInOrder", "assertion_failures": [["testSceneOpensBeforeKeyAndAppliesBufferedDeltasInOrder", "XCTAssertTrue failed - condition did not arrive before deadline"], ["testSceneOpensBeforeKeyAndAppliesBufferedDeltasInOrder", "XCTAssertEqual failed: (\"0\") is not equal to (\"1\") - parallel-open: the key is still held"], ["testSceneOpensBeforeKeyAndAppliesBufferedDeltasInOrder", "XCTUnwrap failed: expected non-nil value of type \"URLRequest\""]]}
+RESTORED M3-active-serial
+a1585450c008daba963319a990a0743343bece41240aadb5c6a543b59bcba7ba  /tmp/g547-scratch/ios/FleetNotifier/App/AppModel.swift
+BEFORE M4-coordinator-serial
+7dfa4d61de2bb6c04087338d655c9330147ce47c80b6eae1ec7311e155f8ba1b  /tmp/g547-scratch/ios/FleetNotifier/Profiles/HostStreamCoordinator.swift
+M4-coordinator-serial flock /tmp/n.lock env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g547-probe-dd -only-testing:FleetNotifierTests/ForegroundReconnectTests/testSlowCoordinatorDoesNotDelayHealthyActiveHost
+g547-probe-M4-coordinator-serial_EXIT=65
+{"label": "M4-coordinator-serial", "exit": 65, "log": "/tmp/g547-probe-M4-coordinator-serial.log", "command": "flock /tmp/n.lock env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g547-probe-dd -only-testing:FleetNotifierTests/ForegroundReconnectTests/testSlowCoordinatorDoesNotDelayHealthyActiveHost", "assertion_failures": [["testSlowCoordinatorDoesNotDelayHealthyActiveHost", "XCTAssertTrue failed - condition did not arrive before deadline"]]}
+RESTORED M4-coordinator-serial
+7dfa4d61de2bb6c04087338d655c9330147ce47c80b6eae1ec7311e155f8ba1b  /tmp/g547-scratch/ios/FleetNotifier/Profiles/HostStreamCoordinator.swift
+restored-green flock /tmp/n.lock env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g547-probe-dd -only-testing:FleetNotifierTests/ForegroundReconnectTests
+g547-probe-restored-green_EXIT=0
+{"label": "restored-green", "exit": 0, "log": "/tmp/g547-probe-restored-green.log", "command": "flock /tmp/n.lock env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -derivedDataPath /tmp/g547-probe-dd -only-testing:FleetNotifierTests/ForegroundReconnectTests", "assertion_failures": []}
+PROBES=4 RED=4 RESTORED_GREEN=13/13 SOURCE_RESTORE=BYTE_IDENTICAL

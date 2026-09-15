@@ -14728,7 +14728,7 @@ final class ForegroundReconnectTests: XCTestCase {
     }
 
     private func fixture(hosts: Int = 1, frames: Int = 2,
-                         mismatch: Bool = false,
+                         mismatch: Bool = false, retained: Bool = true,
                          policy: VerificationBufferPolicy = .init()) async throws -> Fixture {
         let suite = "corral.547.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -14764,14 +14764,14 @@ final class ForegroundReconnectTests: XCTestCase {
             loadMeta: { nil }, saveMeta: { _ in }, wipeIdentity: {}, profileStore: profileStore,
             networkPathMonitor: monitor)
         let seed = try frame("snapshot", rev: 5, epoch: epoch)
-        await model.fleet.ingest(seed).value
+        if retained { await model.fleet.ingest(seed).value }
         model.fleet.verificationBufferPolicy = policy
         for profile in profiles.dropFirst() {
             let store = try XCTUnwrap(model.coordinator?.store(profileID: profile.id))
-            await store.ingest(seed).value
+            if retained { await store.ingest(seed).value }
             store.verificationBufferPolicy = policy
         }
-        model.handleScenePhaseChange(.background)
+        if retained { model.handleScenePhaseChange(.background) }
         return Fixture(model: model, profiles: profiles, urls: urls, keys: keys, gates: gates,
             session: session, defaults: defaults, suite: suite, profileStore: profileStore,
             monitor: monitor, script: script)
@@ -15020,6 +15020,161 @@ final class ForegroundReconnectTests: XCTestCase {
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
+    }
+
+    func testWarmReturnDoesNotInheritEitherHostsRetryDelay() async throws {
+        var f = try await fixture(hosts: 2, frames: 1)
+        defer { f.finish() }
+        for url in f.urls {
+            f.script[url.appendingPathComponent("host-key")]?.gate = nil
+            f.script[url.appendingPathComponent("host-key")]?.status = 500
+        }
+        ForegroundReconnectURLProtocol.configure(f.script)
+        f.start()
+        let other = try XCTUnwrap(f.model.coordinator?.store(profileID: f.profiles[1].id))
+        await wait {
+            guard case .error = other.connectionState else { return false }
+            return f.model.banner?.kind == "host_key_unverified"
+        }
+        XCTAssertEqual(f.count("host-key"), 1)
+        XCTAssertEqual(f.count("host-key", host: 1), 1)
+        f.model.handleScenePhaseChange(.background)
+        for url in f.urls { f.script[url.appendingPathComponent("host-key")]?.status = 200 }
+        ForegroundReconnectURLProtocol.configure(f.script, reset: false)
+        let started = ProcessInfo.processInfo.systemUptime
+        f.start()
+        // The production ladder's first retry waits 3 s. A foreground first
+        // request must not inherit that wait, on either ownership path.
+        await wait({ f.count("host-key") == 2 && f.count("host-key", host: 1) == 2 }, timeout: 1)
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - started, 1)
+        await wait { f.model.keyContinuityState == .verified && other.lastEventId == 6 }
+        XCTAssertEqual(f.model.fleet.lastEventId, 6)
+    }
+
+    func testWarmReturnRetainsRenderedStatesUntilVerifiedReplacement() async throws {
+        var f = try await fixture(hosts: 2, frames: 1)
+        defer { f.finish() }
+        f.start()
+        for gate in f.gates { gate.release() }
+        let other = try XCTUnwrap(f.model.coordinator?.store(profileID: f.profiles[1].id))
+        await wait { f.model.fleet.lastEventId == 6 && other.lastEventId == 6 }
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = UIHostingController(rootView: FleetView(model: f.model)
+            .environmentObject(ThemeStore(defaults: f.defaults)))
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil }
+        f.model.handleScenePhaseChange(.background)
+        let keys = f.urls.map { _ in DriveRequestGate() }
+        defer { for gate in keys { gate.cancel() } }
+        for (index, url) in f.urls.enumerated() {
+            f.script[url.appendingPathComponent("host-key")]?.gate = keys[index]
+            f.script[url.appendingPathComponent("events")] = .init(
+                body: wire([try frame("snapshot", rev: 7, epoch: epoch, id: "replacement")]), holdOpen: true)
+        }
+        ForegroundReconnectURLProtocol.configure(f.script, reset: false)
+        f.start()
+        for store in [f.model.fleet, other] {
+            XCTAssertEqual(store.agent("retained")?.state, .working, "no foreground unknown recast")
+            XCTAssertEqual(store.lastEventId, 6)
+            XCTAssertNotEqual(store.connectionState, .connected)
+        }
+        await wait { f.model.fleet.bufferedFrameCount == 1 && other.bufferedFrameCount == 1 }
+        let rows = try XCTUnwrap(f.model.aggregateBoardRows)
+        XCTAssertEqual(rows.count, 2)
+        XCTAssertTrue(rows.allSatisfy { $0.isStale && $0.agent.state == .working && $0.agent.seq == 6 })
+        try await Task.sleep(for: .milliseconds(200))
+        attachBoard(window, name: "551-warm-retained-unverified")
+        keys[0].release()
+        await wait { f.model.fleet.lastEventId == 7 }
+        XCTAssertNil(f.model.fleet.agent("retained"))
+        XCTAssertEqual(f.model.fleet.agent("replacement")?.seq, 7)
+        XCTAssertEqual(other.agent("retained")?.seq, 6, "one host's verification cannot replace another's rows")
+        XCTAssertNotEqual(other.connectionState, .connected)
+        keys[1].release()
+        await wait { other.lastEventId == 7 }
+        XCTAssertNil(other.agent("retained"))
+        try await Task.sleep(for: .milliseconds(200))
+        attachBoard(window, name: "551-warm-applied-verified")
+    }
+
+    func testSceneGrantsReadCanStayInFlightWhileFirstFrameApplies() async throws {
+        var f = try await fixture(frames: 1)
+        defer { f.finish() }
+        let events = DriveRequestGate(), grants = DriveRequestGate()
+        defer { events.cancel(); grants.cancel() }
+        f.script[f.urls[0].appendingPathComponent("events")]?.gate = events
+        f.script[f.urls[0].appendingPathComponent("grants-read")] = .init(
+            body: Data(#"{"ok":true,"key_id":"dev_reconnect","grants":["read_tail","interrupt"],"expiry_ts":1800000000,"revoked":false}"#.utf8), gate: grants)
+        ForegroundReconnectURLProtocol.configure(f.script)
+        f.start()
+        f.gates[0].release()
+        await wait { f.model.keyContinuityState == .verified }
+        // Exercise the real active handler while verified but still waiting
+        // for the first frame; force a signed read to actually be in flight.
+        f.model.handleScenePhaseChange(.inactive)
+        f.model.handleScenePhaseChange(.active)
+        await wait { f.count("grants-read") >= 1 }
+        XCTAssertEqual(f.model.fleet.lastEventId, 5)
+        XCTAssertFalse(f.model.grants.contains("interrupt"))
+        events.release()
+        await wait { f.model.fleet.lastEventId == 6 }
+        XCTAssertFalse(f.model.grants.contains("interrupt"), "the held grants reply has not completed")
+        grants.release()
+        await wait { f.model.grants.contains("interrupt") }
+    }
+
+    /// #551 measurement-only opt-in: real elapsed background intervals through
+    /// the production scene seam, but a local URLProtocol host, not OS suspension
+    /// or a physical/network benchmark. The normal suite never waits 330 seconds.
+    func testWarmReturnStageMeasurements() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["G551_MEASURE"] == "1",
+                          "opt-in stage capture; see issue-551 measurement driver")
+        var f = try await fixture(retained: false)
+        defer { f.finish() }
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = UIHostingController(rootView: FleetView(model: f.model)
+            .environmentObject(ThemeStore(defaults: f.defaults)))
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil }
+        f.script[f.urls[0].appendingPathComponent("host-key")]?.gate = nil
+        for (scenario, seconds, revision) in [("cold_model", 0, 1), ("warm_30", 30, 2), ("warm_300", 300, 3)] {
+            var backgroundElapsed = 0.0
+            if seconds > 0 {
+                f.model.handleScenePhaseChange(.background)
+                XCTAssertFalse(f.model.fleet.isStreaming)
+                let stopped = ProcessInfo.processInfo.systemUptime
+                print("G551_BACKGROUND_BEGIN \(scenario)")
+                try await Task.sleep(for: .seconds(seconds))
+                backgroundElapsed = ProcessInfo.processInfo.systemUptime - stopped
+                XCTAssertGreaterThanOrEqual(backgroundElapsed, Double(seconds))
+                XCTAssertEqual(f.model.fleet.agent("retained")?.seq, UInt64(revision - 1))
+                XCTAssertNotEqual(f.model.fleet.connectionState, .connected)
+            }
+            f.script[f.urls[0].appendingPathComponent("events")] = .init(
+                body: wire([try frame("snapshot", rev: UInt64(revision), epoch: epoch)]), holdOpen: true)
+            ForegroundReconnectURLProtocol.configure(f.script, reset: false)
+            let started = ProcessInfo.processInfo.systemUptime
+            if seconds == 0 {
+                f.model.startLive()
+                f.monitor.fire(satisfied: true)
+            } else {
+                f.start()
+            }
+            await wait { f.model.fleet.reconnectTiming.measurements[.rowVisible] != nil }
+            let stamps = f.model.fleet.reconnectTiming.measurements
+            for stage in ReconnectTiming.Stage.allCases where stage != .retainedRowVisible {
+                XCTAssertNotNil(stamps[stage], "missing \(stage.rawValue) in \(scenario)")
+            }
+            let record: [String: Any] = [
+                "scenario": scenario, "start_uptime": started,
+                "background_elapsed_seconds": backgroundElapsed,
+                "stamps": Dictionary(uniqueKeysWithValues: stamps.map { ($0.key.rawValue, $0.value) })
+            ]
+            let json = try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])
+            print("G551_SAMPLE \(String(decoding: json, as: UTF8.self))")
+        }
     }
 
     func testNativeRetainedBoardAndSimulatorStageMeasurements() async throws {

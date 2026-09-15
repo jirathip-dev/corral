@@ -1,0 +1,14 @@
+[
+  [
+    "font-red",
+    "let name = Text(paddock.title).font(.subheadline.weight(.semibold))",
+    "let name = Text(paddock.title).font(.caption2)",
+    "testRepositoryChipUsesPrimaryNameAndSecondaryCountFonts"
+  ],
+  [
+    "gap-red",
+    ".padding(.horizontal,12).padding(.top,hudSpacing)",
+    ".padding(.horizontal,12).padding(.top,2)",
+    "testRepositoryChipSharesHUDRhythmAndKeepsIntrinsicChrome"
+  ]
+]

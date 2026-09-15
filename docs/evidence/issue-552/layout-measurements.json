@@ -1,0 +1,770 @@
+{
+  "source_log": "/tmp/g552-focused.log",
+  "head": "22e698613d1291db4062433404401d2851274f1f",
+  "chip_measurements": [
+    "G552_MEASURE night=false type=large filtersToCounts=5.999999999999986 countsToChip=6.0 chipWidth=172.66666666666666 countsWidth=366.0 textHeight=21.0 countsTextHeight=16.33333333333333",
+    "G552_MEASURE night=true type=large filtersToCounts=5.999999999999986 countsToChip=6.0 chipWidth=172.66666666666666 countsWidth=366.0 textHeight=21.0 countsTextHeight=16.33333333333333",
+    "G552_MEASURE night=false type=accessibility3 filtersToCounts=6.0 countsToChip=6.0 chipWidth=293.66666666666663 countsWidth=366.0 textHeight=94.99999999999997 countsTextHeight=43.0",
+    "G552_MEASURE night=true type=accessibility3 filtersToCounts=6.0 countsToChip=6.0 chipWidth=293.66666666666663 countsWidth=366.0 textHeight=94.99999999999997 countsTextHeight=43.0",
+    "G552_MEASURE night=false type=accessibility5 filtersToCounts=6.0 countsToChip=5.999999999999943 chipWidth=355.3333333333333 countsWidth=366.0 textHeight=127.99999999999994 countsTextHeight=303.0",
+    "G552_MEASURE night=true type=accessibility5 filtersToCounts=6.0 countsToChip=5.999999999999943 chipWidth=355.3333333333333 countsWidth=366.0 textHeight=127.99999999999994 countsTextHeight=303.0"
+  ],
+  "g548_invariant": {
+    "large-day": {
+      "states": {
+        "blocked": {
+          "field0_minY": 307.0,
+          "rail_zone_minY": 123.33333333333331,
+          "rail_zone_height": 175.66666666666669,
+          "chip_surface": [
+            12.0,
+            90.33,
+            172.67,
+            33.0
+          ],
+          "counts_strip": [
+            12.0,
+            56.0,
+            366.0,
+            28.33
+          ]
+        },
+        "empty": {
+          "field0_minY": 307.0,
+          "rail_zone_minY": 123.33333333333331,
+          "rail_zone_height": 175.66666666666669,
+          "chip_surface": [
+            12.0,
+            90.33,
+            122.0,
+            33.0
+          ],
+          "counts_strip": [
+            12.0,
+            56.0,
+            366.0,
+            28.33
+          ]
+        },
+        "last-known": {
+          "field0_minY": 307.0,
+          "rail_zone_minY": 123.33333333333331,
+          "rail_zone_height": 175.66666666666669,
+          "chip_surface": [
+            12.0,
+            90.33,
+            172.67,
+            33.0
+          ],
+          "counts_strip": [
+            12.0,
+            56.0,
+            366.0,
+            28.33
+          ]
+        }
+      },
+      "field0_minY_identical_across_states": true,
+      "rail_zone_height_identical_across_states": true
+    },
+    "large-night": {
+      "states": {
+        "blocked": {
+          "field0_minY": 307.0,
+          "rail_zone_minY": 123.33333333333331,
+          "rail_zone_height": 175.66666666666669,
+          "chip_surface": [
+            12.0,
+            90.33,
+            172.67,
+            33.0
+          ],
+          "counts_strip": [
+            12.0,
+            56.0,
+            366.0,
+            28.33
+          ]
+        },
+        "empty": {
+          "field0_minY": 307.0,
+          "rail_zone_minY": 123.33333333333331,
+          "rail_zone_height": 175.66666666666669,
+          "chip_surface": [
+            12.0,
+            90.33,
+            122.0,
+            33.0
+          ],
+          "counts_strip": [
+            12.0,
+            56.0,
+            366.0,
+            28.33
+          ]
+        },
+        "last-known": {
+          "field0_minY": 307.0,
+          "rail_zone_minY": 123.33333333333331,
+          "rail_zone_height": 175.66666666666669,
+          "chip_surface": [
+            12.0,
+            90.33,
+            172.67,
+            33.0
+          ],
+          "counts_strip": [
+            12.0,
+            56.0,
+            366.0,
+            28.33
+          ]
+        }
+      },
+      "field0_minY_identical_across_states": true,
+      "rail_zone_height_identical_across_states": true
+    },
+    "accessibility3-day": {
+      "states": {
+        "blocked": {
+          "field0_minY": 545.3333333333333,
+          "rail_zone_minY": 277.66666666666663,
+          "rail_zone_height": 259.66666666666663,
+          "chip_surface": [
+            12.0,
+            166.67,
+            293.67,
+            111.0
+          ],
+          "counts_strip": [
+            12.0,
+            105.67,
+            366.0,
+            55.0
+          ]
+        },
+        "empty": {
+          "field0_minY": 545.3333333333333,
+          "rail_zone_minY": 277.66666666666663,
+          "rail_zone_height": 259.66666666666663,
+          "chip_surface": [
+            12.0,
+            166.67,
+            250.67,
+            111.0
+          ],
+          "counts_strip": [
+            12.0,
+            105.67,
+            366.0,
+            55.0
+          ]
+        },
+        "last-known": {
+          "field0_minY": 545.3333333333333,
+          "rail_zone_minY": 277.66666666666663,
+          "rail_zone_height": 259.66666666666663,
+          "chip_surface": [
+            12.0,
+            166.67,
+            293.67,
+            111.0
+          ],
+          "counts_strip": [
+            12.0,
+            105.67,
+            366.0,
+            55.0
+          ]
+        }
+      },
+      "field0_minY_identical_across_states": true,
+      "rail_zone_height_identical_across_states": true
+    },
+    "accessibility3-night": {
+      "states": {
+        "blocked": {
+          "field0_minY": 545.3333333333333,
+          "rail_zone_minY": 277.66666666666663,
+          "rail_zone_height": 259.66666666666663,
+          "chip_surface": [
+            12.0,
+            166.67,
+            293.67,
+            111.0
+          ],
+          "counts_strip": [
+            12.0,
+            105.67,
+            366.0,
+            55.0
+          ]
+        },
+        "empty": {
+          "field0_minY": 545.3333333333333,
+          "rail_zone_minY": 277.66666666666663,
+          "rail_zone_height": 259.66666666666663,
+          "chip_surface": [
+            12.0,
+            166.67,
+            250.67,
+            111.0
+          ],
+          "counts_strip": [
+            12.0,
+            105.67,
+            366.0,
+            55.0
+          ]
+        },
+        "last-known": {
+          "field0_minY": 545.3333333333333,
+          "rail_zone_minY": 277.66666666666663,
+          "rail_zone_height": 259.66666666666663,
+          "chip_surface": [
+            12.0,
+            166.67,
+            293.67,
+            111.0
+          ],
+          "counts_strip": [
+            12.0,
+            105.67,
+            366.0,
+            55.0
+          ]
+        }
+      },
+      "field0_minY_identical_across_states": true,
+      "rail_zone_height_identical_across_states": true
+    },
+    "accessibility5-day": {
+      "states": {
+        "blocked": {
+          "field0_minY": 980.3333333333333,
+          "rail_zone_minY": 606.9999999999999,
+          "rail_zone_height": 365.33333333333337,
+          "chip_surface": [
+            12.0,
+            460.33,
+            355.33,
+            146.67
+          ],
+          "counts_strip": [
+            12.0,
+            139.33,
+            366.0,
+            315.0
+          ]
+        }
+      },
+      "field0_minY_identical_across_states": true,
+      "rail_zone_height_identical_across_states": true
+    },
+    "accessibility5-night": {
+      "states": {
+        "blocked": {
+          "field0_minY": 980.3333333333333,
+          "rail_zone_minY": 606.9999999999999,
+          "rail_zone_height": 365.33333333333337,
+          "chip_surface": [
+            12.0,
+            460.33,
+            355.33,
+            146.67
+          ],
+          "counts_strip": [
+            12.0,
+            139.33,
+            366.0,
+            315.0
+          ]
+        }
+      },
+      "field0_minY_identical_across_states": true,
+      "rail_zone_height_identical_across_states": true
+    }
+  },
+  "base_vs_head_layout": {
+    "day-blocked-accessibility3": {
+      "base": {
+        "chip_container": [
+          0.0,
+          160.67,
+          390.0,
+          49.0
+        ],
+        "rail_zone_minY": 209.67,
+        "rail_zone_height": 259.67,
+        "field0_minY": 477.33,
+        "gap_counters_to_chip_surface": 2.0
+      },
+      "head": {
+        "chip_container": [
+          0.0,
+          160.67,
+          390.0,
+          117.0
+        ],
+        "chip_surface": [
+          12.0,
+          166.67,
+          293.67,
+          111.0
+        ],
+        "counts_strip": [
+          12.0,
+          105.67,
+          366.0,
+          55.0
+        ],
+        "rail_zone_minY": 277.67,
+        "rail_zone_height": 259.67,
+        "field0_minY": 545.33,
+        "gap_filters_to_counters": 6.0,
+        "gap_counters_to_chip_surface": 6.0
+      },
+      "field0_minY_delta_head_minus_base": 68.0
+    },
+    "day-blocked-large": {
+      "base": {
+        "chip_container": [
+          0.0,
+          84.33,
+          390.0,
+          22.33
+        ],
+        "rail_zone_minY": 106.67,
+        "rail_zone_height": 175.67,
+        "field0_minY": 290.33,
+        "gap_counters_to_chip_surface": 2.0
+      },
+      "head": {
+        "chip_container": [
+          0.0,
+          84.33,
+          390.0,
+          39.0
+        ],
+        "chip_surface": [
+          12.0,
+          90.33,
+          172.67,
+          33.0
+        ],
+        "counts_strip": [
+          12.0,
+          56.0,
+          366.0,
+          28.33
+        ],
+        "rail_zone_minY": 123.33,
+        "rail_zone_height": 175.67,
+        "field0_minY": 307.0,
+        "gap_filters_to_counters": 6.0,
+        "gap_counters_to_chip_surface": 6.0
+      },
+      "field0_minY_delta_head_minus_base": 16.67
+    },
+    "day-empty-accessibility3": {
+      "base": {
+        "chip_container": [
+          0.0,
+          160.67,
+          390.0,
+          49.0
+        ],
+        "rail_zone_minY": 209.67,
+        "rail_zone_height": 259.67,
+        "field0_minY": 477.33,
+        "gap_counters_to_chip_surface": 2.0
+      },
+      "head": {
+        "chip_container": [
+          0.0,
+          160.67,
+          390.0,
+          117.0
+        ],
+        "chip_surface": [
+          12.0,
+          166.67,
+          250.67,
+          111.0
+        ],
+        "counts_strip": [
+          12.0,
+          105.67,
+          366.0,
+          55.0
+        ],
+        "rail_zone_minY": 277.67,
+        "rail_zone_height": 259.67,
+        "field0_minY": 545.33,
+        "gap_filters_to_counters": 6.0,
+        "gap_counters_to_chip_surface": 6.0
+      },
+      "field0_minY_delta_head_minus_base": 68.0
+    },
+    "day-empty-large": {
+      "base": {
+        "chip_container": [
+          0.0,
+          84.33,
+          390.0,
+          22.33
+        ],
+        "rail_zone_minY": 106.67,
+        "rail_zone_height": 175.67,
+        "field0_minY": 290.33,
+        "gap_counters_to_chip_surface": 2.0
+      },
+      "head": {
+        "chip_container": [
+          0.0,
+          84.33,
+          390.0,
+          39.0
+        ],
+        "chip_surface": [
+          12.0,
+          90.33,
+          122.0,
+          33.0
+        ],
+        "counts_strip": [
+          12.0,
+          56.0,
+          366.0,
+          28.33
+        ],
+        "rail_zone_minY": 123.33,
+        "rail_zone_height": 175.67,
+        "field0_minY": 307.0,
+        "gap_filters_to_counters": 6.0,
+        "gap_counters_to_chip_surface": 6.0
+      },
+      "field0_minY_delta_head_minus_base": 16.67
+    },
+    "day-last-known-accessibility3": {
+      "base": {
+        "chip_container": [
+          0.0,
+          160.67,
+          390.0,
+          49.0
+        ],
+        "rail_zone_minY": 209.67,
+        "rail_zone_height": 259.67,
+        "field0_minY": 477.33,
+        "gap_counters_to_chip_surface": 2.0
+      },
+      "head": {
+        "chip_container": [
+          0.0,
+          160.67,
+          390.0,
+          117.0
+        ],
+        "chip_surface": [
+          12.0,
+          166.67,
+          293.67,
+          111.0
+        ],
+        "counts_strip": [
+          12.0,
+          105.67,
+          366.0,
+          55.0
+        ],
+        "rail_zone_minY": 277.67,
+        "rail_zone_height": 259.67,
+        "field0_minY": 545.33,
+        "gap_filters_to_counters": 6.0,
+        "gap_counters_to_chip_surface": 6.0
+      },
+      "field0_minY_delta_head_minus_base": 68.0
+    },
+    "day-last-known-large": {
+      "base": {
+        "chip_container": [
+          0.0,
+          84.33,
+          390.0,
+          22.33
+        ],
+        "rail_zone_minY": 106.67,
+        "rail_zone_height": 175.67,
+        "field0_minY": 290.33,
+        "gap_counters_to_chip_surface": 2.0
+      },
+      "head": {
+        "chip_container": [
+          0.0,
+          84.33,
+          390.0,
+          39.0
+        ],
+        "chip_surface": [
+          12.0,
+          90.33,
+          172.67,
+          33.0
+        ],
+        "counts_strip": [
+          12.0,
+          56.0,
+          366.0,
+          28.33
+        ],
+        "rail_zone_minY": 123.33,
+        "rail_zone_height": 175.67,
+        "field0_minY": 307.0,
+        "gap_filters_to_counters": 6.0,
+        "gap_counters_to_chip_surface": 6.0
+      },
+      "field0_minY_delta_head_minus_base": 16.67
+    },
+    "night-blocked-accessibility3": {
+      "base": {
+        "chip_container": [
+          0.0,
+          160.67,
+          390.0,
+          49.0
+        ],
+        "rail_zone_minY": 209.67,
+        "rail_zone_height": 259.67,
+        "field0_minY": 477.33,
+        "gap_counters_to_chip_surface": 2.0
+      },
+      "head": {
+        "chip_container": [
+          0.0,
+          160.67,
+          390.0,
+          117.0
+        ],
+        "chip_surface": [
+          12.0,
+          166.67,
+          293.67,
+          111.0
+        ],
+        "counts_strip": [
+          12.0,
+          105.67,
+          366.0,
+          55.0
+        ],
+        "rail_zone_minY": 277.67,
+        "rail_zone_height": 259.67,
+        "field0_minY": 545.33,
+        "gap_filters_to_counters": 6.0,
+        "gap_counters_to_chip_surface": 6.0
+      },
+      "field0_minY_delta_head_minus_base": 68.0
+    },
+    "night-blocked-large": {
+      "base": {
+        "chip_container": [
+          0.0,
+          84.33,
+          390.0,
+          22.33
+        ],
+        "rail_zone_minY": 106.67,
+        "rail_zone_height": 175.67,
+        "field0_minY": 290.33,
+        "gap_counters_to_chip_surface": 2.0
+      },
+      "head": {
+        "chip_container": [
+          0.0,
+          84.33,
+          390.0,
+          39.0
+        ],
+        "chip_surface": [
+          12.0,
+          90.33,
+          172.67,
+          33.0
+        ],
+        "counts_strip": [
+          12.0,
+          56.0,
+          366.0,
+          28.33
+        ],
+        "rail_zone_minY": 123.33,
+        "rail_zone_height": 175.67,
+        "field0_minY": 307.0,
+        "gap_filters_to_counters": 6.0,
+        "gap_counters_to_chip_surface": 6.0
+      },
+      "field0_minY_delta_head_minus_base": 16.67
+    },
+    "night-empty-accessibility3": {
+      "base": {
+        "chip_container": [
+          0.0,
+          160.67,
+          390.0,
+          49.0
+        ],
+        "rail_zone_minY": 209.67,
+        "rail_zone_height": 259.67,
+        "field0_minY": 477.33,
+        "gap_counters_to_chip_surface": 2.0
+      },
+      "head": {
+        "chip_container": [
+          0.0,
+          160.67,
+          390.0,
+          117.0
+        ],
+        "chip_surface": [
+          12.0,
+          166.67,
+          250.67,
+          111.0
+        ],
+        "counts_strip": [
+          12.0,
+          105.67,
+          366.0,
+          55.0
+        ],
+        "rail_zone_minY": 277.67,
+        "rail_zone_height": 259.67,
+        "field0_minY": 545.33,
+        "gap_filters_to_counters": 6.0,
+        "gap_counters_to_chip_surface": 6.0
+      },
+      "field0_minY_delta_head_minus_base": 68.0
+    },
+    "night-empty-large": {
+      "base": {
+        "chip_container": [
+          0.0,
+          84.33,
+          390.0,
+          22.33
+        ],
+        "rail_zone_minY": 106.67,
+        "rail_zone_height": 175.67,
+        "field0_minY": 290.33,
+        "gap_counters_to_chip_surface": 2.0
+      },
+      "head": {
+        "chip_container": [
+          0.0,
+          84.33,
+          390.0,
+          39.0
+        ],
+        "chip_surface": [
+          12.0,
+          90.33,
+          122.0,
+          33.0
+        ],
+        "counts_strip": [
+          12.0,
+          56.0,
+          366.0,
+          28.33
+        ],
+        "rail_zone_minY": 123.33,
+        "rail_zone_height": 175.67,
+        "field0_minY": 307.0,
+        "gap_filters_to_counters": 6.0,
+        "gap_counters_to_chip_surface": 6.0
+      },
+      "field0_minY_delta_head_minus_base": 16.67
+    },
+    "night-last-known-accessibility3": {
+      "base": {
+        "chip_container": [
+          0.0,
+          160.67,
+          390.0,
+          49.0
+        ],
+        "rail_zone_minY": 209.67,
+        "rail_zone_height": 259.67,
+        "field0_minY": 477.33,
+        "gap_counters_to_chip_surface": 2.0
+      },
+      "head": {
+        "chip_container": [
+          0.0,
+          160.67,
+          390.0,
+          117.0
+        ],
+        "chip_surface": [
+          12.0,
+          166.67,
+          293.67,
+          111.0
+        ],
+        "counts_strip": [
+          12.0,
+          105.67,
+          366.0,
+          55.0
+        ],
+        "rail_zone_minY": 277.67,
+        "rail_zone_height": 259.67,
+        "field0_minY": 545.33,
+        "gap_filters_to_counters": 6.0,
+        "gap_counters_to_chip_surface": 6.0
+      },
+      "field0_minY_delta_head_minus_base": 68.0
+    },
+    "night-last-known-large": {
+      "base": {
+        "chip_container": [
+          0.0,
+          84.33,
+          390.0,
+          22.33
+        ],
+        "rail_zone_minY": 106.67,
+        "rail_zone_height": 175.67,
+        "field0_minY": 290.33,
+        "gap_counters_to_chip_surface": 2.0
+      },
+      "head": {
+        "chip_container": [
+          0.0,
+          84.33,
+          390.0,
+          39.0
+        ],
+        "chip_surface": [
+          12.0,
+          90.33,
+          172.67,
+          33.0
+        ],
+        "counts_strip": [
+          12.0,
+          56.0,
+          366.0,
+          28.33
+        ],
+        "rail_zone_minY": 123.33,
+        "rail_zone_height": 175.67,
+        "field0_minY": 307.0,
+        "gap_filters_to_counters": 6.0,
+        "gap_counters_to_chip_surface": 6.0
+      },
+      "field0_minY_delta_head_minus_base": 16.67
+    }
+  }
+}

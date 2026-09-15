@@ -546,7 +546,8 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # canonical algorithm; membership check still 40/40. The #548 branch carried
     # its own branch-local literal (6d553d20…) and this merge is where the single
     # merged value is re-derived.
-    "d8997fa8b255ffdf4f2042179517bb0d84dec9ddd083276be2e2150c513e247e"
+    # 2026-09-15 #552: repository chip hierarchy and shared HUD spacing.
+    "c72970efb5c22bd136f056dff5bc4405b7190919057843544752f6a4a4131b79"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

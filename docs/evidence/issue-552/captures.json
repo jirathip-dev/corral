@@ -1,0 +1,278 @@
+{
+  "base-day": {
+    "raw_path": "/tmp/g552-evidence/base-native/449-01-active-first.png",
+    "committed_path": "/Users/jirathip/.herdr/worktrees/corral/impl552-herd-chip/docs/evidence/issue-552/base-day.png",
+    "marker": {
+      "clockRunning": true,
+      "environment": "Day",
+      "fixture": "DEBUG fictional fleet; not live operational evidence",
+      "horseIDs": [
+        "::herdr:herd-fixture-0",
+        "::herdr:herd-fixture-1",
+        "::herdr:herd-fixture-4",
+        "::herdr:herd-fixture-7",
+        "::herdr:herd-fixture-11",
+        "::herdr:herd-fixture-9",
+        "::herdr:herd-fixture-3",
+        "::herdr:herd-fixture-6",
+        "::herdr:herd-fixture-10",
+        "::herdr:herd-fixture-2",
+        "::herdr:herd-fixture-8",
+        "::herdr:herd-fixture-5"
+      ],
+      "night": false,
+      "paddock": "repo:cedar-tools",
+      "paddockOrder": [
+        "cedar-tools",
+        "maple-client",
+        "atlas-vector"
+      ],
+      "paddockPosition": 1,
+      "phase": "449-01-active-first",
+      "planeOffsets": {
+        "barnTrees": 0,
+        "foreground": 0,
+        "frontRail": 0,
+        "ground": 0,
+        "hills": 0,
+        "horses": 0,
+        "rearFences": 0,
+        "sky": 0
+      },
+      "reduceMotion": false,
+      "sceneID": "30EBCD8B-87B8-42BB-8273-52DCBE4FDD8C",
+      "scroll": 0,
+      "ticks": 0,
+      "workingPaddocks": [
+        "cedar-tools",
+        "maple-client"
+      ]
+    },
+    "pixels": [
+      1170,
+      2532
+    ],
+    "scale": 3,
+    "points": [
+      390,
+      844
+    ],
+    "sky_sample": [
+      68,
+      149,
+      196
+    ],
+    "card_sample": [
+      239,
+      243,
+      228
+    ]
+  },
+  "base-night": {
+    "raw_path": "/tmp/g552-evidence/base-native/03-parallax-next.png",
+    "committed_path": "/Users/jirathip/.herdr/worktrees/corral/impl552-herd-chip/docs/evidence/issue-552/base-night.png",
+    "marker": {
+      "clockRunning": true,
+      "environment": "Night",
+      "fixture": "DEBUG fictional fleet; not live operational evidence",
+      "horseIDs": [
+        "::herdr:herd-fixture-0",
+        "::herdr:herd-fixture-1",
+        "::herdr:herd-fixture-4",
+        "::herdr:herd-fixture-7",
+        "::herdr:herd-fixture-11",
+        "::herdr:herd-fixture-9",
+        "::herdr:herd-fixture-3",
+        "::herdr:herd-fixture-6",
+        "::herdr:herd-fixture-10",
+        "::herdr:herd-fixture-2",
+        "::herdr:herd-fixture-8",
+        "::herdr:herd-fixture-5"
+      ],
+      "night": true,
+      "paddock": "repo:maple-client",
+      "paddockOrder": [
+        "cedar-tools",
+        "maple-client",
+        "atlas-vector"
+      ],
+      "paddockPosition": 2,
+      "phase": "03-parallax-next",
+      "planeOffsets": {
+        "barnTrees": -85.8,
+        "foreground": -253.5,
+        "frontRail": 0,
+        "ground": -156,
+        "hills": -46.8,
+        "horses": -390,
+        "rearFences": -156,
+        "sky": -19.5
+      },
+      "reduceMotion": false,
+      "sceneID": "30EBCD8B-87B8-42BB-8273-52DCBE4FDD8C",
+      "scroll": 390,
+      "ticks": 297,
+      "workingPaddocks": [
+        "cedar-tools",
+        "maple-client"
+      ]
+    },
+    "pixels": [
+      1170,
+      2532
+    ],
+    "scale": 3,
+    "points": [
+      390,
+      844
+    ],
+    "sky_sample": [
+      41,
+      48,
+      74
+    ],
+    "card_sample": [
+      30,
+      42,
+      50
+    ]
+  },
+  "head-day": {
+    "raw_path": "/tmp/g552-evidence/head-native/449-01-active-first.png",
+    "committed_path": "/Users/jirathip/.herdr/worktrees/corral/impl552-herd-chip/docs/evidence/issue-552/head-day.png",
+    "marker": {
+      "clockRunning": true,
+      "environment": "Day",
+      "fixture": "DEBUG fictional fleet; not live operational evidence",
+      "horseIDs": [
+        "::herdr:herd-fixture-0",
+        "::herdr:herd-fixture-1",
+        "::herdr:herd-fixture-4",
+        "::herdr:herd-fixture-7",
+        "::herdr:herd-fixture-11",
+        "::herdr:herd-fixture-9",
+        "::herdr:herd-fixture-3",
+        "::herdr:herd-fixture-6",
+        "::herdr:herd-fixture-10",
+        "::herdr:herd-fixture-2",
+        "::herdr:herd-fixture-8",
+        "::herdr:herd-fixture-5"
+      ],
+      "night": false,
+      "paddock": "repo:cedar-tools",
+      "paddockOrder": [
+        "cedar-tools",
+        "maple-client",
+        "atlas-vector"
+      ],
+      "paddockPosition": 1,
+      "phase": "449-01-active-first",
+      "planeOffsets": {
+        "barnTrees": 0,
+        "foreground": 0,
+        "frontRail": 0,
+        "ground": 0,
+        "hills": 0,
+        "horses": 0,
+        "rearFences": 0,
+        "sky": 0
+      },
+      "reduceMotion": false,
+      "sceneID": "4CA0BAF0-E143-4D38-BA1B-E27494F06E51",
+      "scroll": 0,
+      "ticks": 8,
+      "workingPaddocks": [
+        "cedar-tools",
+        "maple-client"
+      ]
+    },
+    "pixels": [
+      1170,
+      2532
+    ],
+    "scale": 3,
+    "points": [
+      390,
+      844
+    ],
+    "sky_sample": [
+      68,
+      149,
+      196
+    ],
+    "card_sample": [
+      239,
+      243,
+      228
+    ]
+  },
+  "head-night": {
+    "raw_path": "/tmp/g552-evidence/head-native/03-parallax-next.png",
+    "committed_path": "/Users/jirathip/.herdr/worktrees/corral/impl552-herd-chip/docs/evidence/issue-552/head-night.png",
+    "marker": {
+      "clockRunning": true,
+      "environment": "Night",
+      "fixture": "DEBUG fictional fleet; not live operational evidence",
+      "horseIDs": [
+        "::herdr:herd-fixture-0",
+        "::herdr:herd-fixture-1",
+        "::herdr:herd-fixture-4",
+        "::herdr:herd-fixture-7",
+        "::herdr:herd-fixture-11",
+        "::herdr:herd-fixture-9",
+        "::herdr:herd-fixture-3",
+        "::herdr:herd-fixture-6",
+        "::herdr:herd-fixture-10",
+        "::herdr:herd-fixture-2",
+        "::herdr:herd-fixture-8",
+        "::herdr:herd-fixture-5"
+      ],
+      "night": true,
+      "paddock": "repo:maple-client",
+      "paddockOrder": [
+        "cedar-tools",
+        "maple-client",
+        "atlas-vector"
+      ],
+      "paddockPosition": 2,
+      "phase": "03-parallax-next",
+      "planeOffsets": {
+        "barnTrees": -85.8,
+        "foreground": -253.5,
+        "frontRail": 0,
+        "ground": -156,
+        "hills": -46.8,
+        "horses": -390,
+        "rearFences": -156,
+        "sky": -19.5
+      },
+      "reduceMotion": false,
+      "sceneID": "4CA0BAF0-E143-4D38-BA1B-E27494F06E51",
+      "scroll": 390,
+      "ticks": 311,
+      "workingPaddocks": [
+        "cedar-tools",
+        "maple-client"
+      ]
+    },
+    "pixels": [
+      1170,
+      2532
+    ],
+    "scale": 3,
+    "points": [
+      390,
+      844
+    ],
+    "sky_sample": [
+      40,
+      48,
+      77
+    ],
+    "card_sample": [
+      30,
+      42,
+      50
+    ]
+  }
+}

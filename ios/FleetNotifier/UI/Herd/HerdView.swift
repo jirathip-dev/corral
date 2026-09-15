@@ -37,6 +37,7 @@ struct HerdView: View {
     @State private var now = Date()
     @State private var timeRevision = 0
     @State private var dragging = false
+    private let hudSpacing: CGFloat = 6
     init(horses: [HerdHorse], obscured: Bool,
          scopeLabel: String = "Filters", scopeSummary: String = "All repositories",
          connection: BoardModel.ConnectionIndicatorModel
@@ -223,7 +224,7 @@ struct HerdView: View {
     /// SAME row, between the scope pill and the gear — the removed
     /// disconnect panel's recovery actions + verbose copy are gone.
     private var topChrome: some View {
-        VStack(spacing:6) {
+        VStack(spacing:hudSpacing) {
             HStack(spacing:8) {
                 scopeControl
                 ConnectionStatusIndicator(model: connection,
@@ -234,7 +235,13 @@ struct HerdView: View {
                     .ranchChromeSurface(ranchTokens)
                 settingsControl
             }
+#if DEBUG
+            .modifier(HerdRailFrameProbe(name:"hud-row"))
+#endif
             statusSummary
+#if DEBUG
+                .modifier(HerdRailFrameProbe(name:"hud-counts"))
+#endif
         }
         .padding(.horizontal,12)
         .padding(.top,6)
@@ -359,16 +366,33 @@ struct HerdView: View {
         let paddock = paddocks.first { $0.id == paddockID } ?? paddocks.first
         return Group {
             if let paddock {
-                Text(herdRepositoryCaption(paddock))
-                    .font(.caption2).foregroundStyle(ranchTokens.inkColor)
-                    .lineLimit(1)
-                    .padding(.horizontal,8).padding(.vertical,2)
-                    .ranchChromeSurface(ranchTokens, cornerRadius: 8)
-                    .accessibilityLabel(herdRepositoryCaption(paddock))
+                let name = Text(paddock.title).font(.subheadline.weight(.semibold))
+                    .foregroundColor(ranchTokens.inkColor)
+                let counts = Text(herdRepositoryCaption(paddock).dropFirst(paddock.title.count))
+                    .font(.caption).foregroundColor(ranchTokens.mutedColor)
+                ZStack(alignment:.leading) {
+                    if dynamicType.isAccessibilitySize {
+                        // Reserve two lines across rail occupancy changes, without
+                        // capping longer names or counts at a truncating line limit.
+                        Text("\n").font(.subheadline.weight(.semibold)).hidden()
+                            .accessibilityHidden(true)
+                    }
+                    Text("\(name)\(counts)")
+                        .fixedSize(horizontal:false,vertical:true)
+#if DEBUG
+                        .modifier(HerdRailFrameProbe(name:"repository-text"))
+#endif
+                }
+                .padding(.horizontal,12).padding(.vertical,6)
+                .ranchChromeSurface(ranchTokens)
+                .accessibilityLabel(herdRepositoryCaption(paddock))
+#if DEBUG
+                .modifier(HerdRailFrameProbe(name:"repository-surface"))
+#endif
             }
         }
         .frame(maxWidth:.infinity,alignment:.leading)
-        .padding(.horizontal,12).padding(.top,2)
+        .padding(.horizontal,12).padding(.top,hudSpacing)
 #if DEBUG
         .modifier(HerdRailFrameProbe(name:"repository-chip"))
 #endif

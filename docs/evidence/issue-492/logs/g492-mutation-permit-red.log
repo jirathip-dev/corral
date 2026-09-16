@@ -1,0 +1,21 @@
+   Compiling corrald v0.1.0 (/Users/jirathip/.herdr/worktrees/corral/impl492-gitplane)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.25s
+     Running unittests src/lib.rs (/tmp/g492-target/debug/deps/corrald-224ce1b580303be5)
+
+running 1 test
+
+thread 'adapters::git_plane::tests::g492_permit_queue_is_not_execution_budget_and_sweep_is_paced' (2119446) panicked at src/adapters/git_plane_issue492_tests.rs:226:5:
+assertion `left == right` failed: permit wait was incorrectly charged to the execution budget
+  left: 88
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test adapters::git_plane::tests::g492_permit_queue_is_not_execution_budget_and_sweep_is_paced ... FAILED
+
+failures:
+
+failures:
+    adapters::git_plane::tests::g492_permit_queue_is_not_execution_budget_and_sweep_is_paced
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 305 filtered out; finished in 0.21s
+
+error: test failed, to rerun pass `-p corrald --lib`

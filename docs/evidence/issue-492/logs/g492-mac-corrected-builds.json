@@ -1,0 +1,9 @@
+{
+  "source_head": "689139cae7fe4c20d0ddf8c9928ec9d5ae8049eb",
+  "fixed_binary_sha256": "638becc810009995ad727f8a1246ceb5f7f997320e40b7664b731fe2d4bfa592",
+  "baseline": "92ac61d32068c882ff8e971a1470847717e12cd7",
+  "baseline_binary_sha256": "b88c3106a822e1002f1e2ac4df0f4273df8fd8d4e8f514ee80e04b4f5c313ef5",
+  "baseline_target": "/tmp/g492-base-target",
+  "fixed_binary": "/tmp/g492-fixed-corrald",
+  "baseline_binary": "/tmp/g492-base-isolated-corrald"
+}

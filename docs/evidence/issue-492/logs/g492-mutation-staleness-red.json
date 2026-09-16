@@ -1,0 +1,18 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "-p",
+    "corrald",
+    "--lib",
+    "g492_snapshot_marks_old_absent_and_stopped_facts",
+    "--",
+    "--nocapture"
+  ],
+  "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl492-gitplane",
+  "raw_exit": 101,
+  "timed_out": false,
+  "elapsed_seconds": 11.07,
+  "log": "/tmp/g492-mutation-staleness-red.log",
+  "target": "/tmp/g492-target"
+}

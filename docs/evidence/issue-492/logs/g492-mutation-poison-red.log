@@ -1,0 +1,42 @@
+   Compiling corrald v0.1.0 (/Users/jirathip/.herdr/worktrees/corral/impl492-gitplane)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.74s
+     Running unittests src/lib.rs (/tmp/g492-target/debug/deps/corrald-224ce1b580303be5)
+
+running 7 tests
+
+thread '<unnamed>' (2106969) panicked at src/adapters/git_plane_issue492_tests.rs:48:13:
+G492_INITIAL_LOCK_HOLDER_PANIC
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'adapters::git_plane::tests::g492_poisoned_state_keeps_event_path_and_probe_serving' (2106955) panicked at src/adapters/git_plane.rs:713:27:
+called `Result::unwrap()` on an `Err` value: PoisonError { .. }
+
+thread 'adapters::git_plane::tests::g492_warning_subscriber_cannot_poison_the_cache' (2106960) panicked at src/adapters/git_plane_issue492_tests.rs:264:13:
+G492_FAILING_WARN_WRITER
+test adapters::git_plane::tests::g492_warning_limit_preserves_every_skipped_probe_in_counter ... ok
+test adapters::git_plane::tests::g492_poisoned_state_keeps_event_path_and_probe_serving ... FAILED
+test adapters::git_plane::tests::g492_warning_subscriber_cannot_poison_the_cache ... ok
+test adapters::git_plane::tests::g492_snapshot_marks_old_absent_and_stopped_facts ... ok
+test adapters::git_plane::tests::g492_supervisor_restarts_a_silent_stall_but_not_idle_loops ... ok
+
+thread 'tokio-rt-worker' (2106964) panicked at src/adapters/git_plane_issue492_tests.rs:101:9:
+G492_SUPERVISED_POISON_PAYLOAD
+
+thread 'tokio-rt-worker' (2106963) panicked at src/adapters/git_plane.rs:713:27:
+called `Result::unwrap()` on an `Err` value: PoisonError { .. }
+G492_PERMITS 100 fake worktrees x 50ms, max=4, OverBudget=0; paced_ms=5994
+test adapters::git_plane::tests::g492_permit_queue_is_not_execution_budget_and_sweep_is_paced ... ok
+
+thread 'adapters::git_plane::tests::g492_supervisor_respawns_poisoned_child_and_wire_reports_stopped' (2106957) panicked at src/adapters/git_plane_issue492_tests.rs:23:6:
+git-plane condition did not converge: Elapsed(())
+test adapters::git_plane::tests::g492_supervisor_respawns_poisoned_child_and_wire_reports_stopped ... FAILED
+
+failures:
+
+failures:
+    adapters::git_plane::tests::g492_poisoned_state_keeps_event_path_and_probe_serving
+    adapters::git_plane::tests::g492_supervisor_respawns_poisoned_child_and_wire_reports_stopped
+
+test result: FAILED. 5 passed; 2 failed; 0 ignored; 0 measured; 299 filtered out; finished in 11.70s
+
+error: test failed, to rerun pass `-p corrald --lib`

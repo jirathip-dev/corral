@@ -1,0 +1,21 @@
+   Compiling corrald v0.1.0 (/Users/jirathip/.herdr/worktrees/corral/impl492-gitplane)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.91s
+     Running unittests src/lib.rs (/tmp/g492-target/debug/deps/corrald-224ce1b580303be5)
+
+running 1 test
+
+thread 'adapters::git_plane::tests::g492_snapshot_marks_old_absent_and_stopped_facts' (2124052) panicked at src/adapters/git_plane_issue492_tests.rs:339:5:
+assertion `left == right` failed: old git facts must never be marked current
+  left: Bool(false)
+ right: true
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test adapters::git_plane::tests::g492_snapshot_marks_old_absent_and_stopped_facts ... FAILED
+
+failures:
+
+failures:
+    adapters::git_plane::tests::g492_snapshot_marks_old_absent_and_stopped_facts
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 305 filtered out; finished in 0.13s
+
+error: test failed, to rerun pass `-p corrald --lib`

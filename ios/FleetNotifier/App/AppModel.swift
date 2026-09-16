@@ -2741,32 +2741,149 @@ final class AppModel: ObservableObject {
         liveSession = URLSession(configuration: configuration)
     }
 
-    /// #554 round 2 (F1): retire the live session's transport and repair every
-    /// holder of it in ONE step.
+    /// #554 round 3 (F1): completion latch for the bounded retirement drain.
+    /// `Task.value` is NOT cancellable, so the drain cannot race a deadline by
+    /// cancelling its waiter; a latch lets the deadline win instead (see
+    /// `waitForTermination`).
+    private final class DrainLatch: @unchecked Sendable {
+        private let lock = NSLock()
+        private var complete = false
+
+        func signalComplete() {
+            lock.lock()
+            complete = true
+            lock.unlock()
+        }
+
+        var isComplete: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return complete
+        }
+    }
+
+    /// #554 round 3 (F1): bound on the retirement drain, so a wedged owner can
+    /// never hang the lifecycle. Owners are cancelled first, and a cancelled
+    /// owner that is only between its last guard and its next dispatch finishes
+    /// in microseconds — the bound is the pathological case, not the norm.
+    private static let retirementDrainTimeout: TimeInterval = 2
+    /// #554 round 3 (F1): poll cadence of the bounded drain (the wait itself
+    /// suspends; this is not a busy loop).
+    private static let retirementDrainTick: UInt64 = 25_000_000
+
+    /// #554 round 3 (F1): cancel and RETURN every LIVE-path owner whose body can
+    /// still create a task on the live transport.
+    ///
+    /// Why cancellation alone is not enough (and why every caller-side guard is
+    /// not enough): the creation happens INSIDE Foundation's async machinery —
+    /// the abort stack is `bytes(for:)`/`data(for:)` →
+    /// `withTaskCancellationHandler`'s operation → `-[__NSURLSessionLocal
+    /// taskForClassInfo:]` — i.e. one await hop after the call, on another
+    /// executor. A guard evaluated in the caller's step therefore cannot be
+    /// atomic with the creation, and `Task.cancel()` is cooperative: a cancelled
+    /// owner that is already past its last guard still creates its task. The
+    /// only atomic position is "the owner is not running at all", which is what
+    /// cancelling and then WAITING for termination buys.
+    private func liveTransportOwners() -> [Task<Void, Never>] {
+        var owners: [Task<Void, Never>] = []
+        // #400 C3: every coordinator host's stream + preflight/refresh owners.
+        if let coordinator {
+            owners.append(contentsOf: coordinator.stopAll())
+        }
+        // The ACTIVE host's stream owner (the store hands its task back).
+        if let task = fleet.disconnect() {
+            owners.append(task)
+        }
+        // #451: the ACTIVE host's preflight/retry ladder is part of the live
+        // session — a background boundary ends its retries too.
+        if let task = keyContinuityTask {
+            task.cancel()
+            owners.append(task)
+        }
+        keyContinuityTask = nil
+        keyContinuityTaskId = nil
+        // #454 pre-review fix 3: the background boundary resets the ladder's
+        // waiting state explicitly (the retired ladder's own cleanup no longer
+        // clears it — see beginKeyContinuityCheck).
+        keyContinuityWaiting = false
+        // #397/#554: push clear/enroll AND every registered live-path action
+        // (pull refresh, stale-agent reconciliation) must not outlive the live
+        // session that owns their URLSession.
+        for task in lifecycleTasks.values {
+            task.cancel()
+            owners.append(task)
+        }
+        lifecycleTasks.removeAll()
+        return owners
+    }
+
+    /// #554 round 3 (F1): wait for every owner to terminate, bounded by
+    /// `deadline`. The deadline always wins — a wedged owner is left behind
+    /// rather than hanging the lifecycle (and a wedged owner has already created
+    /// its task; the state this drain removes is "about to create").
+    private static func waitForTermination(of owners: [Task<Void, Never>],
+                                           until deadline: Date) async {
+        guard !owners.isEmpty else { return }
+        let latch = DrainLatch()
+        Task.detached(priority: .userInitiated) {
+            for owner in owners {
+                _ = await owner.value
+            }
+            latch.signalComplete()
+        }
+        while !latch.isComplete, Date() < deadline {
+            do {
+                try await Task.sleep(nanoseconds: retirementDrainTick)
+            } catch {
+                return
+            }
+        }
+    }
+
+    /// #554 round 3 (F1): retire the live session's transport — the repair of
+    /// every holder in the same synchronous step as the decision, and the pool
+    /// death only once every collected owner has terminated.
     ///
     /// Invalidating the transport is what kills the stale pooled connection,
     /// but it also makes the retired session FATAL to dispatch on: creating a
     /// task on an invalidated `URLSession` raises an uncatchable
-    /// `NSGenericException` that kills the process. `stopLive()` clears
-    /// `liveSession` while `mode` stays live, so a live path still runs between
-    /// this boundary and the next `startLive()` — and the coordinator CACHES
-    /// the transport it builds its host clients from (`urlSession`, adopted by
-    /// `startLive()` → `adoptTransportSession`). Left alone, that holder keeps
-    /// the dead session, and a foreground-reachable dispatch on it (Settings ▸
-    /// Retry → `startSessionIfNeeded`, a path-restoration hint's reconnect, a
-    /// per-host refresh) creates the fatal task.
+    /// `NSGenericException` that kills the process.
     ///
-    /// So the repair is part of the retirement itself, BEFORE the invalidation:
-    /// the coordinator is reset to the base session, which is never invalidated
-    /// (it is the injected/`.shared` session every non-live path already uses),
-    /// and the next `startLive()` re-adopts the new live session. A dispatch
-    /// site that captured a client earlier still re-checks the transport before
-    /// creating its task — see `refreshFleet()` and
-    /// `HostStreamCoordinator.refreshAll(profiles:)`.
-    private func retireLiveTransport(_ transport: URLSession?) {
+    /// Why waiting for the collected owners closes the window (and why no
+    /// caller-side guard can):
+    /// - The creation is not performed by the caller. `URLSession.data(for:)` /
+    ///   `bytes(for:)` create their task INSIDE Foundation's async machinery
+    ///   (`withTaskCancellationHandler`'s operation → `-[__NSURLSessionLocal
+    ///   taskForClassInfo:]`), one await hop after the call, on another
+    ///   executor — so a guard and the creation are never in one synchronous
+    ///   step, and `Task.cancel()` is cooperative: a cancelled owner that is
+    ///   already past its last guard still creates its task.
+    /// - Owner CREATION, on the other hand, is not racy: every live-path owner
+    ///   (`FleetStore.connect`, `HostStreamCoordinator.openStream`/ladders,
+    ///   `refreshFleet`, reconciliation) is created on the `MainActor`, and so is
+    ///   this retirement step. An owner therefore either exists before this step
+    ///   — and is collected by `liveTransportOwners()` and awaited here — or it
+    ///   resolves its transport after the repair above. The two owner-creating
+    ///   sites that run after an `await` (the per-host ladder's post-verification
+    ///   `openStream`, `refreshFleet`'s `reconnectIfNeeded`) re-check the
+    ///   transport in the SAME synchronous step as the creation, so a
+    ///   post-boundary stretch cannot create an owner bound to the retired
+    ///   transport either.
+    /// - Once every collected owner has terminated, nothing holds the retired
+    ///   transport any more, so the invalidation cannot race a creation.
+    ///
+    /// The wait is bounded: a wedged owner is left behind rather than hanging
+    /// the lifecycle, and the transport is invalidated either way — the pool
+    /// death the contract requires is never skipped.
+    private func retireLiveTransport(_ transport: URLSession?,
+                                     owners: [Task<Void, Never>]) {
         guard let transport else { return }
-        coordinator?.adoptTransportSession(session)
-        transport.invalidateAndCancel()
+        Task { @MainActor in
+            await Self.waitForTermination(
+                of: owners,
+                until: Date().addingTimeInterval(Self.retirementDrainTimeout))
+            transport.invalidateAndCancel()
+        }
     }
 
     func startLive() {
@@ -2946,37 +3063,36 @@ final class AppModel: ObservableObject {
         // session — the background/removal boundary ends both, so no late
         // path callback can act after teardown.
         stopPathMonitor()
-        // #400 C3: cancel every coordinator host's stream/tasks when the
-        // app backgrounds; persist their per-host cursors + allowlisted
-        // caches before the session ends (C5/C6).
+        // #400 C3: persist every coordinator host's per-host cursor +
+        // allowlisted cache BEFORE the owners are cancelled and the session
+        // ends (C5/C6) — these reads must not race a retired transport.
         if let coordinator, let store = profileStore {
             let profiles = store.orderedProfiles
             coordinator.persistCursors(profiles: profiles)
             coordinator.persistAllMetadata(profiles: profiles)
-            coordinator.stopAll()
         }
-        fleet.disconnect()
+        // #554 round 2 (F1): repair every holder of the retired transport in the
+        // SAME synchronous step as the retirement decision — the coordinator is
+        // reset to the base session, which is never invalidated — so every
+        // dispatch made from here on (including one queued before the boundary,
+        // and every owner created after it) derives a transport that cannot be
+        // invalidated. Owner creation is MainActor-serialized with this step, so
+        // an owner either exists before it (and is collected just below) or uses
+        // the base session.
+        coordinator?.adoptTransportSession(session)
+        // #554 round 3 (F1): cancel EVERY live-path owner (coordinator stream +
+        // preflight/refresh owners, the ACTIVE host's stream owner, its
+        // preflight/retry ladder, the push/lifecycle tasks and the registered
+        // pull/reconciliation tasks) and KEEP the handles: the retirement step
+        // below waits for their termination before the transport is invalidated,
+        // because a cancelled owner that is already past its last guard can
+        // still create a task (see retireLiveTransport). #397: push clear/enroll
+        // lifecycle tasks must not outlive the live session that owns their
+        // URLSession — their per-host pending markers were set synchronously
+        // before launch, so a cancelled attempt simply stays pending until the
+        // next successful connection retries it.
+        let owners = liveTransportOwners()
         fleet.persistCursor()
-        // #397: push clear/enroll lifecycle tasks must not outlive the
-        // live session that owns their URLSession — cancel them here so a
-        // task queued behind teardown bails on Task.isCancelled instead of
-        // touching a session that may already be invalidated. Their
-        // per-host pending markers were set synchronously before launch,
-        // so a cancelled attempt simply stays pending until the next
-        // successful connection retries it.
-        for task in lifecycleTasks.values {
-            task.cancel()
-        }
-        lifecycleTasks.removeAll()
-        // #451: the ACTIVE host's preflight/retry ladder is part of the
-        // live session — a background boundary ends its retries too.
-        keyContinuityTask?.cancel()
-        keyContinuityTask = nil
-        keyContinuityTaskId = nil
-        // #454 pre-review fix 3: the background boundary resets the ladder's
-        // waiting state explicitly (the retired ladder's own cleanup no longer
-        // clears it — see beginKeyContinuityCheck).
-        keyContinuityWaiting = false
         // #399: mirror the active profile's cursor into the profile store
         // and persist the allowlisted board metadata cache (background/
         // host-switch boundaries).
@@ -2993,13 +3109,11 @@ final class AppModel: ObservableObject {
         }
         // #554 round 2 (F1): the live session's pool dies with the live
         // session — AFTER the cursor/metadata persistence above (those reads
-        // must not race an invalidated transport), and in the SAME step as the
-        // repair of every holder of the retired transport, so no live-path
-        // dispatch can create a task on an invalidated session (see
-        // retireLiveTransport). Every task dispatched on it is cancelled here,
-        // so nothing of this session can outlive the boundary, and the next
-        // foreground builds a fresh session with an empty pool.
-        retireLiveTransport(retiring)
+        // must not race an invalidated transport). #554 round 3: the repair of
+        // every holder happens in the same step, and the invalidation itself
+        // waits for every owner collected above to terminate, so a task can no
+        // longer be created on the retired transport across an await hop.
+        retireLiveTransport(retiring, owners: owners)
     }
 
     /// #453: the app's scene-phase lifecycle routing — the production
@@ -3221,8 +3335,15 @@ final class AppModel: ObservableObject {
         // (background) before the snapshot arrived.
         let transport = liveSession
         let client = CorraldClient(host: hostURL, session: liveTransport)
+        // #554 round 3 (F1): both refresh tasks are registered as live-path
+        // owners, so a retirement boundary cancels them AND waits for them to
+        // terminate before the transport they hold is invalidated (a cancelled
+        // task that is already past its guard can still create its task).
+        let activeRefreshId = UUID()
+        let coordinatorRefreshId = UUID()
         let activeRefresh = Task { @MainActor [weak self] in
             guard let self else { return }
+            defer { self.lifecycleTasks.removeValue(forKey: activeRefreshId) }
             // #554 round 2 (F1): the client above was built on whatever
             // transport was live at dispatch time, and this body may run only
             // AFTER a retirement boundary (the pull is queued behind a
@@ -3252,8 +3373,11 @@ final class AppModel: ObservableObject {
         }
         let coordinatorRefresh = Task { @MainActor [weak self] in
             guard let self, let store = self.profileStore else { return }
+            defer { self.lifecycleTasks.removeValue(forKey: coordinatorRefreshId) }
             _ = await self.coordinator?.refreshAll(profiles: store.orderedProfiles)
         }
+        lifecycleTasks[activeRefreshId] = activeRefresh
+        lifecycleTasks[coordinatorRefreshId] = coordinatorRefresh
         await activeRefresh.value
         _ = await coordinatorRefresh.value
     }

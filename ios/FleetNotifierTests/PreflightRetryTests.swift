@@ -1408,4 +1408,139 @@ final class LiveSessionTransportTests: XCTestCase {
         XCTAssertTrue(model.liveSession === foreground,
                       "the foreground session is the only live transport in use")
     }
+
+    /// (F1 round 3) The reviewer's reproduction as a pin: jittered
+    /// `.active`/`.background` cycles interleaved with the window-reachable
+    /// Settings ▸ Retry dispatch on a pinned SECONDARY host, over two pinned
+    /// hosts whose `/host-key` never answers (so the preflight ladders churn at
+    /// their bounded rate and the executor is contended — the condition under
+    /// which an owner's await hop can straddle the boundary). It exists because
+    /// no caller-side guard can be atomic with the creation:
+    /// `URLSession.data(for:)`/`bytes(for:)` create their task one await hop
+    /// deeper (inside Foundation's own machinery, on another executor), and
+    /// `Task.cancel()` is cooperative — so a cancelled stream or ladder that is
+    /// already past its last guard still creates its task, and if the
+    /// retirement landed in between, the process aborts uncatchably. RED at
+    /// `1bcdd24` (exit 65, `NSGenericException: Task created in a session that
+    /// has been invalidated`); GREEN only when retirement WAITS for its owners.
+    func testBoundaryJitterWithRetryNeverCreatesATaskOnARetiredTransport() async throws {
+        try await runBoundaryStress(cycles: 600, retrying: true)
+    }
+
+    /// The scoping control for the stress pin: the SAME jittered flapping with
+    /// NO user-reachable dispatch. It does not abort at either head — which is
+    /// what scopes the trigger to the window-reachable retry route rather than
+    /// to the flapping itself.
+    func testBoundaryJitterWithoutRetryIsClean() async throws {
+        try await runBoundaryStress(cycles: 60, retrying: false)
+    }
+
+    /// Shared driver: `cycles` jittered `.active`/`.background` transitions
+    /// through the production scene seam, optionally dispatching the Settings ▸
+    /// Retry route on the pinned secondary host inside each window. The jitter
+    /// is a seeded LCG (no wall clock), so the interleaving is reproducible.
+    private func runBoundaryStress(cycles: Int, retrying: Bool) async throws {
+        defer { cleanup() }
+        let host = try hostURL()
+        let secondaryHost = try XCTUnwrap(URL(string: Self.secondaryHostString))
+        let secondaryKey = secondaryHost.appendingPathComponent("/host-key")
+        let secondaryEvents = secondaryHost.appendingPathComponent("/events")
+        let probe = try probeURL()
+        var script: [URL: [PreflightRetryURLProtocol.Outcome]] = [:]
+        // The ACTIVE host verifies (so the pull route is reachable), the
+        // coordinator host never answers: its ladder stays in its bounded retry
+        // loop for the whole run, which is what keeps the transport busy enough
+        // for an owner's await hop to straddle a boundary — the condition the
+        // reviewer's probe created.
+        script[try keyURL()] = [.ok(Self.pinnedKey)]
+        script[host.appendingPathComponent("/events")] = [.holdOpen]
+        script[secondaryKey] = [.holdOpen]
+        script[secondaryEvents] = [.holdOpen]
+        script[host.appendingPathComponent("/snapshot")] = [.fail(.timedOut)]
+        script[secondaryHost.appendingPathComponent("/snapshot")] = [.fail(.timedOut)]
+        script[probe] = [.holdOpen]
+        let session = scriptedSession(script)
+        // A tiny bound + tiny cadence: each coordinator ladder attempt fails fast
+        // and retries, exactly like the reviewer's stress probe.
+        let policy = HostPreflightRetryPolicy(baseInterval: 0.01, maxInterval: 0.01,
+                                              attemptTimeout: 0.01)
+        let model = try makeModel(session: session, policy: policy, secondary: true)
+        let secondary = try XCTUnwrap(secondaryProfile, "premise: the coordinator host is paired")
+        model.startLive()
+        XCTAssertNotNil(model.liveSession, "premise: the first live session is installed")
+
+        var seed: UInt64 = 0x5DEECE_66D
+        var identities: [ObjectIdentifier] = []
+        var retiredProbes: [(URLSession, ProbeCompletion)] = []
+        for cycle in 0..<cycles {
+            model.handleScenePhaseChange(.active)
+            let live = try XCTUnwrap(model.liveSession, "each foreground installs its own session")
+            identities.append(ObjectIdentifier(live))
+            if retrying {
+                model.retryHostConnection(secondary)
+                if cycle % 4 == 0 { model.retryHostConnection(secondary) }
+                // A pull in flight adds another owner with a captured client.
+                if cycle % 3 == 0 { Task { await model.refreshFleet() } }
+            }
+            // A real task on THIS session, so its retirement is observable.
+            let completion = ProbeCompletion()
+            live.dataTask(with: probe) { _, _, error in completion.record(error) }.resume()
+            retiredProbes.append((live, completion))
+            // The boundary is fired from a MIX of interleavings: sometimes from
+            // this job (right away), sometimes from its own queued `MainActor`
+            // job, and sometimes after a randomized number of queue turns. The
+            // window the reviewer found is precisely "the retirement lands
+            // between an owner's last guard and the dispatch that owner was
+            // already committed to", and which turn reaches that state is not
+            // controllable from the outside — so the pin sweeps the reachable
+            // interleavings instead of assuming one.
+            seed = seed &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+            let turns = Int(seed % 4)
+            switch seed % 3 {
+            case 0:
+                Task { @MainActor in model.handleScenePhaseChange(.background) }
+            default:
+                for _ in 0..<turns { await Task.yield() }
+                model.handleScenePhaseChange(.background)
+            }
+            var spins = 0
+            while model.liveSession != nil, spins < 100_000 {
+                await Task.yield()
+                spins += 1
+            }
+            // Sub-ms jitter, so successive cycles interleave differently.
+            if seed % 3 == 0 {
+                try? await Task.sleep(nanoseconds: (seed % 200) * 1_000)
+            }
+        }
+        // Surviving the loop is the load-bearing observation: a single creation
+        // on a retired transport kills the process (the RED at 1bcdd24).
+        XCTAssertNil(model.liveSession, "the last boundary retires the live session")
+        XCTAssertEqual(model.mode, .live, "the model stays live across the boundary")
+        XCTAssertEqual(Set(identities).count, identities.count,
+                       "every foreground installs a NEW live session (never a retired one)")
+        XCTAssertGreaterThan(PreflightRetryURLProtocol.startCount(to: secondaryEvents), 0,
+                             "premise: the coordinator host's stream really dispatched")
+        if retrying {
+            XCTAssertGreaterThan(PreflightRetryURLProtocol.startCount(to: secondaryKey), 0,
+                                 "premise: the retry route really ran preflight attempts")
+        }
+        // Every retired session must end up invalidated by the retirement step
+        // (the drain never skips the pool death) …
+        await waitUntil(retiredProbes.allSatisfy { ($0.1.error as NSError?)?.code == NSURLErrorCancelled },
+                        timeout: 8)
+        for (index, entry) in retiredProbes.enumerated() {
+            XCTAssertEqual((entry.1.error as NSError?)?.code, NSURLErrorCancelled,
+                           "retired live session #\(index) must be invalidated")
+        }
+        // … and no dispatched transport task may be left unmatched.
+        await waitUntil(PreflightRetryURLProtocol.stoppedTotal >= PreflightRetryURLProtocol.startedTotal,
+                        timeout: 2)
+        print("ISSUE554_STRESS cycles=\(cycles) retrying=\(retrying) "
+              + "started=\(PreflightRetryURLProtocol.startedTotal) "
+              + "stopped=\(PreflightRetryURLProtocol.stoppedTotal)")
+        XCTAssertGreaterThanOrEqual(PreflightRetryURLProtocol.stoppedTotal,
+                                    PreflightRetryURLProtocol.startedTotal,
+                                    "no transport task outlives the stress run")
+    }
 }

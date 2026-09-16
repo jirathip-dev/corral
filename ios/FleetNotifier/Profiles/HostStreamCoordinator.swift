@@ -624,20 +624,43 @@ final class HostStreamCoordinator: ObservableObject {
     /// Stop every coordinator host (app background, C3: cancel all when
     /// the app backgrounds). Rows stay retained in each store for the
     /// next foreground resume.
-    func stopAll() {
+    ///
+    /// #554 round 3 (F1): the cancelled owners are RETURNED so the retirement
+    /// step can wait for their termination before the live transport is
+    /// invalidated — cancelling is cooperative, and a cancelled owner that is
+    /// already past its last guard can still create its transport task.
+    @discardableResult
+    func stopAll() -> [Task<Void, Never>] {
+        var owners: [Task<Void, Never>] = []
         for session in sessions.values {
-            session.continuityTask?.cancel()
+            if let task = session.continuityTask {
+                task.cancel()
+                owners.append(task)
+            }
             session.continuityTask = nil
             session.continuityWaiting = false
-            session.refreshTask?.cancel()
+            if let task = session.refreshTask {
+                task.cancel()
+                owners.append(Self.drainHandle(for: task))
+            }
             session.refreshTask = nil
-            session.store.disconnect()
+            if let task = session.store.disconnect() {
+                owners.append(task)
+            }
             if session.posture != .unpinned, session.posture != .mismatch {
                 session.posture = .verifying
                 session.store.requireHostVerification(resetWindow: true)
             }
         }
         objectWillChange.send()
+        return owners
+    }
+
+    /// #554 round 3 (F1): one awaitable handle for a `Task<String?, Never>`
+    /// owner (a per-host refresh), so a retirement drain can wait for it
+    /// alongside the `Task<Void, Never>` owners.
+    private static func drainHandle(for task: Task<String?, Never>) -> Task<Void, Never> {
+        Task { _ = await task.value }
     }
 
     /// E3: remove ONE host — cancel that host's stream/tail/refresh tasks

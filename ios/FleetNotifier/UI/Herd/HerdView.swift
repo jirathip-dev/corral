@@ -477,9 +477,24 @@ struct HerdView: View {
         }.padding(.vertical,8)
     }
 
-    private func horseCaption(name:String,status:String,hostName:String?,rail:Bool) -> some View {
-        VStack(spacing:2) {
-            Text(name).font(.system(.caption,design:.monospaced)).lineLimit(rail ? 1 : nil)
+    private func horseCaption(name:String,status:String,hostName:String?,rail:Bool,
+                              workspace:Workspace = Workspace()) -> some View {
+        let captionName = Text(name).font(.system(.caption,design:.monospaced)).lineLimit(rail ? 1 : nil)
+        return VStack(spacing:2) {
+            if workspace.dirty || workspace.behind > 0 {
+                HStack(spacing:2) {
+                    captionName
+                    if workspace.dirty {
+                        Text("●").font(.caption2.weight(.semibold)).foregroundStyle(theme.peach)
+                            .fixedSize()
+                    }
+                    if workspace.behind > 0 {
+                        Text("↓\(workspace.behind)").font(.caption2.monospaced()).fixedSize()
+                    }
+                }.lineLimit(rail ? 1 : nil)
+            } else {
+                captionName
+            }
             Text(status).font(.caption.weight(.semibold))
             if let hostName { Text(hostName).font(.caption2).lineLimit(rail ? 1 : nil) }
         }.foregroundStyle(ranchTokens.inkColor).frame(maxWidth:.infinity).padding(.vertical,5)
@@ -507,19 +522,29 @@ struct HerdView: View {
                     }
                 }.frame(height:108).accessibilityHidden(true)
                 horseCaption(name:horse.name,status:"\(herdMark(horse.state)) \(horse.statusText)",
-                             hostName:horse.hostName,rail:rail)
+                             hostName:horse.hostName,rail:rail,workspace:horse.agent.workspace)
             }.frame(width:rail ? railCardWidth : nil)
                 .frame(minWidth:156,minHeight:44).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(horse.disconnected)
         .accessibilityElement(children:.ignore)
-        .accessibilityLabel("\(horse.name), \(horse.statusText), \(horse.agent.workspace.repo ?? "Other")\(horse.hostName.map { " on " + $0 } ?? "")")
+        .accessibilityLabel(herdHorseAccessibilityLabel(horse))
         .accessibilityHint(horse.disconnected ? "Source disconnected" : "Opens recent output")
 #if DEBUG
         .modifier(HerdRailFrameProbe(name:horse.name))
 #endif
     }
+}
+
+func herdHorseAccessibilityLabel(_ horse:HerdHorse) -> String {
+    let workspace = horse.agent.workspace
+    var label = "\(horse.name), \(horse.statusText), \(workspace.repo ?? "Other")\(horse.hostName.map { " on " + $0 } ?? "")"
+    if workspace.dirty { label += ", dirty worktree" }
+    if workspace.behind > 0 {
+        label += ", \(workspace.behind) commit\(workspace.behind == 1 ? "" : "s") behind"
+    }
+    return label
 }
 
 func herdRepositoryCaption(_ paddock:HerdPaddock) -> String {

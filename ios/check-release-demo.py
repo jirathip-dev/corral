@@ -570,7 +570,7 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # creation happens inside Foundation's own async machinery one await hop
     # after any caller-side guard; re-pinned over the round-3 source set
     # (recomputed from the tree, never hand-edited).
-    "8eba68197e99d3e65d326e9de07357c5a823f4d798131d6890a142a412e1e302"
+    "111271878084d05b26d146a2cad67b4a9dc7a20206e2a50181c7956412b46d12"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

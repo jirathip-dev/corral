@@ -16,9 +16,15 @@ dispatches were observed, every retired session's task ends cancelled, stream
 task accounting balances (`stopped >= started`), and no live session survives
 the final boundary. The control runs the identical flapping with no retry.
 
+## Heads
+
+* fix commit (all gates, probes and the G8 re-run ran here): `1da21ba604ccc068bf3fe1e3ec7f2df81332835d`
+* evidence commit (this record; `ios/` byte-identical to the fix head, `git diff --exit-code 1da21ba HEAD -- ios/` = 0):
+  `ea97eb6` on `g554-live-session-preflight`, pushed.
+
 ## GREEN at the round-3 head
 
-`1da21ba` (fix commit; the evidence commit follows it): raw exit 0,
+`1da21ba`: raw exit 0,
 `LiveSessionTransportTests` 8/8, both stress tests pass with real traffic, with
 the per-leg `ISSUE554_STRESS cycles=… retrying=… started=… stopped=…` counters
 in the battery log (`/tmp/g554-probe-control.log`, one entry per battery leg) —

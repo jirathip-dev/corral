@@ -19,8 +19,11 @@ the final boundary. The control runs the identical flapping with no retry.
 ## Heads
 
 * fix commit (all gates, probes and the G8 re-run ran here): `1da21ba604ccc068bf3fe1e3ec7f2df81332835d`
-* evidence commit (this record; `ios/` byte-identical to the fix head, `git diff --exit-code 1da21ba HEAD -- ios/` = 0):
-  `3444194` (this record; its parent `ea97eb6` carried the round-3 report, evidence and battery changes) on `g554-live-session-preflight`, pushed.
+* evidence commits: `ea97eb6` (round-3 report, evidence and battery) plus
+  the record refinements that follow it; the pushed head of
+  `g554-live-session-preflight` is the newest of them, and `ios/` is
+  byte-identical to the fix head on every one of them
+  (`git diff --exit-code 1da21ba HEAD -- ios/` = 0).
 
 ## GREEN at the round-3 head
 

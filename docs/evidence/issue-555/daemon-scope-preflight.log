@@ -1,0 +1,8 @@
+tests/http.rs snapshot contract:
+apply before request: True
+explicit flush absent: True
+expects rev=1 immediately: True
+expects just-applied agent: True
+current handler awaits fresh snapshot: True
+current snapshot flushes then clones: True
+background debounce is two seconds: True

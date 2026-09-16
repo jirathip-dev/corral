@@ -37,7 +37,8 @@ if live and not credential.strip():
     raise SystemExit("live mode needs operator-provided G556_LIVE_TOKEN")
 assert not shutil.which("gh", path="/usr/bin:/bin"), "fixture PATH must not contain gh"
 with tempfile.TemporaryDirectory(prefix="g556-", dir="/tmp") as temp:
-    root = Path(temp)
+    # Advertise physical fixture cwd, matching canonical git fact keys.
+    root = Path(temp).resolve()
     config = root / "config"
     config.mkdir(mode=0o700)
     checkout = root / "repo"
@@ -48,14 +49,19 @@ with tempfile.TemporaryDirectory(prefix="g556-", dir="/tmp") as temp:
         ["git", "-C", str(checkout), "remote", "add", "origin", "https://github.com/jirathip-dev/corral.git"],
     ]:
         subprocess.run(command, check=True, stdout=subprocess.DEVNULL, timeout=15)
+    peer = root / "worktrees/repo/unbound"
+    peer.parent.mkdir(parents=True)
+    subprocess.run(["git", "-C", str(checkout), "worktree", "add", "-b", "unbound-556-peer", str(peer)],
+        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
     class Herdr(socketserver.StreamRequestHandler):
         def handle(self):
             for line in self.rfile:
                 request = json.loads(line)
                 if request["method"] == "agent.list":
-                    result = {"agents": [{"agent": "opencode", "agent_status": "idle", "cwd": str(checkout),
-                        "name": "github-fixture", "pane_id": "p556", "state_labels": {},
-                        "terminal_title_stripped": "Fictional GitHub binding evidence", "workspace_id": "w556"}]}
+                    result = {"agents": [{"agent": "opencode", "agent_status": "idle", "cwd": str(path),
+                        "name": name, "pane_id": pane, "state_labels": {},
+                        "terminal_title_stripped": "Fictional GitHub binding evidence", "workspace_id": "w556"}
+                        for path, name, pane in [(checkout, "github-fixture", "p556"), (peer, "unbound-fixture", "p557")]]}
                 else:
                     result = {"ok": True}
                 self.wfile.write((json.dumps({"id": request["id"], "result": result}) + "\n").encode())
@@ -139,6 +145,8 @@ with tempfile.TemporaryDirectory(prefix="g556-", dir="/tmp") as temp:
         if live:
             assert logs.count("gh plane round-trip complete") >= 2, "need two successful live polls"
             assert args.pr and any(w["pr_number"] == args.pr and w["ci_status"] is not None for w in workspaces), "live PR branch did not bind"
+            unbound = [w for w in workspaces if w["branch"] == "unbound-556-peer"]
+            assert len(unbound) == 1 and unbound[0]["pr_number"] is None and unbound[0]["ci_status"] is None
         else:
             assert logs.count("github: disabled (no token)") == 1
             assert "gh plane round-trip complete" not in logs

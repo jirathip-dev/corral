@@ -1,0 +1,44 @@
+[
+  {
+    "attachments" : [
+      {
+        "configurationName" : "Test Scheme Action",
+        "deviceId" : "3E152044-E411-4CE0-A545-604775D51B58",
+        "deviceName" : "g556-iPhone16",
+        "exportedFileName" : "FC15928B-15E3-4D48-8C2B-5747A7B36B0C.png",
+        "isAssociatedWithFailure" : false,
+        "suggestedHumanReadableName" : "g556-stale_0_B8CD9CB3-90ED-476B-960D-9BEA9D140D1D.png",
+        "timestamp" : 1789577853.075
+      },
+      {
+        "configurationName" : "Test Scheme Action",
+        "deviceId" : "3E152044-E411-4CE0-A545-604775D51B58",
+        "deviceName" : "g556-iPhone16",
+        "exportedFileName" : "B2802799-DB39-404C-A104-8965B65E18C9.png",
+        "isAssociatedWithFailure" : false,
+        "suggestedHumanReadableName" : "g556-bound_0_E8F532BD-B066-4AE5-BBBA-6C258E0F0C1B.png",
+        "timestamp" : 1789577852.517
+      },
+      {
+        "configurationName" : "Test Scheme Action",
+        "deviceId" : "3E152044-E411-4CE0-A545-604775D51B58",
+        "deviceName" : "g556-iPhone16",
+        "exportedFileName" : "A9553164-8171-40C7-A4E0-045D328D1253.png",
+        "isAssociatedWithFailure" : false,
+        "suggestedHumanReadableName" : "g556-unbound-ci_0_77D3DB40-7609-4FD3-906A-9D591B0B12B2.png",
+        "timestamp" : 1789577852.504
+      },
+      {
+        "configurationName" : "Test Scheme Action",
+        "deviceId" : "3E152044-E411-4CE0-A545-604775D51B58",
+        "deviceName" : "g556-iPhone16",
+        "exportedFileName" : "0271C650-76A8-4606-BC94-FAC5D1DD51DC.png",
+        "isAssociatedWithFailure" : false,
+        "suggestedHumanReadableName" : "g556-unbound_0_DABB1C08-ACE7-4D28-9787-208E9DE46F57.png",
+        "timestamp" : 1789577851.878
+      }
+    ],
+    "testIdentifier" : "GitHubBindingBadgeTests/testUnboundHasNoBadgeAndBoundRendersPRNumber()",
+    "testIdentifierURL" : "test://com.apple.xcode/FleetNotifier/FleetNotifierTests/GitHubBindingBadgeTests/testUnboundHasNoBadgeAndBoundRendersPRNumber"
+  }
+]

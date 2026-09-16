@@ -1,0 +1,100 @@
+{
+  "agents": {
+    "herdr:pane:p556": {
+      "agent_id": "herdr:pane:p556",
+      "attachment": {
+        "kind": "herdr-pane",
+        "ref": "p556"
+      },
+      "capabilities": [
+        "read_tail",
+        "read_diff"
+      ],
+      "display_name": "github-fixture",
+      "host": "bK8PetNAN3/aYnoo12TI0tWCa0WGx81FhZSYpkabYzg=",
+      "parent_id": null,
+      "reason": null,
+      "seq": 1,
+      "source": "herdr",
+      "state": "idle",
+      "title": "Fictional GitHub binding evidence",
+      "tool": "opencode",
+      "ts": 1789578709911,
+      "waiting_on": null,
+      "workspace": {
+        "ahead": 0,
+        "behind": 0,
+        "branch": "unbound-556-fixture",
+        "ci_status": null,
+        "dirty": false,
+        "head_sha": "9b7909e7a9d8d686fb5d804b62ccd1591027dfbb",
+        "head_subject": "Fictional #556 lane",
+        "issues": [],
+        "pr_number": null,
+        "repo": "repo",
+        "worktree_path": "/tmp/g556-eq0llsk2/repo"
+      }
+    },
+    "herdr:pane:p557": {
+      "agent_id": "herdr:pane:p557",
+      "attachment": {
+        "kind": "herdr-pane",
+        "ref": "p557"
+      },
+      "capabilities": [
+        "read_tail",
+        "read_diff"
+      ],
+      "display_name": "unbound-fixture",
+      "host": "bK8PetNAN3/aYnoo12TI0tWCa0WGx81FhZSYpkabYzg=",
+      "parent_id": null,
+      "reason": null,
+      "seq": 1,
+      "source": "herdr",
+      "state": "idle",
+      "title": "Fictional GitHub binding evidence",
+      "tool": "opencode",
+      "ts": 1789578709911,
+      "waiting_on": null,
+      "workspace": {
+        "ahead": 0,
+        "behind": 0,
+        "branch": "unbound-556-peer",
+        "ci_status": null,
+        "dirty": false,
+        "head_sha": "9b7909e7a9d8d686fb5d804b62ccd1591027dfbb",
+        "head_subject": "Fictional #556 lane",
+        "issues": [],
+        "pr_number": null,
+        "repo": "repo",
+        "worktree_path": "/tmp/g556-eq0llsk2/worktrees/repo/unbound"
+      }
+    }
+  },
+  "epoch": "fb0625f849bb6e0d64bc779e5d7609a2",
+  "generated_at": 1789578711915,
+  "git_plane_alive": true,
+  "git_plane_backlog": false,
+  "git_plane_last_event_age_ms": 451,
+  "git_plane_skipped": 0,
+  "git_worktree_facts": {
+    "/private/tmp/g556-eq0llsk2/repo": {
+      "fact_age_ms": 1551,
+      "stale": false
+    },
+    "/private/tmp/g556-eq0llsk2/worktrees/repo/unbound": {
+      "fact_age_ms": 1419,
+      "stale": false
+    },
+    "/tmp/g556-eq0llsk2/repo": {
+      "fact_age_ms": null,
+      "stale": true
+    },
+    "/tmp/g556-eq0llsk2/worktrees/repo/unbound": {
+      "fact_age_ms": null,
+      "stale": true
+    }
+  },
+  "rev": 1,
+  "schema_version": 5
+}

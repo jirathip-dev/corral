@@ -1,0 +1,348 @@
+{
+  "mode": "file",
+  "fixture": "Herdr agent and checkout; live GitHub only in env/file modes",
+  "binary_sha256": "1ce76de61416bc80bd5bcd08986332378f493feb51373ac7f61be97b35e16d32",
+  "command": [
+    "/private/tmp/g556-target/release/corrald",
+    "--socket",
+    "/private/tmp/g556-akn17vmq/herdr.sock",
+    "--port",
+    "56628"
+  ],
+  "PATH": "/usr/bin:/bin",
+  "gh_on_PATH": false,
+  "branch": "dependabot/cargo/rust-dependencies-f82fc923d5",
+  "expected_pr": 525,
+  "seconds": 91.05,
+  "samples": [
+    {
+      "elapsed_s": 0.017,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 1.106,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 2.264,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 3.356,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 4.509,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 5.529,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 6.665,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 7.821,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 8.967,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 10.116,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 11.288,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 12.441,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 13.564,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 14.724,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 15.855,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 17.012,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 18.164,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 19.255,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 20.413,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 21.528,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 22.658,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 23.807,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 24.963,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 26.102,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 27.19,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 28.348,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 29.509,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 30.66,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 31.788,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 32.936,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 34.083,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 35.239,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 36.384,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 37.539,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 38.708,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 39.888,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 41.075,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 42.214,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 43.345,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 44.483,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 45.521,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 46.662,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 47.812,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 48.945,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 50.047,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 51.076,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 52.204,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 53.369,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 54.533,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 55.685,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 56.735,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 57.9,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 59.039,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 60.208,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 61.364,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 62.513,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 63.647,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 64.713,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 65.877,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 67.032,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 68.178,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 69.277,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 70.432,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 71.582,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 72.669,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 73.818,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 74.921,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 76.09,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 77.258,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 78.42,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 79.573,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 80.712,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 81.838,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 82.982,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 84.065,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 85.225,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 86.391,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 87.562,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 88.729,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 89.896,
+      "exit": 0
+    }
+  ],
+  "history_before": {
+    "history/seg-000000-1789579568867.jsonl": 272
+  },
+  "history_after": {
+    "history/seg-000000-1789579568867.jsonl": 272
+  },
+  "agent_snapshot_unchanged": false,
+  "raw_exit": 0,
+  "daemon_termination_exit": -15
+}

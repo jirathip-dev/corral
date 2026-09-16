@@ -1,0 +1,39 @@
+{
+  "gates": [
+    {
+      "command": [
+        "swift",
+        "run",
+        "--package-path",
+        "ios/tools/anti-slop-swift",
+        "--scratch-path",
+        "/tmp/g556-slop",
+        "anti-slop",
+        "ios/FleetNotifier",
+        "ios/FleetNotifierTests"
+      ],
+      "exit": 1,
+      "log": "/tmp/g556-slop.log"
+    },
+    {
+      "command": [
+        "/tmp/g556-slop/debug/anti-slop",
+        "/tmp/g556-base-FleetNotifierTests.swift"
+      ],
+      "exit": 1,
+      "log": "/tmp/g556-slop-base.log"
+    }
+  ],
+  "changed_file": "ios/FleetNotifierTests/FleetNotifierTests.swift",
+  "base_rule_counts": {
+    "no-shape-in-symbol-names": 3,
+    "no-force-unwrap": 17,
+    "no-force-try": 1
+  },
+  "head_rule_counts": {
+    "no-shape-in-symbol-names": 3,
+    "no-force-unwrap": 17,
+    "no-force-try": 1
+  },
+  "new_rules": {}
+}

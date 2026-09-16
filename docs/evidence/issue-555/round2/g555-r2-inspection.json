@@ -1,0 +1,47 @@
+[
+  {
+    "command": "git rev-parse HEAD",
+    "raw_exit": 0,
+    "output": "4ab8440611869715762be7d6dff7cdef93dc87f7"
+  },
+  {
+    "command": "git diff --check 60851ed..HEAD",
+    "raw_exit": 0,
+    "output": ""
+  },
+  {
+    "command": "git diff --exit-code 11cc1d26f3b1c22716d4527fb9e7679eaa861aba HEAD -- src/main.rs",
+    "raw_exit": 0,
+    "output": ""
+  },
+  {
+    "command": "git diff --exit-code 60851ed HEAD -- tests/http.rs tests/snapshot_load.rs src/core/store/publication_tests.rs src/core/store/published.rs",
+    "raw_exit": 0,
+    "output": ""
+  },
+  {
+    "command": "git diff --exit-code 60851ed HEAD -- crates ios scripts .github Cargo.toml Cargo.lock deny.toml fastlane",
+    "raw_exit": 0,
+    "output": ""
+  },
+  {
+    "command": "git diff --name-only 60851ed HEAD",
+    "raw_exit": 0,
+    "output": "docs/evidence/issue-555/daemon-smoke.py\ndocs/evidence/issue-555/round2-build.py\ndocs/evidence/issue-555/round2-http-load.py\ndocs/evidence/issue-555/round2-method.md\nsrc/api/events.rs\nsrc/api/mod.rs\nsrc/api/read_timing.rs\nsrc/core/store.rs\nsrc/main.rs\ntests/read_logging.rs"
+  },
+  {
+    "command": "ast-grep outline src/main.rs src/api/mod.rs src/api/events.rs src/api/read_timing.rs src/core/store.rs tests/read_logging.rs --view signatures",
+    "raw_exit": 0,
+    "output": "tests/read_logging.rs\n13: struct Capture(Arc<Mutex<Vec<u8>>>)\n14: impl Write for Capture\n25: fn snapshot_and_sse_info_are_bounded_at_the_real_handlers()\n\nsrc/api/events.rs\n 16: const KEEPALIVE: Duration\n 17: const KEEPALIVE_FRAME: Bytes\n 19: pub(super) async fn events(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response\n133: mod tests\n\nsrc/api/read_timing.rs\n 9: const LOG_INTERVAL_MS: u64\n10: pub static SNAPSHOT: ReadTiming\n11: pub static SSE_FIRST: ReadTiming\n13: pub(super) struct Summary\n19: pub(super) struct ReadTiming\n27: impl ReadTiming\n70: mod tests\n\nsrc/core/store.rs\n 29: mod publication_tests\n 30: mod published\n 35: const HISTORY_CAP: usize\n 37: const BROADCAST_CAP: usize\n 39: const FOREGROUND_TICK: Duration\n 45: const BACKGROUND_TICK: Duration\n 48: struct Inner\n 64: pub struct Store\n 92: impl Default for Store\n125: impl Store\n528: fn now_millis() -> u64\n535: fn new_epoch() -> String\n\nsrc/main.rs\n 32: const DEFAULT_BIND: &str\n 33: const DEFAULT_PORT: u16\n 37: const INTEGRATOR_RECONNECT_BASE: Duration\n 38: const INTEGRATOR_RECONNECT_MAX: Duration\n 39: const INTEGRATOR_RECONNECT_RESET_AFTER: Duration\n 41: const DIGEST_DEFAULT_WINDOW: Duration\n 44: fn config_dir() -> PathBuf\n 51: fn main()\n 77: fn run_digest(args: &[String])\n127: fn parse_args(args: &[String]) -> (PathBuf, SocketAddr, Vec<String>)\n243: fn origin_valid(origin: &str) -> bool\n262: fn bind_permitted(ip: &std::net::IpAddr) -> bool\n275: async fn async_main(socket_path: PathBuf, addr: SocketAddr, cors_origins: Vec<String>)\n421: async fn supervise_planes(\n474: mod tests\n\nsrc/api/mod.rs\n 40: pub(crate) mod cors\n 41: pub mod drive\n 42: mod events\n 43: pub mod issues\n 44: mod read_timing\n 45: pub(crate) mod repo\n 72: const HISTORY_DEFAULT_LIMIT: usize\n 73: const HISTORY_MAX_LIMIT: usize\n 76: pub struct AppState\n104: impl Default for AppState\n129: pub fn router(state: AppState) -> Router\n158: async fn healthz() -> &'static str\n165: pub struct HistoryQuery\n173: async fn history(\n185: async fn snapshot(State(state): State<Arc<AppState>>) -> Response\n209: const DEVICE_TOKEN_MAX_SKEW_SECS: u64\n221: async fn device_token(\n321: const GRANTS_READ_MAX_SKEW_SECS: u64\n334: async fn grants_read(\n394: fn json_err(status: StatusCode, error: &str) -> (StatusCode, Json<serde_json::Value>)\n398: fn now_secs() -> u64\n403: mod tests"
+  },
+  {
+    "command": "ast-grep run -l rust -p 'axum::serve($$$)' src/main.rs",
+    "raw_exit": 0,
+    "output": "src/main.rs:411:    axum::serve(listener, app).await.expect(\"axum server\");"
+  },
+  {
+    "command": "ast-grep run -l rust -p '$STORE.subscribe()' src/api/events.rs src/core/store.rs",
+    "raw_exit": 0,
+    "output": "src/api/events.rs:28:    let rx = store.subscribe();\nsrc/api/events.rs:75:                    rx = store.subscribe();\nsrc/core/store.rs:272:        self.version.subscribe()\nsrc/core/store.rs:288:        self.published.subscribe()\nsrc/core/store.rs:522:        let rx = self.tx.subscribe();"
+  }
+]

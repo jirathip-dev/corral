@@ -1,0 +1,16 @@
+{
+  "source_ref": "11cc1d26f3b1c22716d4527fb9e7679eaa861aba",
+  "mutation": null,
+  "command": [
+    "cargo",
+    "build",
+    "--release",
+    "--manifest-path",
+    "/tmp/g555-daemon-target/r2-base-4eh7qfig/Cargo.toml",
+    "--bin",
+    "corrald"
+  ],
+  "raw_exit": 0,
+  "binary": "/tmp/g555-daemon-target/r2-base-corrald",
+  "binary_sha256": "5e7f1aa82a85d3a6c46cc08db81695b1fb00d3d05050a23206273077d3a147aa"
+}

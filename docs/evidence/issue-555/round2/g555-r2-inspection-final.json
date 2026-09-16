@@ -1,0 +1,42 @@
+[
+  {
+    "command": "git rev-parse HEAD",
+    "raw_exit": 0,
+    "output": "59e0e613bc49784c3608a7b1f9dec5ff9b62d1d5"
+  },
+  {
+    "command": "git diff --check 60851ed..HEAD",
+    "raw_exit": 0,
+    "output": ""
+  },
+  {
+    "command": "git diff --exit-code 11cc1d26f3b1c22716d4527fb9e7679eaa861aba HEAD -- src/main.rs",
+    "raw_exit": 0,
+    "output": ""
+  },
+  {
+    "command": "git diff --exit-code 60851ed HEAD -- src/core/store/published.rs src/core/store/publication_tests.rs tests/http.rs tests/snapshot_load.rs Cargo.toml Cargo.lock crates ios scripts .github deny.toml fastlane",
+    "raw_exit": 0,
+    "output": ""
+  },
+  {
+    "command": "git diff --name-only 60851ed HEAD",
+    "raw_exit": 0,
+    "output": "docs/evidence/issue-555/daemon-smoke.py\ndocs/evidence/issue-555/round2-build.py\ndocs/evidence/issue-555/round2-http-load.py\ndocs/evidence/issue-555/round2-method.md\nsrc/api/events.rs\nsrc/api/mod.rs\nsrc/api/read_timing.rs\nsrc/core/store.rs\nsrc/main.rs\ntests/read_logging.rs"
+  },
+  {
+    "command": "ast-grep run -l rust -p 'axum::serve($$$)' src/main.rs",
+    "raw_exit": 0,
+    "output": "src/main.rs:411:    axum::serve(listener, app).await.expect(\"axum server\");"
+  },
+  {
+    "command": "ast-grep outline src/api/read_timing.rs tests/read_logging.rs --view signatures",
+    "raw_exit": 0,
+    "output": "tests/read_logging.rs\n13: struct Capture(Arc<Mutex<Vec<u8>>>)\n14: impl Write for Capture\n25: fn snapshot_and_sse_info_are_bounded_at_the_real_handlers()\n\nsrc/api/read_timing.rs\n 9: const LOG_INTERVAL_MS: u64\n10: pub static SNAPSHOT: ReadTiming\n11: pub static SSE_FIRST: ReadTiming\n13: pub(super) struct Summary\n19: pub(super) struct ReadTiming\n27: impl ReadTiming\n70: mod tests"
+  },
+  {
+    "command": "python3 -c 'import hashlib,json,subprocess; from pathlib import Path; old=subprocess.check_output([\"git\",\"show\",\"60851ed:.report.md\"]); actual=Path(\".report.md\").read_bytes(); assert actual==old; print(\"PRIOR_REPORT_UNCHANGED\",len(old),hashlib.sha256(old).hexdigest()); baseline=json.loads(Path(\"docs/evidence/issue-555/baseline-source.json\").read_text()); digest=hashlib.sha256(Path(\"tests/snapshot_load.rs\").read_bytes()).hexdigest(); assert digest==baseline[\"harness_sha256\"]; print(\"LOAD_HARNESS_UNCHANGED\",digest); changes=subprocess.check_output([\"git\",\"diff\",\"--name-only\",\"60851ed\",\"HEAD\"],text=True).splitlines(); bad=[p for p in changes if not(p==\".report.md\" or p.startswith((\"src/\",\"tests/\",\"docs/evidence/issue-555/\")))]; assert not bad,bad; print(\"SCOPE_PASS\",len(changes),\"paths\")' ",
+    "raw_exit": 0,
+    "output": "PRIOR_REPORT_UNCHANGED 71662 79ec60d978888113b548331a05cf34d7b51ad35db94eaa1de31f0eb4b316f1c3\nLOAD_HARNESS_UNCHANGED 08774414aa7681db131a8c4a18f86131832785adab4ad9a2f77384a8e3ebe27b\nSCOPE_PASS 10 paths"
+  }
+]

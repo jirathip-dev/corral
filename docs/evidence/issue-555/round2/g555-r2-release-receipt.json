@@ -1,0 +1,14 @@
+{
+  "label": "r2-release",
+  "command": [
+    "cargo",
+    "build",
+    "--release"
+  ],
+  "raw_exit": 0,
+  "duration_s": 21.695,
+  "head": "59e0e613bc49784c3608a7b1f9dec5ff9b62d1d5",
+  "cpu_hogs": 0,
+  "log": "/tmp/g555-r2-release.log",
+  "host_log": "/tmp/g555-r2-release-host.log"
+}

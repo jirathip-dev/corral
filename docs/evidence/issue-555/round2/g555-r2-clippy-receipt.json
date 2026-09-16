@@ -1,0 +1,17 @@
+{
+  "label": "r2-clippy",
+  "command": [
+    "cargo",
+    "clippy",
+    "--all-targets",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "raw_exit": 0,
+  "duration_s": 56.428,
+  "head": "59e0e613bc49784c3608a7b1f9dec5ff9b62d1d5",
+  "cpu_hogs": 0,
+  "log": "/tmp/g555-r2-clippy.log",
+  "host_log": "/tmp/g555-r2-clippy-host.log"
+}

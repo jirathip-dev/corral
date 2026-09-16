@@ -1,0 +1,634 @@
+{
+  "source_head": "59e0e613bc49784c3608a7b1f9dec5ff9b62d1d5",
+  "workspace": {
+    "passed": 488,
+    "failed": 0,
+    "ignored": 11
+  },
+  "receipts": {
+    "r2-base-build": {
+      "label": "r2-base-build",
+      "command": [
+        "python3",
+        "docs/evidence/issue-555/round2-build.py",
+        "11cc1d26f3b1c22716d4527fb9e7679eaa861aba",
+        "base"
+      ],
+      "raw_exit": 0,
+      "duration_s": 114.878,
+      "head": "4ab8440611869715762be7d6dff7cdef93dc87f7",
+      "cpu_hogs": 0,
+      "log": "/tmp/g555-r2-base-build.log",
+      "host_log": "/tmp/g555-r2-base-build-host.log"
+    },
+    "r2-clippy": {
+      "label": "r2-clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "raw_exit": 0,
+      "duration_s": 56.428,
+      "head": "59e0e613bc49784c3608a7b1f9dec5ff9b62d1d5",
+      "cpu_hogs": 0,
+      "log": "/tmp/g555-r2-clippy.log",
+      "host_log": "/tmp/g555-r2-clippy-host.log"
+    },
+    "r2-deny": {
+      "label": "r2-deny",
+      "command": [
+        "cargo",
+        "deny",
+        "check"
+      ],
+      "raw_exit": 0,
+      "duration_s": 1.738,
+      "head": "59e0e613bc49784c3608a7b1f9dec5ff9b62d1d5",
+      "cpu_hogs": 0,
+      "log": "/tmp/g555-r2-deny.log",
+      "host_log": "/tmp/g555-r2-deny-host.log"
+    },
+    "r2-fmt": {
+      "label": "r2-fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--check"
+      ],
+      "raw_exit": 0,
+      "duration_s": 0.416,
+      "head": "59e0e613bc49784c3608a7b1f9dec5ff9b62d1d5",
+      "cpu_hogs": 0,
+      "log": "/tmp/g555-r2-fmt.log",
+      "host_log": "/tmp/g555-r2-fmt-host.log"
+    },
+    "r2-focused-logging": {
+      "label": "r2-focused-logging",
+      "command": [
+        "cargo",
+        "test",
+        "--release",
+        "--test",
+        "read_logging",
+        "--",
+        "--nocapture"
+      ],
+      "raw_exit": 0,
+      "duration_s": 16.732,
+      "head": "59e0e613bc49784c3608a7b1f9dec5ff9b62d1d5",
+      "cpu_hogs": 0,
+      "log": "/tmp/g555-r2-focused-logging.log",
+      "host_log": "/tmp/g555-r2-focused-logging-host.log"
+    },
+    "r2-focused-timing": {
+      "label": "r2-focused-timing",
+      "command": [
+        "cargo",
+        "test",
+        "--release",
+        "--lib",
+        "api::read_timing",
+        "--",
+        "--nocapture"
+      ],
+      "raw_exit": 0,
+      "duration_s": 70.111,
+      "head": "59e0e613bc49784c3608a7b1f9dec5ff9b62d1d5",
+      "cpu_hogs": 0,
+      "log": "/tmp/g555-r2-focused-timing.log",
+      "host_log": "/tmp/g555-r2-focused-timing-host.log"
+    },
+    "r2-hog": {
+      "label": "r2-hog",
+      "command": [
+        "cargo",
+        "test",
+        "--release",
+        "--test",
+        "snapshot_load",
+        "--",
+        "--ignored",
+        "--nocapture"
+      ],
+      "raw_exit": 0,
+      "duration_s": 4.572,
+      "head": "59e0e613bc49784c3608a7b1f9dec5ff9b62d1d5",
+      "cpu_hogs": 10,
+      "log": "/tmp/g555-r2-hog.log",
+      "host_log": "/tmp/g555-r2-hog-host.log",
+      "samples": 512,
+      "p50_ms": 0.008042,
+      "p99_ms": 0.031833,
+      "buffer_age_p50_ms": 856,
+      "buffer_age_p99_ms": 1984,
+      "buffer_age_max_ms": 2014,
+      "bytes_min": 29129,
+      "bytes_max": 29193,
+      "revisions_seen": [
+        1,
+        2
+      ],
+      "budget_pass": true
+    },
+    "r2-http-base-close": {
+      "label": "r2-http-base-close",
+      "command": [
+        "python3",
+        "docs/evidence/issue-555/round2-http-load.py",
+        "record",
+        "--binary",
+        "/tmp/g555-daemon-target/r2-base-corrald",
+        "--source-ref",
+        "11cc1d26f3b1c22716d4527fb9e7679eaa861aba",
+        "--output",
+        "/tmp/g555-r2-http-base-close.json"
+      ],
+      "raw_exit": 0,
+      "duration_s": 8.389,
+      "head": "59e0e613bc49784c3608a7b1f9dec5ff9b62d1d5",
+      "cpu_hogs": 0,
+      "log": "/tmp/g555-r2-http-base-close.log",
+      "host_log": "/tmp/g555-r2-http-base-close-host.log"
+    },
+    "r2-http-base": {
+      "label": "r2-http-base",
+      "command": [
+        "python3",
+        "docs/evidence/issue-555/round2-http-load.py",
+        "record",
+        "--binary",
+        "/tmp/g555-daemon-target/r2-base-corrald",
+        "--source-ref",
+        "11cc1d26f3b1c22716d4527fb9e7679eaa861aba",
+        "--output",
+        "/tmp/g555-r2-http-base.json"
+      ],
+      "raw_exit": 1,
+      "duration_s": 8.963,
+      "head": "4ab8440611869715762be7d6dff7cdef93dc87f7",
+      "cpu_hogs": 0,
+      "log": "/tmp/g555-r2-http-base.log",
+      "host_log": "/tmp/g555-r2-http-base-host.log"
+    },
+    "r2-http-fixed": {
+      "label": "r2-http-fixed",
+      "command": [
+        "python3",
+        "docs/evidence/issue-555/round2-http-load.py",
+        "record",
+        "--binary",
+        "/tmp/g555-daemon-target/release/corrald",
+        "--source-ref",
+        "59e0e613bc49784c3608a7b1f9dec5ff9b62d1d5",
+        "--output",
+        "/tmp/g555-r2-http-fixed.json",
+        "--bounded-logs"
+      ],
+      "raw_exit": 0,
+      "duration_s": 8.931,
+      "head": "59e0e613bc49784c3608a7b1f9dec5ff9b62d1d5",
+      "cpu_hogs": 0,
+      "log": "/tmp/g555-r2-http-fixed.log",
+      "host_log": "/tmp/g555-r2-http-fixed-host.log"
+    },
+    "r2-http": {
+      "label": "r2-http",
+      "command": [
+        "cargo",
+        "test",
+        "--release",
+        "--test",
+        "http",
+        "--",
+        "--nocapture"
+      ],
+      "raw_exit": 0,
+      "duration_s": 7.216,
+      "head": "59e0e613bc49784c3608a7b1f9dec5ff9b62d1d5",
+      "cpu_hogs": 0,
+      "log": "/tmp/g555-r2-http.log",
+      "host_log": "/tmp/g555-r2-http-host.log"
+    },
+    "r2-http-reviewed": {
+      "label": "r2-http-reviewed",
+      "command": [
+        "python3",
+        "docs/evidence/issue-555/round2-http-load.py",
+        "record",
+        "--binary",
+        "/tmp/g555-daemon-target/r2-reviewed-corrald",
+        "--source-ref",
+        "60851ed946ae479ce08a114a058ec70b9ee7e61d",
+        "--output",
+        "/tmp/g555-r2-http-reviewed.json"
+      ],
+      "raw_exit": 0,
+      "duration_s": 11.503,
+      "head": "59e0e613bc49784c3608a7b1f9dec5ff9b62d1d5",
+      "cpu_hogs": 0,
+      "log": "/tmp/g555-r2-http-reviewed.log",
+      "host_log": "/tmp/g555-r2-http-reviewed-host.log"
+    },
+    "r2-load-build": {
+      "label": "r2-load-build",
+      "command": [
+        "cargo",
+        "test",
+        "--release",
+        "--test",
+        "snapshot_load",
+        "--no-run"
+      ],
+      "raw_exit": 0,
+      "duration_s": 2.442,
+      "head": "59e0e613bc49784c3608a7b1f9dec5ff9b62d1d5",
+      "cpu_hogs": 0,
+      "log": "/tmp/g555-r2-load-build.log",
+      "host_log": "/tmp/g555-r2-load-build-host.log"
+    },
+    "r2-publication": {
+      "label": "r2-publication",
+      "command": [
+        "cargo",
+        "test",
+        "--release",
+        "--lib",
+        "core::store::publication_tests",
+        "--",
+        "--nocapture"
+      ],
+      "raw_exit": 0,
+      "duration_s": 1.615,
+      "head": "59e0e613bc49784c3608a7b1f9dec5ff9b62d1d5",
+      "cpu_hogs": 0,
+      "log": "/tmp/g555-r2-publication.log",
+      "host_log": "/tmp/g555-r2-publication-host.log"
+    },
+    "r2-release": {
+      "label": "r2-release",
+      "command": [
+        "cargo",
+        "build",
+        "--release"
+      ],
+      "raw_exit": 0,
+      "duration_s": 21.695,
+      "head": "59e0e613bc49784c3608a7b1f9dec5ff9b62d1d5",
+      "cpu_hogs": 0,
+      "log": "/tmp/g555-r2-release.log",
+      "host_log": "/tmp/g555-r2-release-host.log"
+    },
+    "r2-reviewed-build": {
+      "label": "r2-reviewed-build",
+      "command": [
+        "python3",
+        "docs/evidence/issue-555/round2-build.py",
+        "60851ed946ae479ce08a114a058ec70b9ee7e61d",
+        "reviewed"
+      ],
+      "raw_exit": 0,
+      "duration_s": 22.754,
+      "head": "59e0e613bc49784c3608a7b1f9dec5ff9b62d1d5",
+      "cpu_hogs": 0,
+      "log": "/tmp/g555-r2-reviewed-build.log",
+      "host_log": "/tmp/g555-r2-reviewed-build-host.log"
+    },
+    "r2-smoke": {
+      "label": "r2-smoke",
+      "command": [
+        "python3",
+        "docs/evidence/issue-555/daemon-smoke.py"
+      ],
+      "raw_exit": 0,
+      "duration_s": 0.392,
+      "head": "59e0e613bc49784c3608a7b1f9dec5ff9b62d1d5",
+      "cpu_hogs": 0,
+      "log": "/tmp/g555-r2-smoke.log",
+      "host_log": "/tmp/g555-r2-smoke-host.log"
+    },
+    "r2-workspace": {
+      "label": "r2-workspace",
+      "command": [
+        "cargo",
+        "test",
+        "--workspace"
+      ],
+      "raw_exit": 0,
+      "duration_s": 128.267,
+      "head": "59e0e613bc49784c3608a7b1f9dec5ff9b62d1d5",
+      "cpu_hogs": 0,
+      "log": "/tmp/g555-r2-workspace.log",
+      "host_log": "/tmp/g555-r2-workspace-host.log"
+    }
+  },
+  "measurements": {
+    "g555-r2-http-base-close-receipt.json": {
+      "complete": false
+    },
+    "g555-r2-http-base-close.json": {
+      "complete": true,
+      "source_ref": "11cc1d26f3b1c22716d4527fb9e7679eaa861aba",
+      "binary_sha256": "5e7f1aa82a85d3a6c46cc08db81695b1fb00d3d05050a23206273077d3a147aa",
+      "harness_sha256": "6e2a547a9e9ae929d4286c1e97d9a96873dcdc7a1fe1390e75b6fb909a77b5c2",
+      "sample_counts": {
+        "idle": [
+          128,
+          128,
+          128
+        ],
+        "single": [
+          128,
+          128,
+          128
+        ],
+        "concurrent": [
+          128,
+          128,
+          128
+        ]
+      },
+      "median_latency_ms": {
+        "idle": {
+          "p50": 0.19341707229614258,
+          "p99": 0.25937496684491634
+        },
+        "single": {
+          "p50": 0.1284999307245016,
+          "p99": 1.0164580307900906
+        },
+        "concurrent": {
+          "p50": 0.49741705879569054,
+          "p99": 1.856124959886074
+        }
+      },
+      "info_lines": [
+        0,
+        0,
+        0
+      ],
+      "buffer_age_ms": {
+        "idle": [
+          {
+            "p50": 0.594970703125,
+            "p99": 1.052978515625,
+            "max": 1.06103515625
+          },
+          {
+            "p50": 0.572021484375,
+            "p99": 1.086181640625,
+            "max": 1.086181640625
+          },
+          {
+            "p50": 0.599853515625,
+            "p99": 1.06396484375,
+            "max": 1.075927734375
+          }
+        ],
+        "single": [
+          {
+            "p50": 0.528076171875,
+            "p99": 1.026123046875,
+            "max": 1.047119140625
+          },
+          {
+            "p50": 0.562744140625,
+            "p99": 1.042236328125,
+            "max": 1.06982421875
+          },
+          {
+            "p50": 0.531005859375,
+            "p99": 1.0478515625,
+            "max": 1.06103515625
+          }
+        ],
+        "concurrent": [
+          {
+            "p50": 0.686767578125,
+            "p99": 1.19482421875,
+            "max": 1.30615234375
+          },
+          {
+            "p50": 0.7490234375,
+            "p99": 1.52490234375,
+            "max": 1.621826171875
+          },
+          {
+            "p50": 1.0,
+            "p99": 3.486083984375,
+            "max": 19.86083984375
+          }
+        ]
+      }
+    },
+    "g555-r2-http-base-receipt.json": {
+      "complete": false
+    },
+    "g555-r2-http-base.json": {
+      "complete": false
+    },
+    "g555-r2-http-fixed-receipt.json": {
+      "complete": false
+    },
+    "g555-r2-http-fixed.json": {
+      "complete": true,
+      "source_ref": "59e0e613bc49784c3608a7b1f9dec5ff9b62d1d5",
+      "binary_sha256": "713dcc9c9fd51bebf536a64c27e565f46d230b5a4d5b961847c9eb6508862237",
+      "harness_sha256": "6e2a547a9e9ae929d4286c1e97d9a96873dcdc7a1fe1390e75b6fb909a77b5c2",
+      "sample_counts": {
+        "idle": [
+          128,
+          128,
+          128
+        ],
+        "single": [
+          128,
+          128,
+          128
+        ],
+        "concurrent": [
+          128,
+          128,
+          128
+        ]
+      },
+      "median_latency_ms": {
+        "idle": {
+          "p50": 0.1968329306691885,
+          "p99": 0.3042919561266899
+        },
+        "single": {
+          "p50": 0.1905839890241623,
+          "p99": 1.8250418361276388
+        },
+        "concurrent": {
+          "p50": 1.4412919990718365,
+          "p99": 5.744708003476262
+        }
+      },
+      "info_lines": [
+        1,
+        1,
+        1
+      ],
+      "buffer_age_ms": {
+        "idle": [
+          {
+            "p50": 208.239013671875,
+            "p99": 221.28173828125,
+            "max": 221.515869140625
+          },
+          {
+            "p50": 149.874755859375,
+            "p99": 156.886962890625,
+            "max": 157.0009765625
+          },
+          {
+            "p50": 179.864990234375,
+            "p99": 194.489990234375,
+            "max": 194.68310546875
+          }
+        ],
+        "single": [
+          {
+            "p50": 1385.47900390625,
+            "p99": 1402.920166015625,
+            "max": 1403.11572265625
+          },
+          {
+            "p50": 1285.52197265625,
+            "p99": 1300.781005859375,
+            "max": 1300.987060546875
+          },
+          {
+            "p50": 1355.870849609375,
+            "p99": 1384.166015625,
+            "max": 1384.401123046875
+          }
+        ],
+        "concurrent": [
+          {
+            "p50": 2542.299072265625,
+            "p99": 2699.809814453125,
+            "max": 2703.43701171875
+          },
+          {
+            "p50": 2506.77197265625,
+            "p99": 2578.132080078125,
+            "max": 2580.43994140625
+          },
+          {
+            "p50": 2658.56591796875,
+            "p99": 2749.241943359375,
+            "max": 2762.332275390625
+          }
+        ]
+      }
+    },
+    "g555-r2-http-receipt.json": {
+      "complete": false
+    },
+    "g555-r2-http-reviewed-receipt.json": {
+      "complete": false
+    },
+    "g555-r2-http-reviewed.json": {
+      "complete": true,
+      "source_ref": "60851ed946ae479ce08a114a058ec70b9ee7e61d",
+      "binary_sha256": "e8a545af2f4d683b5311853479a364b95e178b762fc14a0acb2e0d9456fa9e88",
+      "harness_sha256": "6e2a547a9e9ae929d4286c1e97d9a96873dcdc7a1fe1390e75b6fb909a77b5c2",
+      "sample_counts": {
+        "idle": [
+          128,
+          128,
+          128
+        ],
+        "single": [
+          128,
+          128,
+          128
+        ],
+        "concurrent": [
+          128,
+          128,
+          128
+        ]
+      },
+      "median_latency_ms": {
+        "idle": {
+          "p50": 0.19733398221433163,
+          "p99": 0.32770796678960323
+        },
+        "single": {
+          "p50": 1.0891251731663942,
+          "p99": 1.3563749380409718
+        },
+        "concurrent": {
+          "p50": 7.8441668301820755,
+          "p99": 9.876957861706614
+        }
+      },
+      "info_lines": [
+        384,
+        384,
+        384
+      ],
+      "buffer_age_ms": {
+        "idle": [
+          {
+            "p50": 124.196044921875,
+            "p99": 133.421142578125,
+            "max": 133.55908203125
+          },
+          {
+            "p50": 175.431884765625,
+            "p99": 187.06005859375,
+            "max": 187.197021484375
+          },
+          {
+            "p50": 151.07470703125,
+            "p99": 166.08984375,
+            "max": 166.262939453125
+          }
+        ],
+        "single": [
+          {
+            "p50": 1329.650146484375,
+            "p99": 1373.216064453125,
+            "max": 1373.447021484375
+          },
+          {
+            "p50": 1375.48486328125,
+            "p99": 1423.600830078125,
+            "max": 1423.819091796875
+          },
+          {
+            "p50": 1364.02001953125,
+            "p99": 1414.087890625,
+            "max": 1414.261962890625
+          }
+        ],
+        "concurrent": [
+          {
+            "p50": 2983.10107421875,
+            "p99": 3474.46875,
+            "max": 3482.758056640625
+          },
+          {
+            "p50": 3095.23095703125,
+            "p99": 3552.89697265625,
+            "max": 3559.3359375
+          },
+          {
+            "p50": 3114.28515625,
+            "p99": 3644.26904296875,
+            "max": 3652.47216796875
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "label": "r2-base-build",
+  "command": [
+    "python3",
+    "docs/evidence/issue-555/round2-build.py",
+    "11cc1d26f3b1c22716d4527fb9e7679eaa861aba",
+    "base"
+  ],
+  "raw_exit": 0,
+  "duration_s": 114.878,
+  "head": "4ab8440611869715762be7d6dff7cdef93dc87f7",
+  "cpu_hogs": 0,
+  "log": "/tmp/g555-r2-base-build.log",
+  "host_log": "/tmp/g555-r2-base-build-host.log"
+}

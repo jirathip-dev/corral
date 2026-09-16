@@ -1,0 +1,15 @@
+{
+  "label": "r2-reviewed-build",
+  "command": [
+    "python3",
+    "docs/evidence/issue-555/round2-build.py",
+    "60851ed946ae479ce08a114a058ec70b9ee7e61d",
+    "reviewed"
+  ],
+  "raw_exit": 0,
+  "duration_s": 22.754,
+  "head": "59e0e613bc49784c3608a7b1f9dec5ff9b62d1d5",
+  "cpu_hogs": 0,
+  "log": "/tmp/g555-r2-reviewed-build.log",
+  "host_log": "/tmp/g555-r2-reviewed-build-host.log"
+}

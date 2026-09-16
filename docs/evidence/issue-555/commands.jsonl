@@ -1,0 +1,6 @@
+{"head": "6c6ed3b71e9907500ef43dcc05fa375fea2cff2b", "cmd": "bash -n scripts/*.sh", "raw_exit": 0, "log": "/tmp/g555-syntax.log"}
+{"head": "6c6ed3b71e9907500ef43dcc05fa375fea2cff2b", "cmd": "bash scripts/test-daemon-launchd-env.sh", "raw_exit": 0, "log": "/tmp/g555-launchd.log"}
+{"head": "6c6ed3b71e9907500ef43dcc05fa375fea2cff2b", "cmd": "bash scripts/test-install-corral-linux.sh", "raw_exit": 0, "log": "/tmp/g555-linux.log"}
+{"head": "6c6ed3b71e9907500ef43dcc05fa375fea2cff2b", "cmd": "bash docs/evidence/issue-555/base-identity.sh", "raw_exit": 0, "log": "docs/evidence/issue-555/base-vs-head-generated-files.txt"}
+{"head": "6c6ed3b71e9907500ef43dcc05fa375fea2cff2b", "cmd": "bash docs/evidence/issue-555/probes.sh", "raw_exit": 0, "log": "/tmp/g555-probes.log"}
+{"head": "6c6ed3b71e9907500ef43dcc05fa375fea2cff2b", "cmd": "git diff --exit-code", "raw_exit": 0, "log": "/tmp/g555-postprobe-diff.log"}

@@ -49,7 +49,10 @@ What the installer does, in order:
 3. Installs and starts the per-user service — `com.corral.corrald` under
    launchd on macOS (KeepAlive), `corrald.service` under `systemd --user`
    on Linux — running the daemon on loopback `127.0.0.1:8474` against
-   `~/.config/herdr/herdr.sock`.
+   `~/.config/herdr/herdr.sock`. The service is installed at interactive
+   scheduling priority (launchd `ProcessType=Interactive`; systemd `Nice=-5`
+   / `CPUWeight=500`) so a host saturated by the rest of the fleet cannot
+   starve the daemon into multi-second `/snapshot` replies (#555).
 4. Health-checks `http://127.0.0.1:8474/healthz`; on failure the installer
    exits non-zero and the release directory is rolled back (removed on a
    fresh install) — on Linux the service is stopped first.

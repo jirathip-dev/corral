@@ -1,0 +1,29 @@
+== #555 mutation battery (delivered head: 6c6ed3b) ==
+p1-process-type-background       exit=1   RED(ok)            restore=sha-equal
+  suite: bash scripts/test-daemon-launchd-env.sh
+  log:   /tmp/g555-probe-p1-process-type-background.log
+p2-corrald-process-type          exit=1   RED(ok)            restore=sha-equal
+  suite: bash scripts/test-daemon-launchd-env.sh
+  log:   /tmp/g555-probe-p2-corrald-process-type.log
+p3-duplicate-process-type        exit=1   RED(ok)            restore=sha-equal
+  suite: bash scripts/test-daemon-launchd-env.sh
+  log:   /tmp/g555-probe-p3-duplicate-process-type.log
+p4-append-instead-of-replace     exit=1   RED(ok)            restore=sha-equal
+  suite: bash scripts/test-daemon-launchd-env.sh
+  log:   /tmp/g555-probe-p4-append-instead-of-replace.log
+p5-drop-nice-cpuweight           exit=1   RED(ok)            restore=sha-equal
+  suite: bash scripts/test-install-corral-linux.sh
+  log:   /tmp/g555-probe-p5-drop-nice-cpuweight.log
+p6-silent-migration              exit=1   RED(ok)            restore=sha-equal
+  suite: bash scripts/test-install-corral-linux.sh
+  log:   /tmp/g555-probe-p6-silent-migration.log
+
+PASS: every mutation went RED and every restore is byte-identical
+
+--- biting assertion per probe ---
+g555-probe-p1-process-type-background.log :: FAIL: com.corral.corrald.plist ProcessType is 'Background' (want 'Interactive')
+g555-probe-p2-corrald-process-type.log :: FAIL: com.corral.corrald.plist ProcessType is 'Background' (want 'Interactive')
+g555-probe-p3-duplicate-process-type.log :: FAIL: com.corral.corrald.plist has 2 ProcessType keys (want 1)
+g555-probe-p4-append-instead-of-replace.log :: FAIL: rerunning setup changed the daemon plist
+g555-probe-p5-drop-nice-cpuweight.log :: FAIL: unit file /var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/tmp.QdECPO7guF/home/user/.config/systemd/user/corrald.service missing: 'Nice=-5'
+g555-probe-p6-silent-migration.log :: FAIL: log /var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/tmp.gQsk9BBH84/log/migrate.log missing: 'migrated scheduling directives: Nice=unset -> -5, CPUWeight=unset -> 500'

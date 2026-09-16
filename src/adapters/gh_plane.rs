@@ -798,7 +798,6 @@ impl GhPlane {
     }
 }
 
-/// Extract the message from a panic payload for logging.
 /// Sanitize provider text before it can reach facts, snapshots or issue caches.
 fn redact_response(value: &mut Value, token: &str) {
     match value {
@@ -809,11 +808,26 @@ fn redact_response(value: &mut Value, token: &str) {
             *s = crate::core::redact::redact(s).into_owned();
         }
         Value::Array(values) => values.iter_mut().for_each(|v| redact_response(v, token)),
-        Value::Object(values) => values.values_mut().for_each(|v| redact_response(v, token)),
+        Value::Object(values) => {
+            for (key, value) in values {
+                if matches!(key.as_str(), "headRefOid" | "headRefName")
+                    && let Value::String(identity) = value
+                {
+                    // Preserve binding identities, not the display-text entropy
+                    // heuristic. An actual active credential still cannot escape.
+                    if !token.is_empty() {
+                        *identity = identity.replace(token, crate::core::redact::REDACTED);
+                    }
+                } else {
+                    redact_response(value, token);
+                }
+            }
+        }
         _ => {}
     }
 }
 
+/// Extract the message from a panic payload for logging.
 fn panic_message(payload: &(dyn Any + Send)) -> String {
     if let Some(message) = payload.downcast_ref::<&str>() {
         (*message).to_string()
@@ -1667,6 +1681,19 @@ mod tests {
         let snapshot = store.snapshot().await;
         assert_eq!(snapshot.agents["missing-head"].workspace.pr_number, None);
         assert_eq!(snapshot.agents["missing-head"].workspace.ci_status, None);
+    }
+
+    #[test]
+    fn g556_redaction_preserves_binding_identity() {
+        let identity = "Branch0123456789ABCDEFGHIJKabcdefghijk";
+        assert_ne!(crate::core::redact::redact(identity), identity);
+        let mut response = json!({"headRefName":identity,"headRefOid":identity,"title":identity});
+        redact_response(&mut response, "opaque-fixture");
+        assert_eq!(response["headRefName"], identity);
+        assert_eq!(response["headRefOid"], identity);
+        assert_eq!(response["title"], "[REDACTED]");
+        redact_response(&mut response, identity);
+        assert_eq!(response["headRefName"], "[REDACTED]");
     }
 
     #[test]

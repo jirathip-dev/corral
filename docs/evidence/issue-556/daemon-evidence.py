@@ -67,7 +67,8 @@ with tempfile.TemporaryDirectory(prefix="g556-", dir="/tmp") as temp:
     with socket.socket() as reservation:
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
-    env = {k: v for k, v in os.environ.items() if k not in ("GITHUB_TOKEN", "GH_TOKEN", "G556_LIVE_TOKEN", "CORRAL_CONFIG_DIR", "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY")}
+    # Do not inherit host service credentials, proxies, or debug key-log paths.
+    env = {}
     env.update(HOME=temp, PATH="/usr/bin:/bin", CORRAL_CONFIG_DIR=str(config),
         CORRAL_REPO_ROOT=str(checkout), CORRAL_WORKTREES_ROOT=str(root / "worktrees"), RUST_LOG="info")
     if args.mode == "env":

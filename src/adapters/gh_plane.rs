@@ -30,11 +30,11 @@
 //! a 300s background sleep — triggers the immediate SWR fetch instead of
 //! waiting out the stale deadline.
 //!
-//! Token: `GITHUB_TOKEN` env, else `gh auth token` at startup (spawned in the
-//! background task, so `start()` never blocks). If neither yields a token, a
-//! warning is logged and the plane stays down — no crash loop, no retry. A
-//! 401 during polling re-resolves the token (rotation/expiry support); if
-//! re-resolution fails the plane stays down likewise.
+//! Opt-in: `GITHUB_TOKEN` env, else `github-token` in `$CORRAL_CONFIG_DIR`
+//! (default `~/.config/corral`). Group/world-accessible files are refused.
+//! No CLI or login is needed. Without a token, log disabled once and return
+//! before discovery or HTTP. A 401 re-reads these sources for rotation; if
+//! neither yields a token, stop without retrying.
 //!
 //! Failure handling: sustained poll failures back off exponentially from 5s,
 //! capped at the current cadence, resetting on success. The poll's decode/
@@ -320,24 +320,59 @@ impl GhTransport for ReqwestTransport {
     }
 }
 
-/// Resolve the API token: `GITHUB_TOKEN` env first, then `gh auth token`.
+/// Resolve host-only opt-in credentials. Never invoke a credential CLI.
 async fn resolve_token() -> Option<String> {
-    if let Ok(token) = std::env::var("GITHUB_TOKEN") {
-        let token = token.trim().to_string();
-        if !token.is_empty() {
-            return Some(token);
+    let config = std::env::var_os("CORRAL_CONFIG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").unwrap_or_else(|| ".".into()))
+                .join(".config/corral")
+        });
+    token_from_sources(std::env::var("GITHUB_TOKEN").ok(), &config).await
+}
+
+async fn token_from_sources(env: Option<String>, config: &Path) -> Option<String> {
+    use tokio::io::AsyncReadExt;
+
+    if let Some(token) = env.filter(|s| !s.trim().is_empty()) {
+        return Some(token.trim().to_string());
+    }
+    let path = config.join("github-token");
+    // Do not open special files (in particular, a FIFO must not hang startup).
+    match tokio::fs::metadata(&path).await {
+        Ok(meta) if meta.is_file() => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        _ => {
+            warn!("github: token file refused (not a readable regular file)");
+            return None;
         }
     }
-    let output = tokio::process::Command::new("gh")
-        .args(["auth", "token"])
-        .output()
-        .await
-        .ok()?;
-    if !output.status.success() {
-        return None;
+    let read = async {
+        let mut file = tokio::fs::File::open(path).await?;
+        // Check the OPEN descriptor, not just the earlier path metadata.
+        let meta = file.metadata().await?;
+        #[cfg(unix)]
+        let private = {
+            use std::os::unix::fs::PermissionsExt;
+            meta.permissions().mode() & 0o077 == 0
+        };
+        #[cfg(not(unix))]
+        let private = false; // Cannot prove POSIX privacy: refuse the file.
+        if !meta.is_file() || !private {
+            warn!("github: token file refused (requires owner-only permissions, e.g. 0600)");
+            return Ok(None);
+        }
+        let mut token = String::new();
+        file.read_to_string(&mut token).await?;
+        Ok::<_, std::io::Error>((!token.trim().is_empty()).then(|| token.trim().to_string()))
+    };
+    match read.await {
+        Ok(token) => token,
+        Err(_) => {
+            warn!("github: token file refused (read failed)");
+            None
+        }
     }
-    let token = String::from_utf8(output.stdout).ok()?.trim().to_string();
-    (!token.is_empty()).then_some(token)
 }
 
 // ---------------------------------------------------------------------------
@@ -565,8 +600,7 @@ impl GhPlane {
         }
     }
 
-    /// Constructor with an explicit token: skips `GITHUB_TOKEN`/`gh auth
-    /// token` resolution entirely (no subprocess spawn).
+    /// Constructor with an explicit token: skips environment/file resolution.
     pub fn with_token(store: Arc<Store>, token: String) -> Self {
         Self {
             store,
@@ -609,12 +643,13 @@ impl GhPlane {
     }
 
     async fn run_forever(self: Arc<Self>, sink: PlaneSink) {
-        let mut token = match self.token.clone() {
+        let mut token = match self.token.clone().filter(|s| !s.trim().is_empty()) {
             Some(token) => token,
             None => match resolve_token().await {
                 Some(token) => token,
                 None => {
-                    warn!("gh plane staying down: no GITHUB_TOKEN and `gh auth token` unavailable");
+                    static DISABLED: std::sync::Once = std::sync::Once::new();
+                    DISABLED.call_once(|| info!("github: disabled (no token)"));
                     return;
                 }
             },
@@ -679,7 +714,7 @@ impl GhPlane {
                         }
                         Err(GhError::SinkClosed) => return,
                         Err(e) => {
-                            warn!(error = %e, "gh plane poll failed");
+                            warn!(error = %crate::core::redact::redact(&e.to_string().replace(&token, crate::core::redact::REDACTED)), "gh plane poll failed");
                             if e.is_unauthorized() {
                                 // Token rotated/expired: re-resolve once.
                                 match resolve_token().await {
@@ -719,10 +754,11 @@ impl GhPlane {
         sink: &PlaneSink,
     ) -> Result<(), GhError> {
         let started = Instant::now();
-        let response = self
+        let mut response = self
             .transport
             .post(GRAPHQL_ENDPOINT, token, json!({ "query": query }))
             .await?;
+        redact_response(&mut response, token);
         let latency_ms = started.elapsed().as_millis() as u64;
 
         let Some(data) = response.get("data").and_then(|d| d.as_object()) else {
@@ -763,6 +799,21 @@ impl GhPlane {
 }
 
 /// Extract the message from a panic payload for logging.
+/// Sanitize provider text before it can reach facts, snapshots or issue caches.
+fn redact_response(value: &mut Value, token: &str) {
+    match value {
+        Value::String(s) => {
+            if !token.is_empty() {
+                *s = s.replace(token, crate::core::redact::REDACTED);
+            }
+            *s = crate::core::redact::redact(s).into_owned();
+        }
+        Value::Array(values) => values.iter_mut().for_each(|v| redact_response(v, token)),
+        Value::Object(values) => values.values_mut().for_each(|v| redact_response(v, token)),
+        _ => {}
+    }
+}
+
 fn panic_message(payload: &(dyn Any + Send)) -> String {
     if let Some(message) = payload.downcast_ref::<&str>() {
         (*message).to_string()
@@ -1216,6 +1267,421 @@ fn normalize_pr(spec: &GhRepoSpec, pr: &PrWire, repo_issues: &[IssueWire]) -> Gh
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Deliberately fake, assembled so credential scrubbers cannot turn both
+    // source fixtures into the same placeholder. Never used against GitHub.
+    fn g556_fake(source: &str) -> String {
+        format!("{}FAKE556{source}", "ghp_")
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn g556_token_file_permissions_and_rotation() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("github-token");
+        assert_eq!(token_from_sources(None, dir.path()).await, None);
+        std::fs::write(&path, format!("  {}\n", g556_fake("file"))).unwrap();
+        for mode in [0o644, 0o640, 0o604, 0o666] {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            assert_eq!(
+                token_from_sources(None, dir.path()).await,
+                None,
+                "mode {mode:o}"
+            );
+        }
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(
+            token_from_sources(None, dir.path()).await.as_deref(),
+            Some(g556_fake("file").as_str())
+        );
+        assert_eq!(
+            token_from_sources(Some(" \n".into()), dir.path())
+                .await
+                .as_deref(),
+            Some(g556_fake("file").as_str())
+        );
+        assert_eq!(
+            token_from_sources(Some(format!(" {} ", g556_fake("env"))), dir.path())
+                .await
+                .as_deref(),
+            Some(g556_fake("env").as_str())
+        );
+        std::fs::write(&path, format!("{}FAKE_rotated", "github_pat_")).unwrap();
+        assert_eq!(
+            token_from_sources(None, dir.path()).await.as_deref(),
+            Some(format!("{}FAKE_rotated", "github_pat_").as_str())
+        );
+        std::fs::write(&path, "\n").unwrap();
+        assert_eq!(token_from_sources(None, dir.path()).await, None);
+        std::fs::write(&path, [0xff]).unwrap();
+        assert_eq!(token_from_sources(None, dir.path()).await, None);
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert_eq!(token_from_sources(None, dir.path()).await, None);
+    }
+
+    /// Separate processes prove real environment/config resolution without
+    /// process-global set_var races or depending on the reviewer's credentials.
+    #[cfg(unix)]
+    #[test]
+    fn g556_source_processes() {
+        use std::os::unix::fs::PermissionsExt;
+        for source in ["none", "env", "file", "home", "refused"] {
+            let dir = tempfile::tempdir().unwrap();
+            let config = if source == "home" {
+                dir.path().join(".config/corral")
+            } else {
+                dir.path().join("config")
+            };
+            std::fs::create_dir_all(&config).unwrap();
+            if source != "none" {
+                let path = config.join("github-token");
+                std::fs::write(&path, format!("{}\n", g556_fake("file"))).unwrap();
+                std::fs::set_permissions(
+                    path,
+                    std::fs::Permissions::from_mode(if source == "refused" {
+                        0o644
+                    } else {
+                        0o600
+                    }),
+                )
+                .unwrap();
+            }
+            let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+            cmd.args([
+                "--exact",
+                "adapters::gh_plane::tests::g556_process_fixture",
+                "--nocapture",
+            ])
+            .env_remove("GITHUB_TOKEN")
+            .env_remove("CORRAL_CONFIG_DIR")
+            .env("HOME", dir.path())
+            .env("PATH", "/usr/bin:/bin")
+            .env("G556_SOURCE", source);
+            if source != "home" {
+                cmd.env("CORRAL_CONFIG_DIR", &config);
+            }
+            if source == "env" {
+                cmd.env("GITHUB_TOKEN", format!(" {} \n", g556_fake("env")));
+            }
+            let output = cmd.output().unwrap();
+            println!(
+                "source={source} exit={}\n{}\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(output.status.success(), "source={source}");
+        }
+    }
+
+    struct G556Transport {
+        expected: String,
+        calls: std::sync::atomic::AtomicUsize,
+        started: std::time::Instant,
+    }
+
+    impl GhTransport for G556Transport {
+        fn post<'a>(
+            &'a self,
+            url: &'a str,
+            token: &'a str,
+            body: Value,
+        ) -> BoxFuture<'a, Result<Value, GhError>> {
+            Box::pin(async move {
+                assert_eq!(url, GRAPHQL_ENDPOINT);
+                assert_eq!(token, self.expected);
+                assert_eq!(
+                    body["query"]
+                        .as_str()
+                        .unwrap()
+                        .matches("repository(owner:")
+                        .count(),
+                    1
+                );
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                println!(
+                    "FIXTURE transport elapsed_ms={} query={}",
+                    self.started.elapsed().as_millis(),
+                    body
+                );
+                Ok(json!({"data":{"q0":{"pullRequests":{"nodes":[{
+                    "number":556, "headRefOid":"fixture-head", "headRefName":"bound",
+                    "statusCheckRollup":{"state":"FAILURE"},
+                    "closingIssuesReferences":{"nodes":[{"number":556,"title":g556_fake("file")}]}
+                }]},"issues":{"nodes":[{"number":556,"title":format!("GITHUB_TOKEN={}", g556_fake("env")),"body":format!("{}FAKE_rotated", "github_pat_")}]}}}}))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn g556_process_fixture() {
+        use std::sync::atomic::Ordering;
+        let Ok(source) = std::env::var("G556_SOURCE") else {
+            return;
+        };
+        let _ = tracing_subscriber::fmt().with_ansi(false).try_init();
+        let enabled = !["none", "refused"].contains(&source.as_str());
+        let store = Arc::new(Store::new());
+        let mock = Arc::new(G556Transport {
+            expected: g556_fake(if source == "env" { "env" } else { "file" }),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            started: std::time::Instant::now(),
+        });
+        let evidence = std::env::var_os("G556_CADENCE_EVIDENCE").is_some();
+        let config = if evidence {
+            GhPlaneConfig::default()
+        } else {
+            GhPlaneConfig {
+                foreground: Duration::from_millis(30),
+                wake: Duration::from_millis(5),
+                ..GhPlaneConfig::default()
+            }
+        };
+        let plane = Arc::new(GhPlane::with_config_and_specs(
+            store.clone(),
+            mock.clone(),
+            None,
+            config,
+            vec![GhRepoSpec {
+                owner: "fixture".into(),
+                name: "repo".into(),
+                key: "repo".into(),
+                aliases: vec![],
+            }],
+        ));
+        let (sink, mut rx) = crate::core::events::plane_channel();
+        let task = tokio::spawn(plane.run_forever(sink));
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert_eq!(mock.calls.load(Ordering::SeqCst), 0, "never-connected gate");
+        let _subscriber = store.subscribe();
+        if enabled {
+            let event = tokio::time::timeout(Duration::from_secs(4), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let PlaneEvent::Gh(facts) = event else {
+                panic!("expected GitHub facts")
+            };
+            assert_eq!(facts.prs[0].pr_number, 556);
+            assert_eq!(facts.prs[0].ci_status, "FAILURE");
+            assert_eq!(facts.prs[0].closing_issues[0].title, "[REDACTED]");
+            assert_eq!(facts.issues[0].body.as_deref(), Some("[REDACTED]"));
+            println!("FIXTURE facts={}", serde_json::to_string(&facts).unwrap());
+            tokio::time::timeout(Duration::from_secs(if evidence { 65 } else { 2 }), async {
+                while mock.calls.load(Ordering::SeqCst) < 2 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(
+                rx.try_recv().is_err(),
+                "unchanged poll must not emit/journal"
+            );
+        } else {
+            tokio::time::timeout(Duration::from_secs(2), task)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                mock.calls.load(Ordering::SeqCst),
+                0,
+                "no connection attempt, including with a subscriber"
+            );
+            assert!(rx.recv().await.is_none());
+            println!("disabled: transport_calls=0 events=0");
+            return;
+        }
+        task.abort();
+        let _ = task.await;
+    }
+
+    #[tokio::test]
+    async fn g556_binding_freshness_snapshot_and_sse() {
+        use crate::core::events::GitEvent;
+        use crate::core::model::{Change, CiStatus, Resume};
+        use std::sync::atomic::Ordering;
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let store = Store::new();
+        let health = store.git_plane_health();
+        health.enabled.store(true, Ordering::Release);
+        health.alive.store(true, Ordering::Release);
+        let integrator = crate::integrate::Integrator::new(
+            store.clone(),
+            root.join("repos"),
+            root.join("worktrees"),
+        );
+        let (sink, rx) = crate::core::events::plane_channel();
+        let integration_task = tokio::spawn(integrator.run(rx));
+        let mut subscriber = store.subscribe();
+        for (id, branch) in [("bound", "bound"), ("unbound", "no-pr")] {
+            let path = root.join("worktrees/repo").join(id);
+            health
+                .facts
+                .lock()
+                .unwrap()
+                .insert(path.clone(), Some(std::time::Instant::now()));
+            store.apply(Change::upsert(scope_agent(id, &path))).await;
+            sink.send(PlaneEvent::Git(GitEvent::HeadMoved {
+                worktree: path,
+                branch: branch.into(),
+                commit: format!("{id}-head"),
+                subject: None,
+            }))
+            .await
+            .unwrap();
+        }
+        let transport = G556Transport {
+            expected: g556_fake("file"),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            started: std::time::Instant::now(),
+        };
+        let specs = vec![GhRepoSpec {
+            owner: "fixture".into(),
+            name: "repo".into(),
+            key: "repo".into(),
+            aliases: vec![],
+        }];
+        let mut response = transport
+            .post(
+                GRAPHQL_ENDPOINT,
+                &g556_fake("file"),
+                json!({"query":build_query(&specs)}),
+            )
+            .await
+            .unwrap();
+        redact_response(&mut response, &g556_fake("file"));
+        let wire: RepoWire = serde_json::from_value(response["data"]["q0"].clone()).unwrap();
+        sink.send(PlaneEvent::Gh(build_repo_state(&specs[0], &wire)))
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while store.get("bound").await.unwrap().workspace.pr_number != Some(556) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        integration_task.abort();
+        let _ = integration_task.await;
+        let fresh = store.snapshot().await;
+        assert_eq!(fresh.agents["bound"].workspace.pr_number, Some(556));
+        assert_eq!(
+            fresh.agents["bound"].workspace.ci_status,
+            Some(CiStatus::Failure)
+        );
+        assert_eq!(fresh.agents["bound"].workspace.issues.len(), 1);
+        assert_eq!(fresh.agents["unbound"].workspace.pr_number, None);
+        assert_eq!(fresh.agents["unbound"].workspace.ci_status, None);
+        println!(
+            "FIXTURE fresh /snapshot={}",
+            String::from_utf8_lossy(&store.published().body)
+        );
+        while subscriber.try_recv().is_ok() {}
+        let path = root.join("worktrees/repo/bound");
+        for (reason, observed, alive) in [
+            (
+                "aged",
+                Some(std::time::Instant::now() - Duration::from_secs(120)),
+                true,
+            ),
+            ("absent", None, true),
+            ("stopped", Some(std::time::Instant::now()), false),
+        ] {
+            health.facts.lock().unwrap().insert(path.clone(), observed);
+            health.alive.store(alive, Ordering::Release);
+            let stale = store.snapshot().await;
+            let ws = &stale.agents["bound"].workspace;
+            assert_eq!(ws.pr_number, None, "{reason}");
+            assert_eq!(ws.ci_status, None, "{reason}");
+            assert!(ws.issues.is_empty(), "{reason}");
+            assert_eq!(ws.pr_match_source, None);
+            let delta = subscriber.try_recv().unwrap();
+            assert!(
+                delta
+                    .upd
+                    .iter()
+                    .any(|a| a.agent_id == "bound" && a.workspace.pr_number.is_none())
+            );
+            let Resume::Deltas { deltas, .. } = store.resume_from(Some(stale.rev - 1)).await else {
+                panic!("resume delta")
+            };
+            assert!(
+                deltas
+                    .last()
+                    .unwrap()
+                    .upd
+                    .iter()
+                    .all(|a| a.workspace.pr_number.is_none())
+            );
+            let wire: Value = serde_json::from_slice(&store.published().body).unwrap();
+            assert!(wire["agents"]["bound"]["workspace"]["pr_number"].is_null());
+            println!("FIXTURE {reason} /snapshot={wire}");
+            assert!(
+                store.flush().await.is_none(),
+                "steady stale must not make agent deltas"
+            );
+            health.alive.store(true, Ordering::Release);
+            health
+                .facts
+                .lock()
+                .unwrap()
+                .insert(path.clone(), Some(std::time::Instant::now()));
+            // Freshness alone recovers the retained binding: no new payload needed.
+            assert_eq!(
+                store.snapshot().await.agents["bound"].workspace.pr_number,
+                Some(556)
+            );
+            assert!(
+                subscriber
+                    .try_recv()
+                    .unwrap()
+                    .upd
+                    .iter()
+                    .any(|a| a.workspace.pr_number == Some(556))
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn g556_missing_identity_never_publishes_a_binding() {
+        use crate::core::model::{Change, CiStatus};
+        use std::sync::atomic::Ordering;
+        let store = Store::new();
+        let path = Path::new("/fixture/missing-head");
+        let health = store.git_plane_health();
+        health.enabled.store(true, Ordering::Release);
+        health.alive.store(true, Ordering::Release);
+        health
+            .facts
+            .lock()
+            .unwrap()
+            .insert(path.into(), Some(std::time::Instant::now()));
+        let mut agent = scope_agent("missing-head", path);
+        agent.workspace.pr_number = Some(556);
+        agent.workspace.ci_status = Some(CiStatus::Failure);
+        store.apply(Change::upsert(agent)).await;
+        let snapshot = store.snapshot().await;
+        assert_eq!(snapshot.agents["missing-head"].workspace.pr_number, None);
+        assert_eq!(snapshot.agents["missing-head"].workspace.ci_status, None);
+    }
+
+    #[test]
+    fn g556_redacts_all_host_token_families() {
+        for prefix in ["ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"] {
+            let token = format!("{prefix}FAKE556");
+            assert_eq!(crate::core::redact::redact(&token), "[REDACTED]");
+            let mut response = json!({"nested":[format!("token {token}"), "GITHUB_TOKEN=short", "opaque-fixture"]});
+            redact_response(&mut response, "opaque-fixture");
+            assert_eq!(
+                response,
+                json!({"nested":["token [REDACTED]", "GITHUB_TOKEN=[REDACTED]", "[REDACTED]"]})
+            );
+        }
+    }
 
     fn fixture_specs() -> Vec<GhRepoSpec> {
         [

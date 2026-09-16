@@ -2,7 +2,60 @@ import CryptoKit
 import Combine
 import SwiftUI
 import XCTest
+import Vision
 @testable import FleetNotifier
+
+// MARK: - Optional host GitHub binding (#556)
+
+@MainActor
+final class GitHubBindingBadgeTests: XCTestCase {
+    func testUnboundHasNoBadgeAndBoundRendersPRNumber() throws {
+        let suite = "GitHubBindingBadgeTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let theme = ThemeStore(defaults: defaults)
+        var agent = Agent(agentId: "fixture", workspace: Workspace(repo: "repo", branch: "branch"))
+        let unbound = try render(agent, theme: theme, name: "g556-unbound")
+        XCTAssertFalse(try text(unbound).contains("556"))
+        // An orphan CI value must not create any visible GitHub decoration.
+        agent.workspace.ciStatus = .failure
+        let orphanCI = try render(agent, theme: theme, name: "g556-unbound-ci")
+        XCTAssertEqual(unbound.pngData(), orphanCI.pngData())
+        agent.workspace.prNumber = 556
+        let bound = try render(agent, theme: theme, name: "g556-bound")
+        XCTAssertTrue(try text(bound).contains("556"), "real WorkspaceLine must paint the PR number")
+        XCTAssertNotEqual(unbound.pngData(), bound.pngData())
+        // The daemon's stale projection clears only binding fields. The same
+        // production view must return to the original unbound pixels.
+        agent.workspace.prNumber = nil
+        agent.workspace.ciStatus = nil
+        let stale = try render(agent, theme: theme, name: "g556-stale")
+        XCTAssertEqual(unbound.pngData(), stale.pngData())
+    }
+
+    private func render(_ agent: Agent, theme: ThemeStore, name: String) throws -> UIImage {
+        let renderer = ImageRenderer(content: WorkspaceLine(agent: agent)
+            .padding(8).frame(width: 390, height: 48)
+            .background(theme.base).environmentObject(theme))
+        renderer.scale = 3
+        let image = try XCTUnwrap(renderer.uiImage)
+        let attachment = XCTAttachment(image: image)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        return image
+    }
+
+    private func text(_ image: UIImage) throws -> String {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.recognitionLanguages = ["en-US"]
+        try VNImageRequestHandler(cgImage: XCTUnwrap(image.cgImage)).perform([request])
+        let result = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+        print("g556 rendered OCR: \(result)")
+        return result
+    }
+}
 
 // MARK: - Canonical bytes (byte-for-byte serde_json parity, #354 L2 read surface)
 

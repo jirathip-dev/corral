@@ -13,7 +13,7 @@
 //! persistent [`crate::history::HistoryRing`] — zero polling, zero extra git
 //! calls, one page-cache write syscall.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -57,6 +57,8 @@ struct Inner {
     /// Whether any change arrived while nobody was subscribed (drives the
     /// coalesce tick choice without touching the broadcast channel).
     pending_any: bool,
+    /// Bindings hidden at the last publication; raw facts remain recoverable.
+    stale_bindings: BTreeSet<String>,
 }
 
 /// Shared with the local git supervisor, like the existing backlog flag.
@@ -392,6 +394,33 @@ impl Store {
         {
             return None;
         }
+        let mut snapshot = self.snapshot_locked(&inner);
+        let stale_bindings: BTreeSet<String> = snapshot
+            .agents
+            .iter()
+            .filter(|(id, agent)| agent.workspace != inner.agents[*id].workspace)
+            .map(|(id, _)| id.clone())
+            .collect();
+        // A freshness transition must reach already-connected SSE clients too,
+        // even when no git/GitHub payload changed. No adapter version notification:
+        // this is a wire projection, not a new fact or a journal transition.
+        for id in inner
+            .stale_bindings
+            .symmetric_difference(&stale_bindings)
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            if let Some(agent) = snapshot.agents.get(&id) {
+                inner.pending_upd.insert(id, agent.clone());
+                inner.pending_any = true;
+            }
+        }
+        inner.stale_bindings = stale_bindings;
+        for (id, agent) in &mut inner.pending_upd {
+            if let Some(projected) = snapshot.agents.get(id) {
+                *agent = projected.clone();
+            }
+        }
         let delta = if inner.pending_any {
             inner.pending_any = false;
             let delta = Delta {
@@ -411,7 +440,7 @@ impl Store {
             None // Backlog-only change: no fabricated agent delta/revision.
         };
         let captured_at = Instant::now();
-        let snapshot = self.snapshot_locked(&inner);
+        snapshot.rev = inner.rev;
         drop(inner);
         let epoch = self.epoch();
         let published = self.published.clone();
@@ -584,11 +613,31 @@ impl Store {
                     .or_insert_with(|| GitFactAge::at(None, alive));
             }
         }
+        let mut agents = inner.agents.clone();
+        // Embedders without a git plane retain their explicit facts. The daemon
+        // wires health before either plane starts; absent/stopped/aged facts all
+        // use #492's existing stale predicate, sampled by the same coalescer.
+        if health.enabled.load(Ordering::Acquire) {
+            for agent in agents.values_mut() {
+                let ws = &mut agent.workspace;
+                let fresh = ws
+                    .worktree_path
+                    .as_ref()
+                    .and_then(|path| ages.get(path))
+                    .is_some_and(|age| !age.stale);
+                if !fresh || (ws.head_sha.is_none() && ws.branch.is_none()) {
+                    ws.pr_number = None;
+                    ws.ci_status = None;
+                    ws.pr_match_source = None;
+                    ws.issues.clear();
+                }
+            }
+        }
         Snapshot {
             schema_version: SCHEMA_VERSION,
             rev: inner.rev,
             generated_at: now_millis(),
-            agents: inner.agents.clone(),
+            agents,
             git_plane_backlog: self.git_plane_backlog.load(Ordering::Relaxed),
             git_plane_alive: alive,
             git_plane_last_event_age_ms: health.last_event_age_ms(),

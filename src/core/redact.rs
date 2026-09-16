@@ -19,7 +19,8 @@
 //! 1. `sk-ant-*` — Anthropic API keys (the full token, including the
 //!    `sk-ant-` prefix). A bare `sk-ant-` with nothing after it is not
 //!    redacted.
-//! 2. `ghp_*` — GitHub personal access tokens (the full token).
+//! 2. GitHub tokens: `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, and
+//!    `github_pat_` (the full token, including fine-grained PAT segments).
 //! 3. `AKIA*` — AWS access key IDs (`AKIA` + at least one `[A-Z0-9]`;
 //!    production IDs are `AKIA` + 16).
 //! 4. High-entropy runs — an alphanumeric run of ≥ 24 chars containing a
@@ -46,8 +47,7 @@
 //! Not covered (by design): paths/identifiers (`worktree_path`, pane ids),
 //! which are identity, not display text; git-plane-derived `branch`/`repo`
 //! values (F2 follow-up: redact at the integrate boundary or accept the
-//! pane-text scope); `github_pat_*` tokens are only caught when their body
-//! is long enough for rule 4.
+//! pane-text scope).
 
 use std::borrow::Cow;
 
@@ -180,8 +180,14 @@ fn prefix_token_at(input: &str, i: usize, at_span_edge: bool) -> Option<(usize, 
     let rest = &bytes[i..];
     let (prefix, kind) = if rest.starts_with(ANTHROPIC_PREFIX.as_bytes()) {
         (ANTHROPIC_PREFIX, PrefixKind::Token)
-    } else if rest.starts_with(GH_PAT_PREFIX.as_bytes()) {
-        (GH_PAT_PREFIX, PrefixKind::Alnum)
+    } else if rest.starts_with(b"github_pat_") {
+        ("github_pat_", PrefixKind::Token)
+    } else if ["ghp_", "gho_", "ghu_", "ghs_", "ghr_"]
+        .iter()
+        .any(|prefix| rest.starts_with(prefix.as_bytes()))
+    {
+        // GitHub classic/OAuth/app tokens share a four-byte prefix.
+        (&input[i..i + GH_PAT_PREFIX.len()], PrefixKind::Alnum)
     } else if rest.starts_with(AWS_KEY_PREFIX.as_bytes()) {
         (AWS_KEY_PREFIX, PrefixKind::UpperDigit)
     } else {

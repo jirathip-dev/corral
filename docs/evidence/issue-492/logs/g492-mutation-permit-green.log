@@ -1,0 +1,9 @@
+   Compiling corrald v0.1.0 (/Users/jirathip/.herdr/worktrees/corral/impl492-gitplane)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.72s
+     Running unittests src/lib.rs (/tmp/g492-target/debug/deps/corrald-224ce1b580303be5)
+
+running 1 test
+G492_PERMITS 100 fake worktrees x 50ms, max=4, OverBudget=0; paced_ms=5995
+test adapters::git_plane::tests::g492_permit_queue_is_not_execution_budget_and_sweep_is_paced ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 305 filtered out; finished in 7.33s

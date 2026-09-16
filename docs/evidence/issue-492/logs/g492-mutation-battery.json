@@ -1,0 +1,12 @@
+{
+  "command": [
+    "/Users/jirathip/.local/bin/python3",
+    "/Users/jirathip/.herdr/worktrees/corral/impl492-gitplane/docs/evidence/issue-492/mutations.py"
+  ],
+  "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl492-gitplane",
+  "raw_exit": 0,
+  "timed_out": false,
+  "elapsed_seconds": 104.308,
+  "log": "/tmp/g492-mutation-battery.log",
+  "target": "/tmp/g492-target"
+}

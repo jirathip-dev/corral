@@ -1,0 +1,13 @@
+{
+  "command": [
+    "cargo",
+    "build",
+    "--release"
+  ],
+  "cwd": "/tmp/g492-linux-source/fixed",
+  "raw_exit": 101,
+  "timed_out": false,
+  "elapsed_seconds": 11.376,
+  "log": "/tmp/g492-bazzite-release.log",
+  "target": "/tmp/g492-linux-target"
+}

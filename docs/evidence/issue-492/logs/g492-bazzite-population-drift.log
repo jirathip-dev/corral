@@ -1,0 +1,19 @@
+RAW_DIRECTORY /home/jirathip/.cache/g492-proof-r3/runtime/g492-cost-8t8ycyz1
+{
+  "roots": {
+    "added": [],
+    "removed": []
+  },
+  "paths": {
+    "added": [
+      "/var/home/jirathip/.herdr/worktrees/plush-meadow/gauntlet-298-compact-policy"
+    ],
+    "removed": []
+  },
+  "unavailable": {
+    "added": [],
+    "removed": []
+  }
+}
+COUNTS 42 43
+LAST_FIXED_SNAPSHOT_FLAGS {'git_plane_alive': True, 'git_plane_last_event_age_ms': 0, 'git_plane_skipped': 563}

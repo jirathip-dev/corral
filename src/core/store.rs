@@ -17,12 +17,12 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio::sync::{Mutex, Notify, broadcast, watch};
 
-use super::model::{Agent, Change, Delta, Resume, SCHEMA_VERSION, Snapshot};
+use super::model::{Agent, Change, Delta, GitFactAge, Resume, SCHEMA_VERSION, Snapshot};
 use crate::history::{HistoryEvent, HistoryRing, RotationPolicy};
 
 #[cfg(test)]
@@ -59,6 +59,61 @@ struct Inner {
     pending_any: bool,
 }
 
+/// Shared with the local git supervisor, like the existing backlog flag.
+/// The coalescer samples this cache off the request path. Monotonic timestamps
+/// avoid wall-clock changes making old facts appear young again.
+#[derive(Debug)]
+pub struct GitPlaneHealth {
+    pub(crate) enabled: AtomicBool,
+    pub(crate) alive: AtomicBool,
+    pub(crate) skipped: AtomicU64,
+    started: Instant,
+    last_event: AtomicU64,
+    pub(crate) facts: std::sync::Mutex<BTreeMap<PathBuf, Option<Instant>>>,
+}
+
+impl Default for GitPlaneHealth {
+    fn default() -> Self {
+        Self {
+            enabled: AtomicBool::new(false),
+            alive: AtomicBool::new(false),
+            skipped: AtomicU64::new(0),
+            started: Instant::now(),
+            last_event: AtomicU64::new(0),
+            facts: std::sync::Mutex::new(BTreeMap::new()),
+        }
+    }
+}
+
+impl GitPlaneHealth {
+    pub(crate) fn elapsed_ms(&self) -> u64 {
+        self.started.elapsed().as_millis() as u64
+    }
+
+    pub(crate) fn progress(&self) {
+        // +1 reserves zero for "never observed".
+        self.last_event
+            .store(self.elapsed_ms().saturating_add(1), Ordering::Release);
+    }
+
+    fn last_event_age_ms(&self) -> Option<u64> {
+        self.last_event
+            .load(Ordering::Acquire)
+            .checked_sub(1)
+            .map(|last| self.elapsed_ms().saturating_sub(last))
+    }
+}
+
+impl GitFactAge {
+    fn at(observed: Option<Instant>, alive: bool) -> Self {
+        let fact_age_ms = observed.map(|at| at.elapsed().as_millis() as u64);
+        Self {
+            fact_age_ms,
+            stale: !alive || fact_age_ms.is_none_or(|age| age >= 120_000),
+        }
+    }
+}
+
 /// Cloneable handle into the store.
 #[derive(Clone)]
 pub struct Store {
@@ -80,6 +135,7 @@ pub struct Store {
     /// was configured; see [`HistoryRing::open`]).
     history: HistoryRing,
     git_plane_backlog: Arc<AtomicBool>,
+    git_plane_health: Arc<GitPlaneHealth>,
     /// #330: the bounded ledger of STRUCTURED agent-side exchange events
     /// (the agent's blocked questions, observed via herdr
     /// `pane.output_matched` → `waiting_on`). Homed on the store so BOTH
@@ -100,6 +156,10 @@ impl Default for Store {
             generated_at: now_millis(),
             agents: BTreeMap::new(),
             git_plane_backlog: false,
+            git_plane_alive: false,
+            git_plane_last_event_age_ms: None,
+            git_plane_skipped: 0,
+            git_worktree_facts: BTreeMap::new(),
         };
         let (published, _) = watch::channel(Arc::new(PublishedSnapshot::new(
             &epoch,
@@ -117,6 +177,7 @@ impl Default for Store {
             version,
             history: HistoryRing::in_memory(RotationPolicy::default()),
             git_plane_backlog: Arc::new(AtomicBool::new(false)),
+            git_plane_health: Arc::new(GitPlaneHealth::default()),
             exchange: Arc::new(crate::core::provenance::ExchangeLedger::new()),
         }
     }
@@ -145,6 +206,10 @@ impl Store {
     /// was built with [`Store::with_history_dir`]).
     pub fn history(&self) -> HistoryRing {
         self.history.clone()
+    }
+
+    pub fn git_plane_health(&self) -> Arc<GitPlaneHealth> {
+        self.git_plane_health.clone()
     }
 
     pub fn git_plane_backlog(&self) -> Arc<AtomicBool> {
@@ -320,6 +385,9 @@ impl Store {
         let mut inner = self.inner.lock().await;
         let previous = self.published();
         if !inner.pending_any
+            // Once wired, publish ages/health even for an idle or dead plane.
+            // This uses the same <=2s coalescer, never the HTTP request path.
+            && !self.git_plane_health.enabled.load(Ordering::Acquire)
             && previous.git_plane_backlog == self.git_plane_backlog.load(Ordering::Acquire)
         {
             return None;
@@ -428,13 +496,7 @@ impl Store {
     pub async fn snapshot(&self) -> Snapshot {
         self.flush().await;
         let inner = self.inner.lock().await;
-        Snapshot {
-            schema_version: SCHEMA_VERSION,
-            rev: inner.rev,
-            generated_at: now_millis(),
-            agents: inner.agents.clone(),
-            git_plane_backlog: self.git_plane_backlog.load(Ordering::Relaxed),
-        }
+        self.snapshot_locked(&inner)
     }
 
     /// Resolve a client cursor. `Some(rev)` from `Last-Event-ID`, `None` if
@@ -504,12 +566,34 @@ impl Store {
     }
 
     fn snapshot_locked(&self, inner: &Inner) -> Snapshot {
+        let health = &self.git_plane_health;
+        let alive = health.alive.load(Ordering::Acquire);
+        let facts = health.facts.lock().unwrap_or_else(|e| e.into_inner());
+        let mut ages: BTreeMap<String, GitFactAge> = facts
+            .iter()
+            .map(|(path, observed)| {
+                (
+                    path.to_string_lossy().into_owned(),
+                    GitFactAge::at(*observed, alive),
+                )
+            })
+            .collect();
+        for agent in inner.agents.values() {
+            if let Some(path) = &agent.workspace.worktree_path {
+                ages.entry(path.clone())
+                    .or_insert_with(|| GitFactAge::at(None, alive));
+            }
+        }
         Snapshot {
             schema_version: SCHEMA_VERSION,
             rev: inner.rev,
             generated_at: now_millis(),
             agents: inner.agents.clone(),
             git_plane_backlog: self.git_plane_backlog.load(Ordering::Relaxed),
+            git_plane_alive: alive,
+            git_plane_last_event_age_ms: health.last_event_age_ms(),
+            git_plane_skipped: health.skipped.load(Ordering::Relaxed),
+            git_worktree_facts: ages,
         }
     }
 

@@ -213,6 +213,26 @@ pub struct Snapshot {
     /// True while git-plane worktree probes are deferred for retry.
     #[serde(default)]
     pub git_plane_backlog: bool,
+    /// Supervisor health at publication; false while stopped or recovering.
+    pub git_plane_alive: bool,
+    /// Age of event-loop/probe progress (including idle responsiveness), not
+    /// filesystem activity. None before the first progress observation.
+    pub git_plane_last_event_age_ms: Option<u64>,
+    /// Cumulative probes skipped for exceeding their execution budget.
+    pub git_plane_skipped: u64,
+    /// Canonical worktree path -> last successful local-git observation age.
+    /// Ages are relative to generated_at, not the HTTP request time. Consumers
+    /// must also add elapsed time since generated_at when using a saved frame.
+    pub git_worktree_facts: BTreeMap<String, GitFactAge>,
+}
+
+/// A fact is explicitly stale if absent, at least 120s old, or its plane is
+/// not alive. Retained branch/status values must not be interpreted as current
+/// in that case. This is additive: no existing git field is repurposed.
+#[derive(Debug, Clone, Serialize)]
+pub struct GitFactAge {
+    pub fact_age_ms: Option<u64>,
+    pub stale: bool,
 }
 
 /// Incremental change batch, the unit of SSE delivery.

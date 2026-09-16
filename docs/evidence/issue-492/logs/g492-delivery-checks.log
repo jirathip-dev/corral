@@ -1,0 +1,16 @@
+REPORT_PREFIX_BYTE_IDENTICAL 107380 0c04780a4f4c3a991e6e3e7c445701d12d7e0d31cdf6aa7ed467d119b90292dd
+SOURCE_TEST_TREE_EXIT 0
+FENCE_EXIT 0
+DIFF_CHECK_EXIT 0
+verified-workspace_RAW_EXIT 0
+verified-clippy_RAW_EXIT 0
+verified-fmt_RAW_EXIT 0
+verified-deny_RAW_EXIT 0
+verified-release_RAW_EXIT 0
+mac-cost-corrected_RAW_EXIT 0
+bazzite-r3-release_RAW_EXIT 0
+bazzite-r3-baseline-release_RAW_EXIT 0
+bazzite-r3-liveness_RAW_EXIT 0
+bazzite-r3-logger_RAW_EXIT 0
+bazzite-r4-cost_RAW_EXIT 0
+ARTIFACT_HASHES_MATCH

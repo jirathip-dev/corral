@@ -1,0 +1,13 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--workspace"
+  ],
+  "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl492-gitplane",
+  "raw_exit": 0,
+  "timed_out": false,
+  "elapsed_seconds": 101.831,
+  "log": "/tmp/g492-verified-workspace.log",
+  "target": "/tmp/g492-target"
+}

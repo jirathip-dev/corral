@@ -1,0 +1,20 @@
+{
+  "command": [
+    "/usr/bin/python3",
+    "/tmp/g492-measure.py",
+    "--before",
+    "/home/jirathip/.cache/g492-proof-r3/base-corrald",
+    "--after",
+    "/home/jirathip/.cache/g492-proof-r3/fixed-corrald",
+    "--output",
+    "/tmp/g492-bazzite-r3-cost-data.json",
+    "--scratch-root",
+    "/home/jirathip/.cache/g492-proof-r3/runtime"
+  ],
+  "cwd": "/var/home/jirathip/.cache/g492-proof-r3/fixed",
+  "raw_exit": 1,
+  "timed_out": false,
+  "elapsed_seconds": 274.331,
+  "log": "/tmp/g492-bazzite-r3-cost.log",
+  "target": "/home/jirathip/.cache/g492-proof-r3/base-target"
+}

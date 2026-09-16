@@ -1,0 +1,15 @@
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/nvme0n1p3  929G  612G  314G  67% /var/home
+tmpfs           7.4G  5.9G  1.5G  81% /tmp
+OSError: [Errno 122] Disk quota exceeded
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/tmp/g492-run-command.py", line 32, in <module>
+    receipt.write_text(json.dumps(result, indent=2)+'\n')
+    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib64/python3.14/pathlib/__init__.py", line 809, in write_text
+    with self.open(mode='w', encoding=encoding, errors=errors, newline=newline) as f:
+         ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+OSError: [Errno 122] Disk quota exceeded

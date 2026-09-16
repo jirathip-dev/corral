@@ -1,0 +1,18 @@
+{
+  "command": [
+    "/Users/jirathip/.local/bin/python3",
+    "/Users/jirathip/.herdr/worktrees/corral/impl492-gitplane/docs/evidence/issue-492/measure.py",
+    "--before",
+    "/tmp/g492-base-isolated-corrald",
+    "--after",
+    "/tmp/g492-fixed-corrald",
+    "--output",
+    "/tmp/g492-mac-cost-corrected-data.json"
+  ],
+  "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl492-gitplane",
+  "raw_exit": 0,
+  "timed_out": false,
+  "elapsed_seconds": 277.909,
+  "log": "/tmp/g492-mac-cost-corrected.log",
+  "target": "/tmp/g492-base-target"
+}

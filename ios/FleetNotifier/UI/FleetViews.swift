@@ -5761,6 +5761,165 @@ enum RecentsBlocksEvidence {
 }
 #endif
 
+/// #558: one row inventory drives both painting and the single VoiceOver
+/// label. Omitting a row therefore also omits its spoken facts.
+struct RecentWorktreeDetails {
+    enum Row: Hashable { case identity, commit, basename, github }
+    let workspace: Workspace
+
+    var branch: String? { nonempty(workspace.branch) }
+    var sha: String? { nonempty(workspace.headSha).map { String($0.prefix(7)) } }
+    var subject: String? { nonempty(workspace.headSubject?.components(separatedBy: .newlines).first) }
+    var basename: String? { nonempty(WorkspaceLine.worktreeBasename(workspace)) }
+    var hasCounts: Bool { workspace.ahead > 0 || workspace.behind > 0 }
+    var verdict: String? {
+        switch workspace.ciStatus {
+        case .success: return "passing"
+        case .failure: return "failing"
+        case .pending: return "pending"
+        case .unknown, nil: return nil
+        }
+    }
+    var closes: String? {
+        guard let issues = workspace.issues, !issues.isEmpty else { return nil }
+        let numbers = issues.prefix(3).map { "#\($0.number)" }.joined(separator: ", ")
+        return "closes " + numbers + (issues.count > 3 ? " +\(issues.count - 3)" : "")
+    }
+    var rows: [Row] {
+        var rows: [Row] = []
+        if branch != nil || workspace.dirty || hasCounts { rows.append(.identity) }
+        if sha != nil || subject != nil { rows.append(.commit) }
+        if basename != nil { rows.append(.basename) }
+        // #556: the server clears PR/CI/issues for stale bindings. No PR
+        // also covers the disabled plane; orphan CI/issues never render.
+        if workspace.prNumber != nil { rows.append(.github) }
+        return rows
+    }
+    var accessibilityLabel: String {
+        rows.map { row in
+            switch row {
+            case .identity:
+                return [branch.map { "Branch \($0)" }, workspace.dirty ? "dirty" : nil,
+                        hasCounts ? "\(workspace.ahead) ahead, \(workspace.behind) behind" : nil]
+                    .compactMap { $0 }.joined(separator: ", ")
+            case .commit:
+                return [sha, subject].compactMap { $0 }.joined(separator: ", ")
+            case .basename: return basename ?? ""
+            case .github:
+                return [workspace.prNumber.map { "PR \($0)" }, verdict.map { "CI \($0)" }, closes]
+                    .compactMap { $0 }.joined(separator: ", ")
+            }
+        }.joined(separator: ", ")
+    }
+
+    private func nonempty(_ value: String?) -> String? {
+        guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return value
+    }
+}
+
+struct RecentWorktreeBlock: View {
+    let details: RecentWorktreeDetails
+    @EnvironmentObject private var theme: ThemeStore
+
+    var body: some View {
+        if !details.rows.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(details.rows, id: \.self) { row in
+                    line(row)
+                }
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(details.accessibilityLabel)
+            .accessibilityIdentifier("recent-worktree-block")
+        }
+    }
+
+    @ViewBuilder
+    private func line(_ row: RecentWorktreeDetails.Row) -> some View {
+        switch row {
+        case .identity:
+            HStack(spacing: 6) {
+                if let branch = details.branch {
+                    Text(branch).font(.caption2.monospaced())
+                        .foregroundStyle(theme.tailMuted)
+                        .lineLimit(1).truncationMode(.middle)
+                }
+                if details.workspace.dirty {
+                    if details.branch != nil { separator }
+                    Text("dirty").font(.caption2.weight(.semibold))
+                        .foregroundStyle(theme.peach).fixedSize()
+                }
+                if details.hasCounts {
+                    if details.branch != nil || details.workspace.dirty { separator }
+                    Text("↑\(details.workspace.ahead)↓\(details.workspace.behind)")
+                        .font(.caption2.monospaced()).foregroundStyle(theme.tailMuted).fixedSize()
+                }
+            }
+        case .commit:
+            let sha = Text(details.sha ?? "").font(.caption2.monospaced())
+            let subject = Text(details.subject ?? "").font(.caption)
+            Text("\(sha)\(details.sha != nil && details.subject != nil ? " " : "")\(subject)")
+                .foregroundStyle(theme.tailMuted)
+                .lineLimit(2).truncationMode(.tail)
+                .fixedSize(horizontal: false, vertical: true)
+        case .basename:
+            Text(details.basename ?? "").font(.caption2.monospaced())
+                .foregroundStyle(theme.tailQuiet).lineLimit(1).truncationMode(.middle)
+        case .github:
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    githubBinding
+                    closesText
+                }
+                .fixedSize(horizontal: true, vertical: false)
+                VStack(alignment: .leading, spacing: 4) {
+                    githubBinding
+                    closesText
+                }
+            }
+        }
+    }
+
+    private var githubBinding: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            if let pr = details.workspace.prNumber {
+                Text("#\(pr)").font(.caption2.monospaced())
+                    .foregroundStyle(theme.tailMuted)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(theme.surface0, in: Capsule()).fixedSize()
+            }
+            if let verdict = details.verdict {
+                Text(verdict).font(.caption2.monospaced())
+                    .foregroundStyle(verdictColor).fixedSize()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var closesText: some View {
+        if let closes = details.closes {
+            Text(closes).font(.caption2.monospaced())
+                .foregroundStyle(theme.tailQuiet)
+                .lineLimit(2).truncationMode(.tail)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var separator: some View {
+        Text("·").font(.caption2).foregroundStyle(theme.tailMuted)
+    }
+
+    private var verdictColor: Color {
+        switch details.workspace.ciStatus {
+        case .success: return theme.green
+        case .failure: return theme.red
+        case .pending: return theme.yellow
+        case .unknown, nil: return theme.tailMuted
+        }
+    }
+}
+
 /// Read-only recents: LIVE TAIL ONLY. The sheet auto-loads the agent's
 /// bounded tail (≤200 lines, daemon cap), auto-refreshes while open, and
 /// auto-scrolls to the newest content. Renders the tail as ROLE-RUN BLOCKS
@@ -5911,6 +6070,7 @@ struct RecentOutputSheet: View {
                             .foregroundStyle(theme.accent)
                     }
                 }
+                RecentWorktreeBlock(details: RecentWorktreeDetails(workspace: agent.workspace))
             } else {
                 Label("Agent no longer available", systemImage: "exclamationmark.triangle")
                     .font(.subheadline)

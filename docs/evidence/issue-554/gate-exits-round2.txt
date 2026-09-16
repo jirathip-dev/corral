@@ -1,0 +1,57 @@
+# Issue 554 round 2 — gate exits at head 20533cd7d3c467d827f1d02381a5a43213520481
+#
+# Driver: bash docs/evidence/issue-554/run-gates.sh all   (then ... measure)
+# Chain driver log: /tmp/g554-r2-logs/chain-driver.out
+# Measure driver log: /tmp/g554-r2-logs/measure-driver.out
+# Every heavy leg is serialized on the shared heavy lock (/tmp/n.lock) and
+# bounded by docs/evidence/issue-547/bounded-run.py, which appends RAW_EXIT= to
+# each leg log. Raw exit status is the only gate evidence here.
+#
+# --- run-gates.sh all (G1..G7) ---
+HEAD=20533cd7d3c467d827f1d02381a5a43213520481
+DF_START: /dev/disk3s1s1   228Gi    12Gi    10Gi    54%    459k  108M    0%   /
+--- G1 focused (new #554 class + #451 ladders + scene seam/foreground) ---
+g554-focused_EXIT=0
+FOCUSED_EXIT=0
+--- G1b contract-item-4 pins: the behaviour that must stay byte-for-byte unchanged ---
+g554-pins_EXIT=0
+PINS_EXIT=0
+--- G2 full suite ---
+FULL_EXIT=0
+--- G3 boundary + self-test ---
+CHECK_RELEASE_EXIT=0
+SELF_TEST_EXIT=0
+--- G4 Debug + Release builds + binary check ---
+DF_BEFORE_G4: /dev/disk3s1s1   228Gi    12Gi   9.1Gi    57%    459k   95M    0%   /
+DEBUG_EXIT=0
+RELEASE_EXIT=0
+BINARY_EXIT=0
+DF_AFTER_G4: /dev/disk3s1s1   228Gi    12Gi   9.1Gi    57%    459k   95M    0%   /
+--- G5 project-generation drift ---
+XCODEGEN_EXIT=0
+XCODEGEN_DIFF_EXIT=0
+--- G6 advisory anti-slop (head) ---
+ASLOP_EXIT=1
+--- G7 hygiene ---
+DIFFCHECK_EXIT=0
+--- G6b anti-slop base identity compare ---
+BASE_EXTRACT_EXIT=0
+ASLOP_BASE_EXIT=1
+BASE_TOTAL=24 HEAD_TOTAL=24
+ADDED={}
+GONE={}
+COUNT_CHANGED={}
+ASLOP_COMPARE_DONE
+ASLOP_COMPARE_EXIT=0
+DF_END: /dev/disk3s1s1   228Gi    12Gi   8.7Gi    58%    459k   91M    0%   /
+G554_GATES_DONE
+
+# --- run-gates.sh measure (G8) ---
+HEAD=20533cd7d3c467d827f1d02381a5a43213520481
+DF_START: /dev/disk3s1s1   228Gi    12Gi   8.7Gi    58%    459k   91M    0%   /
+--- G8 simulator staged timings (#551 harness, re-run over the #554 fix) ---
+g554-measure-outer_EXIT=0
+MEASURE_EXIT=0
+TIMINGS_EXIT=0
+DF_END: /dev/disk3s1s1   228Gi    12Gi   6.7Gi    64%    459k   70M    1%   /
+G554_GATES_DONE

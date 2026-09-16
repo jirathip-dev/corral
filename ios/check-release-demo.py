@@ -554,7 +554,23 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # 2026-09-15 #551 r3: the idle vertical bob is fenced like `roam`
     # (HerdHorse.bob, HerdModel) and HerdView's row offset calls it — the last
     # motion path the recast removal un-suppressed; re-pinned.
-    "c5f0013fef00cf072c34ae38f08f85febf3f6ecb1eb8242b8d17b3ff7762811d"
+    # 2026-09-15 #554: the per-live-session URLSession — AppModel gains the
+    # live-session transport (created in startLive, invalidated in stopLive,
+    # identity-guarded completions) and HostStreamCoordinator gains the
+    # adopted transport plus the bounded `/host-key` attempt; re-pinned over
+    # the #554 source set (recomputed from the tree, never hand-edited).
+    # 2026-09-16 #554 r2 (F1 fix): retiring the live transport now also REPAIRS
+    # the coordinator's adopted transport in the same step (single retirement
+    # point `AppModel.retireLiveTransport`) and both deferred live dispatch
+    # sites re-check the transport before creating a task; re-pinned over the
+    # round-2 source set (recomputed from the tree, never hand-edited).
+    # 2026-09-16 #554 r3 (F1 closed): the retirement now also WAITS — the
+    # owners that can still create a transport task are cancelled, collected
+    # and awaited (bounded) before `invalidateAndCancel()`, because the task
+    # creation happens inside Foundation's own async machinery one await hop
+    # after any caller-side guard; re-pinned over the round-3 source set
+    # (recomputed from the tree, never hand-edited).
+    "8eba68197e99d3e65d326e9de07357c5a823f4d798131d6890a142a412e1e302"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

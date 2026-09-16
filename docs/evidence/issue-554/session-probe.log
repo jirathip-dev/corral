@@ -1,0 +1,7 @@
+MOCK preserved: true
+timeout base/derived: 60.0 60.0
+shared timeout/wfc: 60.0 false
+derived fetch: 200 ok -
+hold-open started: 1 stopped: 0
+after invalidateAndCancel stopped: 1 completion: domain=NSURLErrorDomain code=-999
+blackhole elapsed=16.0s code=-1001

@@ -1,0 +1,20 @@
+{
+  "provenance": {
+    "source": "docs/evidence/issue-551/lane-report.md (table 'Stage interval (median ms, n=5 each)')",
+    "lanes": "issue 551 measurement lane, same opt-in method testWarmReturnStageMeasurements with G551_MEASURE=1, 5 fresh XCTest hosts, scenarios cold_model/warm_30/warm_300",
+    "transcribed_by": "#554 lane, 2026-09-15 — values are TRANSCRIBED from the #551 report, not measured or re-derived by #554",
+    "note": "only the three scenario medians are transcribed; the raw per-sample marks stay in the #551 lane report"
+  },
+  "environment": "iPhone 16 / iOS Simulator; local URLProtocol fixture",
+  "metrics": {
+    "dispatch": {"cold_model": -1.008, "warm_30": -0.239, "warm_300": -1.310},
+    "key_rtt": {"cold_model": 5.656, "warm_30": 0.928, "warm_300": 2.648},
+    "path_to_sse_200": {"cold_model": 3.628, "warm_30": 0.514, "warm_300": 1.453},
+    "sse_200_to_frame": {"cold_model": 0.974, "warm_30": 0.274, "warm_300": 0.589},
+    "frame_to_apply": {"cold_model": 0.840, "warm_30": 3.779, "warm_300": 5.598},
+    "key_response_to_apply": {"cold_model": 0.279, "warm_30": 3.840, "warm_300": 5.799},
+    "apply_to_row": {"cold_model": 48.948, "warm_30": 2.894, "warm_300": 3.434},
+    "path_to_apply": {"cold_model": 5.015, "warm_30": 4.542, "warm_300": 8.039},
+    "seam_entry_to_apply": {"cold_model": 111.149, "warm_30": 8.338, "warm_300": 35.342}
+  }
+}

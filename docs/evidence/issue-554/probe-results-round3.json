@@ -1,0 +1,123 @@
+{
+  "source_head": "1da21ba604ccc068bf3fe1e3ec7f2df81332835d",
+  "results": [
+    {
+      "label": "control",
+      "exit": 0,
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=C8E69C58-66A4-440D-850C-8C1628C720E6' -derivedDataPath /tmp/g554-probe-dd -only-testing:FleetNotifierTests/LiveSessionTransportTests/testCompletionFromTheRetiredSessionIsNeverApplied -only-testing:FleetNotifierTests/LiveSessionTransportTests/testForegroundCycleInstallsANewSessionAndInvalidatesTheRetiredOne -only-testing:FleetNotifierTests/LiveSessionTransportTests/testLiveSessionKeepsTheStreamTimeoutAndTheLivenessBudget -only-testing:FleetNotifierTests/LiveSessionTransportTests/testNeverRespondingHostKeyFailsWithinTheBoundAndEngagesTheLadder -only-testing:FleetNotifierTests/LiveSessionTransportTests/testRapidPhaseFlappingLeavesOneLiveSessionAndNoLeakedTasks -only-testing:FleetNotifierTests/LiveSessionTransportTests/testRetryDuringRetirementNeverDispatchesOnTheRetiredTransport -only-testing:FleetNotifierTests/LiveSessionTransportTests/testBoundaryJitterWithRetryNeverCreatesATaskOnARetiredTransport -only-testing:FleetNotifierTests/LiveSessionTransportTests/testBoundaryJitterWithoutRetryIsClean",
+      "log": "/tmp/g554-probe-control.log",
+      "assertion_failures": []
+    },
+    {
+      "label": "P1-shared-revert",
+      "exit": 65,
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=C8E69C58-66A4-440D-850C-8C1628C720E6' -derivedDataPath /tmp/g554-probe-dd -only-testing:FleetNotifierTests/LiveSessionTransportTests/testForegroundCycleInstallsANewSessionAndInvalidatesTheRetiredOne",
+      "log": "/tmp/g554-probe-P1-shared-revert.log",
+      "assertion_failures": [
+        "LiveSessionTransportTests/testForegroundCycleInstallsANewSessionAndInvalidatesTheRetiredOne"
+      ],
+      "file": "ios/FleetNotifier/App/AppModel.swift",
+      "old": "    private func installLiveSession() {\n        guard liveSession == nil else { return }\n        let configuration = session.configuration\n        configuration.waitsForConnectivity = false\n        liveSession = URLSession(configuration: configuration)\n    }",
+      "new": "    private func installLiveSession() {\n        // Candidate defect: the pre-#554 production behaviour \u2014 no\n        // per-live-session transport, so every client rides the base/shared\n        // session and no session is ever invalidated.\n        liveSession = nil\n    }",
+      "before_sha256": "ca75048694e87293dbe4986977252085d0d8a08e4516b1f4dad53770a917d0f2",
+      "expected_red": [
+        "LiveSessionTransportTests/testForegroundCycleInstallsANewSessionAndInvalidatesTheRetiredOne"
+      ],
+      "restored_sha256": "ca75048694e87293dbe4986977252085d0d8a08e4516b1f4dad53770a917d0f2",
+      "restore_diff_exit": 0
+    },
+    {
+      "label": "P2-no-invalidate",
+      "exit": 65,
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=C8E69C58-66A4-440D-850C-8C1628C720E6' -derivedDataPath /tmp/g554-probe-dd -only-testing:FleetNotifierTests/LiveSessionTransportTests/testForegroundCycleInstallsANewSessionAndInvalidatesTheRetiredOne -only-testing:FleetNotifierTests/LiveSessionTransportTests/testRapidPhaseFlappingLeavesOneLiveSessionAndNoLeakedTasks",
+      "log": "/tmp/g554-probe-P2-no-invalidate.log",
+      "assertion_failures": [
+        "LiveSessionTransportTests/testForegroundCycleInstallsANewSessionAndInvalidatesTheRetiredOne",
+        "LiveSessionTransportTests/testForegroundCycleInstallsANewSessionAndInvalidatesTheRetiredOne",
+        "LiveSessionTransportTests/testRapidPhaseFlappingLeavesOneLiveSessionAndNoLeakedTasks",
+        "LiveSessionTransportTests/testRapidPhaseFlappingLeavesOneLiveSessionAndNoLeakedTasks",
+        "LiveSessionTransportTests/testRapidPhaseFlappingLeavesOneLiveSessionAndNoLeakedTasks",
+        "LiveSessionTransportTests/testRapidPhaseFlappingLeavesOneLiveSessionAndNoLeakedTasks",
+        "LiveSessionTransportTests/testRapidPhaseFlappingLeavesOneLiveSessionAndNoLeakedTasks",
+        "LiveSessionTransportTests/testRapidPhaseFlappingLeavesOneLiveSessionAndNoLeakedTasks"
+      ],
+      "file": "ios/FleetNotifier/App/AppModel.swift",
+      "old": "            transport.invalidateAndCancel()",
+      "new": "            // Candidate defect: retire without invalidating the transport,\n            // so the retired session keeps its pooled connections and the\n            // identity/leak tests cannot observe a teardown.\n            _ = transport",
+      "before_sha256": "ca75048694e87293dbe4986977252085d0d8a08e4516b1f4dad53770a917d0f2",
+      "expected_red": [
+        "LiveSessionTransportTests/testForegroundCycleInstallsANewSessionAndInvalidatesTheRetiredOne",
+        "LiveSessionTransportTests/testRapidPhaseFlappingLeavesOneLiveSessionAndNoLeakedTasks"
+      ],
+      "restored_sha256": "ca75048694e87293dbe4986977252085d0d8a08e4516b1f4dad53770a917d0f2",
+      "restore_diff_exit": 0
+    },
+    {
+      "label": "P3-slow-preflight",
+      "exit": 65,
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=C8E69C58-66A4-440D-850C-8C1628C720E6' -derivedDataPath /tmp/g554-probe-dd -only-testing:FleetNotifierTests/LiveSessionTransportTests/testNeverRespondingHostKeyFailsWithinTheBoundAndEngagesTheLadder",
+      "log": "/tmp/g554-probe-P3-slow-preflight.log",
+      "assertion_failures": [
+        "LiveSessionTransportTests/testNeverRespondingHostKeyFailsWithinTheBoundAndEngagesTheLadder"
+      ],
+      "file": "ios/FleetNotifier/Profiles/HostStreamCoordinator.swift",
+      "old": "    var attemptTimeout: TimeInterval = 5",
+      "new": "    var attemptTimeout: TimeInterval = 60",
+      "before_sha256": "601596113bb8a247bc7474becadb5111bb2cf3e4162b3cf1750736fc06fa0092",
+      "expected_red": [
+        "LiveSessionTransportTests/testNeverRespondingHostKeyFailsWithinTheBoundAndEngagesTheLadder"
+      ],
+      "restored_sha256": "601596113bb8a247bc7474becadb5111bb2cf3e4162b3cf1750736fc06fa0092",
+      "restore_diff_exit": 0
+    },
+    {
+      "label": "P4-shrunk-stream-timeout",
+      "exit": 65,
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=C8E69C58-66A4-440D-850C-8C1628C720E6' -derivedDataPath /tmp/g554-probe-dd -only-testing:FleetNotifierTests/LiveSessionTransportTests/testLiveSessionKeepsTheStreamTimeoutAndTheLivenessBudget",
+      "log": "/tmp/g554-probe-P4-shrunk-stream-timeout.log",
+      "assertion_failures": [
+        "LiveSessionTransportTests/testLiveSessionKeepsTheStreamTimeoutAndTheLivenessBudget",
+        "LiveSessionTransportTests/testLiveSessionKeepsTheStreamTimeoutAndTheLivenessBudget",
+        "LiveSessionTransportTests/testLiveSessionKeepsTheStreamTimeoutAndTheLivenessBudget",
+        "LiveSessionTransportTests/testLiveSessionKeepsTheStreamTimeoutAndTheLivenessBudget"
+      ],
+      "file": "ios/FleetNotifier/App/AppModel.swift",
+      "old": "        configuration.waitsForConnectivity = false",
+      "new": "        configuration.waitsForConnectivity = false\n        // Candidate defect: shorten the live session's own stream timeout.\n        configuration.timeoutIntervalForRequest = 5",
+      "before_sha256": "ca75048694e87293dbe4986977252085d0d8a08e4516b1f4dad53770a917d0f2",
+      "expected_red": [
+        "LiveSessionTransportTests/testLiveSessionKeepsTheStreamTimeoutAndTheLivenessBudget"
+      ],
+      "restored_sha256": "ca75048694e87293dbe4986977252085d0d8a08e4516b1f4dad53770a917d0f2",
+      "restore_diff_exit": 0
+    },
+    {
+      "label": "P5-no-session-guard",
+      "exit": 65,
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=C8E69C58-66A4-440D-850C-8C1628C720E6' -derivedDataPath /tmp/g554-probe-dd -only-testing:FleetNotifierTests/LiveSessionTransportTests/testCompletionFromTheRetiredSessionIsNeverApplied",
+      "log": "/tmp/g554-probe-P5-no-session-guard.log",
+      "assertion_failures": [
+        "LiveSessionTransportTests/testCompletionFromTheRetiredSessionIsNeverApplied"
+      ],
+      "file": "ios/FleetNotifier/App/AppModel.swift",
+      "old": "                guard !Task.isCancelled, self.isCurrent(context),\n                      self.isLiveTransport(transport) else { return }\n                self.banner = .error(\"fleet_refresh\",",
+      "new": "                // Candidate defect: apply a retired session's failure to\n                // state \u2014 the completion path checks neither cancellation\n                // nor transport identity (round 3 registers the pull\n                // refresh as a life-path owner, so cancellation alone would\n                // otherwise mask this candidate and the probe would stop\n                // discriminating).\n                guard self.isCurrent(context) else { return }\n                self.banner = .error(\"fleet_refresh\",",
+      "before_sha256": "ca75048694e87293dbe4986977252085d0d8a08e4516b1f4dad53770a917d0f2",
+      "expected_red": [
+        "LiveSessionTransportTests/testCompletionFromTheRetiredSessionIsNeverApplied"
+      ],
+      "restored_sha256": "ca75048694e87293dbe4986977252085d0d8a08e4516b1f4dad53770a917d0f2",
+      "restore_diff_exit": 0
+    },
+    {
+      "label": "restored-green",
+      "exit": 0,
+      "command": "env HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=C8E69C58-66A4-440D-850C-8C1628C720E6' -derivedDataPath /tmp/g554-probe-dd -only-testing:FleetNotifierTests/LiveSessionTransportTests/testCompletionFromTheRetiredSessionIsNeverApplied -only-testing:FleetNotifierTests/LiveSessionTransportTests/testForegroundCycleInstallsANewSessionAndInvalidatesTheRetiredOne -only-testing:FleetNotifierTests/LiveSessionTransportTests/testLiveSessionKeepsTheStreamTimeoutAndTheLivenessBudget -only-testing:FleetNotifierTests/LiveSessionTransportTests/testNeverRespondingHostKeyFailsWithinTheBoundAndEngagesTheLadder -only-testing:FleetNotifierTests/LiveSessionTransportTests/testRapidPhaseFlappingLeavesOneLiveSessionAndNoLeakedTasks -only-testing:FleetNotifierTests/LiveSessionTransportTests/testRetryDuringRetirementNeverDispatchesOnTheRetiredTransport -only-testing:FleetNotifierTests/LiveSessionTransportTests/testBoundaryJitterWithRetryNeverCreatesATaskOnARetiredTransport -only-testing:FleetNotifierTests/LiveSessionTransportTests/testBoundaryJitterWithoutRetryIsClean",
+      "log": "/tmp/g554-probe-restored-green.log",
+      "assertion_failures": []
+    }
+  ],
+  "round": 3,
+  "battery": "P1..P5 candidate defects + both boundary-stress tests in every leg (8 selectors)",
+  "removed": "P6-no-repair (round 2) \u2014 measured reason in probes.py + boundary-stress-pin.md"
+}

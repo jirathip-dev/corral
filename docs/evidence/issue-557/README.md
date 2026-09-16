@@ -62,8 +62,26 @@ Explicitly exercised unchanged pins:
   font-role and intrinsic-chrome source assertions remain unchanged.
 
 The focused invocation executed 32 tests with zero failures. `gates.jsonl`
-contains exact expanded commands, raw exit statuses and timing. Full raw logs
-are retained under `/tmp/g557-*.log`; compressed copies accompany closeout.
+contains exact expanded commands, raw exit statuses and timing; `commands.md`
+is its readable table. Full raw logs remain under `/tmp/g557-*.log`.
+`results.txt` preserves selected assertion, measurement and summary lines from
+those logs (an excerpt, not a replacement for the full logs).
+
+The full FleetNotifierTests invocation executed 651 tests, with one opt-in
+measurement test skipped and zero failures. Debug and Release builds, source
+and binary release checks, checker self-tests, generated-project drift, and
+the touched-file anti-slop delta all returned 0. The linter also returned 0
+on committed source head `cfda91b399a32fbd10d730cc6a64da706f6f6755` after the
+mutation restore; baseline/head findings on the two touched Swift files are
+both empty.
+
+The dirty-marker deletion probe compiled and executed the label test:
+RED exit 65, one test / one assertion failure, with the diagnostic
+`the rendered horse label must include the Board-style dirty marker`.
+Restored GREEN exit 0, one test / zero failures. `shasum -a 256` before,
+after restore and after GREEN all produced
+`087d73ea67047942b57a4ce4612f4ec966451f53750f4874d1309ad550819ddb`.
+The source-scoped `git diff --exit-code` returned 0 after restoration.
 
 ## VoiceOver and regression discrimination
 

@@ -1,0 +1,38 @@
+[
+  {
+    "name": "g556-stale.png",
+    "sha256": "2d0773614504041b95b86833575e483b77a653242402a3727ade737933db3012",
+    "pixels": [
+      1170,
+      144
+    ],
+    "test": "GitHubBindingBadgeTests/testUnboundHasNoBadgeAndBoundRendersPRNumber()"
+  },
+  {
+    "name": "g556-bound.png",
+    "sha256": "c97ffce9d22a2ba4ea83010d0d26fe550e9c5d16c55a4fb7c9dee11956c5cb8b",
+    "pixels": [
+      1170,
+      144
+    ],
+    "test": "GitHubBindingBadgeTests/testUnboundHasNoBadgeAndBoundRendersPRNumber()"
+  },
+  {
+    "name": "g556-unbound-ci.png",
+    "sha256": "2d0773614504041b95b86833575e483b77a653242402a3727ade737933db3012",
+    "pixels": [
+      1170,
+      144
+    ],
+    "test": "GitHubBindingBadgeTests/testUnboundHasNoBadgeAndBoundRendersPRNumber()"
+  },
+  {
+    "name": "g556-unbound.png",
+    "sha256": "2d0773614504041b95b86833575e483b77a653242402a3727ade737933db3012",
+    "pixels": [
+      1170,
+      144
+    ],
+    "test": "GitHubBindingBadgeTests/testUnboundHasNoBadgeAndBoundRendersPRNumber()"
+  }
+]

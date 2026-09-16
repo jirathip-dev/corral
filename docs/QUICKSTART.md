@@ -14,8 +14,9 @@ The release install (steps 1-2, the normal path) needs **no Rust toolchain**:
   `loginctl enable-linger "$USER"` (see [LINUX.md](LINUX.md)). Any other
   platform or architecture has no published bundle, see the artifact table
   in step 1.
-- `curl` and `tar`. `gh` is only needed to resolve a release; passing
-  `--url <bundle-url>` installs an explicit bundle without `gh`.
+- `curl` and `tar`. No GitHub account, login, token, or `gh` is required
+  for the explicit-bundle install below. Automatic release/tag resolution
+  is an optional installer path that still uses `gh`.
 - `herdr` running on the same machine — `corrald` reads the fleet from
   the herdr unix socket (`~/.config/herdr/herdr.sock`). If herdr is down,
   `corrald` still serves HTTP; it just shows no herdr agents (see
@@ -28,15 +29,21 @@ Building from source instead is a separate, developer path — step 9.
 From a checkout:
 
 ```sh
-bash scripts/install-corral.sh                    # latest release
-bash scripts/install-corral.sh --release v0.4.2   # or pin a release tag
+bash scripts/install-corral.sh --url https://github.com/jirathip-dev/corral/releases/download/v0.4.2/corral-v0.4.2-macos.tar.gz
 ```
 
 Without a checkout (same script, fetched from the repository):
 
 ```sh
-bash <(curl -fsSL https://raw.githubusercontent.com/jirathip-dev/corral/main/scripts/install-corral.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/jirathip-dev/corral/main/scripts/install-corral.sh) \
+  --url https://github.com/jirathip-dev/corral/releases/download/v0.4.2/corral-v0.4.2-macos.tar.gz
 ```
+
+These examples are for macOS; on Linux x86_64 replace `macos` with
+`linux-x86_64` in the bundle URL. GitHub PR/CI/linked-issue features are
+optional and configured only on the host, not during phone pairing.
+Without a host token the GitHub plane stays disabled (zero connection
+attempts). See [optional GitHub features](OPERATIONS.md#optional-github-features).
 
 What the installer does, in order:
 

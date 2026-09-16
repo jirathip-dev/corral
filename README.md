@@ -16,13 +16,14 @@ herdr socket ─→ corrald (daemon) ─→ iOS app: board · recents · notific
 
 ### 1. Daemon — install the prebuilt release (macOS, Linux x86_64)
 
-Checksummed prebuilt daemon bundles are published per release — no Rust toolchain needed:
+Checksummed prebuilt daemon bundles are published per release — no Rust toolchain, GitHub login, or `gh` needed. Use the explicit bundle URL (macOS example):
 
 ```sh
-bash <(curl -fsSL https://raw.githubusercontent.com/jirathip-dev/corral/main/scripts/install-corral.sh)   # latest release
+bash <(curl -fsSL https://raw.githubusercontent.com/jirathip-dev/corral/main/scripts/install-corral.sh) \
+  --url https://github.com/jirathip-dev/corral/releases/download/v0.4.2/corral-v0.4.2-macos.tar.gz
 ```
 
-From a checkout you can pin a release tag instead (works the same way):
+For Linux x86_64, replace `macos` with `linux-x86_64` in that bundle URL. From a checkout you can also resolve a release tag using the optional `gh` CLI:
 
 ```sh
 bash scripts/install-corral.sh --release v0.4.2
@@ -37,6 +38,8 @@ curl -s http://127.0.0.1:8474/healthz    # → ok
 ```
 
 Published artifacts: `corral-<tag>-macos.tar.gz` (+`.sha256`) and, since v0.4.2, `corral-<tag>-linux-x86_64.tar.gz` (+`.sha256`). Other platforms and architectures (for example Linux aarch64) have no published bundle — the installer refuses them up front rather than relabel another platform's artifact or fall back to a source build. Linux specifics: [docs/LINUX.md](docs/LINUX.md).
+
+GitHub PR numbers, CI verdicts, and linked issues are optional, host-configured features. The daemon defaults to no GitHub traffic without a token; the phone never asks for one. See [optional GitHub configuration](docs/OPERATIONS.md#optional-github-features).
 
 ### 2. Connect iOS (TestFlight build)
 

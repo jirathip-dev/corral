@@ -38,11 +38,8 @@ install a non-ELF staged binary.
 From a terminal in your desktop session (per-user systemd service):
 
 ```sh
-# gh available:
-bash <(curl -fsSL https://raw.githubusercontent.com/jirathip-dev/corral/main/scripts/install-corral.sh)
-
-# or pin a release explicitly (works without gh):
-RELEASE_URL=https://github.com/jirathip-dev/corral/releases/download/v0.1.0/corral-v0.1.0-linux-x86_64.tar.gz \
+# Explicit public bundle: no gh, GitHub login, or token needed.
+RELEASE_URL=https://github.com/jirathip-dev/corral/releases/download/v0.4.2/corral-v0.4.2-linux-x86_64.tar.gz \
   bash <(curl -fsSL https://raw.githubusercontent.com/jirathip-dev/corral/main/scripts/install-corral.sh)
 ```
 
@@ -79,6 +76,10 @@ systemctl --user status corrald.service          # active (running)
 curl -s http://127.0.0.1:8474/healthz            # → ok
 journalctl --user -u corrald.service -e          # daemon logs (journal)
 ```
+
+GitHub PR/CI/linked-issue features are optional and host-configured; they
+are disabled without a host token. Phone pairing never requests GitHub
+credentials. See [optional GitHub features](OPERATIONS.md#optional-github-features).
 
 ## Service behavior (G3)
 

@@ -1,0 +1,366 @@
+elapsed_s=0.018 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+elapsed_s=1.188 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+elapsed_s=2.353 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0xd8dff6c49e86b2fb      0t0  TCP 192.168.1.127:56618->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=3.515 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0xd8dff6c49e86b2fb      0t0  TCP 192.168.1.127:56618->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=4.68 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0xd8dff6c49e86b2fb      0t0  TCP 192.168.1.127:56618->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=5.822 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0xd8dff6c49e86b2fb      0t0  TCP 192.168.1.127:56618->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=6.969 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0xd8dff6c49e86b2fb      0t0  TCP 192.168.1.127:56618->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=8.141 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0xd8dff6c49e86b2fb      0t0  TCP 192.168.1.127:56618->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=9.307 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0xd8dff6c49e86b2fb      0t0  TCP 192.168.1.127:56618->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=10.475 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0xd8dff6c49e86b2fb      0t0  TCP 192.168.1.127:56618->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=11.642 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0xd8dff6c49e86b2fb      0t0  TCP 192.168.1.127:56618->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=12.801 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0xd8dff6c49e86b2fb      0t0  TCP 192.168.1.127:56618->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=13.949 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0xd8dff6c49e86b2fb      0t0  TCP 192.168.1.127:56618->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=15.116 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0xd8dff6c49e86b2fb      0t0  TCP 192.168.1.127:56618->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=16.167 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0xd8dff6c49e86b2fb      0t0  TCP 192.168.1.127:56618->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=17.327 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0xd8dff6c49e86b2fb      0t0  TCP 192.168.1.127:56618->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=18.491 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0xd8dff6c49e86b2fb      0t0  TCP 192.168.1.127:56618->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=19.662 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0xd8dff6c49e86b2fb      0t0  TCP 192.168.1.127:56618->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=20.816 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0xd8dff6c49e86b2fb      0t0  TCP 192.168.1.127:56618->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=21.971 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0xd8dff6c49e86b2fb      0t0  TCP 192.168.1.127:56618->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=23.137 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0xd8dff6c49e86b2fb      0t0  TCP 192.168.1.127:56618->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=24.31 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0xd8dff6c49e86b2fb      0t0  TCP 192.168.1.127:56618->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=25.467 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0xd8dff6c49e86b2fb      0t0  TCP 192.168.1.127:56618->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=26.637 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0xd8dff6c49e86b2fb      0t0  TCP 192.168.1.127:56618->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=27.806 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0xd8dff6c49e86b2fb      0t0  TCP 192.168.1.127:56618->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=28.966 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0xd8dff6c49e86b2fb      0t0  TCP 192.168.1.127:56618->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=30.137 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0xd8dff6c49e86b2fb      0t0  TCP 192.168.1.127:56618->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=31.292 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0xd8dff6c49e86b2fb      0t0  TCP 192.168.1.127:56618->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=32.449 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0xd8dff6c49e86b2fb      0t0  TCP 192.168.1.127:56618->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=33.615 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0xd8dff6c49e86b2fb      0t0  TCP 192.168.1.127:56618->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=34.782 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+elapsed_s=35.936 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+elapsed_s=37.101 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+elapsed_s=38.237 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+elapsed_s=39.359 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+elapsed_s=40.521 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+elapsed_s=41.683 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+elapsed_s=42.847 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+elapsed_s=44.011 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+elapsed_s=45.182 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+elapsed_s=46.345 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+elapsed_s=47.512 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+elapsed_s=48.665 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+elapsed_s=49.791 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+elapsed_s=50.947 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+elapsed_s=52.099 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+elapsed_s=53.252 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+elapsed_s=54.424 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+elapsed_s=55.583 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+elapsed_s=56.752 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+elapsed_s=57.925 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+elapsed_s=59.081 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+elapsed_s=60.254 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+elapsed_s=61.418 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+elapsed_s=62.59 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+elapsed_s=63.755 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+elapsed_s=64.908 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0x3f64657392ec06f8      0t0  TCP 192.168.1.127:56625->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=66.075 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0x3f64657392ec06f8      0t0  TCP 192.168.1.127:56625->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=67.227 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0x3f64657392ec06f8      0t0  TCP 192.168.1.127:56625->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=68.285 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0x3f64657392ec06f8      0t0  TCP 192.168.1.127:56625->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=69.448 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0x3f64657392ec06f8      0t0  TCP 192.168.1.127:56625->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=70.57 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0x3f64657392ec06f8      0t0  TCP 192.168.1.127:56625->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=71.605 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0x3f64657392ec06f8      0t0  TCP 192.168.1.127:56625->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=72.766 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0x3f64657392ec06f8      0t0  TCP 192.168.1.127:56625->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=73.855 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0x3f64657392ec06f8      0t0  TCP 192.168.1.127:56625->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=75.017 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0x3f64657392ec06f8      0t0  TCP 192.168.1.127:56625->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=76.174 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0x3f64657392ec06f8      0t0  TCP 192.168.1.127:56625->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=77.342 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0x3f64657392ec06f8      0t0  TCP 192.168.1.127:56625->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=78.498 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0x3f64657392ec06f8      0t0  TCP 192.168.1.127:56625->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=79.671 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0x3f64657392ec06f8      0t0  TCP 192.168.1.127:56625->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=80.829 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0x3f64657392ec06f8      0t0  TCP 192.168.1.127:56625->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=81.912 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0x3f64657392ec06f8      0t0  TCP 192.168.1.127:56625->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=83.082 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0x3f64657392ec06f8      0t0  TCP 192.168.1.127:56625->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=84.246 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0x3f64657392ec06f8      0t0  TCP 192.168.1.127:56625->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=85.416 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0x3f64657392ec06f8      0t0  TCP 192.168.1.127:56625->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=86.572 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0x3f64657392ec06f8      0t0  TCP 192.168.1.127:56625->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=87.581 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0x3f64657392ec06f8      0t0  TCP 192.168.1.127:56625->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=88.732 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0x3f64657392ec06f8      0t0  TCP 192.168.1.127:56625->20.205.243.168:443 (ESTABLISHED)
+elapsed_s=89.83 lsof_exit=0
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+corrald 1141 jirathip   13u  IPv4 0x2c615328c307b584      0t0  TCP 127.0.0.1:56609 (LISTEN)
+corrald 1141 jirathip   14u  IPv4 0x1f97f0dc86654f2d      0t0  TCP 127.0.0.1:56609->127.0.0.1:56617 (ESTABLISHED)
+corrald 1141 jirathip   17u  IPv4 0x3f64657392ec06f8      0t0  TCP 192.168.1.127:56625->20.205.243.168:443 (ESTABLISHED)

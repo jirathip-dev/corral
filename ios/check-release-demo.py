@@ -806,7 +806,8 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # 2026-09-15 #551 r3: the retained-idle-row bob regression
     # (testWarmReturnRetainedIdleRowNeverBobsWhileVerifiedIdleRowAnimates) +
     # the seeded idle-state fixture parameter; re-pinned.
-    "823a89974d2e06567a20c897bad5f8776faa8e9cb3c04fc399a36c8e93b3b6f3"
+    # #556: production WorkspaceLine bound/unbound raster regression.
+    "bb724b4df8a827342c6e579deaf093350170cc7336c7009f22c0054846e20589"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

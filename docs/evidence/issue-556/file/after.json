@@ -1,0 +1,93 @@
+{
+  "agents": {
+    "herdr:pane:p556": {
+      "agent_id": "herdr:pane:p556",
+      "attachment": {
+        "kind": "herdr-pane",
+        "ref": "p556"
+      },
+      "capabilities": [
+        "read_tail",
+        "read_diff"
+      ],
+      "display_name": "github-fixture",
+      "host": "3EMn8/jtrTgMM4giE0lE7hYY+SBK6Hd2eKYk8CRr0gg=",
+      "parent_id": null,
+      "reason": null,
+      "seq": 1,
+      "source": "herdr",
+      "state": "idle",
+      "title": "Fictional GitHub binding evidence",
+      "tool": "opencode",
+      "ts": 1789579568867,
+      "waiting_on": null,
+      "workspace": {
+        "ahead": 0,
+        "behind": 0,
+        "branch": "dependabot/cargo/rust-dependencies-f82fc923d5",
+        "ci_status": "success",
+        "dirty": false,
+        "head_sha": "74f42255d96a40a51c4c896bfd857a0bcf7f2719",
+        "head_subject": "Fictional #556 lane",
+        "issues": [],
+        "pr_match_source": "branch",
+        "pr_number": 525,
+        "repo": "repo",
+        "worktree_path": "/private/tmp/g556-akn17vmq/repo"
+      }
+    },
+    "herdr:pane:p557": {
+      "agent_id": "herdr:pane:p557",
+      "attachment": {
+        "kind": "herdr-pane",
+        "ref": "p557"
+      },
+      "capabilities": [
+        "read_tail",
+        "read_diff"
+      ],
+      "display_name": "unbound-fixture",
+      "host": "3EMn8/jtrTgMM4giE0lE7hYY+SBK6Hd2eKYk8CRr0gg=",
+      "parent_id": null,
+      "reason": null,
+      "seq": 1,
+      "source": "herdr",
+      "state": "idle",
+      "title": "Fictional GitHub binding evidence",
+      "tool": "opencode",
+      "ts": 1789579568869,
+      "waiting_on": null,
+      "workspace": {
+        "ahead": 0,
+        "behind": 0,
+        "branch": "unbound-556-peer",
+        "ci_status": null,
+        "dirty": false,
+        "head_sha": "74f42255d96a40a51c4c896bfd857a0bcf7f2719",
+        "head_subject": "Fictional #556 lane",
+        "issues": [],
+        "pr_number": null,
+        "repo": "repo",
+        "worktree_path": "/private/tmp/g556-akn17vmq/worktrees/repo/unbound"
+      }
+    }
+  },
+  "epoch": "ab7fd85a129218f330d3df10e3d71b47",
+  "generated_at": 1789579661593,
+  "git_plane_alive": true,
+  "git_plane_backlog": false,
+  "git_plane_last_event_age_ms": 171,
+  "git_plane_skipped": 0,
+  "git_worktree_facts": {
+    "/private/tmp/g556-akn17vmq/repo": {
+      "fact_age_ms": 32131,
+      "stale": false
+    },
+    "/private/tmp/g556-akn17vmq/worktrees/repo/unbound": {
+      "fact_age_ms": 2122,
+      "stale": false
+    }
+  },
+  "rev": 2,
+  "schema_version": 5
+}

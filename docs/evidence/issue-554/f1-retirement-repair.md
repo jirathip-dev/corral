@@ -46,13 +46,63 @@ that attribution is recorded in `.report.md`.
 | `ios/FleetNotifier/Profiles/HostStreamCoordinator.swift:719` | `refreshAll(profiles:)`'s per-host task re-checks `self.urlSession === client.session` before the first request, same reason (`"transport retired during refresh"`). |
 | `ios/FleetNotifier/Profiles/HostStreamCoordinator.swift:377-392` | `adoptTransportSession(_:)` documented as both halves: the startLive adoption and the retirement repair. |
 
-Because the repair lives inside the one function that invalidates, an
-invalidated session cannot remain any live-path dispatch's transport: the
-coordinator can never be left holding one, and a dispatch that captured a
-client earlier refuses to create its task once the transport has moved on.
-`invalidateAndCancel` appears exactly once in production source (that one
-function) — verified with `rg -n "invalidateAndCancel" ios/FleetNotifier/`
-→ one hit, `AppModel.swift:2769`.
+**RETRACTED (round 3).** This file said here that "an invalidated session cannot
+remain any live-path dispatch's transport … a dispatch that captured a client
+earlier refuses to create its task once the transport has moved on", i.e. that no
+window remained. That was FALSE, and the round-2 reviewer disproved it by
+execution at this very head (`1bcdd24`, exit 65, 2/2 — see the ROUND 3 record
+below). The repair is necessary and was verified correct, but it is not
+sufficient: it fixes WHO HOLDS the transport, not WHEN a task is created on it.
+`invalidateAndCancel` still appears exactly once in production source (that one
+function) — that part stands.
+
+## ROUND 3 — the window is the AWAIT HOP between a guard and the creation
+
+The round-2 reviewer ran the production route (220 jittered
+`.active`/`.background` cycles plus `retryHostConnection(secondaryHost)` on two
+pinned hosts) at `1bcdd24` and aborted the process (exit 65, 2/2) with two
+stacks, both from live-path code:
+
+    FleetStore.connect → CorraldClient.stream → URLSession.bytes(for:) → -[__NSURLSessionLocal taskForClassInfo:]
+    CorraldClient.fetchHostKey(within:) → fetchHostKey() → URLSession.data(for:) → same
+
+Controls from the same review: `42ca305` exits 65 as well (this defect was never
+closed, not reopened), and pure scene flapping with NO retry exits 0 (the
+trigger needs a window-reachable dispatch — the Settings ▸ Retry route).
+
+**Why no caller-side guard can close it** (the reviewer's point, and the reason
+round 2's two guards are "correct but not the full set"):
+the creation is not performed by the caller. The throwing frames of the abort
+stack are `URLSession.bytes(for:)` → `withTaskCancellationHandler`'s operation →
+`-[__NSURLSessionLocal taskForClassInfo:]`, i.e. the task is created one await
+hop AFTER the call, on another executor. A guard evaluated in the caller's step
+can therefore never be atomic with it, and `Task.cancel()` is cooperative: a
+cancelled owner that is already past its last guard still creates its task.
+
+**The four sites the reviewer named** (all of them, not "the two that can
+defer" — that round-2 wording understated the set):
+
+| # | Site | Why it was still open |
+| --- | --- | --- |
+| 1 | `FleetStore.swift:838-839` — `streamTask = Task { await client.stream(…) }` | the client is captured at `connect()` and the reconnect loop re-creates a transport task on every rung; cancellation is cooperative |
+| 2 | `CorraldClient.swift:200` — `session.bytes(for:)` | the abort site of stack #1 |
+| 3 | `CorraldClient.swift:126` — `session.data(for:)` | the abort site of stack #2, reached after `HostStreamCoordinator.swift:496` / `AppModel.swift:1327` crossed their guards |
+| 4 | `HostStreamCoordinator.swift:505` — `openStream` after `await fetchHostKey(within:)` | funnels into site 1 |
+
+**The fix (round 3 — the round-3 head SHA is recorded in `.report.md`)**: the
+retirement WAITS. `FleetStore.disconnect()` already returns its stream task (its
+return value used to be discarded), and `HostStreamCoordinator.stopAll()` now
+returns every owner it cancelled (per-host stream, preflight ladder, refresh);
+`AppModel.liveTransportOwners()` collects those plus the ACTIVE host's stream
+task, its preflight ladder and the registered life-path tasks
+(`refreshFleet`'s two tasks are registered in `lifecycleTasks` for exactly this),
+and `retireLiveTransport(_:owners:)` cancels them, waits (bounded, 2 s, so a
+wedged owner cannot hang the lifecycle) for their termination, and only then
+invalidates. Repair-first (round 2) plus MainActor-serialized owner creation is
+what makes the set complete: an owner either exists before the retirement step
+(and is collected and awaited) or resolves its transport after the repair.
+`CorraldClient.swift` and `FleetStore.swift`'s rung loop needed no edit — the
+rungs are covered because the stream task itself is awaited.
 
 ## The new pin (the missing CLASS: task creation, not completion delivery)
 

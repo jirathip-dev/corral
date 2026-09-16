@@ -13,9 +13,25 @@ P3  raise the production preflight bound to 60s         -> (c) RED
 P4  shrink the live session's stream timeout            -> (d) RED
 P5  drop the live-session identity guard on a completion
     path (candidate)                                    -> (b) RED
-P6  retire the live transport WITHOUT repairing the holder that still has it
-    installed in the coordinator (the round-1 behaviour the reviewer's F1
-    found)                                              -> (F1) RED, by ABORT
+
+The battery also carries the round-3 boundary-stress scenario in EVERY leg
+(`testBoundaryJitterWithRetryNeverCreatesATaskOnARetiredTransport` = the
+reviewer's production route, `testBoundaryJitterWithoutRetryIsClean` = its
+scoping control), so a mutation that breaks the live-session seam while a
+boundary dispatch is in flight shows up here too.
+
+Round 2's P6 (retire WITHOUT repairing the holder) was REMOVED in round 3, and
+that removal is itself a finding: the round-3 retirement defers
+`invalidateAndCancel()` until the pre-boundary owners terminate, so the
+holder defect no longer reproduces as an abort — a post-boundary dispatch runs
+on a doomed-but-still-valid session and is cancelled by the drained
+invalidation instead. The round-3 defect class (a task created one await hop
+after a guard) has NO deterministic RED at this seam: it manifests only as the
+nondeterministic `NSGenericException` abort, which the round-2 reviewer
+reproduced by execution at `1bcdd24` (2/2, exit 65 — see
+`f1-retirement-repair.md`) and which five of my own stress recipes (up to 600
+jittered cycles) did NOT reproduce. Keeping a probe whose expected RED is
+"usually" would be a false claim, so it is dropped rather than kept.
 
 Run via bash docs/evidence/issue-554/run-probes.sh (one /tmp/n.lock invocation).
 """
@@ -41,6 +57,8 @@ battery = [
     'LiveSessionTransportTests/testNeverRespondingHostKeyFailsWithinTheBoundAndEngagesTheLadder',
     'LiveSessionTransportTests/testRapidPhaseFlappingLeavesOneLiveSessionAndNoLeakedTasks',
     'LiveSessionTransportTests/testRetryDuringRetirementNeverDispatchesOnTheRetiredTransport',
+    'LiveSessionTransportTests/testBoundaryJitterWithRetryNeverCreatesATaskOnARetiredTransport',
+    'LiveSessionTransportTests/testBoundaryJitterWithoutRetryIsClean',
 ]
 BATTERY_SIZE = len(battery)
 EXPECTED_GREEN = 'Executed %d tests, with 0 failures' % BATTERY_SIZE
@@ -107,13 +125,11 @@ mutations = [
      '    }',
      ['LiveSessionTransportTests/testForegroundCycleInstallsANewSessionAndInvalidatesTheRetiredOne']),
     ('P2-no-invalidate', 'ios/FleetNotifier/App/AppModel.swift',
-     '        coordinator?.adoptTransportSession(session)\n'
-     '        transport.invalidateAndCancel()',
-     '        // Candidate defect: retire without invalidating the transport, so\n'
-     '        // the retired session keeps its pooled connections and the\n'
-     '        // identity/leak tests cannot observe a teardown.\n'
-     '        coordinator?.adoptTransportSession(session)\n'
-     '        _ = transport',
+     '            transport.invalidateAndCancel()',
+     '            // Candidate defect: retire without invalidating the transport,\n'
+     '            // so the retired session keeps its pooled connections and the\n'
+     '            // identity/leak tests cannot observe a teardown.\n'
+     '            _ = transport',
      ['LiveSessionTransportTests/testForegroundCycleInstallsANewSessionAndInvalidatesTheRetiredOne',
       'LiveSessionTransportTests/testRapidPhaseFlappingLeavesOneLiveSessionAndNoLeakedTasks']),
     ('P3-slow-preflight', 'ios/FleetNotifier/Profiles/HostStreamCoordinator.swift',
@@ -130,18 +146,15 @@ mutations = [
      '                guard !Task.isCancelled, self.isCurrent(context),\n'
      '                      self.isLiveTransport(transport) else { return }\n'
      '                self.banner = .error("fleet_refresh",',
-     '                guard !Task.isCancelled, self.isCurrent(context) else { return }\n'
+     '                // Candidate defect: apply a retired session\'s failure to\n'
+     '                // state — the completion path checks neither cancellation\n'
+     '                // nor transport identity (round 3 registers the pull\n'
+     '                // refresh as a life-path owner, so cancellation alone would\n'
+     '                // otherwise mask this candidate and the probe would stop\n'
+     '                // discriminating).\n'
+     '                guard self.isCurrent(context) else { return }\n'
      '                self.banner = .error("fleet_refresh",',
      ['LiveSessionTransportTests/testCompletionFromTheRetiredSessionIsNeverApplied']),
-    ('P6-no-repair', 'ios/FleetNotifier/App/AppModel.swift',
-     '        coordinator?.adoptTransportSession(session)\n'
-     '        transport.invalidateAndCancel()',
-     '        // Candidate defect: retire the transport WITHOUT repairing the\n'
-     '        // holder that still has it installed (the round-1 behaviour: the\n'
-     '        // coordinator keeps the invalidated session and a live-path retry\n'
-     '        // creates a task on it -> NSGenericException abort).\n'
-     '        transport.invalidateAndCancel()',
-     ['LiveSessionTransportTests/testRetryDuringRetirementNeverDispatchesOnTheRetiredTransport']),
 ]
 for label, relative, old, new, expected in mutations:
     path = scratch / relative

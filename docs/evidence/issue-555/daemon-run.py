@@ -31,12 +31,18 @@ if not args.locked:
         child.wait(timeout=10)
         sys.exit(124)
 
-rows = subprocess.check_output(['ps', '-axo', 'pid,comm'], text=True).splitlines()
-heavy = [r for r in rows if len(r.split()) > 1 and Path(r.split()[1]).name in
-         ('cargo', 'rustc', 'xcodebuild', 'swift-frontend')]
-if heavy:
-    print('BLOCKED sibling heavy processes:', heavy, flush=True)
-    sys.exit(75)
+deadline = time.monotonic() + 180
+while True:
+    rows = subprocess.check_output(['ps', '-axo', 'pid,comm'], text=True).splitlines()
+    heavy = [r for r in rows if len(r.split()) > 1 and Path(r.split()[1]).name in
+             ('cargo', 'rustc', 'xcodebuild', 'swift-frontend')]
+    if not heavy:
+        break
+    print('WAIT sibling heavy processes:', heavy, flush=True)
+    if time.monotonic() >= deadline:
+        print('BLOCKED sibling heavy deadline (180s)', flush=True)
+        sys.exit(75)
+    time.sleep(5)
 if not TARGET.exists():
     TARGET.mkdir()
     (TARGET / '.g555-owned').write_text(str(ROOT) + '\n')
@@ -98,7 +104,9 @@ if args.hog and raw_exit == 0:
                    buffer_age_p50_ms=ages[255], buffer_age_p99_ms=ages[506],
                    buffer_age_max_ms=ages[-1], bytes_min=min(s['bytes'] for s in samples),
                    bytes_max=max(s['bytes'] for s in samples))
-    receipt['budget_pass'] = elapsed[255] < 20 and elapsed[506] < 50
+    receipt['revisions_seen'] = sorted({s['rev'] for s in samples})
+    receipt['budget_pass'] = (elapsed[255] < 20 and elapsed[506] < 50
+                              and len(receipt['revisions_seen']) > 1)
 Path(f'/tmp/g555-{args.label}-receipt.json').write_text(json.dumps(receipt, indent=2)+'\n')
 print(json.dumps(receipt, indent=2), flush=True)
 if args.budget and not receipt.get('budget_pass', False):

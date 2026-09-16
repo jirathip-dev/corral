@@ -408,7 +408,27 @@ async fn async_main(socket_path: PathBuf, addr: SocketAddr, cors_origins: Vec<St
         config_dir = %config_dir().display(),
         "corrald listening; auth plane live: GET /host-key, POST /register"
     );
-    axum::serve(listener, app).await.expect("axum server");
+    // One dedicated HTTP executor, independent of herdr/plane tasks and the
+    // publisher. Even a CPU-bound plane future cannot occupy its run queue.
+    // Re-register the socket with this executor's reactor, not the old one.
+    let listener = listener.into_std().expect("HTTP listener transfer");
+    let (http_done, http_finished) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("corral-http".into())
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("HTTP runtime")
+                .block_on(async move {
+                    let listener = tokio::net::TcpListener::from_std(listener)
+                        .expect("HTTP listener registration");
+                    axum::serve(listener, app).await.expect("axum server");
+                });
+            let _ = http_done.send(());
+        })
+        .expect("HTTP thread");
+    http_finished.await.expect("HTTP executor");
 }
 
 /// WS3 F4: supervisor for the integrator task, mirroring the herdr

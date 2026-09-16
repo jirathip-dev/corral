@@ -39,26 +39,24 @@
 
 pub(crate) mod cors;
 pub mod drive;
+mod events;
 pub mod issues;
 pub(crate) mod repo;
 
-use std::convert::Infallible;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::Instant;
 
 use axum::Router;
 use axum::extract::{Query, State};
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::Json;
-use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::http::{StatusCode, header};
+use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
-use futures::stream::{self, Stream, StreamExt};
 use serde::Deserialize;
 use tracing::info;
 
 use crate::adapters::Adapter;
 use crate::auth::AuthPlane;
-use crate::core::model::Resume;
+
 use crate::core::provenance;
 use crate::core::store::Store;
 use crate::push::payload::{
@@ -67,9 +65,8 @@ use crate::push::payload::{
 };
 
 use self::drive::{NoopAdapter, ReplayTable, drive};
+use self::events::events;
 
-/// Keepalive comment cadence so idle connections stay alive through NATs.
-const KEEPALIVE: Duration = Duration::from_secs(15);
 /// Default / cap for one `/history` page.
 const HISTORY_DEFAULT_LIMIT: usize = 1000;
 const HISTORY_MAX_LIMIT: usize = 5000;
@@ -184,103 +181,21 @@ async fn history(
     Json(serde_json::json!({ "events": events }))
 }
 
-async fn snapshot(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    let snap = state.store.snapshot().await;
-    Json(wire_value(&state.store.epoch(), &snap))
-}
-
-/// SSE stream. The first frame is either a full `snapshot` or a `delta`
-/// resume; afterwards every coalesced delta is pushed live.
-async fn events(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let store = state.store.clone();
-    let requested_rev = headers
-        .get("last-event-id")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<u64>().ok());
-    let requested_epoch = headers.get("corral-epoch").and_then(|v| v.to_str().ok());
-    // Epoch-aware clients (iOS #450) name the daemon lifetime their cursor
-    // belongs to; a stale or `unknown` epoch forces a full authoritative
-    // snapshot inside `resume_from_epoch`. Legacy clients omit the header
-    // and keep revision-only resume exactly as before.
-    let epoch = store.epoch();
-
-    // Subscribe BEFORE resolving the cursor: any delta flushed in between is
-    // still delivered (skipped below when already covered by the initial
-    // payload), so no window is ever missed.
-    let rx = store.subscribe();
-
-    // Live: cursor is current — emit nothing (the SSE keep-alive suffices).
-    // A fabricated empty delta would look like a state change to clients.
-    let (initial, live_from_rev) = match store
-        .resume_from_epoch(requested_rev, requested_epoch)
-        .await
-    {
-        Resume::Snapshot(snap) => {
-            info!(rev = snap.rev, "SSE client joined with full snapshot");
-            (
-                vec![delta_event("snapshot", snap.rev, &epoch, &snap)],
-                snap.rev,
-            )
-        }
-        Resume::Deltas {
-            deltas,
-            live_from_rev,
-        } => {
-            info!(replayed = deltas.len(), "SSE client resumed");
-            (
-                deltas
-                    .iter()
-                    .map(|d| delta_event("delta", d.rev, &epoch, d))
-                    .collect(),
-                live_from_rev,
-            )
-        }
-        Resume::Live { rev } => (Vec::new(), rev),
-    };
-
-    let live = stream::unfold(rx, move |mut rx| {
-        let store = store.clone();
-        let epoch = epoch.clone();
-        async move {
-            loop {
-                match rx.recv().await {
-                    Ok(delta) if delta.rev <= live_from_rev => continue,
-                    Ok(delta) => {
-                        return Some((Ok(delta_event("delta", delta.rev, &epoch, &delta)), rx));
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        // Client fell too far behind: full resnapshot.
-                        let snap = store.snapshot().await;
-                        return Some((Ok(delta_event("snapshot", snap.rev, &epoch, &snap)), rx));
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
-                }
-            }
-        }
-    });
-
-    let stream = stream::iter(initial.into_iter().map(Ok)).chain(live);
-    Sse::new(stream).keep_alive(KeepAlive::new().interval(KEEPALIVE))
-}
-
-fn delta_event(kind: &str, rev: u64, epoch: &str, data: &impl serde::Serialize) -> Event {
-    Event::default()
-        .event(kind)
-        .id(rev.to_string())
-        .json_data(wire_value(epoch, data))
-        .expect("delta/snapshot serializes")
-}
-
-fn wire_value(epoch: &str, data: &impl serde::Serialize) -> serde_json::Value {
-    let mut value = serde_json::to_value(data).expect("delta/snapshot serializes");
-    value
-        .as_object_mut()
-        .expect("delta/snapshot wire value is an object")
-        .insert("epoch".to_string(), serde_json::json!(epoch));
-    value
+async fn snapshot(State(state): State<Arc<AppState>>) -> Response {
+    let started = Instant::now();
+    let publication = state.store.published();
+    let response = (
+        [(header::CONTENT_TYPE, "application/json")],
+        publication.body.as_ref().clone(),
+    )
+        .into_response();
+    tracing::info!(
+        serve_ms = started.elapsed().as_secs_f64() * 1000.0,
+        buffer_age_ms = publication.captured_at.elapsed().as_secs_f64() * 1000.0,
+        rev = publication.rev,
+        "snapshot served"
+    );
+    response
 }
 
 /// Max accepted skew between a signed device-token request's `ts` and the

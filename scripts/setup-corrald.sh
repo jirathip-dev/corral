@@ -127,6 +127,28 @@ LAUNCHD_PATH="${LAUNCHD_PATH//&/&amp;}"
 LAUNCHD_PATH="${LAUNCHD_PATH//</&lt;}"
 LAUNCHD_PATH="${LAUNCHD_PATH//>/&gt;}"
 
+# #555: launchd's ProcessType decides the scheduling tier. All three emitted
+# agents run at Interactive so a host loaded by the rest of the fleet cannot
+# starve the daemon whose only job is to answer the phone quickly. The
+# pre-existing values are snapshotted here — before any rewrite — so a re-run
+# can report the migration instead of leaving the owner a manual plutil.
+# Missing or older plists without the key snapshot as "".
+snapshot_process_type() { # $1=plist path -> prints its ProcessType, or nothing
+  [[ -f "$1" ]] || return 0
+  plutil -extract ProcessType raw -o - "$1" 2>/dev/null || true
+}
+OLD_DAEMON_PROCESS_TYPE="$(snapshot_process_type "$PLIST")"
+OLD_UPDATE_PROCESS_TYPE="$(snapshot_process_type "$UPDATE_PLIST")"
+OLD_ROTATE_PROCESS_TYPE="$(snapshot_process_type "$ROTATE_PLIST")"
+
+# Report a scheduling-tier migration on re-run (Background -> Interactive).
+# Silent when the value was already Interactive, or when there was no plist.
+report_process_type_migration() { # $1=previous value, $2=agent label
+  local old="$1" label="$2"
+  [[ -n "$old" && "$old" != "Interactive" ]] || return 0
+  echo "   migrated $label ProcessType: $old -> Interactive (scheduling priority raised)"
+}
+
 echo ">> Installing launchd agent: $PLIST"
 # bootout any previously-loaded job FIRST — launchd does NOT re-read a
 # rewritten plist on kickstart, so a re-run with changed --bind would
@@ -152,7 +174,7 @@ cat > "$PLIST" <<PLIST_EOF
   <key>WorkingDirectory</key><string>$REPO_DIR</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>ProcessType</key><string>Background</string>
+  <key>ProcessType</key><string>Interactive</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
@@ -172,6 +194,7 @@ cat > "$PLIST" <<PLIST_EOF
 </plist>
 PLIST_EOF
 plutil -lint "$PLIST" >/dev/null
+report_process_type_migration "$OLD_DAEMON_PROCESS_TYPE" "$LABEL"
 
 echo ">> Loading under launchd..."
 # bootstrap is the only way to apply a (possibly changed) plist; a genuine
@@ -227,7 +250,7 @@ cat > "$UPDATE_PLIST" <<UPDATE_EOF
   <dict>
     <key>Minute</key><integer>17</integer>
   </dict>
-  <key>ProcessType</key><string>Background</string>
+  <key>ProcessType</key><string>Interactive</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
@@ -240,6 +263,7 @@ cat > "$UPDATE_PLIST" <<UPDATE_EOF
 </plist>
 UPDATE_EOF
 plutil -lint "$UPDATE_PLIST" >/dev/null
+report_process_type_migration "$OLD_UPDATE_PROCESS_TYPE" "com.corral.corrald-update"
 if launchctl bootstrap "gui/$(id -u)" "$UPDATE_PLIST" 2>&1 \
   || { sleep 1; launchctl bootstrap "gui/$(id -u)" "$UPDATE_PLIST" 2>&1; }; then
   echo "   ✓ update agent loaded (checks hourly at :17)"
@@ -271,7 +295,7 @@ cat > "$ROTATE_PLIST" <<ROTATE_EOF
   <key>WorkingDirectory</key><string>$REPO_DIR</string>
   <key>RunAtLoad</key><true/>
   <key>StartInterval</key><integer>1800</integer>
-  <key>ProcessType</key><string>Background</string>
+  <key>ProcessType</key><string>Interactive</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>CORRAL_CONFIG_DIR</key>
@@ -284,6 +308,7 @@ cat > "$ROTATE_PLIST" <<ROTATE_EOF
 </plist>
 ROTATE_EOF
 plutil -lint "$ROTATE_PLIST" >/dev/null
+report_process_type_migration "$OLD_ROTATE_PROCESS_TYPE" "$ROTATE_LABEL"
 if launchctl bootstrap "gui/$(id -u)" "$ROTATE_PLIST" 2>&1 \
   || { sleep 1; launchctl bootstrap "gui/$(id -u)" "$ROTATE_PLIST" 2>&1; }; then
   echo "   ✓ log-rotation agent loaded (checks every 30 min; 50 MiB cap, 2 gz generations)"

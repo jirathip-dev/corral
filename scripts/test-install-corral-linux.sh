@@ -147,11 +147,57 @@ assert_log_has() { # $1=log file, $2=substring
 refute_log_has() {
   if grep -Fq -- "$2" "$1"; then fail "log $1 unexpectedly has: '$2'"; fi
 }
-assert_unit_has() {
-  grep -Fq -- "$1" "$UNIT_FILE" || fail "unit file missing: '$1'"
+# $2 defaults to the fresh-install unit; the #555 migration scenario below
+# passes its own unit file explicitly.
+assert_unit_has() { # $1=substring, $2=unit file (default $UNIT_FILE)
+  grep -Fq -- "$1" "${2:-$UNIT_FILE}" || fail "unit file ${2:-$UNIT_FILE} missing: '$1'"
 }
 refute_unit_has() {
-  if grep -Fq -- "$1" "$UNIT_FILE"; then fail "unit file unexpectedly has: '$1'"; fi
+  if grep -Fq -- "$1" "${2:-$UNIT_FILE}"; then fail "unit file ${2:-$UNIT_FILE} unexpectedly has: '$1'"; fi
+}
+# #555: the [Service] section must be exactly the pre-#555 text plus the two
+# scheduling directives — that is what keeps the hardening block and every
+# other directive byte-identical, and it is compared verbatim (not key by key).
+# $1 = the expected ExecStart line, $2 = unit file.
+assert_service_block() {
+  local exec_start="$1" unit="$2" home="${3:-$FAKE_HOME}" expected actual block
+  # A heredoc inside $(...) does not parse under bash 3.2 (macOS /bin/bash), so
+  # the expected text is read into a variable directly. The emitter expands
+  # $HOME and $CONFIG_DIR inside its own heredoc, hence the placeholders.
+  IFS= read -r -d '' block <<'EOF' || true
+[Service]
+Type=simple
+@EXEC_START@
+# #555: answer under load — Nice/CPUWeight raise the daemon's scheduling weight
+# and CPU share while the rest of the host is saturated (see the header).
+Nice=-5
+CPUWeight=500
+Restart=on-failure
+RestartSec=2
+# The daemon shells out to git/gh for the repo/GitHub planes; give the user
+# service a deterministic PATH instead of the manager's minimal default.
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=CORRAL_CONFIG_DIR=@CONFIG_DIR@
+# Hardening: the daemon needs only its own files under @HOME@ (config), the
+# herdr socket, loopback HTTP, and outbound HTTPS for the gh plane. It must
+# keep writing @CONFIG_DIR@, so ProtectHome/ProtectSystem are deliberately not
+# used; NoNewPrivileges + PrivateTmp + the seccomp-ish flags below stay valid
+# for unprivileged user managers.
+NoNewPrivileges=true
+PrivateTmp=true
+RestrictSUIDSGID=true
+ProtectClock=true
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+EOF
+  expected="${block%$'\n'}"
+  expected="${expected//@EXEC_START@/$exec_start}"
+  expected="${expected//@CONFIG_DIR@/$CONFIG_DIR}"
+  expected="${expected//@HOME@/$home}"
+  actual="$(cat "$unit")"
+  [[ "$actual" == *"$expected"* ]] \
+    || fail "[Service] block of $unit is not the #555 contract (see $unit)"
 }
 
 # ---- fixture release bundles ------------------------------------------------
@@ -180,6 +226,16 @@ assert_unit_has "PrivateTmp=true"
 assert_unit_has "WantedBy=default.target"
 refute_unit_has "ProtectHome="
 refute_unit_has "ProtectSystem="
+# #555: the daemon must not sit at the bottom of the scheduling tier, and the
+# hardening block must stay byte-identical — assert_service_block compares the
+# whole [Service] section verbatim against the pre-#555 text plus the two new
+# scheduling directives.
+assert_unit_has "Nice=-5"
+assert_unit_has "CPUWeight=500"
+refute_unit_has "CPUSchedulingPolicy="
+assert_service_block \
+  "ExecStart=$INSTALL_ROOT/release/corrald --socket $FAKE_HOME/.config/herdr/herdr.sock --bind 127.0.0.1 --port 8474" \
+  "$UNIT_FILE" "$FAKE_HOME"
 refute_log_has "$SYSTEMCTL_LOG" "restart"
 assert_log_has "$SYSTEMCTL_LOG" "enable --now corrald.service"
 assert_log_has "$CURL_LOG" "healthz probe"
@@ -194,6 +250,109 @@ if command -v systemd-analyze >/dev/null 2>&1; then
 else
   echo "skip: systemd-analyze not present on this host (ubuntu CI runs it)"
 fi
+
+# =============================================================================
+echo "== scenario: migration of a pre-#555 unit (bare, no scheduling directives) =="
+# The unit exactly as the emitter wrote it before #555 — i.e. what an existing
+# install has on disk. A re-run must migrate it, report what changed, and reach
+# the same bytes a fresh install produces. This scenario gets its own $HOME and
+# install root so the fresh/reinstall scenarios above keep their state.
+MIGRATE_HOME="$WORK/home-migrate"
+MIGRATE_INSTALL_ROOT="$MIGRATE_HOME/.local/share/corral"
+MIGRATE_UNIT_DIR="$MIGRATE_HOME/.config/systemd/user"
+MIGRATE_UNIT="$MIGRATE_UNIT_DIR/corrald.service"
+mkdir -p "$MIGRATE_UNIT_DIR" "$MIGRATE_HOME"
+cat > "$WORK/pre555-unit.template" <<'EOF'
+# corrald systemd user unit — written by setup-corrald-linux.sh.
+# Managed by scripts/install-corral.sh (install/update/uninstall). Manual
+# edits are overwritten on the next install run.
+[Unit]
+Description=Corral host daemon (corrald)
+# Bounded restart: at most 6 starts per 90s window (systemd start limit);
+# past that the unit fails and stays down until a manual reset-failed/start.
+StartLimitIntervalSec=90
+StartLimitBurst=6
+
+[Service]
+Type=simple
+ExecStart=@EXEC_START@
+Restart=on-failure
+RestartSec=2
+# The daemon shells out to git/gh for the repo/GitHub planes; give the user
+# service a deterministic PATH instead of the manager's minimal default.
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=CORRAL_CONFIG_DIR=@CONFIG_DIR@
+# Hardening: the daemon needs only its own files under @HOME@ (config), the
+# herdr socket, loopback HTTP, and outbound HTTPS for the gh plane. It must
+# keep writing @CONFIG_DIR@, so ProtectHome/ProtectSystem are deliberately not
+# used; NoNewPrivileges + PrivateTmp + the seccomp-ish flags below stay valid
+# for unprivileged user managers.
+NoNewPrivileges=true
+PrivateTmp=true
+RestrictSUIDSGID=true
+ProtectClock=true
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+EOF
+sed -e "s|@CONFIG_DIR@|$CONFIG_DIR|" \
+  -e "s|@HOME@|$MIGRATE_HOME|" \
+  -e "s|@EXEC_START@|$MIGRATE_INSTALL_ROOT/release/corrald --socket $MIGRATE_HOME/.config/herdr/herdr.sock --bind 127.0.0.1 --port 8474|" \
+  "$WORK/pre555-unit.template" > "$MIGRATE_UNIT"
+cp "$MIGRATE_UNIT" "$WORK/pre555-unit.service"
+
+TEST_UNIT_ACTIVE=0 TEST_UNIT_ENABLED=1 TEST_HEALTH_FAIL=0
+set +e
+env -i \
+  HOME="$MIGRATE_HOME" \
+  PATH="$STUB_BIN:/usr/bin:/bin" \
+  CORRAL_CONFIG_DIR="$CONFIG_DIR" \
+  CORRAL_INSTALL_DIR="$MIGRATE_INSTALL_ROOT" \
+  CORRAL_FAKE_UNAME_S="Linux" CORRAL_FAKE_UNAME_M="x86_64" \
+  CORRAL_TEST_SYSTEMCTL_LOG="$LOG_DIR/migrate-systemctl.log" \
+  CORRAL_TEST_CURL_LOG="$LOG_DIR/migrate-curl.log" \
+  CORRAL_TEST_UNIT_ACTIVE="$TEST_UNIT_ACTIVE" \
+  CORRAL_TEST_UNIT_ENABLED="$TEST_UNIT_ENABLED" \
+  CORRAL_TEST_HEALTH_FAIL="$TEST_HEALTH_FAIL" \
+  bash "$INSTALLER" --url "$BUNDLE_URL_BASE" > "$LOG_DIR/migrate.log" 2>&1
+rc=$?
+set -e
+[[ "$rc" -eq 0 ]] || { cat "$LOG_DIR/migrate.log" >&2; fail "migration install exited $rc"; }
+assert_log_has "$LOG_DIR/migrate.log" \
+  "migrated scheduling directives: Nice=unset -> -5, CPUWeight=unset -> 500"
+assert_unit_has "Nice=-5" "$MIGRATE_UNIT"
+assert_unit_has "CPUWeight=500" "$MIGRATE_UNIT"
+refute_unit_has "CPUSchedulingPolicy=" "$MIGRATE_UNIT"
+assert_service_block \
+  "ExecStart=$MIGRATE_INSTALL_ROOT/release/corrald --socket $MIGRATE_HOME/.config/herdr/herdr.sock --bind 127.0.0.1 --port 8474" \
+  "$MIGRATE_UNIT" "$MIGRATE_HOME"
+# The migration touched the scheduling directives only: nothing was removed or
+# replaced from the pre-#555 bytes, and exactly the expected lines were added.
+diff_out="$(diff "$WORK/pre555-unit.service" "$MIGRATE_UNIT" || true)"
+[[ "$(printf '%s\n' "$diff_out" | grep -c '^<')" == "0" ]] \
+  || fail "migration removed or replaced a pre-#555 line:
+$diff_out"
+added="$(printf '%s\n' "$diff_out" | grep '^> ' || true)"
+expected_block=""
+IFS= read -r -d '' expected_block <<'EOF' || true
+> # #555: answer under load — Nice/CPUWeight raise the daemon's scheduling weight
+> # and CPU share while the rest of the host is saturated (see the header).
+> Nice=-5
+> CPUWeight=500
+EOF
+expected_added="${expected_block%$'\n'}"
+[[ "$added" == "$expected_added" ]] || fail "migration added unexpected lines:
+$added"
+# A migrated install must end up byte-identical to a fresh one (only $HOME, and
+# therefore the ExecStart path, differ between the two scenarios).
+sed "s|$FAKE_HOME|@HOME@|g" "$UNIT_FILE" > "$WORK/fresh-unit.norm"
+sed "s|$MIGRATE_HOME|@HOME@|g" "$MIGRATE_UNIT" > "$WORK/migrated-unit.norm"
+cmp -s "$WORK/fresh-unit.norm" "$WORK/migrated-unit.norm" \
+  || fail "migrated unit is not byte-identical to the fresh-install unit"
+ok "pre-#555 migration: reported, scheduling-only diff, byte-identical to fresh"
 
 # =============================================================================
 echo "== scenario: idempotent reinstall (same bundle, service active) =="

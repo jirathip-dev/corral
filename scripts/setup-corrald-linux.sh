@@ -126,6 +126,28 @@ require_command curl
 
 mkdir -p "$UNIT_DIR" "$CONFIG_DIR"
 
+# #555: scheduling priority. The daemon's only job is to answer the phone
+# quickly, so it must not sit at the bottom of the scheduling tier: Nice=-5
+# raises its scheduling weight and CPUWeight=500 its CPU share while the host
+# is saturated by the rest of the fleet. A `systemd --user` manager honours
+# both without privileges; CPUSchedulingPolicy= is deliberately NOT set — it
+# needs CAP_SYS_NICE and would fail the unit for an unprivileged user manager.
+NICE_VALUE="-5"
+CPU_WEIGHT_VALUE="500"
+
+# #555: a re-run over an existing install migrates it (the unit is rendered
+# whole and rewritten only when it differs), and reports what changed so the
+# owner never has to diff unit files by hand. A pre-#555 unit has neither
+# directive, so both report as "unset". Unchanged directives report nothing.
+report_scheduling_migration() { # $1=previous Nice, $2=previous CPUWeight
+  local old_nice="${1:-unset}" old_weight="${2:-unset}" changes=""
+  [[ "$old_nice" == "$NICE_VALUE" ]] || changes="Nice=$old_nice -> $NICE_VALUE"
+  [[ "$old_weight" == "$CPU_WEIGHT_VALUE" ]] \
+    || changes="${changes:+$changes, }CPUWeight=$old_weight -> $CPU_WEIGHT_VALUE"
+  [[ -n "$changes" ]] || return 0
+  echo "   migrated scheduling directives: $changes (daemon answers under load)"
+}
+
 render_unit() {
   # Comment lines start with '#'. The daemon binary, socket, bind and port are
   # literal at install time (like the macOS plist); nothing here is user input
@@ -144,6 +166,10 @@ StartLimitBurst=6
 [Service]
 Type=simple
 ExecStart=$FROM_RELEASE --socket $HERDR_SOCKET --bind $BIND --port $PORT
+# #555: answer under load — Nice/CPUWeight raise the daemon's scheduling weight
+# and CPU share while the rest of the host is saturated (see the header).
+Nice=$NICE_VALUE
+CPUWeight=$CPU_WEIGHT_VALUE
 Restart=on-failure
 RestartSec=2
 # The daemon shells out to git/gh for the repo/GitHub planes; give the user
@@ -168,6 +194,15 @@ WantedBy=default.target
 UNIT_EOF
 }
 
+# #555: read the previous scheduling directives before the rewrite so the
+# migration can be reported (a pre-#555 unit has neither: both are "unset").
+old_nice=""
+old_cpu_weight=""
+if [[ -f "$UNIT" ]]; then
+  old_nice="$(sed -n 's/^Nice=//p' "$UNIT" | head -n 1)"
+  old_cpu_weight="$(sed -n 's/^CPUWeight=//p' "$UNIT" | head -n 1)"
+fi
+
 need_write=0
 if [[ -f "$UNIT" ]] && cmp -s "$UNIT" <(render_unit); then
   need_write=0
@@ -181,6 +216,7 @@ if [[ "$need_write" == "1" ]]; then
   chmod 0644 "$tmp_unit"
   mv -f "$tmp_unit" "$UNIT"
   echo ">> Wrote systemd user unit: $UNIT"
+  report_scheduling_migration "$old_nice" "$old_cpu_weight"
 else
   echo ">> systemd user unit unchanged: $UNIT"
 fi

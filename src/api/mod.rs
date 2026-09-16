@@ -41,6 +41,7 @@ pub(crate) mod cors;
 pub mod drive;
 mod events;
 pub mod issues;
+mod read_timing;
 pub(crate) mod repo;
 
 use std::sync::Arc;
@@ -189,12 +190,17 @@ async fn snapshot(State(state): State<Arc<AppState>>) -> Response {
         publication.body.as_ref().clone(),
     )
         .into_response();
-    tracing::info!(
-        serve_ms = started.elapsed().as_secs_f64() * 1000.0,
-        buffer_age_ms = publication.captured_at.elapsed().as_secs_f64() * 1000.0,
-        rev = publication.rev,
-        "snapshot served"
-    );
+    if let Some(timing) =
+        read_timing::SNAPSHOT.record(started.elapsed(), publication.captured_at.elapsed())
+    {
+        tracing::info!(
+            requests = timing.requests,
+            max_serve_ms = timing.serve_ms,
+            max_buffer_age_ms = timing.buffer_age_ms,
+            latest_rev = publication.rev,
+            "snapshot served"
+        );
+    }
     response
 }
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the built daemon's dedicated HTTP executor, with no live inputs."""
+"""Exercise built-daemon read readiness with no live inputs (not concurrency)."""
 import http.client
 import json
 import re

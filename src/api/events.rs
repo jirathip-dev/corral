@@ -104,13 +104,18 @@ pub(super) async fn events(State(state): State<Arc<AppState>>, headers: HeaderMa
         .map(move |(bytes, captured_at, kind, rev)| {
             if first {
                 first = false;
-                tracing::info!(
-                    serve_ms = started.elapsed().as_secs_f64() * 1000.0,
-                    buffer_age_ms = captured_at.elapsed().as_secs_f64() * 1000.0,
-                    frame_kind = kind,
-                    live_from_rev = rev,
-                    "SSE first frame served"
-                );
+                if let Some(timing) =
+                    super::read_timing::SSE_FIRST.record(started.elapsed(), captured_at.elapsed())
+                {
+                    tracing::info!(
+                        requests = timing.requests,
+                        max_serve_ms = timing.serve_ms,
+                        max_buffer_age_ms = timing.buffer_age_ms,
+                        latest_frame_kind = kind,
+                        latest_live_from_rev = rev,
+                        "SSE first frame served"
+                    );
+                }
             }
             Ok::<_, Infallible>(bytes)
         });

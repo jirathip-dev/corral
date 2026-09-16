@@ -40,6 +40,8 @@ const FOREGROUND_TICK: Duration = Duration::from_millis(250);
 /// Maximum debounce when nobody is watching: 2s from the first change,
 /// never extended by later writes. HTTP tests enforce publication within 3s
 /// (this window plus 1s for encoding/scheduling); this is not a hard OS SLA.
+/// Fast HTTP reads can therefore return data ~2s stale, not freshly flushed
+/// state. An unchanged buffer can be older still; age is not request latency.
 const BACKGROUND_TICK: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Default)]
@@ -511,7 +513,11 @@ impl Store {
         }
     }
 
-    /// Subscribe to live deltas.
+    /// Subscribe to live deltas AND wake the publication coalescer.
+    ///
+    /// Side effect: after registering the receiver, notify the coalescer so a
+    /// pending background debounce shortens to the foreground window. This is
+    /// not a passive getter and does not synchronously flush pending changes.
     pub fn subscribe(&self) -> broadcast::Receiver<Delta> {
         let rx = self.tx.subscribe();
         self.notify.notify_one();

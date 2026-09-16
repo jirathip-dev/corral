@@ -1,0 +1,497 @@
+{
+  "baseline_comparison": {
+    "cold_model": {
+      "apply_to_row": {
+        "baseline_median_ms": 48.948,
+        "head_median_ms": 25.713583454489708,
+        "head_minus_baseline_ms": -23.234416545510292
+      },
+      "dispatch": {
+        "baseline_median_ms": -1.008,
+        "head_median_ms": -0.4767084028571844,
+        "head_minus_baseline_ms": 0.5312915971428156
+      },
+      "frame_to_apply": {
+        "baseline_median_ms": 0.84,
+        "head_median_ms": 0.43249991722404957,
+        "head_minus_baseline_ms": -0.4075000827759504
+      },
+      "key_response_to_apply": {
+        "baseline_median_ms": 0.279,
+        "head_median_ms": 0.16679172404110432,
+        "head_minus_baseline_ms": -0.11220827595889571
+      },
+      "key_rtt": {
+        "baseline_median_ms": 5.656,
+        "head_median_ms": 2.6933748740702868,
+        "head_minus_baseline_ms": -2.962625125929713
+      },
+      "path_to_apply": {
+        "baseline_median_ms": 5.015,
+        "head_median_ms": 2.246083226054907,
+        "head_minus_baseline_ms": -2.768916773945093
+      },
+      "path_to_sse_200": {
+        "baseline_median_ms": 3.628,
+        "head_median_ms": 1.382708316668868,
+        "head_minus_baseline_ms": -2.245291683331132
+      },
+      "seam_entry_to_apply": {
+        "baseline_median_ms": 111.149,
+        "head_median_ms": 41.68516653589904,
+        "head_minus_baseline_ms": -69.46383346410096
+      },
+      "sse_200_to_frame": {
+        "baseline_median_ms": 0.974,
+        "head_median_ms": 0.34562498331069946,
+        "head_minus_baseline_ms": -0.6283750166893005
+      }
+    },
+    "warm_30": {
+      "apply_to_row": {
+        "baseline_median_ms": 2.894,
+        "head_median_ms": 3.272291738539934,
+        "head_minus_baseline_ms": 0.37829173853993403
+      },
+      "dispatch": {
+        "baseline_median_ms": -0.239,
+        "head_median_ms": -0.28074998408555984,
+        "head_minus_baseline_ms": -0.041749984085559855
+      },
+      "frame_to_apply": {
+        "baseline_median_ms": 3.779,
+        "head_median_ms": 4.605791764333844,
+        "head_minus_baseline_ms": 0.8267917643338443
+      },
+      "key_response_to_apply": {
+        "baseline_median_ms": 3.84,
+        "head_median_ms": 4.687916720286012,
+        "head_minus_baseline_ms": 0.8479167202860118
+      },
+      "key_rtt": {
+        "baseline_median_ms": 0.928,
+        "head_median_ms": 1.0227500461041927,
+        "head_minus_baseline_ms": 0.09475004610419269
+      },
+      "path_to_apply": {
+        "baseline_median_ms": 4.542,
+        "head_median_ms": 5.509583279490471,
+        "head_minus_baseline_ms": 0.9675832794904711
+      },
+      "path_to_sse_200": {
+        "baseline_median_ms": 0.514,
+        "head_median_ms": 0.5132083315402269,
+        "head_minus_baseline_ms": -0.0007916684597730761
+      },
+      "seam_entry_to_apply": {
+        "baseline_median_ms": 8.338,
+        "head_median_ms": 9.921708377078176,
+        "head_minus_baseline_ms": 1.5837083770781764
+      },
+      "sse_200_to_frame": {
+        "baseline_median_ms": 0.274,
+        "head_median_ms": 0.2343333326280117,
+        "head_minus_baseline_ms": -0.03966666737198832
+      }
+    },
+    "warm_300": {
+      "apply_to_row": {
+        "baseline_median_ms": 3.434,
+        "head_median_ms": 3.5067081917077303,
+        "head_minus_baseline_ms": 0.07270819170773013
+      },
+      "dispatch": {
+        "baseline_median_ms": -1.31,
+        "head_median_ms": -0.27525005862116814,
+        "head_minus_baseline_ms": 1.034749941378832
+      },
+      "frame_to_apply": {
+        "baseline_median_ms": 5.598,
+        "head_median_ms": 3.8516665808856487,
+        "head_minus_baseline_ms": -1.7463334191143511
+      },
+      "key_response_to_apply": {
+        "baseline_median_ms": 5.799,
+        "head_median_ms": 3.9340415969491005,
+        "head_minus_baseline_ms": -1.8649584030508999
+      },
+      "key_rtt": {
+        "baseline_median_ms": 2.648,
+        "head_median_ms": 1.0969582945108414,
+        "head_minus_baseline_ms": -1.5510417054891588
+      },
+      "path_to_apply": {
+        "baseline_median_ms": 8.039,
+        "head_median_ms": 4.809000063687563,
+        "head_minus_baseline_ms": -3.2299999363124368
+      },
+      "path_to_sse_200": {
+        "baseline_median_ms": 1.453,
+        "head_median_ms": 0.5693333223462105,
+        "head_minus_baseline_ms": -0.8836666776537896
+      },
+      "seam_entry_to_apply": {
+        "baseline_median_ms": 35.342,
+        "head_median_ms": 8.971999865025282,
+        "head_minus_baseline_ms": -26.370000134974717
+      },
+      "sse_200_to_frame": {
+        "baseline_median_ms": 0.589,
+        "head_median_ms": 0.2503334544599056,
+        "head_minus_baseline_ms": -0.33866654554009434
+      }
+    }
+  },
+  "baseline_provenance": {
+    "lanes": "issue 551 measurement lane, same opt-in method testWarmReturnStageMeasurements with G551_MEASURE=1, 5 fresh XCTest hosts, scenarios cold_model/warm_30/warm_300",
+    "note": "only the three scenario medians are transcribed; the raw per-sample marks stay in the #551 lane report",
+    "source": "docs/evidence/issue-551/lane-report.md (table 'Stage interval (median ms, n=5 each)')",
+    "transcribed_by": "#554 lane, 2026-09-15 \u2014 values are TRANSCRIBED from the #551 report, not measured or re-derived by #554"
+  },
+  "baseline_source": "/Users/jirathip/.herdr/worktrees/corral/impl554-live-session/docs/evidence/issue-554/baseline-551-medians.json",
+  "cold_launch_non_regression": {
+    "apply_to_row": {
+      "baseline_median_ms": 48.948,
+      "head_median_ms": 25.713583454489708,
+      "head_minus_baseline_ms": -23.234416545510292
+    },
+    "key_rtt": {
+      "baseline_median_ms": 5.656,
+      "head_median_ms": 2.6933748740702868,
+      "head_minus_baseline_ms": -2.962625125929713
+    },
+    "path_to_apply": {
+      "baseline_median_ms": 5.015,
+      "head_median_ms": 2.246083226054907,
+      "head_minus_baseline_ms": -2.768916773945093
+    },
+    "seam_entry_to_apply": {
+      "baseline_median_ms": 111.149,
+      "head_median_ms": 41.68516653589904,
+      "head_minus_baseline_ms": -69.46383346410096
+    }
+  },
+  "environment": "iPhone 16 / iOS 26.5 Simulator; URLProtocol fixture",
+  "head": "20533cd7d3c467d827f1d02381a5a43213520481",
+  "metrics": {
+    "cold_model": {
+      "apply_to_row": {
+        "median_ms": 25.713583454489708,
+        "milliseconds": [
+          36.764875054359436,
+          19.87829152494669,
+          25.713583454489708,
+          33.21920824237168,
+          18.50649993866682
+        ],
+        "n": 5
+      },
+      "dispatch": {
+        "median_ms": -0.4767084028571844,
+        "milliseconds": [
+          -0.7342083845287561,
+          -0.4767084028571844,
+          -0.6106665823608637,
+          -0.45808334834873676,
+          -0.46891672536730766
+        ],
+        "n": 5
+      },
+      "frame_to_apply": {
+        "median_ms": 0.43249991722404957,
+        "milliseconds": [
+          1.2231250293552876,
+          0.4255417734384537,
+          0.43249991722404957,
+          0.3979166503995657,
+          34.06679164618254
+        ],
+        "n": 5
+      },
+      "key_response_to_apply": {
+        "median_ms": 0.16679172404110432,
+        "milliseconds": [
+          0.6476249545812607,
+          0.16391673125326633,
+          0.16337493434548378,
+          0.16679172404110432,
+          0.19637495279312134
+        ],
+        "n": 5
+      },
+      "key_rtt": {
+        "median_ms": 2.6933748740702868,
+        "milliseconds": [
+          4.618541803210974,
+          2.4214168079197407,
+          2.6933748740702868,
+          2.5245833676308393,
+          36.06795845553279
+        ],
+        "n": 5
+      },
+      "path_to_apply": {
+        "median_ms": 2.246083226054907,
+        "milliseconds": [
+          4.531958373263478,
+          2.1086251363158226,
+          2.246083226054907,
+          2.233291743323207,
+          35.7954166829586
+        ],
+        "n": 5
+      },
+      "path_to_sse_200": {
+        "median_ms": 1.382708316668868,
+        "milliseconds": [
+          2.9632083605974913,
+          1.382708316668868,
+          1.509249908849597,
+          1.3400833122432232,
+          1.3641666155308485
+        ],
+        "n": 5
+      },
+      "seam_entry_to_apply": {
+        "median_ms": 41.68516653589904,
+        "milliseconds": [
+          58.7180417496711,
+          40.95341684296727,
+          41.68516653589904,
+          44.07879174686968,
+          36.53991664759815
+        ],
+        "n": 5
+      },
+      "sse_200_to_frame": {
+        "median_ms": 0.34562498331069946,
+        "milliseconds": [
+          0.34562498331069946,
+          0.30037504620850086,
+          0.3043333999812603,
+          0.495291780680418,
+          0.3644584212452173
+        ],
+        "n": 5
+      }
+    },
+    "warm_30": {
+      "apply_to_row": {
+        "median_ms": 3.272291738539934,
+        "milliseconds": [
+          3.428541589528322,
+          3.272291738539934,
+          3.087625140324235,
+          2.985458355396986,
+          3.9283335208892822
+        ],
+        "n": 5
+      },
+      "dispatch": {
+        "median_ms": -0.28074998408555984,
+        "milliseconds": [
+          -0.5088748876005411,
+          -0.28074998408555984,
+          -0.2702500205487013,
+          -0.2699168398976326,
+          -0.5265416111797094
+        ],
+        "n": 5
+      },
+      "frame_to_apply": {
+        "median_ms": 4.605791764333844,
+        "milliseconds": [
+          5.061541683971882,
+          4.605791764333844,
+          4.117708187550306,
+          4.202874843031168,
+          11.279124999418855
+        ],
+        "n": 5
+      },
+      "key_response_to_apply": {
+        "median_ms": 4.687916720286012,
+        "milliseconds": [
+          5.127291660755873,
+          4.687916720286012,
+          4.1844164952635765,
+          4.272375022992492,
+          11.360291624441743
+        ],
+        "n": 5
+      },
+      "key_rtt": {
+        "median_ms": 1.0227500461041927,
+        "milliseconds": [
+          1.0227500461041927,
+          1.102416543290019,
+          0.9416667744517326,
+          0.9284999687224627,
+          1.5605832450091839
+        ],
+        "n": 5
+      },
+      "path_to_apply": {
+        "median_ms": 5.509583279490471,
+        "milliseconds": [
+          5.641166819259524,
+          5.509583279490471,
+          4.855833249166608,
+          4.930958151817322,
+          12.394333258271217
+        ],
+        "n": 5
+      },
+      "path_to_sse_200": {
+        "median_ms": 0.5132083315402269,
+        "milliseconds": [
+          0.3452918026596308,
+          0.6214582826942205,
+          0.5132083315402269,
+          0.4945832770317793,
+          0.8247082587331533
+        ],
+        "n": 5
+      },
+      "seam_entry_to_apply": {
+        "median_ms": 9.921708377078176,
+        "milliseconds": [
+          11.199791682884097,
+          9.921708377078176,
+          9.442208334803581,
+          9.055166505277157,
+          20.399624947458506
+        ],
+        "n": 5
+      },
+      "sse_200_to_frame": {
+        "median_ms": 0.2343333326280117,
+        "milliseconds": [
+          0.2343333326280117,
+          0.28233323246240616,
+          0.2249167300760746,
+          0.2335000317543745,
+          0.2905000001192093
+        ],
+        "n": 5
+      }
+    },
+    "warm_300": {
+      "apply_to_row": {
+        "median_ms": 3.5067081917077303,
+        "milliseconds": [
+          5.8865416795015335,
+          3.5067081917077303,
+          2.2931250277906656,
+          2.853208454325795,
+          3.877333365380764
+        ],
+        "n": 5
+      },
+      "dispatch": {
+        "median_ms": -0.27525005862116814,
+        "milliseconds": [
+          -0.38154167123138905,
+          -0.27525005862116814,
+          -0.16837497241795063,
+          -0.25733327493071556,
+          -0.31700008548796177
+        ],
+        "n": 5
+      },
+      "frame_to_apply": {
+        "median_ms": 3.8516665808856487,
+        "milliseconds": [
+          0.34354161471128464,
+          4.6501250471919775,
+          2.900791587308049,
+          3.8516665808856487,
+          6.736208451911807
+        ],
+        "n": 5
+      },
+      "key_response_to_apply": {
+        "median_ms": 3.9340415969491005,
+        "milliseconds": [
+          0.2485418226569891,
+          4.714333452284336,
+          2.9770000837743282,
+          3.9340415969491005,
+          6.817375076934695
+        ],
+        "n": 5
+      },
+      "key_rtt": {
+        "median_ms": 1.0969582945108414,
+        "milliseconds": [
+          1.33770820684731,
+          0.9175415616482496,
+          0.7547498680651188,
+          1.132291741669178,
+          1.0969582945108414
+        ],
+        "n": 5
+      },
+      "path_to_apply": {
+        "median_ms": 4.809000063687563,
+        "milliseconds": [
+          1.2047083582729101,
+          5.356624955311418,
+          3.5633749794214964,
+          4.809000063687563,
+          7.597333285957575
+        ],
+        "n": 5
+      },
+      "path_to_sse_200": {
+        "median_ms": 0.5693333223462105,
+        "milliseconds": [
+          0.5860000383108854,
+          0.45616645365953445,
+          0.435791676864028,
+          0.7150834426283836,
+          0.5693333223462105
+        ],
+        "n": 5
+      },
+      "seam_entry_to_apply": {
+        "median_ms": 8.971999865025282,
+        "milliseconds": [
+          7.94170843437314,
+          9.648500010371208,
+          6.245624972507358,
+          8.971999865025282,
+          14.262041775509715
+        ],
+        "n": 5
+      },
+      "sse_200_to_frame": {
+        "median_ms": 0.2503334544599056,
+        "milliseconds": [
+          0.27516670525074005,
+          0.2503334544599056,
+          0.2267917152494192,
+          0.24225004017353058,
+          0.2917915116995573
+        ],
+        "n": 5
+      }
+    }
+  },
+  "non_claims": [
+    "Fresh XCTest process and fresh AppModel per repetition; not normal app force-quit/reopen.",
+    "Warm paths use the production scene seam and real elapsed 30/300s waits, not OS suspension.",
+    "No real daemon/network, physical iPhone, loaded Bazzite, or Mac-server timing.",
+    "path_ready is an asynchronous monitor observation; negative dispatch intervals are retained.",
+    "No injected transport delay; local URLProtocol does not reproduce URLSession socket contention,",
+    "so this harness cannot itself reproduce or falsify the stale-pool warm return.",
+    "The device gate in docs/evidence/issue-554/device-protocol.md remains UNEXECUTED."
+  ],
+  "note": "#554 round 2 (F1 fix): same #551 harness method, re-run unchanged at the round-2 head; medians only, 5 samples per scenario. Source log /tmp/g554-measure.log; driver /tmp/g554-r2-logs/measure-driver.out (bounded), raw exits MEASURE_EXIT=0 TIMINGS_EXIT=0.",
+  "sample_counts": {
+    "cold_model": 5,
+    "warm_30": 5,
+    "warm_300": 5
+  },
+  "source_log": "/tmp/g554-measure.log"
+}

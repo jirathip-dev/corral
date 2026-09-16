@@ -1,0 +1,32 @@
+# #554 ROUND 3 — raw gate exits at the fix head
+
+head: 1da21ba604ccc068bf3fe1e3ec7f2df81332835d  (fix commit; evidence commit follows)
+worktree: /Users/jirathip/.herdr/worktrees/corral/impl554-live-session (branch g554-live-session-preflight)
+runner: docs/evidence/issue-554/run-gates.sh all | measure  (driver: /tmp/g554-r3-logs/ladder-driver.out)
+
+G1  focused (#554 class + #451 ladders + scene seam/foreground)   FOCUSED_EXIT=0
+    -> Executed 49 tests, with 1 test skipped and 0 failures  (/tmp/g554-focused.log)
+    -> LiveSessionTransportTests 8/8 pass, ISSUE554_STRESS counters balanced:
+       cycles=600 retrying=true  started=2564 stopped=2564
+       cycles=60  retrying=false started=254  stopped=254
+G1b contract-item-4 pins (behaviour that must stay byte-for-byte unchanged)  PINS_EXIT=0
+    -> Executed 21 tests, with 0 failures
+G2  full suite                                                      FULL_EXIT=0
+    -> Executed 647 tests, with 1 test skipped and 0 failures  (round 2: 645; +2 stress tests)
+G3  release-demo boundary + self-test      CHECK_RELEASE_EXIT=0   SELF_TEST_EXIT=0
+G4  Debug + Release builds + binary        DEBUG_EXIT=0  RELEASE_EXIT=0  BINARY_EXIT=0
+G5  project generation drift               XCODEGEN_EXIT=0  XCODEGEN_DIFF_EXIT=0
+G6  advisory anti-slop (head)              ASLOP_EXIT=1   (advisory: 24 findings, same as base)
+G7  hygiene: `git diff --check` (worktree) DIFFCHECK_EXIT=0
+G6b anti-slop base identity compare        BASE_EXTRACT_EXIT=0  ASLOP_BASE_EXIT=1
+    -> BASE_TOTAL=24 HEAD_TOTAL=24 ADDED={} GONE={} COUNT_CHANGED={}
+    -> ASLOP_COMPARE_EXIT=0   (delta on touched files: ZERO — the claim is the delta, not the exit)
+G8  staged timings (#551 harness re-run)   MEASURE_EXIT=0  TIMINGS_EXIT=0
+    -> 15 samples {cold_model:5, warm_30:5, warm_300:5}; every compared stage at or
+       below the recorded baseline median (only `cold_model.dispatch` is +0.5 ms over
+       baseline, and that stage's baselines are sub-millisecond artifacts; the
+       harness's own non-regression check passed) -> /tmp/g554-timings.json
+
+Note on G7: the gate the suite runs is the WORKTREE check (`git diff --check`),
+`DIFFCHECK_EXIT=0`. `git diff --check` over a RANGE (e.g. `42ca305..HEAD`) exits 2
+and is not this gate — labelled after the round-2 review's remark.

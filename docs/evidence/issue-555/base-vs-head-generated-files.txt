@@ -1,0 +1,75 @@
+repo:  /Users/jirathip/.herdr/worktrees/corral/impl555-installer
+base:  97ed9e03cb4d265da02ac28bad1685000b159f80
+work:  /tmp/g555-base-identity.2aiMXS
+
+=== launchd com.corral.corrald.plist: base vs head (paths normalized to @SIDE@) ===
+--- /tmp/g555-base-identity.2aiMXS/base/norm/home_Library_LaunchAgents_com.corral.corrald.plist	2026-09-16 07:40:31
++++ /tmp/g555-base-identity.2aiMXS/head/norm/home_Library_LaunchAgents_com.corral.corrald.plist	2026-09-16 07:40:31
+@@ -16,7 +16,7 @@
+   <key>WorkingDirectory</key><string>@SIDE@/release</string>
+   <key>RunAtLoad</key><true/>
+   <key>KeepAlive</key><true/>
+-  <key>ProcessType</key><string>Background</string>
++  <key>ProcessType</key><string>Interactive</string>
+   <key>EnvironmentVariables</key>
+   <dict>
+     <key>PATH</key>
+
+=== launchd com.corral.corrald-update.plist: base vs head (paths normalized to @SIDE@) ===
+--- /tmp/g555-base-identity.2aiMXS/base/norm/home_Library_LaunchAgents_com.corral.corrald-update.plist	2026-09-16 07:40:32
++++ /tmp/g555-base-identity.2aiMXS/head/norm/home_Library_LaunchAgents_com.corral.corrald-update.plist	2026-09-16 07:40:32
+@@ -14,7 +14,7 @@
+   <dict>
+     <key>Minute</key><integer>17</integer>
+   </dict>
+-  <key>ProcessType</key><string>Background</string>
++  <key>ProcessType</key><string>Interactive</string>
+   <key>EnvironmentVariables</key>
+   <dict>
+     <key>PATH</key>
+
+=== launchd com.corral.corrald-rotate.plist: base vs head (paths normalized to @SIDE@) ===
+--- /tmp/g555-base-identity.2aiMXS/base/norm/home_Library_LaunchAgents_com.corral.corrald-rotate.plist	2026-09-16 07:40:32
++++ /tmp/g555-base-identity.2aiMXS/head/norm/home_Library_LaunchAgents_com.corral.corrald-rotate.plist	2026-09-16 07:40:32
+@@ -11,7 +11,7 @@
+   <key>WorkingDirectory</key><string>@SIDE@/release</string>
+   <key>RunAtLoad</key><true/>
+   <key>StartInterval</key><integer>1800</integer>
+-  <key>ProcessType</key><string>Background</string>
++  <key>ProcessType</key><string>Interactive</string>
+   <key>EnvironmentVariables</key>
+   <dict>
+     <key>CORRAL_CONFIG_DIR</key>
+
+=== systemd corrald.service: base vs head (paths normalized to @SIDE@) ===
+--- /tmp/g555-base-identity.2aiMXS/base/norm/lin-home_.config_systemd_user_corrald.service	2026-09-16 07:40:32
++++ /tmp/g555-base-identity.2aiMXS/head/norm/lin-home_.config_systemd_user_corrald.service	2026-09-16 07:40:32
+@@ -11,6 +11,10 @@
+ [Service]
+ Type=simple
+ ExecStart=@SIDE@/lin-bin/corrald --socket @SIDE@/lin-home/.config/herdr/herdr.sock --bind 127.0.0.1 --port 8474
++# #555: answer under load — Nice/CPUWeight raise the daemon's scheduling weight
++# and CPU share while the rest of the host is saturated (see the header).
++Nice=-5
++CPUWeight=500
+ Restart=on-failure
+ RestartSec=2
+ # The daemon shells out to git/gh for the repo/GitHub planes; give the user
+
+=== hardening block (base vs head, must be identical) ===
+# Hardening: the daemon needs only its own files under @SIDE@/lin-home (config), the
+# herdr socket, loopback HTTP, and outbound HTTPS for the gh plane. It must
+# keep writing @SIDE@/lin-config, so ProtectHome/ProtectSystem are deliberately not
+# used; NoNewPrivileges + PrivateTmp + the seccomp-ish flags below stay valid
+# for unprivileged user managers.
+NoNewPrivileges=true
+PrivateTmp=true
+RestrictSUIDSGID=true
+ProtectClock=true
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+560430150ac573c6087ba5d51446ca6aa421484558192e393d53a45893e69ade  /tmp/g555-base-identity.2aiMXS/hardening-base.txt
+560430150ac573c6087ba5d51446ca6aa421484558192e393d53a45893e69ade  /tmp/g555-base-identity.2aiMXS/hardening-head.txt
+
+PASS: base-vs-head generated files differ only by the #555 scheduling lines

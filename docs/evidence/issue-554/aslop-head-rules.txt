@@ -1,0 +1,6 @@
+ios/FleetNotifier/App/AppModel.swift	no-force-unwrap	1
+ios/FleetNotifier/App/AppModel.swift	no-swallowed-errors	1
+ios/FleetNotifierTests/EnrollmentClientTests.swift	no-shape-in-symbol-names	1
+ios/FleetNotifierTests/FleetNotifierTests.swift	no-force-try	1
+ios/FleetNotifierTests/FleetNotifierTests.swift	no-force-unwrap	17
+ios/FleetNotifierTests/FleetNotifierTests.swift	no-shape-in-symbol-names	3

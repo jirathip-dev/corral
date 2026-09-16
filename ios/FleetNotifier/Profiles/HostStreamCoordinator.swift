@@ -184,6 +184,14 @@ struct HostPreflightRetryPolicy: Equatable, Sendable {
     /// Ceiling for the retry spacing — the steady-state cadence of a host
     /// that stays unreachable while the ladder is still owned.
     var maxInterval: TimeInterval
+    /// #554: the bound on ONE `/host-key` attempt (a dead-but-not-yet-closed
+    /// pooled connection otherwise holds the attempt until the OS gives up,
+    /// which is the intermittent "many seconds" warm return). Enforced by the
+    /// LADDER — see `CorraldClient.fetchHostKey(within:)` — never by the
+    /// transport's own request/stream timeouts, which stay 15s/60s. At most
+    /// 5s in production, and injectable so a test can drive the bound
+    /// deterministically (and record the measured elapsed time against it).
+    var attemptTimeout: TimeInterval = 5
 
     /// Production ladder: 3 s, doubling to a 30 s steady-state cadence
     /// (attempts at roughly 0 s, 3 s, 9 s, 21 s, 45 s, 75 s … then every
@@ -214,6 +222,44 @@ struct HostPreflightRetryPolicy: Equatable, Sendable {
     func delayNanoseconds(beforeAttempt nextAttempt: Int) -> UInt64 {
         let seconds = max(0, min(delay(beforeAttempt: nextAttempt), 86_400))
         return UInt64(seconds * 1_000_000_000)
+    }
+}
+
+extension CorraldClient {
+    /// #554: ONE `/host-key` preflight attempt, bounded by the ladder's own
+    /// short timeout.
+    ///
+    /// Why the bound lives in the ladder rather than at the request site:
+    /// `Network/CorraldClient.swift` is outside this lane's fence, so the
+    /// request's configured `timeoutInterval` (15s) cannot be shortened there
+    /// — and a session-level `timeoutIntervalForRequest` cannot express it
+    /// either, because `FleetStore.connect` derives the SSE liveness budget
+    /// from the CONNECTING client's session configuration, so shortening the
+    /// live session's inactivity timeout would silently shrink
+    /// `StreamLiveness` (30s of the 60s stream timeout) and change the #425
+    /// watchdog contract. A measured probe under
+    /// `docs/evidence/issue-554/` records that a request-level
+    /// `timeoutInterval` beats the session-level one, so the only place the
+    /// bound can be enforced is here: the attempt is cancelled at the deadline
+    /// and the #451 ladder retries it exactly like any other transient
+    /// transport failure. The stream timeout (60s) is untouched — only this
+    /// preflight attempt is bounded.
+    func fetchHostKey(within timeout: TimeInterval) async throws -> HostKeyResponse {
+        let attempt = Task { try await fetchHostKey() }
+        let nanoseconds = UInt64(max(0, min(timeout, 86_400)) * 1_000_000_000)
+        let deadline = Task {
+            try? await Task.sleep(nanoseconds: nanoseconds)
+            attempt.cancel()
+        }
+        defer {
+            deadline.cancel()
+            attempt.cancel()
+        }
+        return try await withTaskCancellationHandler {
+            try await attempt.value
+        } onCancel: {
+            attempt.cancel()
+        }
     }
 }
 
@@ -281,7 +327,12 @@ final class HostStreamCoordinator: ObservableObject {
     private static let log = Logger(subsystem: "com.corral.fleetnotifier", category: "host-coordinator")
 
     private let defaults: UserDefaults
-    private let urlSession: URLSession
+    /// #554: the transport this coordinator's host clients are built from.
+    /// Starts as the injected/base session and is swapped for the live
+    /// session's transport by `adoptTransportSession` (AppModel, at
+    /// startLive) so a coordinator host's `/host-key` + `/events` clients
+    /// share the ACTIVE host's empty-pool transport.
+    private var urlSession: URLSession
     private let profileStore: HostProfileStore?
     /// #451: pacing/attempt bound for every per-host preflight ladder.
     /// Injectable so tests run the SAME ladder semantics at tiny intervals.
@@ -322,6 +373,26 @@ final class HostStreamCoordinator: ObservableObject {
     }
 
     // MARK: - Session lifecycle (C3/E3)
+
+    /// #554: set the transport this coordinator builds its host clients from.
+    /// AppModel calls this from startLive() with the session it just installed
+    /// (the coordinator itself is built in AppModel.init, before any live
+    /// session exists), so every host client created from here on —
+    /// `/host-key` preflight and `/events` — rides the same per-live-session
+    /// transport as the ACTIVE host. A transport already installed (a repeated
+    /// startLive inside one live session) is a no-op, and a ladder/stream
+    /// already running keeps the client it was built with: its own identity
+    /// guard refuses a completion that arrives from a superseded transport.
+    ///
+    /// #554 round 2 (F1): the SAME call is the repair half of the retirement
+    /// step — `AppModel.retireLiveTransport` resets this holder to the base
+    /// session in the same step that invalidates a retired live session, so an
+    /// invalidated session can never remain the transport a live-path dispatch
+    /// uses (creating a task on one aborts the process).
+    func adoptTransportSession(_ session: URLSession) {
+        guard urlSession !== session else { return }
+        urlSession = session
+    }
 
     /// Reconcile sessions against the CURRENT configured profiles: drop
     /// (and fully clean up) sessions whose profile vanished or can no
@@ -382,6 +453,10 @@ final class HostStreamCoordinator: ObservableObject {
         guard session.posture != .mismatch else { return }
         guard let url = URL(string: profile.urlString) else { return }
         let client = CorraldClient(host: url, session: urlSession)
+        // #554: every attempt on this ladder is bounded by the policy's own
+        // short preflight timeout (the coordinator hosts share the ACTIVE
+        // host's bound) — the stream timeout below is untouched.
+        let attemptTimeout = preflightPolicy.attemptTimeout
         guard let pinned = profile.hostKeyB64 else {
             session.posture = .unpinned
             openStream(profile: profile, session: session, client: client)
@@ -410,16 +485,18 @@ final class HostStreamCoordinator: ObservableObject {
             var attempt = 1
             while true {
                 guard !Task.isCancelled,
-                      self.sessions[profile.id] === session else { return }
+                      self.sessions[profile.id] === session,
+                      self.urlSession === client.session else { return }
                 // #454: an attempt is in flight — a path hint must not
                 // cancel/restart it; only the WAIT between attempts is
                 // interruptible.
                 session.continuityWaiting = false
                 do {
                     session.store.reconnectTiming.mark(.keyRequest)
-                    let response = try await client.fetchHostKey()
+                    let response = try await client.fetchHostKey(within: attemptTimeout)
                     guard !Task.isCancelled,
-                          self.sessions[profile.id] === session else { return }
+                          self.sessions[profile.id] === session,
+                          self.urlSession === client.session else { return }
                     session.store.reconnectTiming.mark(.keyResponse)
                     if HostKeyTrust.matches(response, pinnedKeyB64: pinned) {
                         session.posture = .verified
@@ -438,7 +515,8 @@ final class HostStreamCoordinator: ObservableObject {
                     return
                 } catch {
                     guard !Task.isCancelled,
-                          self.sessions[profile.id] === session else { return }
+                          self.sessions[profile.id] === session,
+                          self.urlSession === client.session else { return }
                     // Unreachable host: B4 keeps the stream closed (never
                     // unverified-open). The ladder keeps its bounded RATE
                     // for as long as this session owns it — a host that
@@ -546,20 +624,43 @@ final class HostStreamCoordinator: ObservableObject {
     /// Stop every coordinator host (app background, C3: cancel all when
     /// the app backgrounds). Rows stay retained in each store for the
     /// next foreground resume.
-    func stopAll() {
+    ///
+    /// #554 round 3 (F1): the cancelled owners are RETURNED so the retirement
+    /// step can wait for their termination before the live transport is
+    /// invalidated — cancelling is cooperative, and a cancelled owner that is
+    /// already past its last guard can still create its transport task.
+    @discardableResult
+    func stopAll() -> [Task<Void, Never>] {
+        var owners: [Task<Void, Never>] = []
         for session in sessions.values {
-            session.continuityTask?.cancel()
+            if let task = session.continuityTask {
+                task.cancel()
+                owners.append(task)
+            }
             session.continuityTask = nil
             session.continuityWaiting = false
-            session.refreshTask?.cancel()
+            if let task = session.refreshTask {
+                task.cancel()
+                owners.append(Self.drainHandle(for: task))
+            }
             session.refreshTask = nil
-            session.store.disconnect()
+            if let task = session.store.disconnect() {
+                owners.append(task)
+            }
             if session.posture != .unpinned, session.posture != .mismatch {
                 session.posture = .verifying
                 session.store.requireHostVerification(resetWindow: true)
             }
         }
         objectWillChange.send()
+        return owners
+    }
+
+    /// #554 round 3 (F1): one awaitable handle for a `Task<String?, Never>`
+    /// owner (a per-host refresh), so a retirement drain can wait for it
+    /// alongside the `Task<Void, Never>` owners.
+    private static func drainHandle(for task: Task<String?, Never>) -> Task<Void, Never> {
+        Task { _ = await task.value }
     }
 
     /// E3: remove ONE host — cancel that host's stream/tail/refresh tasks
@@ -631,6 +732,15 @@ final class HostStreamCoordinator: ObservableObject {
             let task: Task<String?, Never> = Task { @MainActor [weak self] in
                 guard let self, let session = self.sessions[profile.id] else {
                     return "host removed during refresh"
+                }
+                // #554 round 2 (F1): this client was built from the transport
+                // installed when the refresh was launched; the body runs later
+                // and a retirement boundary may have retired that transport in
+                // between. Dispatch only while it is STILL this coordinator's
+                // transport — a task created on an invalidated session aborts
+                // the process.
+                guard self.urlSession === client.session else {
+                    return "transport retired during refresh"
                 }
                 do {
                     let snapshot = try await client.fetchSnapshot()

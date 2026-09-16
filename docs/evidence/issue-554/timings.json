@@ -1,0 +1,495 @@
+{
+  "source_log": "/tmp/g554-measure.log",
+  "environment": "iPhone 16 / iOS 26.5 Simulator; URLProtocol fixture",
+  "sample_counts": {
+    "cold_model": 5,
+    "warm_30": 5,
+    "warm_300": 5
+  },
+  "metrics": {
+    "cold_model": {
+      "dispatch": {
+        "n": 5,
+        "milliseconds": [
+          -0.6501250900328159,
+          -0.4067915724590421,
+          -0.41295832488685846,
+          -0.43450004886835814,
+          -0.4082499071955681
+        ],
+        "median_ms": -0.41295832488685846
+      },
+      "key_rtt": {
+        "n": 5,
+        "milliseconds": [
+          9.458791697397828,
+          35.92454164754599,
+          2.603249973617494,
+          2.398333279415965,
+          2.4450832279399037
+        ],
+        "median_ms": 2.603249973617494
+      },
+      "path_to_sse_200": {
+        "n": 5,
+        "milliseconds": [
+          7.843458326533437,
+          1.5418333932757378,
+          1.6084166709333658,
+          1.4464999549090862,
+          1.5111666871234775
+        ],
+        "median_ms": 1.5418333932757378
+      },
+      "sse_200_to_frame": {
+        "n": 5,
+        "milliseconds": [
+          0.22054160945117474,
+          0.38495834451168776,
+          0.40579168125987053,
+          0.34933327697217464,
+          0.35200000274926424
+        ],
+        "median_ms": 0.35200000274926424
+      },
+      "frame_to_apply": {
+        "n": 5,
+        "milliseconds": [
+          1.1365000391378999,
+          33.77212502527982,
+          0.34849997609853745,
+          0.3338750684633851,
+          0.32733334228396416
+        ],
+        "median_ms": 0.34849997609853745
+      },
+      "key_response_to_apply": {
+        "n": 5,
+        "milliseconds": [
+          0.3918333677574992,
+          0.18116668798029423,
+          0.17241667956113815,
+          0.16587506979703903,
+          0.1536667114123702
+        ],
+        "median_ms": 0.17241667956113815
+      },
+      "apply_to_row": {
+        "n": 5,
+        "milliseconds": [
+          39.278749958612025,
+          18.94670829642564,
+          28.412958374246955,
+          21.87345828860998,
+          21.556374966166914
+        ],
+        "median_ms": 21.87345828860998
+      },
+      "path_to_apply": {
+        "n": 5,
+        "milliseconds": [
+          9.200499975122511,
+          35.698916763067245,
+          2.362708328291774,
+          2.129708300344646,
+          2.190500032156706
+        ],
+        "median_ms": 2.362708328291774
+      },
+      "seam_entry_to_apply": {
+        "n": 5,
+        "milliseconds": [
+          83.13820837065578,
+          36.41308331862092,
+          46.70837498269975,
+          41.99608333874494,
+          42.08662500604987
+        ],
+        "median_ms": 42.08662500604987
+      }
+    },
+    "warm_30": {
+      "dispatch": {
+        "n": 5,
+        "milliseconds": [
+          -0.6044582696631551,
+          -0.2719166222959757,
+          -0.3097082953900099,
+          -0.22637494839727879,
+          -0.23029162548482418
+        ],
+        "median_ms": -0.2719166222959757
+      },
+      "key_rtt": {
+        "n": 5,
+        "milliseconds": [
+          0.8855833439156413,
+          0.9873750386759639,
+          1.2725417036563158,
+          0.8452082984149456,
+          0.8494582725688815
+        ],
+        "median_ms": 0.8855833439156413
+      },
+      "path_to_sse_200": {
+        "n": 5,
+        "milliseconds": [
+          0.1253749942407012,
+          0.5416667554527521,
+          0.6362083368003368,
+          0.4764166660606861,
+          0.46508340165019035
+        ],
+        "median_ms": 0.4764166660606861
+      },
+      "sse_200_to_frame": {
+        "n": 5,
+        "milliseconds": [
+          0.21662504877895117,
+          0.23924990091472864,
+          0.23141666315495968,
+          0.20745827350765467,
+          0.22762489970773458
+        ],
+        "median_ms": 0.22762489970773458
+      },
+      "frame_to_apply": {
+        "n": 5,
+        "milliseconds": [
+          4.487250000238419,
+          4.73604176659137,
+          0.3358334070071578,
+          3.6881667328998446,
+          3.9262500358745456
+        ],
+        "median_ms": 3.9262500358745456
+      },
+      "key_response_to_apply": {
+        "n": 5,
+        "milliseconds": [
+          4.548124969005585,
+          4.801500006578863,
+          0.2406249986961484,
+          3.7532083224505186,
+          3.999791690148413
+        ],
+        "median_ms": 3.999791690148413
+      },
+      "apply_to_row": {
+        "n": 5,
+        "milliseconds": [
+          3.584791673347354,
+          3.5584582947194576,
+          5.584499915130436,
+          2.810791600495577,
+          3.147416631691158
+        ],
+        "median_ms": 3.5584582947194576
+      },
+      "path_to_apply": {
+        "n": 5,
+        "milliseconds": [
+          4.829250043258071,
+          5.516958422958851,
+          1.2034584069624543,
+          4.372041672468185,
+          4.6189583372324705
+        ],
+        "median_ms": 4.6189583372324705
+      },
+      "seam_entry_to_apply": {
+        "n": 5,
+        "milliseconds": [
+          9.357749950140715,
+          9.865750093013048,
+          6.760000018402934,
+          8.191208355128765,
+          8.450083318166435
+        ],
+        "median_ms": 8.450083318166435
+      }
+    },
+    "warm_300": {
+      "dispatch": {
+        "n": 5,
+        "milliseconds": [
+          -0.23799994960427284,
+          -0.24987501092255116,
+          -0.22770825307816267,
+          -0.22237503435462713,
+          -0.22920826449990273
+        ],
+        "median_ms": -0.22920826449990273
+      },
+      "key_rtt": {
+        "n": 5,
+        "milliseconds": [
+          0.8381250081583858,
+          0.8791666477918625,
+          0.7616665679961443,
+          0.8244166383519769,
+          0.8500833064317703
+        ],
+        "median_ms": 0.8381250081583858
+      },
+      "path_to_sse_200": {
+        "n": 5,
+        "milliseconds": [
+          0.417000032030046,
+          0.5569999339058995,
+          0.3769167233258486,
+          0.44970831368118525,
+          0.44125004205852747
+        ],
+        "median_ms": 0.44125004205852747
+      },
+      "sse_200_to_frame": {
+        "n": 5,
+        "milliseconds": [
+          0.2544999588280916,
+          0.190416700206697,
+          0.22304162848740816,
+          0.21579163148999214,
+          0.24591665714979172
+        ],
+        "median_ms": 0.22304162848740816
+      },
+      "frame_to_apply": {
+        "n": 5,
+        "milliseconds": [
+          4.518624977208674,
+          4.22474998049438,
+          3.7293334025889635,
+          3.67450003977865,
+          4.168208339251578
+        ],
+        "median_ms": 4.168208339251578
+      },
+      "key_response_to_apply": {
+        "n": 5,
+        "milliseconds": [
+          4.589999909512699,
+          4.342874977737665,
+          3.7953334394842386,
+          3.7379583809524775,
+          4.234499996528029
+        ],
+        "median_ms": 4.234499996528029
+      },
+      "apply_to_row": {
+        "n": 5,
+        "milliseconds": [
+          3.2143749995157123,
+          3.016000031493604,
+          2.74808332324028,
+          2.7656666934490204,
+          3.030416672118008
+        ],
+        "median_ms": 3.016000031493604
+      },
+      "path_to_apply": {
+        "n": 5,
+        "milliseconds": [
+          5.190124968066812,
+          4.9721666146069765,
+          4.32929175440222,
+          4.339999984949827,
+          4.855375038459897
+        ],
+        "median_ms": 4.855375038459897
+      },
+      "seam_entry_to_apply": {
+        "n": 5,
+        "milliseconds": [
+          10.610958328470588,
+          9.363249992020428,
+          7.888791733421385,
+          7.9236667370423675,
+          8.87791661079973
+        ],
+        "median_ms": 8.87791661079973
+      }
+    }
+  },
+  "baseline_source": "/Users/jirathip/.herdr/worktrees/corral/impl554-live-session/docs/evidence/issue-554/baseline-551-medians.json",
+  "baseline_provenance": {
+    "source": "docs/evidence/issue-551/lane-report.md (table 'Stage interval (median ms, n=5 each)')",
+    "lanes": "issue 551 measurement lane, same opt-in method testWarmReturnStageMeasurements with G551_MEASURE=1, 5 fresh XCTest hosts, scenarios cold_model/warm_30/warm_300",
+    "transcribed_by": "#554 lane, 2026-09-15 \u2014 values are TRANSCRIBED from the #551 report, not measured or re-derived by #554",
+    "note": "only the three scenario medians are transcribed; the raw per-sample marks stay in the #551 lane report"
+  },
+  "baseline_comparison": {
+    "cold_model": {
+      "dispatch": {
+        "baseline_median_ms": -1.008,
+        "head_median_ms": -0.41295832488685846,
+        "head_minus_baseline_ms": 0.5950416751131415
+      },
+      "key_rtt": {
+        "baseline_median_ms": 5.656,
+        "head_median_ms": 2.603249973617494,
+        "head_minus_baseline_ms": -3.0527500263825056
+      },
+      "path_to_sse_200": {
+        "baseline_median_ms": 3.628,
+        "head_median_ms": 1.5418333932757378,
+        "head_minus_baseline_ms": -2.0861666067242624
+      },
+      "sse_200_to_frame": {
+        "baseline_median_ms": 0.974,
+        "head_median_ms": 0.35200000274926424,
+        "head_minus_baseline_ms": -0.6219999972507357
+      },
+      "frame_to_apply": {
+        "baseline_median_ms": 0.84,
+        "head_median_ms": 0.34849997609853745,
+        "head_minus_baseline_ms": -0.4915000239014625
+      },
+      "key_response_to_apply": {
+        "baseline_median_ms": 0.279,
+        "head_median_ms": 0.17241667956113815,
+        "head_minus_baseline_ms": -0.10658332043886187
+      },
+      "apply_to_row": {
+        "baseline_median_ms": 48.948,
+        "head_median_ms": 21.87345828860998,
+        "head_minus_baseline_ms": -27.07454171139002
+      },
+      "path_to_apply": {
+        "baseline_median_ms": 5.015,
+        "head_median_ms": 2.362708328291774,
+        "head_minus_baseline_ms": -2.652291671708226
+      },
+      "seam_entry_to_apply": {
+        "baseline_median_ms": 111.149,
+        "head_median_ms": 42.08662500604987,
+        "head_minus_baseline_ms": -69.06237499395013
+      }
+    },
+    "warm_30": {
+      "dispatch": {
+        "baseline_median_ms": -0.239,
+        "head_median_ms": -0.2719166222959757,
+        "head_minus_baseline_ms": -0.032916622295975695
+      },
+      "key_rtt": {
+        "baseline_median_ms": 0.928,
+        "head_median_ms": 0.8855833439156413,
+        "head_minus_baseline_ms": -0.04241665608435874
+      },
+      "path_to_sse_200": {
+        "baseline_median_ms": 0.514,
+        "head_median_ms": 0.4764166660606861,
+        "head_minus_baseline_ms": -0.0375833339393139
+      },
+      "sse_200_to_frame": {
+        "baseline_median_ms": 0.274,
+        "head_median_ms": 0.22762489970773458,
+        "head_minus_baseline_ms": -0.046375100292265437
+      },
+      "frame_to_apply": {
+        "baseline_median_ms": 3.779,
+        "head_median_ms": 3.9262500358745456,
+        "head_minus_baseline_ms": 0.14725003587454566
+      },
+      "key_response_to_apply": {
+        "baseline_median_ms": 3.84,
+        "head_median_ms": 3.999791690148413,
+        "head_minus_baseline_ms": 0.15979169014841332
+      },
+      "apply_to_row": {
+        "baseline_median_ms": 2.894,
+        "head_median_ms": 3.5584582947194576,
+        "head_minus_baseline_ms": 0.6644582947194575
+      },
+      "path_to_apply": {
+        "baseline_median_ms": 4.542,
+        "head_median_ms": 4.6189583372324705,
+        "head_minus_baseline_ms": 0.0769583372324707
+      },
+      "seam_entry_to_apply": {
+        "baseline_median_ms": 8.338,
+        "head_median_ms": 8.450083318166435,
+        "head_minus_baseline_ms": 0.11208331816643557
+      }
+    },
+    "warm_300": {
+      "dispatch": {
+        "baseline_median_ms": -1.31,
+        "head_median_ms": -0.22920826449990273,
+        "head_minus_baseline_ms": 1.0807917355000973
+      },
+      "key_rtt": {
+        "baseline_median_ms": 2.648,
+        "head_median_ms": 0.8381250081583858,
+        "head_minus_baseline_ms": -1.8098749918416144
+      },
+      "path_to_sse_200": {
+        "baseline_median_ms": 1.453,
+        "head_median_ms": 0.44125004205852747,
+        "head_minus_baseline_ms": -1.0117499579414726
+      },
+      "sse_200_to_frame": {
+        "baseline_median_ms": 0.589,
+        "head_median_ms": 0.22304162848740816,
+        "head_minus_baseline_ms": -0.3659583715125918
+      },
+      "frame_to_apply": {
+        "baseline_median_ms": 5.598,
+        "head_median_ms": 4.168208339251578,
+        "head_minus_baseline_ms": -1.429791660748422
+      },
+      "key_response_to_apply": {
+        "baseline_median_ms": 5.799,
+        "head_median_ms": 4.234499996528029,
+        "head_minus_baseline_ms": -1.564500003471971
+      },
+      "apply_to_row": {
+        "baseline_median_ms": 3.434,
+        "head_median_ms": 3.016000031493604,
+        "head_minus_baseline_ms": -0.417999968506396
+      },
+      "path_to_apply": {
+        "baseline_median_ms": 8.039,
+        "head_median_ms": 4.855375038459897,
+        "head_minus_baseline_ms": -3.1836249615401027
+      },
+      "seam_entry_to_apply": {
+        "baseline_median_ms": 35.342,
+        "head_median_ms": 8.87791661079973,
+        "head_minus_baseline_ms": -26.46408338920027
+      }
+    }
+  },
+  "cold_launch_non_regression": {
+    "seam_entry_to_apply": {
+      "baseline_median_ms": 111.149,
+      "head_median_ms": 42.08662500604987,
+      "head_minus_baseline_ms": -69.06237499395013
+    },
+    "path_to_apply": {
+      "baseline_median_ms": 5.015,
+      "head_median_ms": 2.362708328291774,
+      "head_minus_baseline_ms": -2.652291671708226
+    },
+    "key_rtt": {
+      "baseline_median_ms": 5.656,
+      "head_median_ms": 2.603249973617494,
+      "head_minus_baseline_ms": -3.0527500263825056
+    },
+    "apply_to_row": {
+      "baseline_median_ms": 48.948,
+      "head_median_ms": 21.87345828860998,
+      "head_minus_baseline_ms": -27.07454171139002
+    }
+  },
+  "non_claims": [
+    "Fresh XCTest process and fresh AppModel per repetition; not normal app force-quit/reopen.",
+    "Warm paths use the production scene seam and real elapsed 30/300s waits, not OS suspension.",
+    "No real daemon/network, physical iPhone, loaded Bazzite, or Mac-server timing.",
+    "path_ready is an asynchronous monitor observation; negative dispatch intervals are retained.",
+    "No injected transport delay; local URLProtocol does not reproduce URLSession socket contention,",
+    "so this harness cannot itself reproduce or falsify the stale-pool warm return.",
+    "The device gate in docs/evidence/issue-554/device-protocol.md remains UNEXECUTED."
+  ]
+}

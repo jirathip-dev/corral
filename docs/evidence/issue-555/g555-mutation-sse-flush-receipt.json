@@ -1,0 +1,19 @@
+{
+  "label": "mutation-sse-flush",
+  "command": [
+    "cargo",
+    "test",
+    "--release",
+    "--lib",
+    "core::store::publication_tests::reads_and_initial_sse_do_not_wait_for_writer_or_publisher",
+    "--",
+    "--exact",
+    "--nocapture"
+  ],
+  "raw_exit": 101,
+  "duration_s": 67.647,
+  "head": "2d09b37762b97a751a0eb52c5c0ac57ece1d5485",
+  "cpu_hogs": 0,
+  "log": "/tmp/g555-mutation-sse-flush.log",
+  "host_log": "/tmp/g555-mutation-sse-flush-host.log"
+}

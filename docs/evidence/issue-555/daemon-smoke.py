@@ -2,7 +2,7 @@
 """Exercise the built daemon's dedicated HTTP executor, with no live inputs."""
 import http.client
 import json
-import os
+import re
 from pathlib import Path
 import socket
 import subprocess
@@ -74,7 +74,9 @@ with tempfile.TemporaryDirectory(prefix='g555-smoke-') as directory:
         finally:
             child.terminate()
             child.wait(timeout=10)
-text = log_path.read_text()
+# The daemon's formatter colors field names even when stdout is redirected.
+# Preserve the raw log; remove ANSI sequences only for field assertions.
+text = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', log_path.read_text())
 for message in ['snapshot served', 'SSE first frame served', 'serve_ms=', 'buffer_age_ms=']:
     assert message in text, message
 print('G555_DAEMON_SMOKE_PASS info timing+age observed; fixture daemon reaped; fixture files removed')

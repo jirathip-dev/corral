@@ -1,0 +1,20 @@
+{
+  "label": "mutation-no-publication",
+  "command": [
+    "cargo",
+    "test",
+    "--release",
+    "--test",
+    "http",
+    "snapshot_returns_json_with_rev_and_agents",
+    "--",
+    "--exact",
+    "--nocapture"
+  ],
+  "raw_exit": 101,
+  "duration_s": 24.89,
+  "head": "2d09b37762b97a751a0eb52c5c0ac57ece1d5485",
+  "cpu_hogs": 0,
+  "log": "/tmp/g555-mutation-no-publication.log",
+  "host_log": "/tmp/g555-mutation-no-publication-host.log"
+}

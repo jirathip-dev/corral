@@ -1,0 +1,32 @@
+{
+  "label": "after-load",
+  "command": [
+    "cargo",
+    "test",
+    "--release",
+    "--test",
+    "snapshot_load",
+    "--",
+    "--ignored",
+    "--nocapture"
+  ],
+  "raw_exit": 0,
+  "duration_s": 6.051,
+  "head": "2d09b37762b97a751a0eb52c5c0ac57ece1d5485",
+  "cpu_hogs": 10,
+  "log": "/tmp/g555-after-load.log",
+  "host_log": "/tmp/g555-after-load-host.log",
+  "samples": 512,
+  "p50_ms": 0.022917,
+  "p99_ms": 0.065291,
+  "buffer_age_p50_ms": 873,
+  "buffer_age_p99_ms": 1980,
+  "buffer_age_max_ms": 2011,
+  "bytes_min": 29129,
+  "bytes_max": 29193,
+  "revisions_seen": [
+    1,
+    2
+  ],
+  "budget_pass": true
+}

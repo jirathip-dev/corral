@@ -1,0 +1,21 @@
+{
+  "label": "r2-http-fixed",
+  "command": [
+    "python3",
+    "docs/evidence/issue-555/round2-http-load.py",
+    "record",
+    "--binary",
+    "/tmp/g555-daemon-target/release/corrald",
+    "--source-ref",
+    "59e0e613bc49784c3608a7b1f9dec5ff9b62d1d5",
+    "--output",
+    "/tmp/g555-r2-http-fixed.json",
+    "--bounded-logs"
+  ],
+  "raw_exit": 0,
+  "duration_s": 8.931,
+  "head": "59e0e613bc49784c3608a7b1f9dec5ff9b62d1d5",
+  "cpu_hogs": 0,
+  "log": "/tmp/g555-r2-http-fixed.log",
+  "host_log": "/tmp/g555-r2-http-fixed-host.log"
+}

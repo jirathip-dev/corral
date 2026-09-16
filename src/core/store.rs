@@ -18,12 +18,18 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::sync::{Mutex, Notify, broadcast, watch};
 
 use super::model::{Agent, Change, Delta, Resume, SCHEMA_VERSION, Snapshot};
 use crate::history::{HistoryEvent, HistoryRing, RotationPolicy};
+
+#[cfg(test)]
+mod publication_tests;
+mod published;
+pub use published::PublishedSnapshot;
+use published::{event_bytes, wire_bytes};
 
 /// How many coalesced delta batches to retain for SSE resume.
 const HISTORY_CAP: usize = 1024;
@@ -31,7 +37,11 @@ const HISTORY_CAP: usize = 1024;
 const BROADCAST_CAP: usize = 256;
 /// Coalesce window while at least one SSE subscriber is connected.
 const FOREGROUND_TICK: Duration = Duration::from_millis(250);
-/// Coalesce window when nobody is watching.
+/// Maximum debounce when nobody is watching: 2s from the first change,
+/// never extended by later writes. HTTP tests enforce publication within 3s
+/// (this window plus 1s for encoding/scheduling); this is not a hard OS SLA.
+/// Fast HTTP reads can therefore return data ~2s stale, not freshly flushed
+/// state. An unchanged buffer can be older still; age is not request latency.
 const BACKGROUND_TICK: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Default)]
@@ -56,6 +66,10 @@ pub struct Store {
     /// every fresh Store gets a new value even when its numeric rev repeats.
     epoch: Arc<str>,
     inner: Arc<Mutex<Inner>>,
+    /// Read handlers only clone this pointer; no writer/agent lock is shared.
+    published: watch::Sender<Arc<PublishedSnapshot>>,
+    /// Serializes capture -> encode -> publish, including cancelled flushes.
+    publish_lock: Arc<Mutex<()>>,
     tx: broadcast::Sender<Delta>,
     notify: Arc<Notify>,
     /// Change-version signal: bumped once per applied change batch (WS3's
@@ -79,9 +93,25 @@ impl Default for Store {
     fn default() -> Self {
         let (tx, _) = broadcast::channel(BROADCAST_CAP);
         let (version, _) = watch::channel(0);
+        let epoch: Arc<str> = Arc::from(new_epoch());
+        let initial = Snapshot {
+            schema_version: SCHEMA_VERSION,
+            rev: 0,
+            generated_at: now_millis(),
+            agents: BTreeMap::new(),
+            git_plane_backlog: false,
+        };
+        let (published, _) = watch::channel(Arc::new(PublishedSnapshot::new(
+            &epoch,
+            &initial,
+            Instant::now(),
+            VecDeque::new(),
+        )));
         Self {
-            epoch: Arc::from(new_epoch()),
+            epoch,
             inner: Arc::new(Mutex::new(Inner::default())),
+            published,
+            publish_lock: Arc::new(Mutex::new(())),
             tx,
             notify: Arc::new(Notify::new()),
             version,
@@ -247,51 +277,102 @@ impl Store {
         self.tx.receiver_count()
     }
 
-    /// Coalesce and publish. Runs forever; the only exit is the shutdown
-    /// signal being dropped by [`Store::shutdown`]'s owner dropping the guard.
+    /// Latest immutable wire publication; safe even while a writer is busy.
+    pub fn published(&self) -> Arc<PublishedSnapshot> {
+        self.published.borrow().clone()
+    }
+
+    /// Observable publication boundary, independent of the writer's version
+    /// signal. Borrow/update before waiting to avoid losing a publication.
+    pub fn publications(&self) -> watch::Receiver<Arc<PublishedSnapshot>> {
+        self.published.subscribe()
+    }
+
+    /// Coalesce and publish. Abort the owning task to stop. The idle timer
+    /// also observes backlog-atomic changes that do not emit agent changes.
     pub async fn run_coalescer(&self) {
         loop {
-            self.notify.notified().await;
-            loop {
-                let sleep = {
-                    let inner = self.inner.lock().await;
-                    if !inner.pending_any {
-                        break;
-                    }
+            let notified = tokio::select! {
+                _ = self.notify.notified() => true,
+                _ = tokio::time::sleep(BACKGROUND_TICK) => false,
+            };
+            if notified {
+                let mut deadline = tokio::time::Instant::now() + BACKGROUND_TICK;
+                loop {
                     if self.subscriber_count() > 0 {
-                        FOREGROUND_TICK
-                    } else {
-                        BACKGROUND_TICK
+                        // Joining SSE shortens an already-running background
+                        // debounce. Repeated writes never extend the deadline.
+                        deadline = deadline.min(tokio::time::Instant::now() + FOREGROUND_TICK);
                     }
-                };
-                tokio::time::sleep(sleep).await;
-                self.flush().await;
+                    tokio::select! {
+                        _ = tokio::time::sleep_until(deadline) => break,
+                        _ = self.notify.notified() => {}
+                    }
+                }
             }
+            self.flush().await;
         }
     }
 
     /// Publish pending changes as one delta batch with a fresh rev.
     pub async fn flush(&self) -> Option<Delta> {
+        let publication_guard = self.publish_lock.clone().lock_owned().await;
         let mut inner = self.inner.lock().await;
-        if !inner.pending_any {
+        let previous = self.published();
+        if !inner.pending_any
+            && previous.git_plane_backlog == self.git_plane_backlog.load(Ordering::Acquire)
+        {
             return None;
         }
-        inner.pending_any = false;
-        let delta = Delta {
-            rev: inner.rev + 1,
-            upd: std::mem::take(&mut inner.pending_upd)
-                .into_values()
-                .collect(),
-            del: std::mem::take(&mut inner.pending_del),
+        let delta = if inner.pending_any {
+            inner.pending_any = false;
+            let delta = Delta {
+                rev: inner.rev + 1,
+                upd: std::mem::take(&mut inner.pending_upd)
+                    .into_values()
+                    .collect(),
+                del: std::mem::take(&mut inner.pending_del),
+            };
+            inner.rev = delta.rev;
+            inner.history.push_back((delta.rev, delta.clone()));
+            while inner.history.len() > HISTORY_CAP {
+                inner.history.pop_front();
+            }
+            Some(delta)
+        } else {
+            None // Backlog-only change: no fabricated agent delta/revision.
         };
-        inner.rev = delta.rev;
-        inner.history.push_back((delta.rev, delta.clone()));
-        while inner.history.len() > HISTORY_CAP {
-            inner.history.pop_front();
-        }
+        let captured_at = Instant::now();
+        let snapshot = self.snapshot_locked(&inner);
         drop(inner);
-        let _ = self.tx.send(delta.clone());
-        Some(delta)
+        let epoch = self.epoch();
+        let published = self.published.clone();
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            // Move the owned guard into the encoder: cancelling an awaiting
+            // flush cannot let a later revision publish ahead of this one.
+            let _guard = publication_guard;
+            let mut history = previous.history.clone();
+            if let Some(delta) = &delta {
+                history.push_back((
+                    delta.rev,
+                    Arc::new(event_bytes("delta", delta.rev, &wire_bytes(&epoch, delta))),
+                ));
+                while history.len() > HISTORY_CAP {
+                    history.pop_front();
+                }
+            }
+            let next = PublishedSnapshot::new(&epoch, &snapshot, captured_at, history);
+            // Publish BEFORE broadcasting: initial snapshot + subscribed
+            // deltas always share a boundary, including lag recovery.
+            published.send_replace(Arc::new(next));
+            if let Some(delta) = &delta {
+                let _ = tx.send(delta.clone());
+            }
+            delta
+        })
+        .await
+        .expect("snapshot publisher")
     }
 
     /// Fetch a single record (adapters use this for gated updates like
@@ -432,9 +513,15 @@ impl Store {
         }
     }
 
-    /// Subscribe to live deltas.
+    /// Subscribe to live deltas AND wake the publication coalescer.
+    ///
+    /// Side effect: after registering the receiver, notify the coalescer so a
+    /// pending background debounce shortens to the foreground window. This is
+    /// not a passive getter and does not synchronously flush pending changes.
     pub fn subscribe(&self) -> broadcast::Receiver<Delta> {
-        self.tx.subscribe()
+        let rx = self.tx.subscribe();
+        self.notify.notify_one();
+        rx
     }
 }
 

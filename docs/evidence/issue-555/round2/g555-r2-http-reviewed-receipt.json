@@ -1,0 +1,20 @@
+{
+  "label": "r2-http-reviewed",
+  "command": [
+    "python3",
+    "docs/evidence/issue-555/round2-http-load.py",
+    "record",
+    "--binary",
+    "/tmp/g555-daemon-target/r2-reviewed-corrald",
+    "--source-ref",
+    "60851ed946ae479ce08a114a058ec70b9ee7e61d",
+    "--output",
+    "/tmp/g555-r2-http-reviewed.json"
+  ],
+  "raw_exit": 0,
+  "duration_s": 11.503,
+  "head": "59e0e613bc49784c3608a7b1f9dec5ff9b62d1d5",
+  "cpu_hogs": 0,
+  "log": "/tmp/g555-r2-http-reviewed.log",
+  "host_log": "/tmp/g555-r2-http-reviewed-host.log"
+}

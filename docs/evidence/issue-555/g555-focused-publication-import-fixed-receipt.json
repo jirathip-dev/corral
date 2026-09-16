@@ -1,0 +1,18 @@
+{
+  "label": "focused-publication-import-fixed",
+  "command": [
+    "cargo",
+    "test",
+    "--release",
+    "--lib",
+    "core::store::publication_tests",
+    "--",
+    "--nocapture"
+  ],
+  "raw_exit": 101,
+  "duration_s": 11.642,
+  "head": "918e778c6c4da1e91ccce9fb75ba20e1a10e1679",
+  "cpu_hogs": 0,
+  "log": "/tmp/g555-focused-publication-import-fixed.log",
+  "host_log": "/tmp/g555-focused-publication-import-fixed-host.log"
+}

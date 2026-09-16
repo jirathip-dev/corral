@@ -1,0 +1,28 @@
+{
+  "label": "baseline-load",
+  "command": [
+    "cargo",
+    "test",
+    "--release",
+    "--test",
+    "snapshot_load",
+    "--",
+    "--ignored",
+    "--nocapture"
+  ],
+  "raw_exit": 0,
+  "duration_s": 27.191,
+  "head": "11cc1d26f3b1c22716d4527fb9e7679eaa861aba",
+  "cpu_hogs": 10,
+  "log": "/tmp/g555-baseline-load.log",
+  "host_log": "/tmp/g555-baseline-load-host.log",
+  "samples": 512,
+  "p50_ms": 43.854583000000005,
+  "p99_ms": 46.199959,
+  "buffer_age_p50_ms": 0,
+  "buffer_age_p99_ms": 1,
+  "buffer_age_max_ms": 2,
+  "bytes_min": 29129,
+  "bytes_max": 29323,
+  "budget_pass": false
+}

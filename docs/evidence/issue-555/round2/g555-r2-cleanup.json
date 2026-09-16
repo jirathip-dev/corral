@@ -1,0 +1,13 @@
+{
+  "owner": "/Users/jirathip/.herdr/worktrees/corral/impl555-daemon",
+  "source_unchanged": true,
+  "active_target_processes": [],
+  "binary_hashes_before_cleanup": {
+    "r2-reviewed-corrald": "e8a545af2f4d683b5311853479a364b95e178b762fc14a0acb2e0d9456fa9e88",
+    "r2-base-corrald": "5e7f1aa82a85d3a6c46cc08db81695b1fb00d3d05050a23206273077d3a147aa",
+    "r2-fixed-corrald": "713dcc9c9fd51bebf536a64c27e565f46d230b5a4d5b961847c9eb6508862237"
+  },
+  "unfinished_verification": "paired executor mutation/controls blocked by 900s admission; initial relative p99 flag retained",
+  "raw_exit": 0,
+  "target_absent": true
+}

@@ -1,0 +1,8 @@
+{
+  "removed": "/tmp/g555-daemon-target",
+  "owner": "/Users/jirathip/.herdr/worktrees/corral/impl555-daemon",
+  "target_absent": true,
+  "free_before_bytes": 3882991616,
+  "free_after_bytes": 6998638592,
+  "raw_exit": 0
+}

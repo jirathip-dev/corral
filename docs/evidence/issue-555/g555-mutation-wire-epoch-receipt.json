@@ -1,0 +1,19 @@
+{
+  "label": "mutation-wire-epoch",
+  "command": [
+    "cargo",
+    "test",
+    "--release",
+    "--lib",
+    "core::store::publication_tests::randomized_publications_match_old_snapshot_and_sse_bytes",
+    "--",
+    "--exact",
+    "--nocapture"
+  ],
+  "raw_exit": 101,
+  "duration_s": 50.49,
+  "head": "2d09b37762b97a751a0eb52c5c0ac57ece1d5485",
+  "cpu_hogs": 0,
+  "log": "/tmp/g555-mutation-wire-epoch.log",
+  "host_log": "/tmp/g555-mutation-wire-epoch-host.log"
+}

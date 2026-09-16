@@ -1,0 +1,14 @@
+{
+  "label": "baseline-format",
+  "command": [
+    "cargo",
+    "fmt",
+    "--all"
+  ],
+  "raw_exit": 0,
+  "duration_s": 0.289,
+  "head": "11cc1d26f3b1c22716d4527fb9e7679eaa861aba",
+  "cpu_hogs": 0,
+  "log": "/tmp/g555-baseline-format.log",
+  "host_log": "/tmp/g555-baseline-format-host.log"
+}

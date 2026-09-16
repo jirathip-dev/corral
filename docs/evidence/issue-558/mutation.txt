@@ -1,0 +1,37 @@
+#558 compiled SHA/subject omission probe
+
+Source commit: 49823b03d5c0352f5b9f2c62922dc0748e44686e
+Mutation: remove `if sha != nil || subject != nil { rows.append(.commit) }`
+from RecentWorktreeDetails.rows. This is the row inventory consumed by
+RecentWorktreeBlock's ForEach AND its single accessibility label, so the
+probe removes the real painted commit row as well as its spoken facts.
+
+Invocation (under one held `flock /tmp/n.lock` session):
+HERDR_XCODEBUILD_DIRECT=1 HERMES_SIM_TASK_ACTIVE=1 xcodebuild test -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination 'platform=iOS Simulator,id=59DDC0C5-891E-4EC0-91AF-4F50DF68D793' -destination-timeout 60 -derivedDataPath /tmp/g558-dd -parallel-testing-enabled NO -only-testing:FleetNotifierTests/RecentWorktreeBlockTests/testCommitRowAndExactAccessibilityLabel CODE_SIGNING_ALLOWED=NO
+
+RED raw exit: 65
+/tmp/g558-mutation-red.log:
+Executed 1 test, with 2 failures (0 unexpected)
+FleetNotifierTests.swift:25: the row inventory is missing .commit.
+FleetNotifierTests.swift:26: XCTAssertEqual failed:
+  actual: Branch feature/sheet, dirty, 2 ahead, 1 behind, sheet-lane, PR 558, CI passing, closes #45, #46, #47 +2
+  expected: Branch feature/sheet, dirty, 2 ahead, 1 behind, abcdef1, Keep commit context visible, sheet-lane, PR 558, CI passing, closes #45, #46, #47 +2
+** TEST FAILED **
+
+Restore:
+git restore --source=49823b03d5c0352f5b9f2c62922dc0748e44686e --worktree -- ios/FleetNotifier/UI/FleetViews.swift
+touch ios/FleetNotifier/UI/FleetViews.swift
+shasum -a 256 ios/FleetNotifier/UI/FleetViews.swift
+  before: 24e2fe94d56ba54f2547c3b5bcd31ce483ac9bd829729a1f4f369796953e5f7e
+  after:  24e2fe94d56ba54f2547c3b5bcd31ce483ac9bd829729a1f4f369796953e5f7e
+cmp /tmp/g558-mutation-before.log /tmp/g558-mutation-after.log -> raw exit 0
+git diff --exit-code -> raw exit 0, empty /tmp/g558-mutation-restore-diff.log
+
+GREEN (same command, restored source) raw exit: 0
+/tmp/g558-mutation-green.log:
+Executed 1 test, with 0 failures (0 unexpected)
+** TEST SUCCEEDED **
+
+No test was edited for the probe. No digest was re-pinned around it.
+Source/fixture/capture verifier after restore: raw exit 0,
+/tmp/g558-restored-scope.log (SCOPE_PASS).

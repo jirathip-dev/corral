@@ -61,9 +61,10 @@
 //! serialized because topology reconciliation also performs synchronous
 //! filesystem canonicalization. A slow probe therefore queues behind bounded
 //! work rather than multiplying host load and starving unrelated async
-//! services. Once admitted, its child still has the five-second timeout and
-//! its over-budget diagnostic remains unchanged; permit wait is additional
-//! latency, not part of that child timeout.
+//! services. Permit wait is scheduling latency, outside the 200ms execution
+//! budget. Status sweeps spread over the interval (at least 50ms per slot),
+//! independent of topology/discovery timers. Per-worktree budget WARNs are
+//! bounded to once per five minutes; the skipped counter counts every skip.
 //!
 //! When an FSEvents path under `commondir/worktrees/` is unknown, the watcher
 //! loop awaits the throttled topology rescan before debouncing the newly
@@ -91,19 +92,22 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::fs;
+use std::future::{Future, poll_fn};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::{Duration, Instant};
 
+use crate::core::store::GitPlaneHealth;
 use futures::StreamExt;
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::process::Command;
 use tokio::sync::{Mutex as AsyncMutex, Semaphore, mpsc};
-use tracing::{debug, info, warn};
+use tokio::task::JoinSet;
+use tracing::{debug, error, info, warn};
 
 use crate::core::events::{GitEvent, GitStatus, Plane, PlaneEvent, PlaneSink};
 use crate::core::util::{canonicalize_existing_prefix, now_millis};
@@ -115,6 +119,10 @@ const DEBOUNCE: Duration = Duration::from_millis(300);
 /// bounded backstop for events the OS coalesced or missed, so it must not be
 /// a hot poll loop of its own.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(60);
+const HEARTBEAT: Duration = Duration::from_secs(1);
+const STALL_TIMEOUT: Duration = Duration::from_secs(120);
+const RESTART_DELAY: Duration = Duration::from_secs(1);
+const WARN_INTERVAL: Duration = Duration::from_secs(5 * 60);
 /// Registry-only safety-net cadence. FSEvents plus a one-shot startup rescan
 /// are the primary topology signals; this is a bounded backstop for repos or
 /// worktrees registered without a deliverable event.
@@ -471,6 +479,20 @@ struct WorktreeState {
     /// The last probe exceeded the per-worktree budget. Keep cached facts
     /// until a later round completes instead of publishing a partial result.
     stale: bool,
+    last_budget_warning: Option<Instant>,
+}
+
+impl WorktreeState {
+    fn warn_over_budget(&mut self, now: Instant) -> bool {
+        if self
+            .last_budget_warning
+            .is_some_and(|last| now.saturating_duration_since(last) < WARN_INTERVAL)
+        {
+            return false;
+        }
+        self.last_budget_warning = Some(now);
+        true
+    }
 }
 
 #[derive(Debug, Default)]
@@ -566,6 +588,13 @@ pub struct GitPlane {
     /// duplicating loops.
     stopped: AtomicBool,
     backlog: Arc<AtomicBool>,
+    health: Arc<GitPlaneHealth>,
+    // Every child, including debounce/retry tasks, belongs to one generation.
+    tasks: Mutex<JoinSet<bool>>,
+    supervising: AtomicBool,
+    generation: AtomicU64,
+    progress_ms: [AtomicU64; 3],
+    stall_timeout: Duration,
     sweep_intervals: SweepIntervals,
 }
 
@@ -630,12 +659,21 @@ impl GitPlane {
             retry_scheduled: AtomicBool::new(false),
             stopped: AtomicBool::new(false),
             backlog: Arc::new(AtomicBool::new(false)),
+            health: Arc::new(GitPlaneHealth::default()),
+            tasks: Mutex::new(JoinSet::new()),
+            supervising: AtomicBool::new(false),
+            generation: AtomicU64::new(0),
+            progress_ms: std::array::from_fn(|_| AtomicU64::new(0)),
+            stall_timeout: STALL_TIMEOUT,
             sweep_intervals: PRODUCTION_SWEEP_INTERVALS,
         }
     }
 
     fn repo_roots_snapshot(&self) -> Vec<PathBuf> {
-        self.repo_roots.read().unwrap().clone()
+        self.repo_roots
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     fn refresh_repo_sources(&self) {
@@ -645,15 +683,15 @@ impl GitPlane {
         let mut roots = self.fallback_repo_roots.clone();
         roots.extend(discovery.discover(&self.fallback_repo_roots));
         let roots = canonicalize_repo_roots(roots);
-        let mut current = self.repo_roots.write().unwrap();
+        let mut current = self.repo_roots.write().unwrap_or_else(|e| e.into_inner());
         if *current != roots {
-            let previous = current.clone();
+            let previous = std::mem::replace(&mut *current, roots.clone());
+            drop(current);
             info!(
                 old = ?previous,
                 new = ?roots,
                 "git plane: refreshed live repo sources"
             );
-            *current = roots;
         }
     }
 
@@ -661,6 +699,33 @@ impl GitPlane {
     fn with_sweep_intervals(mut self, sweep_intervals: SweepIntervals) -> Self {
         self.sweep_intervals = sweep_intervals;
         self
+    }
+
+    pub fn with_health(mut self, health: Arc<GitPlaneHealth>) -> Self {
+        health.enabled.store(true, Ordering::Release);
+        self.health = health;
+        self
+    }
+
+    // A poisoned cache is recoverable. No caller propagates poison into a
+    // second panic, and logging is always outside the state critical section.
+    fn lock_state(&self) -> MutexGuard<'_, PlaneState> {
+        self.state.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
+    fn progress(&self, task: usize) {
+        self.progress_ms[task].store(self.health.elapsed_ms(), Ordering::Release);
+        self.health.progress();
+    }
+
+    fn spawn(&self, critical: bool, future: impl Future<Output = ()> + Send + 'static) {
+        self.tasks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .spawn(async move {
+                future.await;
+                critical
+            });
     }
 
     pub fn with_backlog_flag(mut self, backlog: Arc<AtomicBool>) -> Self {
@@ -695,6 +760,106 @@ impl GitPlane {
         self.repo_roots_snapshot().contains(&canon) || canon.starts_with(&self.worktrees_root)
     }
 
+    // -- supervisor ----------------------------------------------------------
+
+    async fn next_task(&self) -> Option<Result<bool, tokio::task::JoinError>> {
+        poll_fn(|cx| {
+            self.tasks
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .poll_join_next(cx)
+        })
+        .await
+    }
+
+    async fn supervise(self: Arc<Self>, sink: PlaneSink) {
+        self.health.enabled.store(true, Ordering::Release);
+        loop {
+            self.stopped.store(false, Ordering::Relaxed);
+            self.retry_scheduled.store(false, Ordering::Relaxed);
+            {
+                let mut state = self.lock_state();
+                state.pending.clear();
+                state.rerun.clear();
+                // Re-emit complete observations after a panic, including a
+                // panic between updating this cache and sending its events.
+                for worktree in state.worktrees.values_mut() {
+                    worktree.branch = None;
+                    worktree.commit = None;
+                    worktree.subject = None;
+                    worktree.status = None;
+                }
+            }
+            for observed in self
+                .health
+                .facts
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .values_mut()
+            {
+                *observed = None;
+            }
+            self.progress(0);
+            self.progress(1);
+            self.progress(2);
+            self.generation.fetch_add(1, Ordering::Release);
+            self.health.alive.store(true, Ordering::Release);
+            let (tx, rx) = mpsc::channel(1);
+            self.spawn(true, self.clone().run_watcher(sink.clone(), rx, tx.clone()));
+            self.spawn(true, self.clone().run_sweep(sink.clone(), tx.clone()));
+            self.spawn(true, self.clone().run_status_sweep(sink.clone(), tx));
+            let mut heartbeat = tokio::time::interval(HEARTBEAT.min(self.stall_timeout));
+            loop {
+                tokio::select! {
+                    _ = sink.closed() => break,
+                    result = self.next_task() => {
+                        match result {
+                            Some(Ok(false)) => continue, // completed debounce/retry
+                            Some(Err(ref failure)) => {
+                                self.health.alive.store(false, Ordering::Release);
+                                error!(error = %failure, "git plane child failed; restarting generation");
+                            }
+                            _ => {
+                                self.health.alive.store(false, Ordering::Release);
+                                error!("git plane event loop exited; restarting generation");
+                            }
+                        }
+                        break;
+                    }
+                    _ = heartbeat.tick() => {
+                        let now = self.health.elapsed_ms();
+                        if self.progress_ms.iter().any(|last| {
+                            now.saturating_sub(last.load(Ordering::Acquire))
+                                > self.stall_timeout.as_millis() as u64
+                        }) {
+                            self.health.alive.store(false, Ordering::Release);
+                            error!(bound_ms = self.stall_timeout.as_millis() as u64,
+                                "git plane stalled; restarting generation");
+                            break;
+                        }
+                    }
+                }
+            }
+            self.health.alive.store(false, Ordering::Release);
+            self.stopped.store(true, Ordering::Relaxed);
+            self.tasks
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .abort_all();
+            // Join every old child BEFORE re-arming. No detached probe may
+            // publish an old generation's result after replacement starts.
+            while self.next_task().await.is_some() {}
+            if sink.is_closed() {
+                break;
+            }
+            tokio::select! {
+                _ = sink.closed() => break,
+                _ = tokio::time::sleep(RESTART_DELAY) => {}
+            }
+        }
+        self.supervising.store(false, Ordering::Release);
+    }
+
     // -- watcher (primary signal) -------------------------------------------
 
     async fn run_watcher(
@@ -723,12 +888,21 @@ impl GitPlane {
                 "git plane: fsevents watchers live"
             );
         }
+        // A paced safety sweep is not boot hydration. Re-probe all cached
+        // paths now (also after recovery), using the same four admission slots.
+        let initial: Vec<_> = self.lock_state().worktrees.keys().cloned().collect();
+        for worktree in initial {
+            self.debounce(worktree, sink.clone());
+        }
+        let mut heartbeat = tokio::time::interval(HEARTBEAT.min(self.stall_timeout));
         loop {
+            self.progress(0);
             if self.stopped.load(Ordering::Relaxed) {
                 info!("git plane: fsevents watcher exiting (sink closed)");
                 break;
             }
             tokio::select! {
+                _ = heartbeat.tick() => {},
                 item = event_rx.recv() => {
                     match item {
                         Some((_commondir, Ok(first))) => {
@@ -856,7 +1030,7 @@ impl GitPlane {
         F: FnMut(&Path) -> Result<W, E>,
     {
         let commondirs: Vec<PathBuf> = {
-            let state = self.state.lock().unwrap();
+            let state = self.lock_state();
             state.commondirs.clone()
         };
 
@@ -923,7 +1097,7 @@ impl GitPlane {
                 // entry while its events are still arriving, so retry once
                 // after the registration settles.
                 let tx = cmd_tx.clone();
-                tokio::spawn(async move {
+                self.spawn(false, async move {
                     tokio::time::sleep(RESCAN_RETRY_DELAY).await;
                     let _ = tx.send(WatcherCommand::RescanAndRegister).await;
                 });
@@ -949,7 +1123,7 @@ impl GitPlane {
     /// but matches no known gitdir — a worktree may have appeared, so the
     /// caller should rescan the registry.
     fn map_event_path(&self, path: &Path) -> (Vec<PathBuf>, bool) {
-        let state = self.state.lock().unwrap();
+        let state = self.lock_state();
         let mut best: Option<(usize, PathBuf)> = None;
         for (wt, st) in &state.worktrees {
             let Some(gd) = st.gitdir.as_ref() else {
@@ -1044,7 +1218,7 @@ impl GitPlane {
     /// measured from the first event of a burst.
     fn debounce(self: &Arc<Self>, wt: PathBuf, sink: PlaneSink) {
         let spawn = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.lock_state();
             if state.pending.insert(wt.clone()) {
                 true
             } else {
@@ -1061,17 +1235,16 @@ impl GitPlane {
         }
         let plane = self.clone();
         let git_command_budget = plane.git_command_budget.clone();
-        tokio::spawn(async move {
+        self.spawn(false, async move {
             let mut follow_up_used = false;
             loop {
                 tokio::time::sleep(DEBOUNCE).await;
-                // Budget clock starts after the debounce (the 300ms window is
-                // outside the 200ms per-event budget) but covers the probe —
-                // the dominant cost — through the emits. Keep `pending` set
-                // while this task waits for the shared git budget.
+                // Wall latency excludes debounce but includes permit wait.
+                // Only admitted execution consumes the 200ms probe budget.
+                // Keep `pending` set while waiting so events stay coalesced.
                 let started = Instant::now();
                 let (cached_commit, cached_subject) = {
-                    let state = plane.state.lock().unwrap();
+                    let state = plane.lock_state();
                     state
                         .worktrees
                         .get(&wt)
@@ -1088,7 +1261,7 @@ impl GitPlane {
                 plane.apply_probe(&wt, started, probe, &sink).await;
 
                 let rerun = {
-                    let mut state = plane.state.lock().unwrap();
+                    let mut state = plane.lock_state();
                     if !follow_up_used && state.rerun.remove(&wt) {
                         follow_up_used = true;
                         true
@@ -1100,7 +1273,7 @@ impl GitPlane {
                 };
                 if !rerun || plane.stopped.load(Ordering::Relaxed) {
                     if plane.stopped.load(Ordering::Relaxed) {
-                        let mut state = plane.state.lock().unwrap();
+                        let mut state = plane.lock_state();
                         state.pending.remove(&wt);
                         state.rerun.remove(&wt);
                     }
@@ -1148,14 +1321,15 @@ impl GitPlane {
         topology_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut rediscovery_ticker = tokio::time::interval(self.sweep_intervals.rediscovery);
         rediscovery_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut status_ticker = tokio::time::interval(self.sweep_intervals.status);
-        status_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         // Consume the immediate first ticks; the watcher already did the boot
         // rescan and the startup rescan above ran the same reconciliation.
         topology_ticker.tick().await;
         rediscovery_ticker.tick().await;
+        let mut heartbeat = tokio::time::interval(HEARTBEAT.min(self.stall_timeout));
         loop {
+            self.progress(1);
             tokio::select! {
+                _ = heartbeat.tick() => {},
                 _ = topology_ticker.tick() => {
                     if self.stopped.load(Ordering::Relaxed) {
                         info!("git plane: safety-net sweep exiting (sink closed)");
@@ -1189,6 +1363,24 @@ impl GitPlane {
                         self.debounce(wt, sink.clone());
                     }
                 }
+            }
+        }
+    }
+
+    // Independent pacing must not defer the 10s topology/15m discovery clocks.
+    async fn run_status_sweep(
+        self: Arc<Self>,
+        sink: PlaneSink,
+        watcher_cmd_tx: mpsc::Sender<WatcherCommand>,
+    ) {
+        tokio::time::sleep(self.sweep_intervals.startup_delay).await;
+        let mut status_ticker = tokio::time::interval(self.sweep_intervals.status);
+        status_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut heartbeat = tokio::time::interval(HEARTBEAT.min(self.stall_timeout));
+        loop {
+            self.progress(2);
+            tokio::select! {
+                _ = heartbeat.tick() => {},
                 _ = status_ticker.tick() => {
                     if self.stopped.load(Ordering::Relaxed) {
                         info!("git plane: safety-net sweep exiting (sink closed)");
@@ -1203,7 +1395,7 @@ impl GitPlane {
                     // it never reopens an existing stream.
                     let _ = watcher_cmd_tx.try_send(WatcherCommand::RegisterNew);
                     let worktrees: Vec<(PathBuf, Option<String>, Option<String>)> = {
-                        let state = self.state.lock().unwrap();
+                        let state = self.lock_state();
                         state
                             .worktrees
                             .iter()
@@ -1212,13 +1404,12 @@ impl GitPlane {
                     };
                     let sweep_started = Instant::now();
                     let git_command_budget = self.git_command_budget.clone();
-                    let mut probes = futures::stream::iter(worktrees)
-                        .map(|(wt, cached_commit, cached_subject)| {
+                    let mut probes = paced_probes(worktrees, self.sweep_intervals.status,
+                        |(wt, cached_commit, cached_subject)| {
                             let git_command_budget = git_command_budget.clone();
                             async move {
-                                // Budget clock starts at probe start (the
-                                // sweep has no debounce) and measures through
-                                // the emits.
+                                // Wall time includes queueing; the execution
+                                // budget starts only after permit admission.
                                 let started = Instant::now();
                                 let probe = probe_worktree_with_budget(
                                     &wt,
@@ -1229,9 +1420,9 @@ impl GitPlane {
                                 .await;
                                 (wt, started, probe)
                             }
-                        })
-                        .buffer_unordered(MAX_CONCURRENT_PROBES);
+                        });
                     while let Some((wt, started, probe)) = probes.next().await {
+                        self.progress(2);
                         self.apply_probe(&wt, started, probe, &sink).await;
                     }
                     debug!(
@@ -1248,9 +1439,8 @@ impl GitPlane {
     /// Diff a fresh probe against the cached facts for `wt` and emit only
     /// the events that actually changed. Runs for both the watcher's
     /// debounced batches and the sweep, so the emit surface is identical.
-    /// `started` is the per-event budget clock (probe start for the sweep,
-    /// after the debounce for fs events) — the 200ms budget check covers
-    /// the probe through the emits.
+    /// `started` measures total scheduling/probe latency for diagnostics.
+    /// The execution budget itself starts only after semaphore admission.
     async fn apply_probe(
         &self,
         wt: &Path,
@@ -1262,10 +1452,15 @@ impl GitPlane {
             Ok(p) => p,
             Err(ProbeError::Gone) => {
                 let removed = {
-                    let mut state = self.state.lock().unwrap();
+                    let mut state = self.lock_state();
                     state.worktrees.remove(wt).is_some()
                 };
                 if removed {
+                    self.health
+                        .facts
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(wt);
                     info!(worktree = %wt.display(), "git plane: worktree removed (directory gone)");
                     if sink
                         .send(PlaneEvent::Git(GitEvent::WorktreeRemoved {
@@ -1280,18 +1475,29 @@ impl GitPlane {
                 return;
             }
             Err(ProbeError::OverBudget) => {
-                let mut state = self.state.lock().unwrap();
-                if let Some(worktree) = state.worktrees.get_mut(wt) {
-                    worktree.stale = true;
-                }
+                let emit_warning = {
+                    let mut state = self.lock_state();
+                    state.worktrees.get_mut(wt).is_some_and(|worktree| {
+                        worktree.stale = true;
+                        worktree.warn_over_budget(Instant::now())
+                    })
+                };
                 self.backlog.store(true, Ordering::Release);
-                warn!(
-                    worktree = %wt.display(),
-                    took_ms = started.elapsed().as_millis() as u64,
-                    budget_ms = EVENT_BUDGET.as_millis() as u64,
-                    skipped = true,
-                    "git plane event over budget; deferred to a later round"
-                );
+                let skipped = self
+                    .health
+                    .skipped
+                    .fetch_add(1, Ordering::Relaxed)
+                    .wrapping_add(1);
+                // No logging/subscriber code runs while holding the cache lock.
+                if emit_warning {
+                    warn!(
+                        worktree = %wt.display(),
+                        queued_and_probe_ms = started.elapsed().as_millis() as u64,
+                        budget_ms = EVENT_BUDGET.as_millis() as u64,
+                        skipped,
+                        "git plane event over budget; deferred to a later round"
+                    );
+                }
                 return;
             }
             Err(ProbeError::Git(e)) => {
@@ -1301,7 +1507,7 @@ impl GitPlane {
         };
         let mut events: Vec<GitEvent> = Vec::new();
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.lock_state();
             let st = state.worktrees.entry(wt.to_path_buf()).or_default();
             let commit_changed = st.commit.as_deref() != Some(probe.commit.as_str());
             let branch_changed = st.branch.as_deref() != Some(probe.branch.as_str());
@@ -1353,6 +1559,12 @@ impl GitPlane {
                 return;
             }
         }
+        self.health
+            .facts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(wt.to_path_buf(), Some(Instant::now()));
+        self.health.progress();
     }
 
     // -- registry -----------------------------------------------------------
@@ -1409,7 +1621,7 @@ impl GitPlane {
             // disappearance) proves otherwise. Without this, the diff below
             // would emit false WorktreeRemoved events for every worktree
             // owned only by the unavailable source.
-            let state = self.state.lock().unwrap();
+            let state = self.lock_state();
             for source in &scan.unavailable_sources {
                 let Some(paths) = state.source_worktrees.get(source) else {
                     continue;
@@ -1431,22 +1643,21 @@ impl GitPlane {
                 }
             }
         }
-        {
-            // A skipped entry means the plane will never emit facts for it —
-            // make the drop visible (once per continuous skip period).
-            let mut state = self.state.lock().unwrap();
+        let skipped_notices: Vec<_> = {
+            let mut state = self.lock_state();
             state.skip_warned.retain(|p| skipped.contains(p));
-            for path in &skipped {
-                if state.skip_warned.insert(path.clone()) {
-                    warn!(
-                        worktree = %path.display(),
-                        "git plane: worktree listed but skipped (outside the watched set or directory missing)"
-                    );
-                }
-            }
+            skipped
+                .iter()
+                .filter(|path| state.skip_warned.insert((*path).clone()))
+                .cloned()
+                .collect()
+        };
+        for path in skipped_notices {
+            warn!(worktree = %path.display(),
+                "git plane: worktree listed but skipped (outside the watched set or directory missing)");
         }
         let (added, removed, added_paths) = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.lock_state();
             let mut added: Vec<WorktreeEntry> = Vec::new();
             let mut removed: Vec<PathBuf> = Vec::new();
             for (path, entry) in &tracked {
@@ -1533,6 +1744,13 @@ impl GitPlane {
             let added_paths: Vec<PathBuf> = added.iter().map(|e| e.path.clone()).collect();
             (added, removed, added_paths)
         };
+        {
+            let mut facts = self.health.facts.lock().unwrap_or_else(|e| e.into_inner());
+            facts.retain(|path, _| tracked.contains_key(path));
+            for path in tracked.keys() {
+                facts.entry(path.clone()).or_insert(None);
+            }
+        }
         for entry in &added {
             info!(worktree = %entry.path.display(), "git plane: worktree added");
             if sink
@@ -1602,7 +1820,7 @@ impl GitPlane {
     fn source_scan_allowed(&self, source: &Path, mode: ScanMode) -> SourceScanDecision {
         let source_is_dir = source.is_dir();
         let now = Instant::now();
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.lock_state();
         let Some(failure) = state.source_failures.get(source).copied() else {
             return SourceScanDecision {
                 allowed: true,
@@ -1631,7 +1849,7 @@ impl GitPlane {
 
     fn note_source_failure(&self, source: &Path, source_is_dir: bool) -> SourceFailureNotice {
         let now = Instant::now();
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.lock_state();
         let mut failure = state
             .source_failures
             .remove(source)
@@ -1671,12 +1889,7 @@ impl GitPlane {
     }
 
     fn clear_source_failure(&self, source: &Path) -> bool {
-        self.state
-            .lock()
-            .unwrap()
-            .source_failures
-            .remove(source)
-            .is_some()
+        self.lock_state().source_failures.remove(source).is_some()
     }
 
     /// WS3 F2: enumerate worktrees PER REPO. `git worktree list` from the
@@ -1710,7 +1923,7 @@ impl GitPlane {
             }
         }
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.lock_state();
             // A dynamic worktree container that disappeared from the root is
             // a source change, not a reason to retain a stale backoff epoch if
             // it is later recreated at the same path.
@@ -1967,6 +2180,33 @@ fn resolve_gitdir(wt: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Spread a sweep over its interval; never launch more than four probes.
+/// At extreme fleet sizes the 200ms execution envelope stretches the sweep
+/// rather than building an unbounded queue. Missed interval ticks are skipped.
+fn paced_probes<T, F, Fut>(
+    items: Vec<T>,
+    interval: Duration,
+    probe: F,
+) -> impl futures::Stream<Item = Fut::Output>
+where
+    F: Fn(T) -> Fut,
+    Fut: Future,
+{
+    let count = u32::try_from(items.len().max(1)).unwrap_or(u32::MAX);
+    let spacing = (interval / count).max(EVENT_BUDGET / MAX_CONCURRENT_PROBES as u32);
+    let start = tokio::time::Instant::now();
+    futures::stream::iter(items.into_iter().enumerate())
+        .map(move |(index, item)| {
+            let future = probe(item);
+            let deadline = start + spacing.saturating_mul(u32::try_from(index).unwrap_or(u32::MAX));
+            async move {
+                tokio::time::sleep_until(deadline).await;
+                future.await
+            }
+        })
+        .buffer_unordered(MAX_CONCURRENT_PROBES)
+}
+
 /// Enforce the per-worktree event budget. A timed-out probe is discarded as a
 /// unit, leaving the last complete facts available until a later sweep retries
 /// the worktree; this keeps a slow repository from blocking the serving path.
@@ -1976,38 +2216,59 @@ async fn probe_worktree_with_budget(
     cached_subject: Option<&str>,
     git_command_budget: Arc<Semaphore>,
 ) -> Result<Probe, ProbeError> {
-    match tokio::time::timeout(
-        EVENT_BUDGET,
-        probe_worktree(wt, cached_commit, cached_subject, git_command_budget),
+    with_probe_budget(
+        git_command_budget,
+        probe_worktree_admitted(wt, cached_commit, cached_subject),
     )
     .await
-    {
+}
+
+async fn with_probe_budget<T>(
+    budget: Arc<Semaphore>,
+    probe: impl Future<Output = Result<T, ProbeError>>,
+) -> Result<T, ProbeError> {
+    // Scheduling is not execution. Hold one permit across status + optional
+    // log; neither command reacquires it inside the execution deadline.
+    let _permit = budget
+        .acquire_owned()
+        .await
+        .map_err(|_| ProbeError::Git("git command budget closed".into()))?;
+    match tokio::time::timeout(EVENT_BUDGET, probe).await {
         Ok(result) => result,
         Err(_) => Err(ProbeError::OverBudget),
     }
 }
 
-/// One worktree snapshot. One `git status` subprocess; `git log` runs only
-/// when the cached HEAD changed (or no cache exists). Never mutates anything
-/// (`--no-optional-locks` so `status` cannot rewrite the index).
+#[cfg(test)]
 async fn probe_worktree(
     wt: &Path,
     cached_commit: Option<&str>,
     cached_subject: Option<&str>,
-    git_command_budget: Arc<Semaphore>,
+    budget: Arc<Semaphore>,
+) -> Result<Probe, ProbeError> {
+    let _permit = budget
+        .acquire_owned()
+        .await
+        .map_err(|_| ProbeError::Git("git command budget closed".into()))?;
+    probe_worktree_admitted(wt, cached_commit, cached_subject).await
+}
+
+/// One worktree snapshot. One `git status` subprocess; `git log` runs only
+/// when the cached HEAD changed (or no cache exists). Never mutates anything
+/// (`--no-optional-locks` so `status` cannot rewrite the index).
+async fn probe_worktree_admitted(
+    wt: &Path,
+    cached_commit: Option<&str>,
+    cached_subject: Option<&str>,
 ) -> Result<Probe, ProbeError> {
     #[cfg(test)]
     TEST_PROBE_RUNS.fetch_add(1, Ordering::SeqCst);
     if !wt.is_dir() {
         return Err(ProbeError::Gone);
     }
-    let status = run_git(
-        git_command_budget.clone(),
-        wt,
-        &["status", "--porcelain=v2", "--branch"],
-    )
-    .await
-    .map_err(ProbeError::Git)?;
+    let status = run_git_admitted(wt, &["status", "--porcelain=v2", "--branch"])
+        .await
+        .map_err(ProbeError::Git)?;
     let (branch, mut commit, status) = parse_status_v2(&status)?;
     let subject = if cached_commit == Some(commit.as_str()) {
         cached_subject.map(str::to_string)
@@ -2015,7 +2276,7 @@ async fn probe_worktree(
         // P4 G21: ONE invocation resolves both the head commit AND its
         // first-line subject when HEAD moved. The status probe already
         // carries `oid`, so no `rev-parse` is needed on the hot path.
-        let head = run_git(git_command_budget, wt, &["log", "-1", "--format=%H%n%s"])
+        let head = run_git_admitted(wt, &["log", "-1", "--format=%H%n%s"])
             .await
             .map_err(ProbeError::Git)?;
         let mut lines = head.lines();
@@ -2039,8 +2300,6 @@ async fn run_git(
     wt: &Path,
     args: &[&str],
 ) -> Result<String, String> {
-    #[cfg(test)]
-    GIT_CALLS.fetch_add(1, Ordering::Relaxed);
     // The permit covers the complete child lifetime, including output
     // collection and the timeout. A slow git process therefore occupies one
     // bounded slot and cannot fan out into one process per changed worktree.
@@ -2048,6 +2307,12 @@ async fn run_git(
         .acquire_owned()
         .await
         .map_err(|_| "git command budget closed".to_string())?;
+    run_git_admitted(wt, args).await
+}
+
+async fn run_git_admitted(wt: &Path, args: &[&str]) -> Result<String, String> {
+    #[cfg(test)]
+    GIT_CALLS.fetch_add(1, Ordering::Relaxed);
     #[cfg(test)]
     let _test_load = TestGitLoadGuard::acquire();
     #[cfg(test)]
@@ -2219,26 +2484,16 @@ impl Plane for GitPlane {
     /// Never blocks: all work happens on background tasks. Resets the
     /// sink-close flag so a supervised restart can re-arm cleanly (WS3 F4).
     fn start(self: Arc<Self>, sink: PlaneSink) {
-        self.stopped.store(false, Ordering::Relaxed);
-        let (watcher_cmd_tx, watcher_cmd_rx) = mpsc::channel::<WatcherCommand>(1);
-        let watcher_sink = sink.clone();
-        let watcher_plane = self.clone();
-        let watcher_cmd_tx_for_events = watcher_cmd_tx.clone();
-        tokio::spawn(async move {
-            watcher_plane
-                .run_watcher(watcher_sink, watcher_cmd_rx, watcher_cmd_tx_for_events)
-                .await;
-        });
-        let sweep_plane = self.clone();
-        tokio::spawn(async move {
-            sweep_plane.run_sweep(sink, watcher_cmd_tx).await;
-        });
+        if !self.supervising.swap(true, Ordering::AcqRel) {
+            tokio::spawn(self.supervise(sink));
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    include!("git_plane_issue492_tests.rs");
 
     /// Poll `rx` until a `WorktreeRemoved` for `want` arrives or `timeout`
     /// elapses. Non-matching events (boot-scan `WorktreeAdded`, head facts,
@@ -2479,7 +2734,7 @@ mod tests {
             PathBuf::from("/fake/repo-two/.git"),
         ];
         {
-            let mut state = plane.state.lock().unwrap();
+            let mut state = plane.lock_state();
             state.commondirs = boot.to_vec();
         }
 
@@ -2509,7 +2764,7 @@ mod tests {
         // entries remain immutable.
         let later = PathBuf::from("/fake/repo-three/.git");
         {
-            let mut state = plane.state.lock().unwrap();
+            let mut state = plane.lock_state();
             state.commondirs.push(later.clone());
         }
         assert!(plane.register_new_commondir_watchers(&mut watchers, &mut create));
@@ -2532,7 +2787,7 @@ mod tests {
         // entire shared stream.
         let failed = PathBuf::from("/fake/repo-four/.git");
         {
-            let mut state = plane.state.lock().unwrap();
+            let mut state = plane.lock_state();
             state.commondirs.push(failed.clone());
         }
         let attempts = std::cell::RefCell::new(Vec::new());
@@ -2800,7 +3055,7 @@ mod tests {
             PathBuf::from("/nonexistent-gitplane-wts-root"),
         );
         {
-            let mut state = plane.state.lock().unwrap();
+            let mut state = plane.lock_state();
             mutate(&mut state);
 
             state.commondirs = state.main_checkouts.keys().cloned().collect();
@@ -3018,7 +3273,7 @@ mod tests {
             delta, 0,
             "a missing source is checked with metadata only, never one git child per topology tick"
         );
-        let state = plane.state.lock().unwrap();
+        let state = plane.lock_state();
         let failure = state
             .source_failures
             .get(&canonicalize_existing_prefix(&missing))
@@ -3058,16 +3313,9 @@ mod tests {
         while rx.try_recv().is_ok() {}
         let canonical_repo = fs::canonicalize(&repo).unwrap();
         let canonical_linked = fs::canonicalize(&linked).unwrap();
-        assert!(
-            plane
-                .state
-                .lock()
-                .unwrap()
-                .worktrees
-                .contains_key(&canonical_repo)
-        );
+        assert!(plane.lock_state().worktrees.contains_key(&canonical_repo));
         {
-            let state = plane.state.lock().unwrap();
+            let state = plane.lock_state();
             assert!(state.worktrees.contains_key(&canonical_linked));
             assert!(
                 state
@@ -3089,7 +3337,7 @@ mod tests {
         }
 
         {
-            let state = plane.state.lock().unwrap();
+            let state = plane.lock_state();
             assert!(state.worktrees.contains_key(&canonical_repo));
             assert!(state.worktrees.contains_key(&canonical_linked));
             assert!(
@@ -3118,9 +3366,7 @@ mod tests {
         plane.rediscover(&sink).await;
         assert!(
             !plane
-                .state
-                .lock()
-                .unwrap()
+                .lock_state()
                 .source_failures
                 .contains_key(&canonical_repo)
         );
@@ -3629,7 +3875,7 @@ mod tests {
         let (watcher_cmd_tx, _watcher_cmd_rx) = mpsc::channel(1);
         let sweep = {
             let plane = plane.clone();
-            tokio::spawn(async move { plane.run_sweep(sink, watcher_cmd_tx).await })
+            tokio::spawn(async move { plane.run_status_sweep(sink, watcher_cmd_tx).await })
         };
         let slow_git = TestGitDelayReset::new(300);
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -3639,9 +3885,7 @@ mod tests {
                 "sweep did not skip the slow worktree"
             );
             if plane
-                .state
-                .lock()
-                .unwrap()
+                .lock_state()
                 .worktrees
                 .get(&worktree)
                 .is_some_and(|state| state.stale)
@@ -3658,9 +3902,7 @@ mod tests {
                 "sweep did not retry the worktree"
             );
             if plane
-                .state
-                .lock()
-                .unwrap()
+                .lock_state()
                 .worktrees
                 .get(&worktree)
                 .is_some_and(|state| {

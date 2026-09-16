@@ -1,0 +1,13 @@
+{
+  "label": "mutation-battery",
+  "command": [
+    "python3",
+    "docs/evidence/issue-555/daemon-mutations.py"
+  ],
+  "raw_exit": 1,
+  "duration_s": 387.831,
+  "head": "2d09b37762b97a751a0eb52c5c0ac57ece1d5485",
+  "cpu_hogs": 0,
+  "log": "/tmp/g555-mutation-battery.log",
+  "host_log": "/tmp/g555-mutation-battery-host.log"
+}

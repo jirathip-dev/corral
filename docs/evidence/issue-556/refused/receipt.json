@@ -1,0 +1,48 @@
+{
+  "mode": "refused",
+  "fixture": "Herdr agent and checkout; live GitHub only in env/file modes",
+  "binary_sha256": "1ce76de61416bc80bd5bcd08986332378f493feb51373ac7f61be97b35e16d32",
+  "command": [
+    "/private/tmp/g556-target/release/corrald",
+    "--socket",
+    "/tmp/g556-k_gxfl_w/herdr.sock",
+    "--port",
+    "53050"
+  ],
+  "PATH": "/usr/bin:/bin",
+  "gh_on_PATH": false,
+  "branch": "unbound-556-fixture",
+  "expected_pr": null,
+  "seconds": 5.659,
+  "samples": [
+    {
+      "elapsed_s": 0.011,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 1.147,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 2.251,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 3.406,
+      "exit": 0
+    },
+    {
+      "elapsed_s": 4.556,
+      "exit": 0
+    }
+  ],
+  "history_before": {
+    "history/seg-000000-1789579013425.jsonl": 272
+  },
+  "history_after": {
+    "history/seg-000000-1789579013425.jsonl": 272
+  },
+  "agent_snapshot_unchanged": true,
+  "raw_exit": 0,
+  "daemon_termination_exit": -15
+}

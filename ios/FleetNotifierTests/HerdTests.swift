@@ -3,6 +3,54 @@ import SwiftUI
 @testable import FleetNotifier
 
 final class HerdTests: XCTestCase {
+    func testHorseCaptionLabelWiresPositiveGitMarkers() throws {
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "HerdView.swift", withExtension: "txt"))
+        let source = try String(contentsOf: url, encoding: .utf8).filter { !$0.isWhitespace }
+        let start = try XCTUnwrap(source.range(of: "privatefunchorseCaption("))
+        let end = try XCTUnwrap(source.range(of: "privatefunchorseButton(", range: start.upperBound..<source.endIndex))
+        let caption = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(caption.contains("letcaptionName=Text(name).font(.system(.caption,design:.monospaced)).lineLimit(rail?1:nil)"))
+        XCTAssertTrue(caption.contains("ifworkspace.dirty||workspace.behind>0{HStack(spacing:2){captionName"))
+        XCTAssertTrue(caption.contains("ifworkspace.dirty{Text(\"●\").font(.caption2.weight(.semibold)).foregroundStyle(theme.peach).fixedSize()}"),
+                      "the rendered horse label must include the Board-style dirty marker")
+        XCTAssertTrue(caption.contains("ifworkspace.behind>0{Text(\"↓\\(workspace.behind)\").font(.caption2.monospaced()).fixedSize()}"))
+        XCTAssertTrue(caption.contains(".lineLimit(rail?1:nil)}else{captionName}"),
+                      "absence keeps the original name label, without an empty marker container")
+        XCTAssertTrue(caption.contains("Text(status).font(.caption.weight(.semibold))"))
+        XCTAssertTrue(caption.contains(".padding(.vertical,5).ranchChromeSurface(ranchTokens,cornerRadius:8)"))
+        for forbidden in ["workspace.repo", "workspace.branch", "workspace.ahead", "head_subject", "Text(\"dirty\")"] {
+            XCTAssertFalse(caption.contains(forbidden), forbidden)
+        }
+        let buttonEnd = try XCTUnwrap(source.range(of: "funcherdHorseAccessibilityLabel(", range: end.upperBound..<source.endIndex))
+        let button = String(source[end.lowerBound..<buttonEnd.lowerBound])
+        XCTAssertTrue(button.contains("hostName:horse.hostName,rail:rail,workspace:horse.agent.workspace)"))
+        XCTAssertTrue(button.contains(".accessibilityLabel(herdHorseAccessibilityLabel(horse))"))
+    }
+
+    func testHorseGitAccessibilityWordsAndAbsence() throws {
+        let absent = try JSONDecoder().decode(Workspace.self, from: Data("{}".utf8))
+        let cases: [(Workspace, String)] = [
+            (absent, ""),
+            (Workspace(dirty: false, ahead: 0, behind: 0), ""),
+            (Workspace(ahead: 8), ""),
+            (Workspace(dirty: true), ", dirty worktree"),
+            (Workspace(behind: 1), ", 1 commit behind"),
+            (Workspace(dirty: true, ahead: 8, behind: 3), ", dirty worktree, 3 commits behind")
+        ]
+        for (workspace, suffix) in cases {
+            let horse = HerdHorse(agent: Agent(agentId: "557-horse", state: .blocked, workspace: workspace,
+                                               displayName: "rail-horse"),
+                                  hostProfileID: nil, hostName: nil, disconnected: false)
+            XCTAssertEqual(herdHorseAccessibilityLabel(horse), "rail-horse, blocked, Other" + suffix)
+        }
+        // #564 owns git freshness. Host connectivity must not become a proxy.
+        let retained = HerdHorse(agent: Agent(agentId: "557-retained", state: .idle,
+                                              workspace: Workspace(repo: "canter", dirty: true, behind: 2)),
+                                 hostProfileID: nil, hostName: "Test host", disconnected: true)
+        XCTAssertEqual(herdHorseAccessibilityLabel(retained),
+                       "557-retained, idle · last known, canter on Test host, dirty worktree, 2 commits behind")
+    }
+
     func testNativeDynamicTypeTapZonesAndSharedDestinationWiring() throws {
         func source(_ name: String) throws -> String {
             let url = try XCTUnwrap(Bundle(for:Self.self).url(forResource:name+".swift",withExtension:"txt"))
@@ -296,7 +344,7 @@ final class HerdRailZoneTests: XCTestCase {
         var values: [String: CGRect] = [:]
     }
 
-    private func fleet(_ state: String) -> [HerdHorse] {
+    private func fleet(_ state: String, gitWorkspace: Workspace? = nil) -> [HerdHorse] {
         var horses = (0..<15).map { index in
             HerdHorse(agent: Agent(agentId: "548-field-\(index)", state: .idle,
                                    workspace: Workspace(repo: "canter"), displayName: "field-\(index)"),
@@ -304,13 +352,14 @@ final class HerdRailZoneTests: XCTestCase {
         }
         if state != "empty" {
             horses.append(HerdHorse(agent: Agent(agentId: "548-rail", state: .blocked,
-                                                  workspace: Workspace(repo: "canter"), displayName: "rail-horse"),
+                                                  workspace: gitWorkspace ?? Workspace(repo: "canter"), displayName: "rail-horse"),
                                      hostProfileID: nil, hostName: nil, disconnected: state == "last-known"))
         }
         return horses
     }
 
-    private func render(_ state: String, night: Bool, type: DynamicTypeSize = .large) async throws -> [String: CGRect] {
+    private func render(_ state: String, night: Bool, type: DynamicTypeSize = .large,
+                        gitWorkspace: Workspace? = nil) async throws -> [String: CGRect] {
         let defaults = UserDefaults.standard
         let saved = defaults.object(forKey: "herdEnvironment")
         defaults.set(night ? "Night" : "Day", forKey: "herdEnvironment")
@@ -320,7 +369,7 @@ final class HerdRailZoneTests: XCTestCase {
         }
         let frames = Frames()
         let theme = ThemeStore(reduceMotionProvider: { true })
-        let view = HerdView(horses: fleet(state), obscured: false, select: { _ in })
+        let view = HerdView(horses: fleet(state, gitWorkspace: gitWorkspace), obscured: false, select: { _ in })
             .environmentObject(theme)
             .environment(\.dynamicTypeSize, type)
             .onPreferenceChange(HerdRailFrames.self) { frames.values = $0 }
@@ -333,7 +382,7 @@ final class HerdRailZoneTests: XCTestCase {
         window.makeKeyAndVisible()
         defer { window.isHidden = true }
         try await Task.sleep(for: .milliseconds(1200))
-        let name = "\(night ? "night" : "day")-\(state)-\(type)"
+        let name = "\(night ? "night" : "day")-\(state)-\(type)" + (gitWorkspace == nil ? "" : "-git")
         try capture(window, name: name)
         let measured = frames.values
         print("G548_MEASURE \(name) safeTop=\(window.safeAreaInsets.top) frames=\(measured)")
@@ -399,6 +448,24 @@ final class HerdRailZoneTests: XCTestCase {
                 }
                 XCTAssertEqual(Set(firstRows).count, 1, "rail occupancy must not move the first horse row")
                 XCTAssertEqual(Set(heights).count, 1, "reserve identical card height in all three states")
+            }
+        }
+    }
+
+    func testGitSignalsKeepCaptionGeometryDayNightAX3() async throws {
+        for type in [DynamicTypeSize.large, .accessibility3] {
+            for night in [false, true] {
+                let absent = try await render("blocked", night: night, type: type)
+                let signals = try await render("blocked", night: night, type: type,
+                                               gitWorkspace: Workspace(repo: "canter", dirty: true, behind: 3))
+                XCTAssertEqual(Set(signals.keys), Set(absent.keys), "frame probe names stay unchanged")
+                for (name, expected) in absent {
+                    XCTAssertEqual(try XCTUnwrap(signals[name]), expected, "git markers moved \(name)")
+                }
+                let rail = try XCTUnwrap(signals["rail-horse"])
+                let zone = try XCTUnwrap(signals["rail-zone"])
+                XCTAssertLessThanOrEqual(rail.maxY, zone.maxY + 0.5, "git caption must fit the reserved rail")
+                print("G557_MEASURE night=\(night) type=\(type) rail=\(rail) zone=\(zone) identicalFrames=true")
             }
         }
     }

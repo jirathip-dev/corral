@@ -1,0 +1,24 @@
+[
+  {
+    "command": [
+      "grep",
+      "-rn",
+      "gh auth token",
+      "src/"
+    ],
+    "exit": 1,
+    "lines": 0,
+    "log": "/tmp/g556-gh-auth.log"
+  },
+  {
+    "command": [
+      "grep",
+      "-rnF",
+      "Command::new(\"gh\")",
+      "src/"
+    ],
+    "exit": 1,
+    "lines": 0,
+    "log": "/tmp/g556-gh-command.log"
+  }
+]

@@ -1,0 +1,13 @@
+{
+  "command": [
+    "cargo",
+    "deny",
+    "check"
+  ],
+  "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl492-gitplane",
+  "raw_exit": 0,
+  "timed_out": false,
+  "elapsed_seconds": 1.622,
+  "log": "/tmp/g492-verified-deny.log",
+  "target": "/tmp/g492-target"
+}

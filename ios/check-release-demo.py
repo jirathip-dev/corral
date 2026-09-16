@@ -570,7 +570,7 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # creation happens inside Foundation's own async machinery one await hop
     # after any caller-side guard; re-pinned over the round-3 source set
     # (recomputed from the tree, never hand-edited).
-    "8eba68197e99d3e65d326e9de07357c5a823f4d798131d6890a142a412e1e302"
+    "111271878084d05b26d146a2cad67b4a9dc7a20206e2a50181c7956412b46d12"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.
@@ -806,7 +806,8 @@ APPROVED_TEST_SOURCE_DIGEST = (
     # 2026-09-15 #551 r3: the retained-idle-row bob regression
     # (testWarmReturnRetainedIdleRowNeverBobsWhileVerifiedIdleRowAnimates) +
     # the seeded idle-state fixture parameter; re-pinned.
-    "823a89974d2e06567a20c897bad5f8776faa8e9cb3c04fc399a36c8e93b3b6f3"
+    # #556: production WorkspaceLine bound/unbound raster regression.
+    "bb724b4df8a827342c6e579deaf093350170cc7336c7009f22c0054846e20589"
 )
 RELEASE_SOURCE_DIGEST_MARKER = source_digest_marker(APPROVED_RELEASE_SOURCE_DIGEST)
 RELEASE_BUILD_INPUTS = tuple(

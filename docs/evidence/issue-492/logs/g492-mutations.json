@@ -1,0 +1,35 @@
+[
+  {
+    "mutation": "poison",
+    "path": "src/adapters/git_plane.rs",
+    "test": "g492_",
+    "red": 101,
+    "green": 0,
+    "expected_failure": "PoisonError",
+    "before": "340c867d6b09e5c91a1f3d74b2d532425a2f776e92ee27059915dbb7610073bd  src/adapters/git_plane.rs",
+    "after": "340c867d6b09e5c91a1f3d74b2d532425a2f776e92ee27059915dbb7610073bd  src/adapters/git_plane.rs",
+    "restore_diff": 0
+  },
+  {
+    "mutation": "permit",
+    "path": "src/adapters/git_plane.rs",
+    "test": "g492_permit_queue_is_not_execution_budget_and_sweep_is_paced",
+    "red": 101,
+    "green": 0,
+    "expected_failure": "permit wait was incorrectly charged to the execution budget",
+    "before": "340c867d6b09e5c91a1f3d74b2d532425a2f776e92ee27059915dbb7610073bd  src/adapters/git_plane.rs",
+    "after": "340c867d6b09e5c91a1f3d74b2d532425a2f776e92ee27059915dbb7610073bd  src/adapters/git_plane.rs",
+    "restore_diff": 0
+  },
+  {
+    "mutation": "staleness",
+    "path": "src/core/store.rs",
+    "test": "g492_snapshot_marks_old_absent_and_stopped_facts",
+    "red": 101,
+    "green": 0,
+    "expected_failure": "old git facts must never be marked current",
+    "before": "2cae7ca9dde92c500e2677f86950e7ccb921a7db379a7c5839542f363c9b8be2  src/core/store.rs",
+    "after": "2cae7ca9dde92c500e2677f86950e7ccb921a7db379a7c5839542f363c9b8be2  src/core/store.rs",
+    "restore_diff": 0
+  }
+]

@@ -45,6 +45,50 @@ Prebuilt tagged releases can be installed without a Rust toolchain using
 `scripts/setup-corrald.sh --from-release <binary>` skips the cargo build
 and uses the bundled `corrald` binary instead.
 
+### Optional GitHub features
+
+Public installs and phone pairing need no GitHub knowledge, login, or `gh`.
+PR numbers, CI verdicts, and the issues a PR closes are optional read-only
+facts. The host opts in; the phone remains a signed read-only client, with
+no token-entry or GitHub-connection Settings surface.
+
+The daemon resolves its token at startup in this order:
+
+1. Nonempty `GITHUB_TOKEN` in the daemon process environment. For launchd,
+   configure its `EnvironmentVariables` dictionary; exporting in a shell
+   does not change an already-running service. On Linux configure the user
+   service environment instead.
+2. A UTF-8 token in `$CORRAL_CONFIG_DIR/github-token`, default
+   `~/.config/corral/github-token`. Use an owner-only file (`0600`) under
+   the private config directory (`0700`). Group/world permissions cause a
+   refusal log and the file is treated as absent. Whitespace is trimmed;
+   an empty env value falls through to the file. Do not commit the token
+   or put it in terminal logs. Use a token with read access to the intended
+   repositories, PRs, issues and check results; no write permission is needed.
+
+No credential CLI is invoked. With neither source configured, startup logs
+`github: disabled (no token)` once and the plane exits before any HTTP
+connection attempt. A disabled process does not watch for a new token;
+apply initial configuration at the next owner-managed service start. A 401
+while enabled re-reads the same sources (including a rotated file); without
+a replacement the plane stops. Removing a file does not revoke a token
+already loaded in memory: revoke the credential at GitHub and/or arrange an
+owner-managed service restart to disable the running plane.
+
+Even with a token, no polling occurs before the first SSE client connects.
+After that, one aliased GraphQL query covers the active repository set per
+round-trip: 60 seconds while connected, 300 seconds in background, with
+bounded backoff on failure. No per-repository CLI processes are spawned.
+
+An unbound agent has null `pr_number`/`ci_status` and no PR badge. The daemon
+also hides PR/CI/linked-issue bindings when the git plane's per-worktree
+facts are absent, stopped, or at least 120 seconds old. The existing
+publication coalescer applies this to `/snapshot`, initial SSE, and live
+SSE deltas (up to about two seconds after the freshness boundary), without
+adding request-path work. Fresh facts can restore a retained binding even
+if the GitHub payload has not changed. This does not promise freshness
+while a phone is disconnected or while no new GitHub poll succeeds.
+
 ### Grant provisioning (out-of-band since #354)
 
 The host-admin grant surface (`POST /grants`, `GET /grants` and the

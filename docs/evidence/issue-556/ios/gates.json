@@ -1,0 +1,93 @@
+[
+  {
+    "command": [
+      "python3",
+      "ios/check-release-demo.py",
+      "--self-test"
+    ],
+    "exit": 0,
+    "log": "/tmp/g556-release-source-self-test.log",
+    "duration_s": 49.751
+  },
+  {
+    "command": [
+      "xcodebuild",
+      "-project",
+      "ios/FleetNotifier.xcodeproj",
+      "-scheme",
+      "FleetNotifier",
+      "-derivedDataPath",
+      "/tmp/g556-dd",
+      "CODE_SIGNING_ALLOWED=NO",
+      "build",
+      "-destination",
+      "generic/platform=iOS Simulator"
+    ],
+    "exit": 0,
+    "log": "/tmp/g556-ios-build.log",
+    "duration_s": 115.863
+  },
+  {
+    "command": [
+      "xcrun",
+      "simctl",
+      "boot",
+      "3E152044-E411-4CE0-A545-604775D51B58"
+    ],
+    "exit": 0,
+    "log": "/tmp/g556-ios-boot.log",
+    "duration_s": 0.78
+  },
+  {
+    "command": [
+      "xcrun",
+      "simctl",
+      "bootstatus",
+      "3E152044-E411-4CE0-A545-604775D51B58",
+      "-b"
+    ],
+    "exit": 0,
+    "log": "/tmp/g556-ios-bootstatus.log",
+    "duration_s": 52.674
+  },
+  {
+    "command": [
+      "xcodebuild",
+      "-project",
+      "ios/FleetNotifier.xcodeproj",
+      "-scheme",
+      "FleetNotifier",
+      "-derivedDataPath",
+      "/tmp/g556-dd",
+      "CODE_SIGNING_ALLOWED=NO",
+      "test",
+      "-destination",
+      "platform=iOS Simulator,id=3E152044-E411-4CE0-A545-604775D51B58",
+      "-only-testing:FleetNotifierTests",
+      "-parallel-testing-enabled",
+      "NO",
+      "-resultBundlePath",
+      "/tmp/g556-ios.xcresult"
+    ],
+    "exit": 0,
+    "log": "/tmp/g556-ios-full.log",
+    "duration_s": 305.164
+  },
+  {
+    "command": [
+      "xcrun",
+      "xcresulttool",
+      "export",
+      "attachments",
+      "--test-id",
+      "GitHubBindingBadgeTests",
+      "--path",
+      "/tmp/g556-ios.xcresult",
+      "--output-path",
+      "/tmp/g556-ios-attachments"
+    ],
+    "exit": 0,
+    "log": "/tmp/g556-ios-export.log",
+    "duration_s": 2.69
+  }
+]

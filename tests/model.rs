@@ -99,6 +99,10 @@ fn snapshot_is_versioned_flat_keyed_records() {
         generated_at: 1_755_273_000_000,
         agents,
         git_plane_backlog: false,
+        git_plane_alive: false,
+        git_plane_last_event_age_ms: None,
+        git_plane_skipped: 0,
+        git_worktree_facts: std::collections::BTreeMap::new(),
     };
     let v = serde_json::to_value(&snap).unwrap();
     assert_eq!(v["schema_version"], SCHEMA_VERSION);
@@ -107,6 +111,10 @@ fn snapshot_is_versioned_flat_keyed_records() {
     assert_eq!(v["schema_version"], 5);
     assert_eq!(v["rev"], 12);
     assert!(v["agents"].is_object(), "agents must be flat keyed records");
+    assert_eq!(v["git_plane_alive"], false);
+    assert!(v["git_plane_last_event_age_ms"].is_null());
+    assert_eq!(v["git_plane_skipped"], 0);
+    assert!(v["git_worktree_facts"].is_object());
 }
 
 #[test]

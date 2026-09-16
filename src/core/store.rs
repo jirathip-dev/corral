@@ -13,17 +13,23 @@
 //! persistent [`crate::history::HistoryRing`] — zero polling, zero extra git
 //! calls, one page-cache write syscall.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use tokio::sync::{Mutex, Notify, broadcast, watch};
 
-use super::model::{Agent, Change, Delta, Resume, SCHEMA_VERSION, Snapshot};
+use super::model::{Agent, Change, Delta, GitFactAge, Resume, SCHEMA_VERSION, Snapshot};
 use crate::history::{HistoryEvent, HistoryRing, RotationPolicy};
+
+#[cfg(test)]
+mod publication_tests;
+mod published;
+pub use published::PublishedSnapshot;
+use published::{event_bytes, wire_bytes};
 
 /// How many coalesced delta batches to retain for SSE resume.
 const HISTORY_CAP: usize = 1024;
@@ -31,7 +37,11 @@ const HISTORY_CAP: usize = 1024;
 const BROADCAST_CAP: usize = 256;
 /// Coalesce window while at least one SSE subscriber is connected.
 const FOREGROUND_TICK: Duration = Duration::from_millis(250);
-/// Coalesce window when nobody is watching.
+/// Maximum debounce when nobody is watching: 2s from the first change,
+/// never extended by later writes. HTTP tests enforce publication within 3s
+/// (this window plus 1s for encoding/scheduling); this is not a hard OS SLA.
+/// Fast HTTP reads can therefore return data ~2s stale, not freshly flushed
+/// state. An unchanged buffer can be older still; age is not request latency.
 const BACKGROUND_TICK: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Default)]
@@ -47,6 +57,63 @@ struct Inner {
     /// Whether any change arrived while nobody was subscribed (drives the
     /// coalesce tick choice without touching the broadcast channel).
     pending_any: bool,
+    /// Bindings hidden at the last publication; raw facts remain recoverable.
+    stale_bindings: BTreeSet<String>,
+}
+
+/// Shared with the local git supervisor, like the existing backlog flag.
+/// The coalescer samples this cache off the request path. Monotonic timestamps
+/// avoid wall-clock changes making old facts appear young again.
+#[derive(Debug)]
+pub struct GitPlaneHealth {
+    pub(crate) enabled: AtomicBool,
+    pub(crate) alive: AtomicBool,
+    pub(crate) skipped: AtomicU64,
+    started: Instant,
+    last_event: AtomicU64,
+    pub(crate) facts: std::sync::Mutex<BTreeMap<PathBuf, Option<Instant>>>,
+}
+
+impl Default for GitPlaneHealth {
+    fn default() -> Self {
+        Self {
+            enabled: AtomicBool::new(false),
+            alive: AtomicBool::new(false),
+            skipped: AtomicU64::new(0),
+            started: Instant::now(),
+            last_event: AtomicU64::new(0),
+            facts: std::sync::Mutex::new(BTreeMap::new()),
+        }
+    }
+}
+
+impl GitPlaneHealth {
+    pub(crate) fn elapsed_ms(&self) -> u64 {
+        self.started.elapsed().as_millis() as u64
+    }
+
+    pub(crate) fn progress(&self) {
+        // +1 reserves zero for "never observed".
+        self.last_event
+            .store(self.elapsed_ms().saturating_add(1), Ordering::Release);
+    }
+
+    fn last_event_age_ms(&self) -> Option<u64> {
+        self.last_event
+            .load(Ordering::Acquire)
+            .checked_sub(1)
+            .map(|last| self.elapsed_ms().saturating_sub(last))
+    }
+}
+
+impl GitFactAge {
+    fn at(observed: Option<Instant>, alive: bool) -> Self {
+        let fact_age_ms = observed.map(|at| at.elapsed().as_millis() as u64);
+        Self {
+            fact_age_ms,
+            stale: !alive || fact_age_ms.is_none_or(|age| age >= 120_000),
+        }
+    }
 }
 
 /// Cloneable handle into the store.
@@ -56,6 +123,10 @@ pub struct Store {
     /// every fresh Store gets a new value even when its numeric rev repeats.
     epoch: Arc<str>,
     inner: Arc<Mutex<Inner>>,
+    /// Read handlers only clone this pointer; no writer/agent lock is shared.
+    published: watch::Sender<Arc<PublishedSnapshot>>,
+    /// Serializes capture -> encode -> publish, including cancelled flushes.
+    publish_lock: Arc<Mutex<()>>,
     tx: broadcast::Sender<Delta>,
     notify: Arc<Notify>,
     /// Change-version signal: bumped once per applied change batch (WS3's
@@ -66,6 +137,7 @@ pub struct Store {
     /// was configured; see [`HistoryRing::open`]).
     history: HistoryRing,
     git_plane_backlog: Arc<AtomicBool>,
+    git_plane_health: Arc<GitPlaneHealth>,
     /// #330: the bounded ledger of STRUCTURED agent-side exchange events
     /// (the agent's blocked questions, observed via herdr
     /// `pane.output_matched` → `waiting_on`). Homed on the store so BOTH
@@ -79,14 +151,35 @@ impl Default for Store {
     fn default() -> Self {
         let (tx, _) = broadcast::channel(BROADCAST_CAP);
         let (version, _) = watch::channel(0);
+        let epoch: Arc<str> = Arc::from(new_epoch());
+        let initial = Snapshot {
+            schema_version: SCHEMA_VERSION,
+            rev: 0,
+            generated_at: now_millis(),
+            agents: BTreeMap::new(),
+            git_plane_backlog: false,
+            git_plane_alive: false,
+            git_plane_last_event_age_ms: None,
+            git_plane_skipped: 0,
+            git_worktree_facts: BTreeMap::new(),
+        };
+        let (published, _) = watch::channel(Arc::new(PublishedSnapshot::new(
+            &epoch,
+            &initial,
+            Instant::now(),
+            VecDeque::new(),
+        )));
         Self {
-            epoch: Arc::from(new_epoch()),
+            epoch,
             inner: Arc::new(Mutex::new(Inner::default())),
+            published,
+            publish_lock: Arc::new(Mutex::new(())),
             tx,
             notify: Arc::new(Notify::new()),
             version,
             history: HistoryRing::in_memory(RotationPolicy::default()),
             git_plane_backlog: Arc::new(AtomicBool::new(false)),
+            git_plane_health: Arc::new(GitPlaneHealth::default()),
             exchange: Arc::new(crate::core::provenance::ExchangeLedger::new()),
         }
     }
@@ -115,6 +208,10 @@ impl Store {
     /// was built with [`Store::with_history_dir`]).
     pub fn history(&self) -> HistoryRing {
         self.history.clone()
+    }
+
+    pub fn git_plane_health(&self) -> Arc<GitPlaneHealth> {
+        self.git_plane_health.clone()
     }
 
     pub fn git_plane_backlog(&self) -> Arc<AtomicBool> {
@@ -247,51 +344,132 @@ impl Store {
         self.tx.receiver_count()
     }
 
-    /// Coalesce and publish. Runs forever; the only exit is the shutdown
-    /// signal being dropped by [`Store::shutdown`]'s owner dropping the guard.
+    /// Latest immutable wire publication; safe even while a writer is busy.
+    pub fn published(&self) -> Arc<PublishedSnapshot> {
+        self.published.borrow().clone()
+    }
+
+    /// Observable publication boundary, independent of the writer's version
+    /// signal. Borrow/update before waiting to avoid losing a publication.
+    pub fn publications(&self) -> watch::Receiver<Arc<PublishedSnapshot>> {
+        self.published.subscribe()
+    }
+
+    /// Coalesce and publish. Abort the owning task to stop. The idle timer
+    /// also observes backlog-atomic changes that do not emit agent changes.
     pub async fn run_coalescer(&self) {
         loop {
-            self.notify.notified().await;
-            loop {
-                let sleep = {
-                    let inner = self.inner.lock().await;
-                    if !inner.pending_any {
-                        break;
-                    }
+            let notified = tokio::select! {
+                _ = self.notify.notified() => true,
+                _ = tokio::time::sleep(BACKGROUND_TICK) => false,
+            };
+            if notified {
+                let mut deadline = tokio::time::Instant::now() + BACKGROUND_TICK;
+                loop {
                     if self.subscriber_count() > 0 {
-                        FOREGROUND_TICK
-                    } else {
-                        BACKGROUND_TICK
+                        // Joining SSE shortens an already-running background
+                        // debounce. Repeated writes never extend the deadline.
+                        deadline = deadline.min(tokio::time::Instant::now() + FOREGROUND_TICK);
                     }
-                };
-                tokio::time::sleep(sleep).await;
-                self.flush().await;
+                    tokio::select! {
+                        _ = tokio::time::sleep_until(deadline) => break,
+                        _ = self.notify.notified() => {}
+                    }
+                }
             }
+            self.flush().await;
         }
     }
 
     /// Publish pending changes as one delta batch with a fresh rev.
     pub async fn flush(&self) -> Option<Delta> {
+        let publication_guard = self.publish_lock.clone().lock_owned().await;
         let mut inner = self.inner.lock().await;
-        if !inner.pending_any {
+        let previous = self.published();
+        if !inner.pending_any
+            // Once wired, publish ages/health even for an idle or dead plane.
+            // This uses the same <=2s coalescer, never the HTTP request path.
+            && !self.git_plane_health.enabled.load(Ordering::Acquire)
+            && previous.git_plane_backlog == self.git_plane_backlog.load(Ordering::Acquire)
+        {
             return None;
         }
-        inner.pending_any = false;
-        let delta = Delta {
-            rev: inner.rev + 1,
-            upd: std::mem::take(&mut inner.pending_upd)
-                .into_values()
-                .collect(),
-            del: std::mem::take(&mut inner.pending_del),
-        };
-        inner.rev = delta.rev;
-        inner.history.push_back((delta.rev, delta.clone()));
-        while inner.history.len() > HISTORY_CAP {
-            inner.history.pop_front();
+        let mut snapshot = self.snapshot_locked(&inner);
+        let stale_bindings: BTreeSet<String> = snapshot
+            .agents
+            .iter()
+            .filter(|(id, agent)| agent.workspace != inner.agents[*id].workspace)
+            .map(|(id, _)| id.clone())
+            .collect();
+        // A freshness transition must reach already-connected SSE clients too,
+        // even when no git/GitHub payload changed. No adapter version notification:
+        // this is a wire projection, not a new fact or a journal transition.
+        for id in inner
+            .stale_bindings
+            .symmetric_difference(&stale_bindings)
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            if let Some(agent) = snapshot.agents.get(&id) {
+                inner.pending_upd.insert(id, agent.clone());
+                inner.pending_any = true;
+            }
         }
+        inner.stale_bindings = stale_bindings;
+        for (id, agent) in &mut inner.pending_upd {
+            if let Some(projected) = snapshot.agents.get(id) {
+                *agent = projected.clone();
+            }
+        }
+        let delta = if inner.pending_any {
+            inner.pending_any = false;
+            let delta = Delta {
+                rev: inner.rev + 1,
+                upd: std::mem::take(&mut inner.pending_upd)
+                    .into_values()
+                    .collect(),
+                del: std::mem::take(&mut inner.pending_del),
+            };
+            inner.rev = delta.rev;
+            inner.history.push_back((delta.rev, delta.clone()));
+            while inner.history.len() > HISTORY_CAP {
+                inner.history.pop_front();
+            }
+            Some(delta)
+        } else {
+            None // Backlog-only change: no fabricated agent delta/revision.
+        };
+        let captured_at = Instant::now();
+        snapshot.rev = inner.rev;
         drop(inner);
-        let _ = self.tx.send(delta.clone());
-        Some(delta)
+        let epoch = self.epoch();
+        let published = self.published.clone();
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            // Move the owned guard into the encoder: cancelling an awaiting
+            // flush cannot let a later revision publish ahead of this one.
+            let _guard = publication_guard;
+            let mut history = previous.history.clone();
+            if let Some(delta) = &delta {
+                history.push_back((
+                    delta.rev,
+                    Arc::new(event_bytes("delta", delta.rev, &wire_bytes(&epoch, delta))),
+                ));
+                while history.len() > HISTORY_CAP {
+                    history.pop_front();
+                }
+            }
+            let next = PublishedSnapshot::new(&epoch, &snapshot, captured_at, history);
+            // Publish BEFORE broadcasting: initial snapshot + subscribed
+            // deltas always share a boundary, including lag recovery.
+            published.send_replace(Arc::new(next));
+            if let Some(delta) = &delta {
+                let _ = tx.send(delta.clone());
+            }
+            delta
+        })
+        .await
+        .expect("snapshot publisher")
     }
 
     /// Fetch a single record (adapters use this for gated updates like
@@ -347,13 +525,7 @@ impl Store {
     pub async fn snapshot(&self) -> Snapshot {
         self.flush().await;
         let inner = self.inner.lock().await;
-        Snapshot {
-            schema_version: SCHEMA_VERSION,
-            rev: inner.rev,
-            generated_at: now_millis(),
-            agents: inner.agents.clone(),
-            git_plane_backlog: self.git_plane_backlog.load(Ordering::Relaxed),
-        }
+        self.snapshot_locked(&inner)
     }
 
     /// Resolve a client cursor. `Some(rev)` from `Last-Event-ID`, `None` if
@@ -423,18 +595,66 @@ impl Store {
     }
 
     fn snapshot_locked(&self, inner: &Inner) -> Snapshot {
+        let health = &self.git_plane_health;
+        let alive = health.alive.load(Ordering::Acquire);
+        let facts = health.facts.lock().unwrap_or_else(|e| e.into_inner());
+        let mut ages: BTreeMap<String, GitFactAge> = facts
+            .iter()
+            .map(|(path, observed)| {
+                (
+                    path.to_string_lossy().into_owned(),
+                    GitFactAge::at(*observed, alive),
+                )
+            })
+            .collect();
+        for agent in inner.agents.values() {
+            if let Some(path) = &agent.workspace.worktree_path {
+                ages.entry(path.clone())
+                    .or_insert_with(|| GitFactAge::at(None, alive));
+            }
+        }
+        let mut agents = inner.agents.clone();
+        // Embedders without a git plane retain their explicit facts. The daemon
+        // wires health before either plane starts; absent/stopped/aged facts all
+        // use #492's existing stale predicate, sampled by the same coalescer.
+        if health.enabled.load(Ordering::Acquire) {
+            for agent in agents.values_mut() {
+                let ws = &mut agent.workspace;
+                let fresh = ws
+                    .worktree_path
+                    .as_ref()
+                    .and_then(|path| ages.get(path))
+                    .is_some_and(|age| !age.stale);
+                if !fresh || (ws.head_sha.is_none() && ws.branch.is_none()) {
+                    ws.pr_number = None;
+                    ws.ci_status = None;
+                    ws.pr_match_source = None;
+                    ws.issues.clear();
+                }
+            }
+        }
         Snapshot {
             schema_version: SCHEMA_VERSION,
             rev: inner.rev,
             generated_at: now_millis(),
-            agents: inner.agents.clone(),
+            agents,
             git_plane_backlog: self.git_plane_backlog.load(Ordering::Relaxed),
+            git_plane_alive: alive,
+            git_plane_last_event_age_ms: health.last_event_age_ms(),
+            git_plane_skipped: health.skipped.load(Ordering::Relaxed),
+            git_worktree_facts: ages,
         }
     }
 
-    /// Subscribe to live deltas.
+    /// Subscribe to live deltas AND wake the publication coalescer.
+    ///
+    /// Side effect: after registering the receiver, notify the coalescer so a
+    /// pending background debounce shortens to the foreground window. This is
+    /// not a passive getter and does not synchronously flush pending changes.
     pub fn subscribe(&self) -> broadcast::Receiver<Delta> {
-        self.tx.subscribe()
+        let rx = self.tx.subscribe();
+        self.notify.notify_one();
+        rx
     }
 }
 

@@ -1,0 +1,17 @@
+{
+  "mode": "env",
+  "fixture": "Herdr agent and checkout; live GitHub only in env/file modes",
+  "binary_sha256": "1ce76de61416bc80bd5bcd08986332378f493feb51373ac7f61be97b35e16d32",
+  "command": [
+    "/private/tmp/g556-target/release/corrald",
+    "--socket",
+    "/tmp/g556-9xmz7ncr/herdr.sock",
+    "--port",
+    "53274"
+  ],
+  "PATH": "/usr/bin:/bin",
+  "gh_on_PATH": false,
+  "branch": "dependabot/cargo/rust-dependencies-f82fc923d5",
+  "expected_pr": 525,
+  "daemon_termination_exit": -15
+}

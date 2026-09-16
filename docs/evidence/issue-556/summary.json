@@ -1,0 +1,114 @@
+{
+  "none": {
+    "seconds": 300.917,
+    "raw_exit": 0,
+    "disabled_lines": 1,
+    "refusal_lines": [],
+    "lsof_samples": 264,
+    "history_bytes_delta": 0,
+    "agent_snapshot_unchanged": true,
+    "round_trips": [],
+    "completion_intervals_s": [],
+    "bindings": [
+      {
+        "agent": "herdr:pane:p556",
+        "branch": "unbound-556-fixture",
+        "pr_number": null,
+        "ci_status": null
+      },
+      {
+        "agent": "herdr:pane:p557",
+        "branch": "unbound-556-peer",
+        "pr_number": null,
+        "ci_status": null
+      }
+    ]
+  },
+  "refused": {
+    "seconds": 5.659,
+    "raw_exit": 0,
+    "disabled_lines": 1,
+    "refusal_lines": [
+      "2026-09-16T17:16:53.428300Z  WARN corrald::adapters::gh_plane: github: token file refused (requires owner-only permissions, e.g. 0600)"
+    ],
+    "lsof_samples": 5,
+    "history_bytes_delta": 0,
+    "agent_snapshot_unchanged": true,
+    "round_trips": [],
+    "completion_intervals_s": [],
+    "bindings": [
+      {
+        "agent": "herdr:pane:p556",
+        "branch": "unbound-556-fixture",
+        "pr_number": null,
+        "ci_status": null
+      },
+      {
+        "agent": "herdr:pane:p557",
+        "branch": "unbound-556-peer",
+        "pr_number": null,
+        "ci_status": null
+      }
+    ]
+  },
+  "env": {
+    "seconds": 90.987,
+    "raw_exit": 0,
+    "disabled_lines": 0,
+    "refusal_lines": [],
+    "lsof_samples": 79,
+    "history_bytes_delta": 0,
+    "agent_snapshot_unchanged": false,
+    "round_trips": [
+      "2026-09-16T17:24:41.324818Z  INFO corrald::adapters::gh_plane: gh plane round-trip complete latency_ms=2297 repos=1 changed=1",
+      "2026-09-16T17:25:43.110414Z  INFO corrald::adapters::gh_plane: gh plane round-trip complete latency_ms=1780 repos=1 changed=0"
+    ],
+    "completion_intervals_s": [
+      61.785596
+    ],
+    "bindings": [
+      {
+        "agent": "herdr:pane:p556",
+        "branch": "dependabot/cargo/rust-dependencies-f82fc923d5",
+        "pr_number": 525,
+        "ci_status": "success"
+      },
+      {
+        "agent": "herdr:pane:p557",
+        "branch": "unbound-556-peer",
+        "pr_number": null,
+        "ci_status": null
+      }
+    ]
+  },
+  "file": {
+    "seconds": 91.05,
+    "raw_exit": 0,
+    "disabled_lines": 0,
+    "refusal_lines": [],
+    "lsof_samples": 80,
+    "history_bytes_delta": 0,
+    "agent_snapshot_unchanged": false,
+    "round_trips": [
+      "2026-09-16T17:26:15.214778Z  INFO corrald::adapters::gh_plane: gh plane round-trip complete latency_ms=2339 repos=1 changed=1",
+      "2026-09-16T17:27:17.063758Z  INFO corrald::adapters::gh_plane: gh plane round-trip complete latency_ms=1842 repos=1 changed=0"
+    ],
+    "completion_intervals_s": [
+      61.84898
+    ],
+    "bindings": [
+      {
+        "agent": "herdr:pane:p556",
+        "branch": "dependabot/cargo/rust-dependencies-f82fc923d5",
+        "pr_number": 525,
+        "ci_status": "success"
+      },
+      {
+        "agent": "herdr:pane:p557",
+        "branch": "unbound-556-peer",
+        "pr_number": null,
+        "ci_status": null
+      }
+    ]
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "label": "baseline-formatted-build",
+  "command": [
+    "cargo",
+    "test",
+    "--release",
+    "--test",
+    "snapshot_load",
+    "--no-run"
+  ],
+  "raw_exit": 0,
+  "duration_s": 1.214,
+  "head": "11cc1d26f3b1c22716d4527fb9e7679eaa861aba",
+  "cpu_hogs": 0,
+  "log": "/tmp/g555-baseline-formatted-build.log",
+  "host_log": "/tmp/g555-baseline-formatted-build-host.log"
+}

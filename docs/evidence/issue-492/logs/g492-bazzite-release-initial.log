@@ -1,0 +1,75 @@
+    Updating crates.io index
+ Downloading crates ...
+  Downloaded rustls v0.23.45
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.24
+   Compiling libc v0.2.189
+   Compiling cfg-if v1.0.4
+   Compiling typenum v1.20.1
+   Compiling subtle v2.6.1
+   Compiling pin-project-lite v0.2.17
+   Compiling zeroize v1.9.0
+   Compiling futures-core v0.3.34
+   Compiling log v0.4.33
+   Compiling autocfg v1.5.1
+   Compiling serde v1.0.229
+   Compiling find-msvc-tools v0.1.11
+   Compiling shlex v2.0.1
+   Compiling futures-io v0.3.34
+   Compiling once_cell v1.21.4
+   Compiling rand_core v0.10.1
+   Compiling slab v0.4.12
+   Compiling version_check v0.9.5
+   Compiling getrandom v0.4.3
+   Compiling pkg-config v0.3.34
+   Compiling num-traits v0.2.19
+   Compiling serde_core v1.0.229
+   Compiling cmov v0.5.4
+   Compiling bitflags v2.13.1
+   Compiling const-oid v0.10.2
+   Compiling generic-array v0.14.7
+   Compiling bytes v1.12.1
+   Compiling ctutils v0.4.2
+   Compiling futures-sink v0.3.34
+   Compiling tracing-core v0.1.36
+   Compiling itoa v1.0.18
+   Compiling stable_deref_trait v1.2.1
+   Compiling hybrid-array v0.4.14
+   Compiling futures-channel v0.3.34
+   Compiling parking v2.2.1
+   Compiling syn v3.0.3
+   Compiling syn v2.0.119
+   Compiling memchr v2.8.3
+error: failed to build archive at `/tmp/g492-linux-target/release/deps/liblibc-8282e81b60f616fe.rlib`: Disk quota exceeded (os error 122)
+
+error: could not compile `libc` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not parse/generate dep info at: /tmp/g492-linux-target/release/deps/num_traits-61e7922d5c03c734.d
+
+Caused by:
+  failed to write `/tmp/g492-linux-target/release/.fingerprint/num-traits-61e7922d5c03c734/dep-lib-num_traits`
+
+Caused by:
+  Disk quota exceeded (os error 122)
+error: failed to build archive at `/tmp/g492-linux-target/release/deps/liblibc-2fcd2a6c7fc5c9d1.rlib`: Disk quota exceeded (os error 122)
+
+error: could not compile `libc` (lib) due to 1 previous error
+error: failed to build archive at `/tmp/g492-linux-target/release/deps/libhybrid_array-bc97e1f864a5672d.rlib`: Disk quota exceeded (os error 122)
+
+error: could not compile `hybrid-array` (lib) due to 1 previous error
+error: failed to write /tmp/g492-linux-target/release/deps/rustctaM5fI/lib.rmeta: Disk quota exceeded (os error 122)
+
+error: could not compile `memchr` (lib) due to 1 previous error
+error: failed to write to `/tmp/g492-linux-target/release/deps/rmetacx2u3Z/full.rmeta`: Disk quota exceeded (os error 122)
+
+error: could not compile `serde_core` (lib) due to 1 previous error
+error: failed to write to `/tmp/g492-linux-target/release/deps/rmetaKbKVMa/full.rmeta`: Disk quota exceeded (os error 122)
+
+error: could not compile `serde_core` (lib) due to 1 previous error
+error: failed to write to `/tmp/g492-linux-target/release/deps/rmetaMUSW03/full.rmeta`: Disk quota exceeded (os error 122)
+
+error: could not compile `syn` (lib) due to 1 previous error
+error: failed to write to `/tmp/g492-linux-target/release/deps/rmetaQIqmZA/full.rmeta`: Disk quota exceeded (os error 122)
+
+error: could not compile `syn` (lib) due to 1 previous error

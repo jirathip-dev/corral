@@ -1,0 +1,648 @@
+   Compiling corrald v0.1.0 (/Users/jirathip/.herdr/worktrees/corral/impl492-gitplane)
+   Compiling corrald-client v0.1.0 (/Users/jirathip/.herdr/worktrees/corral/impl492-gitplane/crates/corrald-client)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.87s
+     Running unittests src/lib.rs (/tmp/g492-target/debug/deps/corrald-8e911e71c9133835)
+
+running 306 tests
+test adapters::gh_plane::tests::cadence_foreground_60s_while_connected ... ok
+test adapters::gh_plane::tests::cadence_reconnect_mid_sleep_triggers_immediate_fetch ... ok
+test adapters::gh_plane::tests::cadence_background_300s_after_all_subscribers_disconnect ... ok
+test adapters::gh_plane::tests::cadence_swr_zero_polling_without_any_subscriber ... ok
+test adapters::gh_plane::tests::cadence_first_subscriber_triggers_immediate_fetch ... ok
+test adapters::gh_plane::tests::failure_backoff_doubles_then_caps ... ok
+test adapters::gh_plane::tests::collapse_ci_priorities_and_unknowns ... ok
+test adapters::gh_plane::tests::tolerates_partial_repo_wire ... ok
+test adapters::gh_plane::tests::removed_repo_facts_stay_absent_from_the_poll_query ... ok
+test adapters::gh_plane::tests::removed_pr_facts_stay_absent_from_the_poll_query ... ok
+test adapters::gh_plane::tests::removed_repo_facts_stay_absent_from_the_emitted_state ... ok
+test adapters::gh_plane::tests::removed_pr_facts_stay_absent_from_the_emitted_state ... ok
+test adapters::gh_plane::tests::maps_repo_wire_into_contract_types ... ok
+test adapters::gh_plane::tests::query_covers_all_repos_once ... ok
+test adapters::gh_plane::tests::one_query_fans_out_issue_state_to_native_aliases ... ok
+test adapters::git_plane::tests::commondir_watchers_are_fresh_additive_and_idempotent ... ok
+test adapters::git_plane::tests::fs_event_batch_coalesces_burst_to_one_worktree ... ok
+test adapters::git_plane::tests::g492_warning_limit_preserves_every_skipped_probe_in_counter ... ok
+test adapters::git_plane::tests::g492_poisoned_state_keeps_event_path_and_probe_serving ... ok
+test adapters::git_plane::tests::g492_warning_subscriber_cannot_poison_the_cache ... ok
+test adapters::gh_plane::tests::default_constructor_waits_for_workspace_scope ... ok
+test adapters::git_plane::tests::map_event_path_maps_refs_heads_to_the_worktree_on_that_branch ... ok
+test adapters::git_plane::tests::map_event_path_prefers_most_specific_gitdir_when_nested ... ok
+test adapters::git_plane::tests::map_event_path_unmatched_worktrees_path_signals_rescan ... ok
+test adapters::git_plane::tests::map_event_path_unrelated_path_maps_to_nothing ... ok
+test adapters::git_plane::tests::g492_snapshot_marks_old_absent_and_stopped_facts ... ok
+test adapters::git_plane::tests::missing_source_backoff_is_bounded_and_expires_into_rediscovery ... ok
+test adapters::git_plane::tests::missing_source_warn_cap_resets_only_after_source_change ... ok
+test adapters::gh_plane::tests::herdr_scope_refreshes_after_workspace_topology_changes ... ok
+test adapters::git_plane::tests::parses_porcelain_paths_with_special_characters ... ok
+test adapters::git_plane::tests::parses_status_ahead_behind_and_dirty_flags ... ok
+test adapters::git_plane::tests::parses_status_clean_branch_header ... ok
+test adapters::git_plane::tests::parses_status_detached_and_gone_upstream ... ok
+test adapters::git_plane::tests::parses_status_v2_branch_oid_and_dirty_flags ... ok
+test adapters::git_plane::tests::parses_status_v2_detached_head ... ok
+test adapters::git_plane::tests::parses_status_v2_xy_at_correct_offset_and_untracked ... ok
+test adapters::git_plane::tests::parses_worktree_list_porcelain ... ok
+test adapters::git_plane::tests::g492_supervisor_respawns_poisoned_child_and_wire_reports_stopped ... ok
+test adapters::git_plane::tests::failed_repo_source_uses_backoff_but_rediscovery_can_retry ... ok
+test adapters::git_plane::tests::g492_supervisor_restarts_a_silent_stall_but_not_idle_loops ... ok
+test adapters::git_plane::tests::g492_permit_queue_is_not_execution_budget_and_sweep_is_paced ... ok
+test adapters::git_plane::tests::handle_fs_event_emits_worktree_removed_for_deleted_worktree ... ok
+test adapters::git_plane::tests::handle_fs_event_resolves_raw_symlinked_delete_path ... ok
+test adapters::git_plane::tests::resolves_gitdir_for_dir_and_file_forms ... ok
+test adapters::git_plane::tests::high_volume_git_work_is_bounded_and_preserves_sse_revisions ... ok
+test adapters::git_plane::tests::missing_repo_source_is_not_retried_by_the_hot_topology_loop ... ok
+test adapters::git_plane::tests::unescapes_c_style_paths_as_fallback_only ... ok
+test adapters::git_plane::tests::watches_accepts_symlinked_roots_and_canonical_spellings ... ok
+test adapters::git_plane::tests::watches_resolves_paths_that_do_not_exist_yet ... ok
+test adapters::herdr::review_tests::catalog_reconcile_evicts_superseded_session_from_sessionless_pane ... ok
+test adapters::herdr::review_tests::catalog_sessionless_refresh_keeps_live_session_identity ... ok
+test adapters::herdr::review_tests::catalog_sweep_tombstones_unmapped_row_without_pruning_live_agent ... ok
+test adapters::herdr::review_tests::periodic_catalog_refresh_preserves_blocked_waiting_on_without_rev ... ok
+test adapters::herdr::review_tests::read_diff_agent_without_worktree_path_is_no_worktree ... ok
+test adapters::herdr::review_tests::read_diff_refuses_paths_outside_the_worktrees_root ... ok
+test adapters::herdr::review_tests::read_diff_serves_real_worktree_diff_and_redacts ... ok
+test adapters::herdr::review_tests::read_diff_unknown_agent_is_typed ... ok
+test adapters::herdr::review_tests::reason_from_labels_is_deterministic ... ok
+test adapters::herdr::review_tests::reconcile_removes_ghost_agents ... ok
+test adapters::herdr::review_tests::reconcile_tracks_add_remove_and_state_change_without_noop_rev ... ok
+test adapters::herdr::review_tests::session_id_migration_preserves_waiting_on_and_approval_claim ... ok
+test adapters::herdr::review_tests::stale_catalog_snapshot_cannot_clobber_newer_event ... ok
+test adapters::herdr::review_tests::stale_pane_to_session_migration_preserves_state_and_sequence ... ok
+test adapters::herdr::review_tests::stale_status_event_cannot_clobber_fresh_catalog_state ... ok
+test adapters::herdr::review_tests::unregistered_pane_status_changed_keeps_actual_status ... ok
+test adapters::git_plane::tests::over_budget_probe_is_skipped_and_retried_later ... ok
+test adapters::herdr::tests::blocked_question_is_recorded_into_the_structured_exchange_ledger ... ok
+test adapters::herdr::tests::blocked_status_then_matched_output_sets_waiting_on ... ok
+test adapters::herdr::tests::call_after_reader_exit_is_rejected_without_timeout ... ok
+test adapters::herdr::tests::cancel_all_pane_streams_preserves_membership_and_closes_socket ... ok
+test adapters::herdr::tests::classifies_prompt_kinds_and_hashes ... ok
+test adapters::herdr::tests::conditional_rpc_removal_discards_same_generation_store_update ... ok
+test adapters::herdr::tests::conditional_rpc_removal_preserves_newer_same_target_generation ... ok
+test adapters::herdr::tests::contract_tail_keeps_redaction_and_bounds ... ok
+test adapters::herdr::tests::contract_tail_legacy_providers_fall_back_to_bounded_full_page ... ok
+test adapters::herdr::tests::contract_tail_unchanged_only_for_equal_nonzero_provider_revision ... ok
+test adapters::herdr::tests::contract_tail_wrap_restart_is_changed_not_unchanged ... ok
+test adapters::herdr::tests::decode_event_parses_known_pane_payload_directly ... ok
+test adapters::herdr::tests::decode_event_skips_unknown_kind_without_wire_typed_value ... ok
+test adapters::herdr::tests::drive_target_follows_stable_session_to_new_pane_and_name ... ok
+test adapters::herdr::tests::drive_target_survives_session_id_migration ... ok
+test adapters::herdr::tests::dropped_client_stops_the_reader ... ok
+test adapters::herdr::tests::exchange_identity_matches_real_read_tail_transforms ... ok
+test adapters::herdr::tests::extract_choices_detects_menus ... ok
+test adapters::herdr::tests::fresh_agent_list_wire_decodes_and_reconciles_captured_shape ... ok
+test adapters::herdr::tests::global_closed_streams_share_backoff_and_reset_after_stability ... ok
+test adapters::herdr::tests::hostless_adapter_keeps_records_without_a_host_stamp ... ok
+test adapters::herdr::tests::accepted_then_closed_global_streams_back_off_and_recover ... ok
+test adapters::herdr::tests::late_pane_events_cannot_resurrect_migrated_pane ... ok
+test adapters::herdr::tests::late_rpc_stale_does_not_retire_new_generation_or_store_row ... ok
+test adapters::herdr::tests::live_generation_map_is_bounded_and_never_reuses_tokens ... ok
+test adapters::herdr::tests::matched_output_with_secret_lands_redacted_in_the_store ... ok
+test adapters::herdr::tests::normalizes_real_agent_list_entries ... ok
+test adapters::herdr::tests::hundred_thousand_lines_stay_bounded_quickly ... ok
+test adapters::herdr::tests::pane_migration_cancels_old_dedicated_stream_once ... ok
+test adapters::git_plane::tests::probe_returns_sha_and_first_line_subject_in_two_git_calls ... ok
+test adapters::herdr::tests::primary_linked_alias_and_unknown_paths_get_only_canonical_facts ... ok
+test adapters::herdr::tests::probe_read_tail_bytes_first_unchanged_changed ... ok
+test adapters::herdr::tests::read_tail_empty_output_is_empty_lines_not_an_error ... ok
+test adapters::herdr::tests::read_tail_rejects_unknown_agents ... ok
+test adapters::herdr::tests::read_tail_round_trips_over_the_socket_redacted ... ok
+test adapters::herdr::tests::read_tail_since_with_rev_changed_returns_new_window_and_newer_rev ... ok
+test adapters::herdr::tests::read_tail_since_with_rev_first_read_returns_window_and_provider_rev ... ok
+test adapters::herdr::tests::read_tail_since_with_rev_legacy_provider_falls_back_to_bounded_full_page ... ok
+test adapters::herdr::tests::read_tail_since_with_rev_unchanged_returns_explicit_empty_without_page ... ok
+test adapters::herdr::tests::read_tail_since_with_rev_wrap_restart_is_changed_not_unchanged ... ok
+test adapters::herdr::tests::read_tail_transport_failure_is_typed ... ok
+test adapters::herdr::tests::reader_exit_cancels_pending_call ... ok
+test adapters::herdr::tests::reason_and_title_redact_pane_derived_text ... ok
+test adapters::herdr::tests::reconnect_list_remap_is_atomic_and_keeps_stable_agent_live ... ok
+test adapters::herdr::tests::removing_pane_cancels_live_forwarder_and_closes_socket ... ok
+test adapters::herdr::tests::retry_backoff_is_exponential_capped_and_resettable ... ok
+test adapters::herdr::tests::session_refreshes_catalog_without_global_stream_close ... ok
+test adapters::herdr::tests::stale_cleanup_rejects_inflight_event_upsert_after_store_read ... ok
+test adapters::git_plane::tests::probe_reuses_cached_subject_without_log_on_unchanged_head ... ok
+test adapters::herdr::tests::stamped_agent_host_matches_the_daemon_host_identity ... ok
+test adapters::herdr::tests::subscription_failures_warn_once_until_recovery ... ok
+test adapters::herdr::tests::tail_byte_bound_is_32_kib ... ok
+test adapters::herdr::tests::tail_is_redacted_and_bounded_at_the_boundary ... ok
+test adapters::herdr::tests::tail_passes_clean_prose_through_and_handles_empty_output ... ok
+test adapters::herdr::tests::tail_scrubs_tui_furniture_after_redaction ... ok
+test adapters::git_plane::tests::probe_survives_unborn_head_with_null_equivalents ... ok
+test adapters::herdr::tests::unknown_state_flows_through_read_path ... ok
+test adapters::herdr::tests::unsupported_private_use_glyphs_are_replaced_but_emoji_survive ... ok
+test adapters::herdr::tests::waiting_on_redacts_pane_text_at_the_boundary ... ok
+test api::drive::tests::tail_lines_are_bounded ... ok
+test api::drive::tests::terminal_open_request_id_is_consumed_once ... ok
+test api::drive::tests::wire_envelope_round_trips_to_identical_canonical_bytes ... ok
+test api::events::tests::keepalive_bytes_match_axum ... ok
+test adapters::herdr::tests::subscribe_response_is_not_starved_by_replay_flood ... ok
+test api::read_timing::tests::concurrent_callers_cannot_multiply_the_log_budget ... ok
+test api::read_timing::tests::tight_polling_is_bounded_and_keeps_unsampled_peaks ... ok
+test api::repo::tests::normalize_trims_and_drops_empty ... ok
+test api::issues::tests::issues_view_excludes_cached_categories_without_live_herdr_workspace ... ok
+test api::tests::device_token_refuses_unknown_and_revoked_keys ... ok
+test adapters::herdr::tests::tombstones_are_bounded ... ok
+test api::tests::device_token_registers_and_clears ... ok
+test api::tests::device_token_requires_a_valid_signature_and_freshness ... ok
+test api::tests::device_token_rejects_non_hex_or_path_traversing_tokens ... ok
+test auth::audit::tests::append_creates_chained_valid_log ... ok
+test api::tests::grants_read_rejects_forged_signature_stale_ts_and_unknown_key ... ok
+test auth::audit::tests::caller_stub_grows_only_on_writes ... ok
+test api::tests::grants_read_returns_current_grants ... ok
+test auth::audit::tests::f5_load_enforces_0600 ... ok
+test auth::audit::tests::f4b_tombstone_is_skipped_anywhere_in_chain ... ok
+test auth::audit::tests::f4b_crash_mid_append_is_repaired_and_log_stays_valid ... ok
+test auth::audit::tests::tampered_line_breaks_integrity ... ok
+test auth::audit::tests::resumes_chain_across_reopen ... ok
+test auth::enrollment::tests::approve_before_redeem_conflicts_and_unknown_session_404s ... ok
+test auth::enrollment::tests::precedence_unknown_then_expired_then_state ... ok
+test auth::enrollment::tests::double_mint_same_revoked_key_second_approve_is_typed_conflict ... ok
+test auth::enrollment::tests::status_never_conflicts_for_consumed_codes ... ok
+test auth::host_identity::tests::corrupt_key_fails_fast ... ok
+test auth::enrollment::tests::revoked_key_is_not_restored_until_explicit_approve ... ok
+test auth::host_identity::tests::created_with_0600_and_stable_across_restart ... ok
+test auth::host_identity::tests::debug_never_leaks_secret ... ok
+test auth::registry::tests::bad_public_keys_rejected ... ok
+test auth::registry::tests::corrupt_registry_fails_fast ... ok
+test auth::enrollment::tests::cap_bounds_actionable_sessions_and_prunes_expired ... ok
+test auth::registry::tests::debug_never_leaks_registration_token_or_keys ... ok
+test auth::registry::tests::f5_load_enforces_0600 ... ok
+test auth::registry::tests::device_token_is_additive_and_persists ... ok
+test auth::registry::tests::display_name_is_additive_backfills_and_never_overwrites ... ok
+test auth::registry::tests::f8_persist_failure_propagates_and_lock_stays_usable ... ok
+test auth::registry::tests::pre_257_revoked_device_loads_without_revoked_ts ... ok
+test auth::registry::tests::grants_and_revocation_persist_and_survive_reload ... ok
+test auth::registry::tests::re_registration_is_idempotent_and_never_extends ... ok
+test auth::registry::tests::register_gates_on_token_constant_time ... ok
+test auth::registry::tests::push_eligibility_gates_revoked_and_expired_keys ... ok
+test auth::tests::b64_round_trip ... ok
+test auth::tests::constant_time_eq_matches_only_identical ... ok
+test core::blocks::tests::cleans_ansi_csi_sequences ... ok
+test core::blocks::tests::cleans_charset_select_escapes ... ok
+test core::blocks::tests::cleans_osc_sequences_bel_and_st ... ok
+test core::blocks::tests::composer_echo_contract_preserves_build_and_unsupported_shapes ... ok
+test core::blocks::tests::composer_echo_shape_binds_recorded_prompts_exactly_once ... ok
+test core::blocks::tests::decorated_echo_binds_once_and_extra_echoes_stay_unknown ... ok
+test core::blocks::tests::esc_footer_hints_stay_system_only_in_short_rows ... ok
+test core::blocks::tests::exchange_assistant_event_binds_to_agent_block ... ok
+test core::blocks::tests::exchange_event_absent_keeps_line_unknown ... ok
+test core::blocks::tests::exchange_event_renders_exactly_once_per_read ... ok
+test core::blocks::tests::exchange_tool_event_binds_to_tool_block ... ok
+test core::blocks::tests::fixture_claude_pane_segments_exactly ... ok
+test core::blocks::tests::fixture_codex_pane_segments_exactly ... ok
+test core::blocks::tests::machine_output_prefix_does_not_unlock_composer_echo ... ok
+test core::blocks::tests::no_hard_wrap_long_line ... ok
+test core::blocks::tests::normalizes_whitespace ... ok
+test core::blocks::tests::ordinary_prose_with_percent_or_model_words_stays_out_of_system ... ok
+test core::blocks::tests::parses_truncation_marker_variants ... ok
+test core::blocks::tests::real_session_gauge_rows_stay_system ... ok
+test core::blocks::tests::repeated_identical_prompts_bind_in_ledger_order ... ok
+test core::blocks::tests::resolves_cr_overdraw_to_last_segment ... ok
+test core::blocks::tests::scrubber_collapses_hermes_tui_frame_borders ... ok
+test core::blocks::tests::scrubber_compacts_progress_block_runs ... ok
+test core::blocks::tests::scrubber_keeps_dash_runs_inside_code_strings ... ok
+test core::blocks::tests::scrubber_keeps_prose_and_short_runs_untouched ... ok
+test core::blocks::tests::segment_classifies_raw_pane_shape ... ok
+test core::blocks::tests::segment_does_not_delete_system_artifacts ... ok
+test core::blocks::tests::segment_keeps_same_kind_lines_together_until_blank ... ok
+test core::blocks::tests::segment_lifts_truncation_marker_and_removes_text ... ok
+test core::blocks::tests::segment_maps_transcript_roles ... ok
+test core::blocks::tests::segment_splits_on_blanks_and_kind_changes ... ok
+test core::blocks::tests::undecorated_line_is_never_an_echo_candidate ... ok
+test auth::registry::tests::revoked_ts_stamped_on_revoke_survives_reload_and_re_stamps ... ok
+test core::blocks::tests::unprefixed_line_never_binds_even_when_text_matches ... ok
+test auth::registry::tests::set_device_token_by_token_clears_all_matching_records ... ok
+test core::diff::tests::errors_are_typed ... ok
+test core::diff::tests::diff_stats_cover_staged_and_unstaged_and_note_untracked_excluded ... ok
+test core::diff::tests::diff_page_contains_headers_hunks_and_prefixed_lines ... ok
+test core::diff::tests::files_cap_truncates_the_list_and_stats_stay_complete ... ok
+test core::events::tests::git_status_dirty_semantics ... ok
+test core::events::tests::head_events_decode_without_subject_additive ... ok
+test core::events::tests::plane_event_round_trips_through_json ... ok
+test core::model::tests::advertised_capabilities_include_read_diff_and_parse ... ok
+test core::provenance::tests::bind_echoes_is_one_to_one_per_read ... ok
+test core::provenance::tests::bind_echoes_offers_events_oldest_first ... ok
+test core::provenance::tests::bind_echoes_window_caps_the_eligible_trailing_slice ... ok
+test core::provenance::tests::bind_echoes_without_events_leaves_everything_unbound ... ok
+test core::provenance::tests::events_carry_no_raw_text ... ok
+test core::diff::tests::paging_window_advances_and_reports_has_more ... ok
+test core::provenance::tests::records_and_matches_by_text_identity ... ok
+test core::provenance::tests::records_redacted_identity_for_secret_prompts ... ok
+test core::diff::tests::very_long_lines_are_truncated_and_byte_budget_bounds_the_page ... ok
+test core::redact::perf_tests::unbroken_blob_redacts_in_linear_time ... ok
+test core::redact::perf_tests::env_shaped_prose_line_redacts_in_linear_time ... ok
+test core::redact::tests::anthropic_keys_are_redacted ... ok
+test core::redact::tests::aws_access_key_ids_are_redacted ... ok
+test core::redact::tests::env_rule_does_not_swallow_ordinary_prose ... ok
+test core::redact::tests::env_shaped_lines_redact_values_only ... ok
+test core::redact::tests::env_shaped_non_secrets_pass_through ... ok
+test core::redact::tests::github_pats_are_redacted ... ok
+test core::redact::tests::high_entropy_runs_are_redacted_conservatively ... ok
+test core::redact::tests::multiline_text_is_processed_line_by_line ... ok
+test core::redact::tests::multiple_and_adjacent_tokens_collapse ... ok
+test core::redact::tests::ordinary_prose_passes_through_untouched ... ok
+test core::redact::tests::redaction_is_idempotent ... ok
+test core::redact::tests::the_live_test_shape_redacts_all_three_prefixes ... ok
+test core::redact::tests::tokens_glued_to_hyphen_or_underscore_are_redacted ... ok
+test core::redact::perf_tests::whitespace_free_query_string_redacts_in_linear_time ... ok
+test core::store::publication_tests::publication_is_atomic_and_retained_buffers_stay_unchanged ... ok
+test core::provenance::tests::ledger_is_bounded_and_evicts_oldest ... ok
+test core::store::publication_tests::reads_and_initial_sse_do_not_wait_for_writer_or_publisher ... ok
+test core::store::publication_tests::sse_subscribe_boundary_and_lag_recovery_never_replay_older_deltas ... ok
+test core::workspace::tests::generation_reset_clears_vanished_branch_and_reaccepts_present_fact ... ok
+test core::workspace::tests::primary_linked_alias_and_unknown_paths_are_deterministic ... ok
+test core::workspace::tests::registry_alias_attributes_stale_worktree_dir_to_canonical_repo ... ok
+test drive::tests::canonical_bytes_are_deterministic ... ok
+test drive::tests::capability_round_trips_and_parses ... ok
+test drive::tests::payload_parse_rejects_mismatched_kinds ... ok
+test drive::tests::removed_mutating_capabilities_no_longer_parse ... ok
+test history::digest::tests::blocked_pairs_from_consecutive_transitions ... ok
+test history::digest::tests::first_in_window_blocked_counts_from_window_start ... ok
+test history::digest::tests::fmt_duration_units ... ok
+test history::digest::tests::open_span_reported_without_joining_closed_total ... ok
+test history::digest::tests::render_is_deterministic_and_sorted ... ok
+test history::digest::tests::work_by_repo_and_ordering ... ok
+test integrate::tests::derives_repo_from_both_path_forms ... ok
+test integrate::tests::head_subject_is_redacted_before_landing_in_the_read_model ... ok
+test integrate::tests::issues_cache_is_keyed_by_native_repo_identity ... ok
+test integrate::tests::issues_cache_prunes_when_live_herdr_membership_changes ... ok
+test integrate::tests::issues_flow_from_the_bound_prs_closing_refs_only ... ok
+test integrate::tests::maps_ci_strings_verbatim ... ok
+test integrate::tests::pr_matching_prefers_head_sha_then_branch_then_bound_then_clears ... ok
+test integrate::tests::reapply_path_merges_head_sha_and_subject_from_cached_facts ... ok
+test integrate::tests::reset_worktree_clears_head_fields ... ok
+test integrate::tests::tracked_non_fleet_gh_fact_publishes_issues ... ok
+test push::config::tests::from_map_parses_endpoint_and_topic ... ok
+test push::config::tests::from_map_requires_all_three ... ok
+test push::payload::tests::blocked_payload_carries_the_claim_and_bounds_choices ... ok
+test push::payload::tests::blocked_payload_redacts_secret_shaped_prompt ... ok
+test push::payload::tests::canonical_device_token_bytes_are_fixed_order ... ok
+test push::payload::tests::done_payload_is_plain_without_actions ... ok
+test push::payload::tests::oversized_choices_are_truncated_to_the_per_choice_budget ... ok
+test push::payload::tests::oversized_prompt_truncates_to_fit_the_apns_budget ... ok
+test push::payload::tests::payloads_namespace_thread_and_host_by_composite_target ... ok
+test push::payload::tests::truncate_bytes_is_utf8_safe_and_idempotent ... ok
+test push::provider::tests::apns_400_mapping_is_reason_aware ... ok
+test push::provider::tests::apns_400_payload_too_large_is_not_unregistered ... ok
+test push::provider::tests::expired_provider_token_is_retryable_but_only_that_exact_case ... ok
+test push::provider::tests::parse_p8_accepts_ec_pkcs8_pem ... ok
+test push::provider::tests::parse_p8_rejects_garbage ... ok
+test push::provider::tests::provider_token_is_an_es256_jwt_with_expected_claims ... ok
+test push::provider::tests::token_hash_is_one_way_and_stable ... ok
+test push::provider::tests::transport_error_reason_is_classified_not_displayed ... ok
+test core::store::publication_tests::cached_resume_matches_epoch_and_history_rules ... ok
+test push::tests::blocked_transition_pushes_within_budget ... ok
+test push::tests::boot_seed_pushes_agents_already_blocked_before_start ... ok
+test push::tests::batching_a_burst_on_the_same_prompt_pushes_once ... ok
+test push::tests::done_transition_pushes_plain_completion ... ok
+test push::tests::devices_without_tokens_are_skipped_and_revoked_never_push ... ok
+test adapters::git_plane::tests::queued_probe_events_coalesce_to_one_follow_up ... ok
+test push::tests::prompt_text_is_redacted_before_leaving_the_machine ... ok
+test adapters::git_plane::tests::rediscovery_reconciles_a_recreated_repo_without_restart ... ok
+test push::tests::rejected_400_keeps_device_token_in_registry ... ok
+test core::store::publication_tests::randomized_publications_match_old_snapshot_and_sse_bytes ... ok
+test push::tests::repeated_done_upserts_push_exactly_once ... ok
+test push::tests::unregistered_drops_device_token_from_registry ... ok
+test adapters::git_plane::tests::rediscovery_timer_refreshes_projects_and_ignores_unnamed_git_roots ... ok
+test adapters::git_plane::tests::transient_git_failure_retains_last_known_worktrees_and_topology ... ok
+test adapters::git_plane::tests::watcher_and_sweep_rescans_are_serialized ... ok
+test push::tests::new_prompt_while_blocked_pushes_again_then_done_pushes_once ... ok
+test push::tests::lagged_watcher_re_seeds_and_never_loses_the_block ... ok
+test adapters::herdr::tests::pane_churn_aborts_old_generation_without_delayed_duplicate ... ok
+test push::tests::reconcile_retries_a_failed_delivery_until_it_succeeds ... ok
+test push::tests::transient_failures_retry_with_backoff_and_succeed ... ok
+test adapters::herdr::tests::pane_stream_recovers_after_connection_and_subscription_failures ... ok
+
+test result: ok. 306 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 15.69s
+
+     Running unittests src/main.rs (/tmp/g492-target/debug/deps/corrald-a7d1c8dfe5668d82)
+
+running 7 tests
+test tests::bind_allowlist_accepts_non_public_and_refuses_public ... ok
+test tests::origin_allowlist_accepts_exact_origins_and_refuses_paths ... ok
+test bounded_log::tests::oversized_writes_are_bounded_and_poison_is_recoverable ... ok
+test bounded_log::tests::error_and_panic_survive_rotation ... ok
+test tests::live_origin_repo_reaches_issue_cache_through_production_seam ... ok
+test tests::scoped_specs_use_only_live_herdr_workspaces ... ok
+test tests::same_remote_basename_groups_specs_without_native_key_collisions ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/auth.rs (/tmp/g492-target/debug/deps/auth-e911d68c648a1a6b)
+
+running 18 tests
+test canonical_bytes_are_the_locked_signing_format ... ok
+test host_identity_published_as_x25519_not_hostname ... ok
+test expired_key_rejected ... ok
+test read_only_device_cannot_drive_ac3 ... ok
+test host_key_endpoint_returns_algorithm_and_key ... ok
+test audit_requires_admin_token_and_grants_surface_is_route_absent ... ok
+test f11_host_key_has_no_path_disclosure ... ok
+test register_endpoint_accepts_and_truncates_display_name ... ok
+test register_endpoint_gates_on_token_and_returns_grants ... ok
+test debug_output_never_leaks_secrets ... ok
+test unknown_key_rejected ... ok
+test tampered_envelope_is_bad_signature ... ok
+test drive_seam_full_flow_ac1_and_ac3_over_http ... ok
+test sign_verify_round_trip ... ok
+test revoked_key_rejected ... ok
+test registry_persists_across_reload_with_0600_perms ... ok
+test revoke_takes_effect_immediately_on_next_drive ... ok
+test live_daemon_self_test ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.21s
+
+     Running tests/drive.rs (/tmp/g492-target/debug/deps/drive-ef0be59a7e2e007f)
+
+running 19 tests
+test payload_kind_mismatch_is_typed_refusal ... ok
+test empty_request_id_or_target_is_bad_request ... ok
+test malformed_body_is_bad_request ... ok
+test completed_request_replays_after_target_becomes_stale ... ok
+test read_diff_result_carries_page_and_audits_executed ... ok
+test read_diff_dispatch_refusal_is_typed_and_audited_refused ... ok
+test read_diff_bounds_are_clamped_daemon_side ... ok
+test read_diff_without_grant_is_403_not_granted_and_not_audited ... ok
+test read_tail_blocks_are_cleaned_and_segmented_on_the_wire ... ok
+test read_tail_result_carries_lines_and_audits_executed ... ok
+test read_tail_unknown_agent_is_typed_refusal ... ok
+test read_tail_transport_failure_is_typed_and_audited_failed ... ok
+test stale_agent_is_typed_conflict_before_dispatch ... ok
+test not_implemented_and_transport_are_typed ... ok
+test unknown_agent_is_typed_refusal_at_dispatch ... ok
+test read_tail_with_no_output_is_ok_with_empty_lines ... ok
+test unknown_capability_is_typed_refusal ... ok
+test audit_grows_only_on_signed_drive_dispatches ... ok
+test valid_signature_passes_and_invalid_is_typed_auth_error ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.82s
+
+     Running tests/enrollment.rs (/tmp/g492-target/debug/deps/enrollment-e57f0c7c47eb7aea)
+
+running 10 tests
+test http_listener_exposes_no_owner_mutation_routes ... ok
+test pending_cap_rejects_runaway_minting ... ok
+test replay_and_conflict_semantics_are_typed ... ok
+test full_flow_owner_only_approval_grants_read_tail_exactly ... ok
+test revoke_is_immediate_idempotent_and_restart_surviving ... ok
+test revoked_key_restores_only_via_fresh_explicit_approval ... ok
+test persist_failure_is_disk_first_and_retryable ... ok
+test owner_socket_requires_owner_peer_credentials_and_0600 ... ok
+test wrong_host_404_and_two_key_race_binds_one_winner ... ok
+test status_never_conflicts_and_expiry_precedes_state ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.31s
+
+     Running tests/gh_plane.rs (/tmp/g492-target/debug/deps/gh_plane-dac870d069710de0)
+
+running 15 tests
+test live_round_trip_all_repos ... ignored, live: requires GITHUB_TOKEN or `gh auth token`; hits the real GitHub API
+test herdr_scope_excludes_non_herdr_agent ... ok
+test one_bad_repo_does_not_poison_the_round_trip ... ok
+test herdr_scope_excludes_unowned_git_checkout ... ok
+test failed_poll_emits_nothing ... ok
+test sustained_failures_back_off_then_recover ... ok
+test first_subscriber_triggers_immediate_fetch_then_foreground_cadence ... ok
+test maps_all_repos_and_emits_only_changes ... ok
+test herdr_scope_run_loop_refreshes_additions_and_removals ... ok
+test reconnect_during_background_sleep_triggers_immediate_fetch ... ok
+test empty_live_scope_never_calls_transport ... ok
+test retained_pr_fact_change_still_emits_and_updates_canonical_state ... ok
+test zero_subscribers_never_polls ... ok
+test background_cadence_after_all_subscribers_disconnect ... ok
+test title_or_mergeability_only_change_does_not_emit ... ok
+
+test result: ok. 14 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.44s
+
+     Running tests/git_plane.rs (/tmp/g492-target/debug/deps/git_plane-ceaa57ab7f4fdccf)
+
+running 4 tests
+test live_herdr_repo_commit_under_one_second ... ignored, live acceptance against the real herdr repo; run explicitly
+test fresh_instance_reemits_registry_at_boot ... ok
+test temp_repo_commit_emits_events_under_second ... ok
+test multiple_commondirs_register_immutable_watchers_and_preserve_event_delivery ... ok
+
+test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 12.76s
+
+     Running tests/history.rs (/tmp/g492-target/debug/deps/history-3fa3002c0da4dd85)
+
+running 13 tests
+test live_smoke_daemon_herdr_digest ... ignored, needs the corrald binary + a fake herdr socket; run with --ignored
+test should_rotate_pure_caps ... ok
+test oldest_drop_past_cap ... ok
+test in_memory_ring_ordered_and_filtered ... ok
+test store_remove_emits_no_event ... ok
+test store_records_only_actual_transitions ... ok
+test torn_tail_line_skipped_on_load ... ok
+test store_with_history_dir_persists ... ok
+test persistent_ring_survives_restart ... ok
+test digest_cli_offline_against_ring ... ok
+test segments_rotate_and_prune_oldest ... ok
+test history_endpoint_returns_ordered_events ... ok
+test stress_flood_stays_bounded_under_2_mib ... ok
+
+test result: ok. 12 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.07s
+
+     Running tests/http.rs (/tmp/g492-target/debug/deps/http-6ef38abd88e8a3c4)
+
+running 23 tests
+test cors_preflight_answers_read_routes_only_for_allowlisted_origin ... ok
+test cors_default_state_never_emits_cors_headers ... ok
+test epoch_matching_cursor_resumes_incrementally ... ok
+test cors_never_emitted_on_the_write_plane ... ok
+test issues_endpoint_returns_exactly_current_herdr_workspace_repos ... ok
+test cors_read_plane_reflects_only_allowlisted_origin ... ok
+test resume_semantics_are_exposed_by_store ... ok
+test healthz_ok ... ok
+test no_fleets_json_reference_anywhere_in_src ... ok
+test epoch_restart_with_higher_rev_resnapshots ... ok
+test issues_endpoint_serves_last_known_repo_issues ... ok
+test native_issues_use_live_repos_only ... ok
+test poisoned_path_never_invokes_private_fleet_tool_on_read_plane ... ok
+test removed_cost_route_is_not_a_json_fallback ... ok
+test epoch_restart_with_lower_rev_resnapshots ... ok
+test epoch_restart_with_equal_rev_resnapshots ... ok
+test sse_with_stale_cursor_returns_full_snapshot ... ok
+test snapshot_never_needs_fleet_ops ... ok
+test sse_live_cursor_emits_no_fabricated_delta ... ok
+test sse_with_fresh_cursor_resumes_incrementally ... ok
+test sse_no_cursor_snapshot_then_live_delta ... ok
+test snapshot_returns_json_with_rev_and_agents ... ok
+test snapshot_exposes_git_plane_backlog_additively ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.20s
+
+     Running tests/integration.rs (/tmp/g492-target/debug/deps/integration-06e07254ebaeed52)
+
+running 16 tests
+test converges_when_agent_appears_after_facts_were_cached ... ok
+test head_subject_egresses_redacted_not_raw ... ok
+test git_facts_merge_and_batch_into_one_rev ... ok
+test main_checkout_derives_repo_from_root_name ... ok
+test agent_appears_with_zero_subsequent_plane_events_still_converges ... ok
+test facts_fan_out_to_every_matching_agent ... ok
+test shared_attribution_merges_primary_alias_and_keeps_unknown_orphaned ... ok
+test detached_head_normalizes_branch_to_none ... ok
+test registry_worktree_alias_keeps_primary_and_linked_in_one_repo_group ... ok
+test generation_restart_clears_vanished_branch_and_reconciles_present_path ... ok
+test other_repo_worktrees_merge_fleet_wide ... ok
+test topology_events_never_create_or_remove_agents ... ok
+test gh_facts_map_pr_and_ci_and_reset_when_pr_leaves_the_open_set ... ok
+test issues_join_into_the_workspace_from_the_bound_prs_closing_refs_only ... ok
+test unchanged_facts_produce_no_delta ... ok
+test worktree_removed_resets_git_derived_fields_and_pr_binding ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/model.rs (/tmp/g492-target/debug/deps/model-08510bd5642c53c6)
+
+running 13 tests
+test herdr_status_mapping_covers_five_tools_states ... ok
+test capability_contract_is_exact ... ok
+test ci_status_serializes_snake_case ... ok
+test g23_payload_without_new_fields_decodes_with_defaults ... ok
+test backwards_compat_p1_agent_decodes_without_read_model_fields ... ok
+test roundtrip_serialization ... ok
+test delta_is_flat_with_upd_del ... ok
+test g23_workspace_fields_round_trip ... ok
+test attachment_holds_pane_ref_not_agent_id ... ok
+test workspace_read_model_fields_serialize ... ok
+test state_and_waiting_kind_enum_strings ... ok
+test snapshot_is_versioned_flat_keyed_records ... ok
+test backwards_compat_p1_snapshot_decodes ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/provenance.rs (/tmp/g492-target/debug/deps/provenance-b7e38d46fed66769)
+
+running 13 tests
+test daemon_golden_fixture_matches_canonical_blocks ... ok
+test daemon_live_session_golden_fixture_matches_canonical_blocks ... ok
+test secret_prompt_record_keeps_only_redacted_identity ... ok
+test prompt_round_trip_renders_exactly_once_as_user ... ok
+test read_tail_result_still_serves_lines_additively ... ok
+test unprefixed_model_output_matching_an_old_prompt_is_never_user ... ok
+test unprovenanced_direct_input_stays_unknown ... ok
+test duplicate_echo_renders_the_prompt_exactly_once ... ok
+test live_session_without_structured_role_source_stays_unknown ... ok
+test live_session_exchange_produces_canonical_conversation_blocks ... ok
+test secret_prompt_keeps_provenance_and_never_leaks_raw_text ... ok
+test prompt_provenance_is_scoped_per_target ... ok
+test repeated_identical_prompts_keep_their_own_request_ids ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+
+     Running tests/push.rs (/tmp/g492-target/debug/deps/push-200e14591cb7455d)
+
+running 2 tests
+test blocked_transition_reaches_provider_within_10s_then_done_pushes ... ok
+test only_enrolled_live_devices_receive_pushes ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.66s
+
+     Running tests/read_logging.rs (/tmp/g492-target/debug/deps/read_logging-be34bc075a559f22)
+
+running 1 test
+test snapshot_and_sse_info_are_bounded_at_the_real_handlers ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/readonly_cut.rs (/tmp/g492-target/debug/deps/readonly_cut-20ab578f122337f9)
+
+running 5 tests
+test grant_admin_surface_is_route_absent_even_for_admin_tokens ... ok
+test sse_and_snapshot_read_plane_still_serves ... ok
+test mutating_drives_are_refused_without_dispatch_or_audit ... ok
+test signed_read_tail_still_dispatches_after_the_cut ... ok
+test fresh_registration_is_still_read_only_default ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests/redact.rs (/tmp/g492-target/debug/deps/redact-09e96ece5861ebc7)
+
+running 3 tests
+test read_tail_response_shape_passes_redaction_untouched_when_clean ... ok
+test redacted_text_embeds_into_json_without_leaking_or_corrupting ... ok
+test ingest_redacts_secrets_before_the_store_can_serialize ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/snapshot_load.rs (/tmp/g492-target/debug/deps/snapshot_load-78dc51edbca79a2e)
+
+running 1 test
+test snapshot_load_measurement ... ignored, bounded CPU-load evidence; run via docs/evidence/issue-555/daemon-run.py
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/store.rs (/tmp/g492-target/debug/deps/store-b591dd444cd20b46)
+
+running 12 tests
+test remove_emits_del_delta ... ok
+test resume_current_rev_goes_live ... ok
+test remove_then_upsert_emits_only_update_for_clients ... ok
+test snapshot_flushes_and_bumps_rev_once_per_batch ... ok
+test resume_future_cursor_after_restart_resnapshots ... ok
+test resume_fresh_cursor_replays_deltas_only ... ok
+test resume_too_old_returns_snapshot ... ok
+test pending_upserts_dedupe_within_one_window ... ok
+test monotonic_rev_never_repeats ... ok
+test foreground_tick_coalesces_at_250ms_when_watched ... ok
+test background_tick_coalesces_at_2s_when_unwatched ... ok
+test history_is_bounded_and_recovers_with_snapshot ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 37.88s
+
+     Running unittests src/lib.rs (/tmp/g492-target/debug/deps/corrald_client-575dae7e7eecb557)
+
+running 14 tests
+test errors::tests::wrong_status_for_kind_is_not_classified ... ok
+test errors::tests::full_matrix_classifies ... ok
+test approval::tests::approval_id_is_agent_colon_hash ... ok
+test approval::tests::prompt_hash_covers_exact_untrimmed_bytes ... ok
+test approval::tests::prompt_hash_is_sha256_hex_prefixed ... ok
+test client::tests::envelope_builder_produces_typed_payload ... ok
+test errors::tests::refusal_parses_both_body_shapes ... ok
+test model::tests::workspace_serializes_issues_always_and_match_source_only_when_bound ... ok
+test model::tests::workspace_mirrors_the_g23_daemon_fields_tolerantly ... ok
+test keypair::tests::key_id_derivation_matches_daemon_shape ... ok
+test keypair::tests::sign_envelope_covers_canonical_bytes ... ok
+test keypair::tests::signature_round_trips_and_is_deterministic ... ok
+test client::tests::base_url_normalization ... ok
+test sse::tests::stalled_stream_times_out_instead_of_hanging ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+     Running tests/capabilities.rs (/tmp/g492-target/debug/deps/capabilities-17a756fe6e84762f)
+
+running 1 test
+test client_capabilities_equal_daemon_read_only_set ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/conformance.rs (/tmp/g492-target/debug/deps/conformance-2faed934d46d350f)
+
+running 12 tests
+test r10_audit_grows_only_on_writes ... ignored, requires a live corrald; run the suite with --ignored
+test r11_gh_pr_binds_by_branch_fallback_and_populates_issues ... ignored, live: requires gh auth + a suitable open PR on a tracked repo; run with --ignored
+test r1_register ... ignored, requires a live corrald; run the suite with --ignored
+test r2_read_path_and_sse_resume ... ignored, requires a live corrald; run the suite with --ignored
+test r5_read_only_device_denied ... ignored, requires a live corrald; run the suite with --ignored
+test register_read_sign_drive_read_only ... ignored, requires a live corrald; run the suite with --ignored
+test sse_resume_edge_cases ... ignored, requires a live corrald; run the suite with --ignored
+test canonical_envelope_bytes_match_the_daemon_locked_literal ... ok
+test payload_bytes_are_key_order_independent ... ok
+test step_up_canonical_bytes_are_fixed_order ... ok
+test canonical_bytes_include_rev_in_fixed_position ... ok
+test workspace_head_fields_round_trip_through_json ... ok
+
+test result: ok. 5 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests corrald
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests corrald_client
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

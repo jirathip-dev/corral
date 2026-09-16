@@ -1,0 +1,200 @@
+src/core/model.rs
+ 32: pub const SCHEMA_VERSION: u32
+ 38: pub enum AgentState
+       enumMember: Idle, Working, Blocked, Done, Unknown
+ 46: impl AgentState
+       method: from_herdr_status
+ 62: pub enum WaitingOnKind
+       enumMember: ApproveTool, AnswerQuestion, Menu, Crash
+ 75: pub struct WaitingOn
+       field: kind, prompt, prompt_hash, approval_id, choices
+ 95: pub enum CiStatus
+       enumMember: Success, Failure, Pending, Unknown
+110: pub struct Workspace
+       field: repo, branch, worktree_path, pr_number, ci_status, dirty, ahead, behind, head_sha, head_subject, pr_match_source, issues
+155: pub struct Attachment
+       field: kind, reference
+170: pub const CAPABILITIES: [&str; 2]
+174: pub struct Agent
+       field: agent_id, source, tool, state, reason, seq, ts, capabilities, waiting_on, parent_id, host, workspace, attachment, display_name, title
+205: pub struct Snapshot
+       field: schema_version, rev, generated_at, agents, git_plane_backlog, git_plane_alive, git_plane_last_event_age_ms, git_plane_skipped, git_worktree_facts
+233: pub struct GitFactAge
+       field: fact_age_ms, stale
+240: pub struct Delta
+       field: rev, upd, del
+250: pub enum Change
+       enumMember: Upsert, Remove
+255: impl Change
+       method: upsert
+263: pub enum Resume
+       enumMember: Snapshot, Deltas, Live
+276: mod tests
+       function: advertised_capabilities_include_read_diff_and_parse
+
+src/bounded_log.rs
+ 14: const CAP: u64
+ 17: pub struct BoundedLog(Arc<Mutex<Files>>)
+ 19: struct Files
+       field: path, file, len, cap
+ 26: impl BoundedLog
+       method: open, install_panic_hook, with_cap
+ 53: impl Files
+       method: reopen, record
+ 99: pub struct LogGuard<'a>(MutexGuard<'a, Files>)
+101: impl<'a> MakeWriter<'a> for BoundedLog
+       method: make_writer
+109: impl Write for LogGuard<'_>
+       method: write, flush
+131: mod tests
+       function: error_and_panic_survive_rotation, oversized_writes_are_bounded_and_poison_is_recoverable
+
+src/core/store.rs
+ 29: mod publication_tests
+ 30: mod published
+ 35: const HISTORY_CAP: usize
+ 37: const BROADCAST_CAP: usize
+ 39: const FOREGROUND_TICK: Duration
+ 45: const BACKGROUND_TICK: Duration
+ 48: struct Inner
+       field: agents, rev, history, pending_upd, pending_del, pending_any
+ 66: pub struct GitPlaneHealth
+       field: enabled, alive, skipped, facts, started, last_event
+ 75: impl Default for GitPlaneHealth
+       method: default
+ 88: impl GitPlaneHealth
+       method: elapsed_ms, progress, last_event_age_ms
+107: impl GitFactAge
+       method: at
+119: pub struct Store
+       field: epoch, inner, published, publish_lock, tx, notify, version, history, git_plane_backlog, git_plane_health, exchange
+148: impl Default for Store
+       method: default
+186: impl Store
+       method: new, epoch, with_history_dir, history, git_plane_health, git_plane_backlog, exchange, apply, upsert_if, update_where, changes, subscriber_count, published, publications, run_coalescer, flush, get, remove_if, matching, snapshot, resume_from, resume_from_epoch, subscribe, apply_if, snapshot_locked
+612: fn now_millis() -> u64
+619: fn new_epoch() -> String
+
+src/main.rs
+ 30: mod bounded_log
+ 34: const DEFAULT_BIND: &str
+ 35: const DEFAULT_PORT: u16
+ 39: const INTEGRATOR_RECONNECT_BASE: Duration
+ 40: const INTEGRATOR_RECONNECT_MAX: Duration
+ 41: const INTEGRATOR_RECONNECT_RESET_AFTER: Duration
+ 43: const DIGEST_DEFAULT_WINDOW: Duration
+ 46: fn config_dir() -> PathBuf
+ 53: fn main()
+ 83: fn run_digest(args: &[String])
+133: fn parse_args(args: &[String]) -> (PathBuf, SocketAddr, Vec<String>)
+249: fn origin_valid(origin: &str) -> bool
+268: fn bind_permitted(ip: &std::net::IpAddr) -> bool
+281: async fn async_main(socket_path: PathBuf, addr: SocketAddr, cors_origins: Vec<String>)
+427: async fn supervise_planes(
+481: mod tests
+       function: ip, herdr_agent, live_origin_repo_reaches_issue_cache_through_production_seam, same_remote_basename_groups_specs_without_native_key_collisions, scoped_specs_use_only_live_herdr_workspaces, bind_allowlist_accepts_non_public_and_refuses_public, origin_allowlist_accepts_exact_origins_and_refuses_paths
+
+src/adapters/git_plane.rs
+ 117: const DEBOUNCE: Duration
+ 121: const SWEEP_INTERVAL: Duration
+ 122: const HEARTBEAT: Duration
+ 123: const STALL_TIMEOUT: Duration
+ 124: const RESTART_DELAY: Duration
+ 125: const WARN_INTERVAL: Duration
+ 129: const TOPOLOGY_INTERVAL: Duration
+ 132: const REDISCOVERY_INTERVAL: Duration
+ 136: const STARTUP_RESCAN_DELAY: Duration
+ 139: struct SweepIntervals
+        field: startup_delay, topology, rediscovery, status
+ 146: const PRODUCTION_SWEEP_INTERVALS: SweepIntervals
+ 156: pub trait RepoSourceDiscovery: std::fmt::Debug + Send + Sync
+        method: discover
+ 167: pub struct LiveRepoSourceDiscovery
+        field: projects_root, attribution
+ 172: impl LiveRepoSourceDiscovery
+        method: new, from_env, with_attribution
+ 191: impl RepoSourceDiscovery for LiveRepoSourceDiscovery
+        method: discover
+ 232: const EVENT_BUDGET: Duration
+ 234: const GIT_TIMEOUT: Duration
+ 242: const MAX_CONCURRENT_GIT_COMMANDS: usize
+ 246: const MAX_CONCURRENT_PROBES: usize
+ 249: const RESCAN_THROTTLE_MILLIS: u64
+ 253: const RESCAN_RETRY_DELAY: Duration
+ 256: const FS_EVENT_BATCH_MAX: usize
+ 259: const MISSING_SOURCE_BACKOFF: [Duration; 3]
+ 267: const MISSING_SOURCE_EXPIRY: Duration
+ 270: struct SourceFailureState
+        field: source_is_dir, consecutive_failures, first_failed_at, next_retry_at, warned
+ 283: impl SourceFailureState
+        method: new, expired, should_retry, record_failure
+ 331: enum ScanMode
+        enumMember: Regular, Rediscovery
+ 338: impl ScanMode
+        method: force_missing_sources
+ 348: enum WatcherCommand
+        enumMember: RegisterNew, RescanAndRegister
+ 357: static GIT_CALLS: AtomicU64
+ 366: static PROBE_LOCK: tokio::sync::Mutex<()>
+ 372: static TEST_GIT_DELAY_MILLIS: AtomicU64
+ 374: static TEST_GIT_IN_FLIGHT: AtomicUsize
+ 376: static TEST_GIT_MAX_IN_FLIGHT: AtomicUsize
+ 378: static TEST_PROBE_RUNS: AtomicU64
+ 380: static TEST_RESCAN_IN_FLIGHT: AtomicUsize
+ 382: static TEST_RESCAN_MAX_IN_FLIGHT: AtomicUsize
+ 385: struct TestGitLoadGuard
+ 388: impl TestGitLoadGuard
+        method: acquire
+ 413: impl Drop for TestGitLoadGuard
+        method: drop
+ 422: struct TestRescanLoadGuard
+ 425: impl TestRescanLoadGuard
+        method: acquire
+ 450: impl Drop for TestRescanLoadGuard
+        method: drop
+ 464: struct WorktreeEntry
+        field: path, gitdir
+ 473: struct WorktreeState
+        field: gitdir, branch, commit, subject, status, stale, last_budget_warning
+ 485: impl WorktreeState
+        method: warn_over_budget
+ 499: struct PlaneState
+        field: worktrees, by_branch, commondirs, main_checkouts, pending, rerun, skip_warned, source_failures, source_worktrees, source_main_checkouts, source_by_branch
+ 538: struct Probe
+        field: branch, commit, subject, status
+ 548: enum ProbeError
+        enumMember: Gone, OverBudget, Git
+ 564: pub struct GitPlane
+        field: repo_roots, fallback_repo_roots, source_discovery, worktrees_root, state, git_command_budget, rescan_lock, last_rescan, retry_scheduled, stopped, backlog, health, tasks, supervising, generation, progress_ms, stall_timeout, sweep_intervals
+ 601: fn canonicalize_repo_roots(roots: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf>
+ 612: impl GitPlane
+        method: new, with_repo_roots, with_repo_roots_and_discovery, with_health, with_backlog_flag, build, repo_roots_snapshot, refresh_repo_sources, with_sweep_intervals, lock_state, progress, spawn, watches, next_task, supervise, run_watcher, new_commondir_watcher, register_new_commondir_watchers, handle_fs_event_batch, handle_fs_event, map_event_path, maybe_rescan, debounce, run_sweep, run_status_sweep, apply_probe, rescan, rediscover, rescan_with_mode
+1787: struct ScanResult
+        field: source_set, unavailable_sources, entries, main_checkouts, by_branch, worktrees_by_source, main_checkouts_by_source, by_branch_by_source
+1807: struct SourceFailureNotice
+        field: warn, consecutive_failures, next_retry_at
+1814: struct SourceScanDecision
+        field: allowed, source_is_dir
+1819: impl GitPlane
+        method: source_scan_allowed, note_source_failure, log_source_failure, clear_source_failure, scan_all_worktrees_with_mode
+2055: fn parse_worktree_list(output: &str) -> Vec<(PathBuf, Option<String>)>
+2098: fn resolve_possibly_escaped(raw: &Path) -> PathBuf
+2117: fn unescape_worktree_path(s: &str) -> Option<String>
+2162: fn resolve_gitdir(wt: &Path) -> Option<PathBuf>
+2186: fn paced_probes<T, F, Fut>(
+2213: async fn probe_worktree_with_budget(
+2226: async fn with_probe_budget<T>(
+2243: async fn probe_worktree(
+2259: async fn probe_worktree_admitted(
+2298: async fn run_git(
+2313: async fn run_git_admitted(wt: &Path, args: &[&str]) -> Result<String, String>
+2356: fn parse_status(output: &str) -> GitStatus
+2390: fn parse_status_line(line: &str, status: &mut GitStatus)
+2405: fn parse_status_v2_record(line: &str, status: &mut GitStatus)
+2428: fn parse_status_v2(output: &str) -> Result<(String, String, GitStatus), ProbeError>
+2467: fn event_kind(event: &GitEvent) -> &'static str
+2477: impl Plane for GitPlane
+        method: source, start
+2494: mod tests
+        struct: TestGitDelayReset
+        function: wait_for_removed, missing_source_backoff_is_bounded_and_expires_into_rediscovery, missing_source_warn_cap_resets_only_after_source_change, parses_status_clean_branch_header, parses_status_ahead_behind_and_dirty_flags, parses_status_detached_and_gone_upstream, parses_status_v2_branch_oid_and_dirty_flags, parses_status_v2_xy_at_correct_offset_and_untracked, parses_status_v2_detached_head, parses_worktree_list_porcelain, commondir_watchers_are_fresh_additive_and_idempotent, parses_porcelain_paths_with_special_characters, unescapes_c_style_paths_as_fallback_only, watches_accepts_symlinked_roots_and_canonical_spellings, watches_resolves_paths_that_do_not_exist_yet, resolves_gitdir_for_dir_and_file_forms, plane_with_state, map_event_path_prefers_most_specific_gitdir_when_nested, map_event_path_maps_refs_heads_to_the_worktree_on_that_branch, map_event_path_unmatched_worktrees_path_signals_rescan, map_event_path_unrelated_path_maps_to_nothing, fs_event_batch_coalesces_burst_to_one_worktree, init_repo_at, scratch_repo, missing_repo_source_is_not_retried_by_the_hot_topology_loop, transient_git_failure_retains_last_known_worktrees_and_topology, failed_repo_source_uses_backoff_but_rediscovery_can_retry, rediscovery_timer_refreshes_projects_and_ignores_unnamed_git_roots, rediscovery_reconciles_a_recreated_repo_without_restart, load_test_agent, watcher_and_sweep_rescans_are_serialized, queued_probe_events_coalesce_to_one_follow_up, high_volume_git_work_is_bounded_and_preserves_sse_revisions, probe_returns_sha_and_first_line_subject_in_two_git_calls, probe_reuses_cached_subject_without_log_on_unchanged_head, over_budget_probe_is_skipped_and_retried_later, probe_survives_unborn_head_with_null_equivalents, handle_fs_event_emits_worktree_removed_for_deleted_worktree, handle_fs_event_resolves_raw_symlinked_delete_path

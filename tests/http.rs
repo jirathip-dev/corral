@@ -45,6 +45,20 @@ async fn app() -> (Store, axum::Router) {
     (store, app)
 }
 
+/// #555: 2s maximum background debounce + 1s encoding/scheduler allowance.
+/// Await the publisher, not a request-triggered flush; missing publication
+/// fails rather than silently serving stale state forever.
+async fn await_publication(
+    publication: &mut tokio::sync::watch::Receiver<Arc<corrald::core::store::PublishedSnapshot>>,
+) {
+    let started = Instant::now();
+    tokio::time::timeout(Duration::from_secs(3), publication.changed())
+        .await
+        .expect("snapshot must publish within 3s")
+        .expect("publisher remains live");
+    assert!(started.elapsed() < Duration::from_secs(3));
+}
+
 async fn app_with_repos(repos: &[Option<&str>]) -> (Store, axum::Router) {
     let (store, app) = app().await;
     for (index, repo) in repos.iter().enumerate() {
@@ -170,9 +184,14 @@ async fn removed_cost_route_is_not_a_json_fallback() {
 #[tokio::test]
 async fn snapshot_returns_json_with_rev_and_agents() {
     let (store, app) = app().await;
+    let mut publication = store.publications();
     store
         .apply(Change::upsert(agent("a", AgentState::Blocked)))
         .await;
+
+    // A read serves the old publication; it must not become the publisher.
+    assert_eq!(get_json(&app, "/snapshot").await["rev"], 0);
+    await_publication(&mut publication).await;
 
     let res = app
         .oneshot(Request::get("/snapshot").body(Body::empty()).unwrap())
@@ -222,11 +241,23 @@ async fn epoch_restart_with_higher_rev_resnapshots() {
 #[tokio::test]
 async fn snapshot_exposes_git_plane_backlog_additively() {
     let (store, app) = app().await;
+    let mut publication = store.publications();
     store
         .git_plane_backlog()
         .store(true, std::sync::atomic::Ordering::Release);
+    await_publication(&mut publication).await;
     let v = get_json(&app, "/snapshot").await;
     assert_eq!(v["git_plane_backlog"], true);
+    store
+        .git_plane_backlog()
+        .store(false, std::sync::atomic::Ordering::Release);
+    await_publication(&mut publication).await;
+    let next = get_json(&app, "/snapshot").await;
+    assert_eq!(next["git_plane_backlog"], false);
+    assert_eq!(
+        next["rev"], v["rev"],
+        "backlog changes do not invent agent deltas"
+    );
 }
 
 #[tokio::test]

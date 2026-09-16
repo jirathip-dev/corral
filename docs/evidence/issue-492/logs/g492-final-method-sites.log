@@ -1,0 +1,17 @@
+AST_COMMAND ["ast-grep", "scan", "--json=compact", "--inline-rules", "id: report-methods\nlanguage: Rust\nrule: {kind: function_item}", "src/adapters/git_plane.rs", "src/core/store.rs", "src/bounded_log.rs", "src/main.rs"]
+RAW_EXIT 0
+src/bounded_log.rs:75 record
+src/bounded_log.rs:110 write
+src/core/store.rs:358 run_coalescer
+src/core/store.rs:496 snapshot
+src/core/store.rs:568 snapshot_locked
+src/main.rs:53 main
+src/main.rs:427 supervise_planes
+src/adapters/git_plane.rs:704 with_health
+src/adapters/git_plane.rs:712 lock_state
+src/adapters/git_plane.rs:775 supervise
+src/adapters/git_plane.rs:865 run_watcher
+src/adapters/git_plane.rs:1371 run_status_sweep
+src/adapters/git_plane.rs:1444 apply_probe
+src/adapters/git_plane.rs:2226 with_probe_budget
+src/adapters/git_plane.rs:2486 start

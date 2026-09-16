@@ -1,0 +1,18 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "-p",
+    "corrald",
+    "--lib",
+    "g492_",
+    "--",
+    "--nocapture"
+  ],
+  "cwd": "/var/home/jirathip/.cache/g492-proof-r3/fixed",
+  "raw_exit": 0,
+  "timed_out": false,
+  "elapsed_seconds": 70.673,
+  "log": "/tmp/g492-bazzite-r3-liveness.log",
+  "target": "/home/jirathip/.cache/g492-proof-r3/fixed-target"
+}

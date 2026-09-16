@@ -1,0 +1,24 @@
+
+2026-09-16T17:24:35.019328Z  INFO corrald: owner channel listening (local-only unix socket) path=/private/tmp/g556-4a28wpku/config/owner.sock
+2026-09-16T17:24:35.019840Z  INFO corrald: planes supervisor live: git watcher + gh poller -> integrator -> store repo_roots=["/private/tmp/g556-4a28wpku/repo"] worktrees_root=/private/tmp/g556-4a28wpku/worktrees
+2026-09-16T17:24:35.019900Z  INFO corrald: push notifier not configured (set CORRAL_APNS_* to enable APNs)
+2026-09-16T17:24:35.019905Z  INFO corrald: CORS read plane disabled (no --cors-origin / $CORRALD_CORS_ORIGIN)
+2026-09-16T17:24:35.019925Z  INFO corrald::adapters::herdr: connecting to herdr socket=/private/tmp/g556-4a28wpku/herdr.sock
+2026-09-16T17:24:35.020332Z  INFO corrald: corrald listening; auth plane live: GET /host-key, POST /register addr=127.0.0.1:56609 scope="loopback" socket=/private/tmp/g556-4a28wpku/herdr.sock config_dir=/private/tmp/g556-4a28wpku/config
+2026-09-16T17:24:35.022598Z  INFO corrald::adapters::herdr: agent upsert agent_id=herdr:pane:p556 tool=opencode state=Idle persisted=true
+2026-09-16T17:24:35.023401Z  INFO corrald::adapters::herdr: agent upsert agent_id=herdr:pane:p557 tool=opencode state=Idle persisted=true
+2026-09-16T17:24:35.023411Z  INFO corrald::adapters::herdr: herdr bootstrap complete agents=2
+2026-09-16T17:24:35.122817Z  INFO corrald::adapters::git_plane: git plane: worktree added worktree=/private/tmp/g556-4a28wpku/worktrees/repo/unbound
+2026-09-16T17:24:35.122841Z  INFO corrald::adapters::git_plane: git plane: worktree added worktree=/private/tmp/g556-4a28wpku/repo
+2026-09-16T17:24:35.124237Z  INFO corrald::adapters::git_plane: git plane: commondir watch live gitdir=/private/tmp/g556-4a28wpku/repo/.git
+2026-09-16T17:24:35.124253Z  INFO corrald::adapters::git_plane: git plane: fsevents watchers live repos=["/private/tmp/g556-4a28wpku/repo"] root=/private/tmp/g556-4a28wpku/worktrees
+2026-09-16T17:24:35.347917Z  INFO corrald::api: snapshot served requests=1 max_serve_ms=0.024 max_buffer_age_ms=343.921 latest_rev=0
+2026-09-16T17:24:35.483825Z  INFO corrald::adapters::git_plane: git plane event emitted source="git" worktree=/private/tmp/g556-4a28wpku/repo event="head_moved"
+2026-09-16T17:24:35.483850Z  INFO corrald::adapters::git_plane: git plane event emitted source="git" worktree=/private/tmp/g556-4a28wpku/repo event="dirty_changed"
+2026-09-16T17:24:35.483881Z  INFO corrald::adapters::git_plane: git plane event emitted source="git" worktree=/private/tmp/g556-4a28wpku/worktrees/repo/unbound event="head_moved"
+2026-09-16T17:24:35.483894Z  INFO corrald::adapters::git_plane: git plane event emitted source="git" worktree=/private/tmp/g556-4a28wpku/worktrees/repo/unbound event="dirty_changed"
+2026-09-16T17:24:37.089742Z  INFO corrald::api::events: SSE first frame served requests=1 max_serve_ms=0.019 max_buffer_age_ms=64.762 latest_frame_kind="snapshot" latest_live_from_rev=1
+2026-09-16T17:24:39.025852Z  INFO corrald::adapters::gh_plane: gh plane live: first SSE subscriber connected subscribers=1
+2026-09-16T17:24:41.324818Z  INFO corrald::adapters::gh_plane: gh plane round-trip complete latency_ms=2297 repos=1 changed=1
+2026-09-16T17:25:43.110414Z  INFO corrald::adapters::gh_plane: gh plane round-trip complete latency_ms=1780 repos=1 changed=0
+2026-09-16T17:26:08.051621Z  INFO corrald::api: snapshot served requests=6 max_serve_ms=0.007 max_buffer_age_ms=1707.753 latest_rev=2

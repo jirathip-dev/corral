@@ -1,0 +1,32 @@
+{
+  "label": "r2-hog",
+  "command": [
+    "cargo",
+    "test",
+    "--release",
+    "--test",
+    "snapshot_load",
+    "--",
+    "--ignored",
+    "--nocapture"
+  ],
+  "raw_exit": 0,
+  "duration_s": 4.572,
+  "head": "59e0e613bc49784c3608a7b1f9dec5ff9b62d1d5",
+  "cpu_hogs": 10,
+  "log": "/tmp/g555-r2-hog.log",
+  "host_log": "/tmp/g555-r2-hog-host.log",
+  "samples": 512,
+  "p50_ms": 0.008042,
+  "p99_ms": 0.031833,
+  "buffer_age_p50_ms": 856,
+  "buffer_age_p99_ms": 1984,
+  "buffer_age_max_ms": 2014,
+  "bytes_min": 29129,
+  "bytes_max": 29193,
+  "revisions_seen": [
+    1,
+    2
+  ],
+  "budget_pass": true
+}

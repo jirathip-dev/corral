@@ -1,0 +1,20 @@
+{
+  "label": "r2-http-base",
+  "command": [
+    "python3",
+    "docs/evidence/issue-555/round2-http-load.py",
+    "record",
+    "--binary",
+    "/tmp/g555-daemon-target/r2-base-corrald",
+    "--source-ref",
+    "11cc1d26f3b1c22716d4527fb9e7679eaa861aba",
+    "--output",
+    "/tmp/g555-r2-http-base.json"
+  ],
+  "raw_exit": 1,
+  "duration_s": 8.963,
+  "head": "4ab8440611869715762be7d6dff7cdef93dc87f7",
+  "cpu_hogs": 0,
+  "log": "/tmp/g555-r2-http-base.log",
+  "host_log": "/tmp/g555-r2-http-base-host.log"
+}

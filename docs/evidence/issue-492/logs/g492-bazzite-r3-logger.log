@@ -1,0 +1,14 @@
+   Compiling corrald v0.1.0 (/var/home/jirathip/.cache/g492-proof-r3/fixed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.31s
+     Running unittests src/main.rs (/home/jirathip/.cache/g492-proof-r3/fixed-target/debug/deps/corrald-5f4ad63e9a78ebed)
+
+running 2 tests
+
+thread '<unnamed>' (2997595) panicked at src/bounded_log.rs:179:13:
+poison writer
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test bounded_log::tests::oversized_writes_are_bounded_and_poison_is_recoverable ... ok
+G492_ERROR_OR_PANIC: ERROR and real panic survived full-file rotation
+test bounded_log::tests::error_and_panic_survive_rotation ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s

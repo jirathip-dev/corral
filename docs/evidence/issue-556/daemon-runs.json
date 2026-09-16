@@ -1,0 +1,66 @@
+[
+  {
+    "command": [
+      "python3",
+      "/Users/jirathip/.herdr/worktrees/corral/impl556-ghoptin/docs/evidence/issue-556/daemon-evidence.py",
+      "/tmp/g556-target/release/corrald",
+      "none",
+      "--seconds",
+      "300",
+      "--output",
+      "/Users/jirathip/.herdr/worktrees/corral/impl556-ghoptin/docs/evidence/issue-556/none"
+    ],
+    "exit": 0,
+    "log": "/tmp/g556-daemon-none.log"
+  },
+  {
+    "command": [
+      "python3",
+      "/Users/jirathip/.herdr/worktrees/corral/impl556-ghoptin/docs/evidence/issue-556/daemon-evidence.py",
+      "/tmp/g556-target/release/corrald",
+      "refused",
+      "--seconds",
+      "5",
+      "--output",
+      "/Users/jirathip/.herdr/worktrees/corral/impl556-ghoptin/docs/evidence/issue-556/refused"
+    ],
+    "exit": 0,
+    "log": "/tmp/g556-daemon-refused.log"
+  },
+  {
+    "command": [
+      "python3",
+      "/Users/jirathip/.herdr/worktrees/corral/impl556-ghoptin/docs/evidence/issue-556/daemon-evidence.py",
+      "/tmp/g556-target/release/corrald",
+      "env",
+      "--seconds",
+      "90",
+      "--output",
+      "/Users/jirathip/.herdr/worktrees/corral/impl556-ghoptin/docs/evidence/issue-556/env",
+      "--branch",
+      "dependabot/cargo/rust-dependencies-f82fc923d5",
+      "--pr",
+      "525"
+    ],
+    "exit": 0,
+    "log": "/tmp/g556-daemon-env-canonical.log"
+  },
+  {
+    "command": [
+      "python3",
+      "/Users/jirathip/.herdr/worktrees/corral/impl556-ghoptin/docs/evidence/issue-556/daemon-evidence.py",
+      "/tmp/g556-target/release/corrald",
+      "file",
+      "--seconds",
+      "90",
+      "--output",
+      "/Users/jirathip/.herdr/worktrees/corral/impl556-ghoptin/docs/evidence/issue-556/file",
+      "--branch",
+      "dependabot/cargo/rust-dependencies-f82fc923d5",
+      "--pr",
+      "525"
+    ],
+    "exit": 0,
+    "log": "/tmp/g556-daemon-file-canonical.log"
+  }
+]

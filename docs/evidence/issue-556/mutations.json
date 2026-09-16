@@ -1,0 +1,69 @@
+[
+  {
+    "probe": "permissions",
+    "file": "src/adapters/gh_plane.rs",
+    "old": "meta.permissions().mode() & 0o077 == 0",
+    "new": "meta.permissions().mode() & 0o000 == 0",
+    "command": [
+      "cargo",
+      "test",
+      "--lib",
+      "g556_token_file_permissions_and_rotation",
+      "--",
+      "--nocapture"
+    ],
+    "exit": 101,
+    "duration_s": 18.322,
+    "log": "/tmp/g556-mutation-permissions.log",
+    "restored_sha256": "4cf1893bc7581670d57cd583b10edc185e3c53b2450c554896aa8b730e429c0c"
+  },
+  {
+    "probe": "publication",
+    "file": "src/core/store.rs",
+    "old": "if !fresh || (ws.head_sha.is_none() && ws.branch.is_none()) {",
+    "new": "if false && (!fresh || (ws.head_sha.is_none() && ws.branch.is_none())) {",
+    "command": [
+      "cargo",
+      "test",
+      "--lib",
+      "g556_binding_freshness_snapshot_and_sse",
+      "--",
+      "--nocapture"
+    ],
+    "exit": 101,
+    "duration_s": 15.901,
+    "log": "/tmp/g556-mutation-publication.log",
+    "restored_sha256": "b7852667802f334db2e981100b206f2efa3e7dd9df6f947df1af734e8dc607e8"
+  },
+  {
+    "probe": "response-redaction",
+    "file": "src/adapters/gh_plane.rs",
+    "old": "        redact_response(&mut response, token);",
+    "new": "        // Mutation: omit response redaction.",
+    "command": [
+      "cargo",
+      "test",
+      "--lib",
+      "g556_source_processes",
+      "--",
+      "--nocapture"
+    ],
+    "exit": 101,
+    "duration_s": 17.563,
+    "log": "/tmp/g556-mutation-response-redaction.log",
+    "restored_sha256": "4cf1893bc7581670d57cd583b10edc185e3c53b2450c554896aa8b730e429c0c"
+  },
+  {
+    "probe": "restored",
+    "command": [
+      "cargo",
+      "test",
+      "--lib",
+      "g556_",
+      "--",
+      "--nocapture"
+    ],
+    "exit": 0,
+    "log": "/tmp/g556-restored.log"
+  }
+]

@@ -27,6 +27,8 @@ use corrald::history::{Digest, HistoryRing, RotationPolicy};
 use corrald::integrate::Integrator;
 use tracing_subscriber::EnvFilter;
 
+mod bounded_log;
+
 /// Loopback default. `--bind` may widen to tailnet/private/ULA (#65,
 /// `bind_permitted`); public interfaces are always refused.
 const DEFAULT_BIND: &str = "127.0.0.1";
@@ -49,7 +51,11 @@ fn config_dir() -> PathBuf {
 }
 
 fn main() {
+    let diagnostic_log = bounded_log::BoundedLog::open(&config_dir());
+    diagnostic_log.install_panic_hook();
     tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(diagnostic_log)
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
@@ -440,7 +446,8 @@ async fn supervise_planes(
                 attribution.worktrees_root(),
                 source_discovery.clone(),
             )
-            .with_backlog_flag(store.git_plane_backlog()),
+            .with_backlog_flag(store.git_plane_backlog())
+            .with_health(store.git_plane_health()),
         );
         let gh_plane: Arc<dyn Plane> = Arc::new(GhPlane::with_herdr_scope(
             Arc::new(store.clone()),

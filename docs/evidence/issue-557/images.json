@@ -1,0 +1,53 @@
+{
+  "device": {
+    "lastBootedAt": "2026-09-16T19:52:26Z",
+    "dataPath": "/Users/jirathip/Library/Developer/CoreSimulator/Devices/0F5C1EDC-64C3-4565-899C-0D7A47CCEF5A/data",
+    "dataPathSize": 1938194432,
+    "logPath": "/Users/jirathip/Library/Logs/CoreSimulator/0F5C1EDC-64C3-4565-899C-0D7A47CCEF5A",
+    "udid": "0F5C1EDC-64C3-4565-899C-0D7A47CCEF5A",
+    "isAvailable": true,
+    "logPathSize": 176128,
+    "deviceTypeIdentifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro",
+    "state": "Booted",
+    "name": "g557-caption"
+  },
+  "renderer": "HerdRailZoneTests UIHostingController + drawHierarchy; 390x844 pt, scale 1",
+  "images": [
+    {
+      "file": "day-blocked-large.png",
+      "sha256": "f61ad477407686c3372745c51fe8ebca4d57f668283cf9fdef05c09b8eaf52ef"
+    },
+    {
+      "file": "day-blocked-large-git.png",
+      "sha256": "2f8aca4abe6fd5f14036b5a0ea5058343aafa37d07c35cff5ccbdc2b900280f9"
+    },
+    {
+      "file": "day-blocked-accessibility3.png",
+      "sha256": "27f84c61c02c415c6d39de80b4872fd34449051511c3e0b40ad4d4cc0dea4db1"
+    },
+    {
+      "file": "day-blocked-accessibility3-git.png",
+      "sha256": "ea940883744e9d3d1d261736264423814af3b6b2cdbc2f3c47232666d6b04e29"
+    },
+    {
+      "file": "night-blocked-large.png",
+      "sha256": "0dad903f1d684b4e8e0d1408c14b2207d7c42a162b3303e1f44ffedbaaa55088"
+    },
+    {
+      "file": "night-blocked-large-git.png",
+      "sha256": "ccf03643e9e364c3977560434cbfa23b40b2386caa8ffc0e708f9bd3a4448727"
+    },
+    {
+      "file": "night-blocked-accessibility3.png",
+      "sha256": "82a1eb4eedc1f335627d76ffe6afbe004c67888d6f206dab9479c0a193d8ae66"
+    },
+    {
+      "file": "night-blocked-accessibility3-git.png",
+      "sha256": "6a464f620f0d3b2c1b4c2efabf206d2c04180e083a1ef855f7a60f08f28ef881"
+    },
+    {
+      "file": "day-blocked-accessibility3-git-scrolled.png",
+      "sha256": "214cfc8ba9d6cc6d83a177517d7c83c65c768ac4d428dea5b7145183c6ef9462"
+    }
+  ]
+}

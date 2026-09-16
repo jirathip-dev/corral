@@ -1,0 +1,421 @@
+{
+  "source_head": "2d09b37762b97a751a0eb52c5c0ac57ece1d5485",
+  "workspace_totals": {
+    "passed": 485,
+    "failed": 0,
+    "ignored": 11
+  },
+  "unchanged_harness_sha256": "08774414aa7681db131a8c4a18f86131832785adab4ad9a2f77384a8e3ebe27b",
+  "baseline": {
+    "label": "baseline-final",
+    "command": [
+      "cargo",
+      "test",
+      "--release",
+      "--test",
+      "snapshot_load",
+      "--",
+      "--ignored",
+      "--nocapture"
+    ],
+    "raw_exit": 0,
+    "duration_s": 26.905,
+    "head": "11cc1d26f3b1c22716d4527fb9e7679eaa861aba",
+    "cpu_hogs": 10,
+    "log": "/tmp/g555-baseline-final.log",
+    "host_log": "/tmp/g555-baseline-final-host.log",
+    "samples": 512,
+    "p50_ms": 43.870792,
+    "p99_ms": 45.68775,
+    "buffer_age_p50_ms": 1,
+    "buffer_age_p99_ms": 1,
+    "buffer_age_max_ms": 2,
+    "bytes_min": 29129,
+    "bytes_max": 29323,
+    "budget_pass": false
+  },
+  "after": {
+    "label": "after-load",
+    "command": [
+      "cargo",
+      "test",
+      "--release",
+      "--test",
+      "snapshot_load",
+      "--",
+      "--ignored",
+      "--nocapture"
+    ],
+    "raw_exit": 0,
+    "duration_s": 6.051,
+    "head": "2d09b37762b97a751a0eb52c5c0ac57ece1d5485",
+    "cpu_hogs": 10,
+    "log": "/tmp/g555-after-load.log",
+    "host_log": "/tmp/g555-after-load-host.log",
+    "samples": 512,
+    "p50_ms": 0.022917,
+    "p99_ms": 0.065291,
+    "buffer_age_p50_ms": 873,
+    "buffer_age_p99_ms": 1980,
+    "buffer_age_max_ms": 2011,
+    "bytes_min": 29129,
+    "bytes_max": 29193,
+    "revisions_seen": [
+      1,
+      2
+    ],
+    "budget_pass": true
+  },
+  "receipts": [
+    {
+      "label": "after-build",
+      "raw_exit": 0,
+      "command": [
+        "cargo",
+        "test",
+        "--release",
+        "--test",
+        "snapshot_load",
+        "--no-run"
+      ]
+    },
+    {
+      "label": "after-load",
+      "raw_exit": 0,
+      "command": [
+        "cargo",
+        "test",
+        "--release",
+        "--test",
+        "snapshot_load",
+        "--",
+        "--ignored",
+        "--nocapture"
+      ]
+    },
+    {
+      "label": "baseline-build",
+      "raw_exit": 0,
+      "command": [
+        "cargo",
+        "test",
+        "--release",
+        "--test",
+        "snapshot_load",
+        "--no-run"
+      ]
+    },
+    {
+      "label": "baseline-final",
+      "raw_exit": 0,
+      "command": [
+        "cargo",
+        "test",
+        "--release",
+        "--test",
+        "snapshot_load",
+        "--",
+        "--ignored",
+        "--nocapture"
+      ]
+    },
+    {
+      "label": "baseline-format",
+      "raw_exit": 0,
+      "command": [
+        "cargo",
+        "fmt",
+        "--all"
+      ]
+    },
+    {
+      "label": "baseline-formatted-build",
+      "raw_exit": 0,
+      "command": [
+        "cargo",
+        "test",
+        "--release",
+        "--test",
+        "snapshot_load",
+        "--no-run"
+      ]
+    },
+    {
+      "label": "baseline-load",
+      "raw_exit": 0,
+      "command": [
+        "cargo",
+        "test",
+        "--release",
+        "--test",
+        "snapshot_load",
+        "--",
+        "--ignored",
+        "--nocapture"
+      ]
+    },
+    {
+      "label": "clippy",
+      "raw_exit": 0,
+      "command": [
+        "cargo",
+        "clippy",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ]
+    },
+    {
+      "label": "deny",
+      "raw_exit": 0,
+      "command": [
+        "cargo",
+        "deny",
+        "check"
+      ]
+    },
+    {
+      "label": "fmt-check",
+      "raw_exit": 0,
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--check"
+      ]
+    },
+    {
+      "label": "focused-http-foreground-fixed",
+      "raw_exit": 0,
+      "command": [
+        "cargo",
+        "test",
+        "--release",
+        "--test",
+        "http",
+        "--",
+        "--nocapture"
+      ]
+    },
+    {
+      "label": "focused-http",
+      "raw_exit": 101,
+      "command": [
+        "cargo",
+        "test",
+        "--release",
+        "--test",
+        "http",
+        "--",
+        "--nocapture"
+      ]
+    },
+    {
+      "label": "focused-publication-green",
+      "raw_exit": 101,
+      "command": [
+        "cargo",
+        "test",
+        "--release",
+        "--lib",
+        "core::store::publication_tests",
+        "--",
+        "--nocapture"
+      ]
+    },
+    {
+      "label": "focused-publication-import-fixed",
+      "raw_exit": 101,
+      "command": [
+        "cargo",
+        "test",
+        "--release",
+        "--lib",
+        "core::store::publication_tests",
+        "--",
+        "--nocapture"
+      ]
+    },
+    {
+      "label": "focused-publication-lag-fixed",
+      "raw_exit": 0,
+      "command": [
+        "cargo",
+        "test",
+        "--release",
+        "--lib",
+        "core::store::publication_tests",
+        "--",
+        "--nocapture"
+      ]
+    },
+    {
+      "label": "focused-publication",
+      "raw_exit": 101,
+      "command": [
+        "cargo",
+        "test",
+        "--release",
+        "--lib",
+        "core::store::publication_tests",
+        "--",
+        "--nocapture"
+      ]
+    },
+    {
+      "label": "format-final",
+      "raw_exit": 0,
+      "command": [
+        "cargo",
+        "fmt",
+        "--all"
+      ]
+    },
+    {
+      "label": "format",
+      "raw_exit": 0,
+      "command": [
+        "cargo",
+        "fmt",
+        "--all"
+      ]
+    },
+    {
+      "label": "mutation-battery",
+      "raw_exit": 1,
+      "command": [
+        "python3",
+        "docs/evidence/issue-555/daemon-mutations.py"
+      ]
+    },
+    {
+      "label": "mutation-no-publication",
+      "raw_exit": 101,
+      "command": [
+        "cargo",
+        "test",
+        "--release",
+        "--test",
+        "http",
+        "snapshot_returns_json_with_rev_and_agents",
+        "--",
+        "--exact",
+        "--nocapture"
+      ]
+    },
+    {
+      "label": "mutation-resume",
+      "raw_exit": 0,
+      "command": [
+        "python3",
+        "docs/evidence/issue-555/daemon-mutations.py",
+        "mutation-no-publication"
+      ]
+    },
+    {
+      "label": "mutation-snapshot-flush",
+      "raw_exit": 101,
+      "command": [
+        "cargo",
+        "test",
+        "--release",
+        "--lib",
+        "core::store::publication_tests::reads_and_initial_sse_do_not_wait_for_writer_or_publisher",
+        "--",
+        "--exact",
+        "--nocapture"
+      ]
+    },
+    {
+      "label": "mutation-sse-flush",
+      "raw_exit": 101,
+      "command": [
+        "cargo",
+        "test",
+        "--release",
+        "--lib",
+        "core::store::publication_tests::reads_and_initial_sse_do_not_wait_for_writer_or_publisher",
+        "--",
+        "--exact",
+        "--nocapture"
+      ]
+    },
+    {
+      "label": "mutation-wire-epoch",
+      "raw_exit": 101,
+      "command": [
+        "cargo",
+        "test",
+        "--release",
+        "--lib",
+        "core::store::publication_tests::randomized_publications_match_old_snapshot_and_sse_bytes",
+        "--",
+        "--exact",
+        "--nocapture"
+      ]
+    },
+    {
+      "label": "release-build",
+      "raw_exit": 0,
+      "command": [
+        "cargo",
+        "build",
+        "--release"
+      ]
+    },
+    {
+      "label": "restored-http-bound",
+      "raw_exit": 0,
+      "command": [
+        "cargo",
+        "test",
+        "--release",
+        "--test",
+        "http",
+        "snapshot_returns_json_with_rev_and_agents",
+        "--",
+        "--exact",
+        "--nocapture"
+      ]
+    },
+    {
+      "label": "restored-publication",
+      "raw_exit": 0,
+      "command": [
+        "cargo",
+        "test",
+        "--release",
+        "--lib",
+        "core::store::publication_tests",
+        "--",
+        "--nocapture"
+      ]
+    },
+    {
+      "label": "smoke-ansi-fixed",
+      "raw_exit": 0,
+      "command": [
+        "python3",
+        "docs/evidence/issue-555/daemon-smoke.py"
+      ]
+    },
+    {
+      "label": "smoke",
+      "raw_exit": 1,
+      "command": [
+        "python3",
+        "docs/evidence/issue-555/daemon-smoke.py"
+      ]
+    },
+    {
+      "label": "workspace-test",
+      "raw_exit": 0,
+      "command": [
+        "cargo",
+        "test",
+        "--workspace"
+      ]
+    }
+  ]
+}

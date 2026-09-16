@@ -1,0 +1,14 @@
+diff --git a/tests/model.rs b/tests/model.rs
+index 98a1b32..0491a2f 100644
+--- a/tests/model.rs
++++ b/tests/model.rs
+@@ -101,0 +102,4 @@ fn snapshot_is_versioned_flat_keyed_records() {
++        git_plane_alive: false,
++        git_plane_last_event_age_ms: None,
++        git_plane_skipped: 0,
++        git_worktree_facts: std::collections::BTreeMap::new(),
+@@ -109,0 +114,4 @@ fn snapshot_is_versioned_flat_keyed_records() {
++    assert_eq!(v["git_plane_alive"], false);
++    assert!(v["git_plane_last_event_age_ms"].is_null());
++    assert_eq!(v["git_plane_skipped"], 0);
++    assert!(v["git_worktree_facts"].is_object());

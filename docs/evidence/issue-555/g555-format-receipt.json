@@ -1,0 +1,14 @@
+{
+  "label": "format",
+  "command": [
+    "cargo",
+    "fmt",
+    "--all"
+  ],
+  "raw_exit": 0,
+  "duration_s": 0.416,
+  "head": "918e778c6c4da1e91ccce9fb75ba20e1a10e1679",
+  "cpu_hogs": 0,
+  "log": "/tmp/g555-format.log",
+  "host_log": "/tmp/g555-format-host.log"
+}

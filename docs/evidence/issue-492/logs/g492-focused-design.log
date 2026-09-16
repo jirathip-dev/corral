@@ -1,0 +1,28 @@
+   Compiling corrald v0.1.0 (/Users/jirathip/.herdr/worktrees/corral/impl492-gitplane)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.92s
+     Running unittests src/lib.rs (/tmp/g492-target/debug/deps/corrald-224ce1b580303be5)
+
+running 7 tests
+
+thread '<unnamed>' (1928909) panicked at src/adapters/git_plane_issue492_tests.rs:48:13:
+G492_INITIAL_LOCK_HOLDER_PANIC
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'adapters::git_plane::tests::g492_warning_subscriber_cannot_poison_the_cache' (1928899) panicked at src/adapters/git_plane_issue492_tests.rs:264:13:
+G492_FAILING_WARN_WRITER
+test adapters::git_plane::tests::g492_warning_limit_preserves_every_skipped_probe_in_counter ... ok
+test adapters::git_plane::tests::g492_poisoned_state_keeps_event_path_and_probe_serving ... ok
+test adapters::git_plane::tests::g492_warning_subscriber_cannot_poison_the_cache ... ok
+test adapters::git_plane::tests::g492_snapshot_marks_old_absent_and_stopped_facts ... ok
+test adapters::git_plane::tests::g492_supervisor_restarts_a_silent_stall_but_not_idle_loops ... ok
+
+thread 'tokio-rt-worker' (1928903) panicked at src/adapters/git_plane_issue492_tests.rs:101:9:
+G492_SUPERVISED_POISON_PAYLOAD
+2026-09-16T14:03:04.856234Z ERROR corrald::adapters::git_plane: git plane child failed; restarting generation error=task 26 panicked with message "G492_SUPERVISED_POISON_PAYLOAD"
+
+G492_REAL_HTTP_LIVENESS alive=true stopped=false
+test adapters::git_plane::tests::g492_supervisor_respawns_poisoned_child_and_wire_reports_stopped ... ok
+G492_PERMITS 100 fake worktrees x 50ms, max=4, OverBudget=0; paced_ms=5994
+test adapters::git_plane::tests::g492_permit_queue_is_not_execution_budget_and_sweep_is_paced ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 299 filtered out; finished in 7.32s

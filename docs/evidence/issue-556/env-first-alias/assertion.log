@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "/Users/jirathip/.herdr/worktrees/corral/impl556-ghoptin/docs/evidence/issue-556/daemon-evidence.py", line 146, in <module>
+    assert args.pr and any(w["pr_number"] == args.pr and w["ci_status"] is not None for w in workspaces), "live PR branch did not bind"
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: live PR branch did not bind

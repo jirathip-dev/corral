@@ -1,0 +1,13 @@
+{
+  "label": "smoke-ansi-fixed",
+  "command": [
+    "python3",
+    "docs/evidence/issue-555/daemon-smoke.py"
+  ],
+  "raw_exit": 0,
+  "duration_s": 0.757,
+  "head": "2d09b37762b97a751a0eb52c5c0ac57ece1d5485",
+  "cpu_hogs": 0,
+  "log": "/tmp/g555-smoke-ansi-fixed.log",
+  "host_log": "/tmp/g555-smoke-ansi-fixed-host.log"
+}

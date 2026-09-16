@@ -1,0 +1,121 @@
+{
+  "issue": 558,
+  "base": "74c96a1d57528083e67df7fd24de9764e21373f9",
+  "capture_log": "/tmp/g558-focused-adaptive.log",
+  "capture_exit": 0,
+  "release_source_digest": "d58dd8adf1b70f72049678b0da464d65ab7fe3c064c93d57a7f38d5c4cb4027d",
+  "test_source_digest": "5c27ace68bd25d7ab958303ccac5f38a1518b7cc4877072b8e764bca8d1b4da8",
+  "simulator": {
+    "name": "iPhone 16",
+    "udid": "59DDC0C5-891E-4EC0-91AF-4F50DF68D793",
+    "runtime": "iOS 26.5"
+  },
+  "rendering": "XCTest on simulator; real RecentOutputSheet hosted in a native page sheet over FleetView; test window 390x844 points at scale 3. GitHub-only captures use real RecentWorktreeBlock via ImageRenderer, 358x220 points at scale 3. No post-capture resizing.",
+  "fixtures": "RecentWorktreeBlockTests JSONDecoder Agent fixtures and existing AppModel.enterDemo / FleetStore.seedDemo injection; no live service",
+  "captures": [
+    {
+      "file": "day-large-ax3.png",
+      "sha256": "23dd0482fd9c53dccbf04e89b85cff68667bd9e00485ae67b2229cf95057fcad",
+      "pixels": [
+        1170,
+        2532
+      ]
+    },
+    {
+      "file": "day-large-default.png",
+      "sha256": "e03abd4de68efa046bfac77118e3ce2fb79b6963bd8a68f1be4a18d12e1078e3",
+      "pixels": [
+        1170,
+        2532
+      ]
+    },
+    {
+      "file": "day-medium-absent.png",
+      "sha256": "50c1e3447aeb6f46a1b4643efe999d504c9e7bf34a8e5e7a5e5221ef4d1cd174",
+      "pixels": [
+        1170,
+        2532
+      ]
+    },
+    {
+      "file": "day-medium-ax3.png",
+      "sha256": "a85b8607d97e9cdc15c798106f68fcfd505a62c927dc833a4ed8bfef16866904",
+      "pixels": [
+        1170,
+        2532
+      ]
+    },
+    {
+      "file": "day-medium-default.png",
+      "sha256": "79d8fd59970045f31fa16b61565079d66fdbbde84be444bdc1b6c9447c5d8c7c",
+      "pixels": [
+        1170,
+        2532
+      ]
+    },
+    {
+      "file": "github-failing.png",
+      "sha256": "dc739bbbfd37e091fbe2c169b61f76039738da41e5bc10d9485f2d74d1021751",
+      "pixels": [
+        1074,
+        660
+      ]
+    },
+    {
+      "file": "github-passing.png",
+      "sha256": "f4aa9c2b52c148eb0d811c9d8c3be81fdc5fb3841a367a4dbbb5c60eb2848407",
+      "pixels": [
+        1074,
+        660
+      ]
+    },
+    {
+      "file": "github-pending.png",
+      "sha256": "e889d36cf952e21cc1b436faf0174d5a40fd98d0087b93b2464911f6172c89bf",
+      "pixels": [
+        1074,
+        660
+      ]
+    },
+    {
+      "file": "night-large-ax3.png",
+      "sha256": "20f9060b513e3d520b8b668ec117cd64195aa246bcb1d3e1faefd77eb4cc5d5d",
+      "pixels": [
+        1170,
+        2532
+      ]
+    },
+    {
+      "file": "night-large-default.png",
+      "sha256": "71a804b1ac1daf7df25fbb415c02837ebdd777df162b542a2df9c044202b8043",
+      "pixels": [
+        1170,
+        2532
+      ]
+    },
+    {
+      "file": "night-medium-absent.png",
+      "sha256": "19d5fa70328dda39239d3e7de7192709b73284cd6985f6d18f3c6cada5e2f4f7",
+      "pixels": [
+        1170,
+        2532
+      ]
+    },
+    {
+      "file": "night-medium-ax3.png",
+      "sha256": "ade77cae54625c9f006cf881ef48256373eab4c746331459a53cb6456727f3fe",
+      "pixels": [
+        1170,
+        2532
+      ]
+    },
+    {
+      "file": "night-medium-default.png",
+      "sha256": "70df391f1cafef2f8bf3da88f99069e41e4945318ed7ae314c6f9c4133ffb547",
+      "pixels": [
+        1170,
+        2532
+      ]
+    }
+  ]
+}

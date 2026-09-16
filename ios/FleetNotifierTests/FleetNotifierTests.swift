@@ -5,6 +5,227 @@ import XCTest
 import Vision
 @testable import FleetNotifier
 
+// MARK: - Recent-output worktree facts (#558)
+
+@MainActor
+final class RecentWorktreeBlockTests: XCTestCase {
+    private let bound = #"{"repo":"corral","branch":"feature/sheet","worktree_path":"/fixture/sheet-lane","dirty":true,"ahead":2,"behind":1,"head_sha":"abcdef1234567890","head_subject":"Keep commit context visible\nBody must not render","pr_number":558,"ci_status":"success","issues":[{"number":45},{"number":46},{"number":47},{"number":48},{"number":49}]}"#
+
+    private func decode(_ workspace: String) throws -> Agent {
+        let json = #"{"agent_id":"sheet-fixture","source":"herdr","tool":"fixture","state":"working","display_name":"Sheet fixture","workspace":\#(workspace)}"#
+        return try JSONDecoder().decode(Agent.self, from: Data(json.utf8))
+    }
+
+    func testCommitRowAndExactAccessibilityLabel() throws {
+        let workspace = try decode(bound).workspace
+        let details = RecentWorktreeDetails(workspace: workspace)
+        XCTAssertEqual(workspace.headSha, "abcdef1234567890")
+        XCTAssertEqual(workspace.headSubject, "Keep commit context visible\nBody must not render")
+        XCTAssertEqual(workspace.issues?.map(\.number), [45, 46, 47, 48, 49])
+        XCTAssertEqual(details.rows, [.identity, .commit, .basename, .github])
+        XCTAssertEqual(details.accessibilityLabel,
+                       "Branch feature/sheet, dirty, 2 ahead, 1 behind, abcdef1, Keep commit context visible, sheet-lane, PR 558, CI passing, closes #45, #46, #47 +2")
+        let roundTrip = try JSONDecoder().decode(Workspace.self, from: JSONEncoder().encode(workspace))
+        XCTAssertEqual(roundTrip, workspace)
+    }
+
+    func testOlderPayloadAndNullFieldsCollapseWithoutInventingClean() throws {
+        for payload in [#"{"repo":"corral"}"#,
+                        #"{"repo":"corral","head_sha":null,"head_subject":null,"issues":null}"#] {
+            let workspace = try decode(payload).workspace
+            XCTAssertNil(workspace.headSha)
+            XCTAssertNil(workspace.headSubject)
+            XCTAssertNil(workspace.issues)
+            let details = RecentWorktreeDetails(workspace: workspace)
+            XCTAssertEqual(details.rows, [])
+            XCTAssertEqual(details.accessibilityLabel, "")
+        }
+    }
+
+    func testOptionalFactsStayIndependentAndBasenameMatchesBoard() throws {
+        let cases: [(Workspace, [RecentWorktreeDetails.Row], String)] = [
+            (Workspace(branch: "main"), [.identity], "Branch main"),
+            (Workspace(dirty: true), [.identity], "dirty"),
+            (Workspace(behind: 3), [.identity], "0 ahead, 3 behind"),
+            (Workspace(headSha: "123456789"), [.commit], "1234567"),
+            (Workspace(headSubject: "Subject\nBody"), [.commit], "Subject"),
+            (Workspace(headSha: "", headSubject: "\nBody"), [], ""),
+            (Workspace(worktreePath: "/fixture/lane/"), [.basename], "lane"),
+            (Workspace(branch: "feature/lane", worktreePath: "/fixture/feature-lane"), [.identity], "Branch feature/lane")
+        ]
+        for (workspace, rows, label) in cases {
+            let details = RecentWorktreeDetails(workspace: workspace)
+            XCTAssertEqual(details.rows, rows)
+            XCTAssertEqual(details.accessibilityLabel, label)
+            XCTAssertEqual(details.basename, WorkspaceLine.worktreeBasename(workspace))
+        }
+    }
+
+    func testGitHubMatrixUsesWordsAndRequiresBoundPR() throws {
+        for (status, expected) in [(CiStatus.success, "passing"), (.failure, "failing"), (.pending, "pending")] {
+            let workspace = Workspace(prNumber: 558, ciStatus: status, issues: [.init(number: 45)])
+            XCTAssertEqual(RecentWorktreeDetails(workspace: workspace).accessibilityLabel,
+                           "PR 558, CI \(expected), closes #45")
+        }
+        for status in [CiStatus.unknown, nil] {
+            XCTAssertEqual(RecentWorktreeDetails(workspace: Workspace(prNumber: 558, ciStatus: status)).accessibilityLabel,
+                           "PR 558")
+        }
+        let orphan = Workspace(ciStatus: .failure, issues: [.init(number: 45)])
+        XCTAssertEqual(RecentWorktreeDetails(workspace: orphan).rows, [])
+        XCTAssertEqual(RecentWorktreeDetails(workspace: orphan).accessibilityLabel, "")
+        // Exactly the server's #556 projection: PR/CI absent, issues empty.
+        let stale = try decode(#"{"repo":"corral","pr_number":null,"ci_status":null,"issues":[]}"#).workspace
+        XCTAssertEqual(RecentWorktreeDetails(workspace: stale).rows, [])
+        XCTAssertEqual(RecentWorktreeDetails(workspace: stale).accessibilityLabel, "")
+    }
+
+    func testRenderedGitHubAbsenceAndTwoLineSubject() throws {
+        let theme = ThemeStore(reduceMotionProvider: { true })
+        let unbound = try blockImage(Workspace(), theme: theme)
+        let orphan = try blockImage(Workspace(ciStatus: .failure, issues: [.init(number: 45)]), theme: theme)
+        XCTAssertEqual(unbound.pngData(), orphan.pngData(), "unbound CI/issues must paint nothing")
+        let unknown = try blockImage(Workspace(prNumber: 558, ciStatus: .unknown), theme: theme)
+        let absentCI = try blockImage(Workspace(prNumber: 558), theme: theme)
+        XCTAssertEqual(unknown.pngData(), absentCI.pngData(), "unknown must not paint a verdict")
+        for (status, word) in [(CiStatus.success, "passing"), (.failure, "failing"), (.pending, "pending")] {
+            var workspace = try decode(bound).workspace
+            workspace.ciStatus = status
+            let image = try blockImage(workspace, theme: theme)
+            let text = try recognizedText(image)
+            XCTAssertTrue(text.contains("558"), text)
+            XCTAssertTrue(text.contains(word), text)
+            XCTAssertTrue(text.contains("closes") && text.contains("+2"), text)
+            XCTAssertFalse(text.contains("Body must not render"), text)
+            try save(image, name: "github-\(word)")
+        }
+        for type in [DynamicTypeSize.large, .accessibility3] {
+            let short = try blockImage(Workspace(headSubject: "Subject"), theme: theme, type: type, fixedHeight: false)
+            let long = String(repeating: "A long commit subject with useful context ", count: 12)
+            let two = try blockImage(Workspace(headSubject: long), theme: theme, type: type, fixedHeight: false)
+            let longer = try blockImage(Workspace(headSubject: long + long), theme: theme, type: type, fixedHeight: false)
+            let reference = ImageRenderer(content: Text("Subject\nSubject").font(.caption)
+                .environment(\.dynamicTypeSize, type))
+            reference.scale = 3
+            XCTAssertGreaterThan(two.size.height, short.size.height)
+            XCTAssertEqual(two.size.height, try XCTUnwrap(reference.uiImage).size.height, accuracy: 1)
+            XCTAssertEqual(two.size.height, longer.size.height, "subject height stays at two lines")
+            print("G558_SUBJECT type=\(type) one=\(short.size.height) long=\(two.size.height) longer=\(longer.size.height)")
+        }
+    }
+
+    func testSheetWiresTheSameRowsToPaintingAndAccessibility() throws {
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "FleetViews.swift", withExtension: "txt"))
+        let source = try String(contentsOf: url, encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "struct RecentWorktreeBlock: View {"))
+        let end = try XCTUnwrap(source.range(of: "struct RecentOutputSheet: View {", range: start.upperBound..<source.endIndex))
+        let block = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(block.contains("ForEach(details.rows, id: \\.self)"))
+        XCTAssertTrue(block.contains(".accessibilityElement(children: .ignore)"))
+        XCTAssertTrue(block.contains(".accessibilityLabel(details.accessibilityLabel)"))
+        let headerStart = try XCTUnwrap(source.range(of: "private var header: some View {", range: end.upperBound..<source.endIndex))
+        let headerEnd = try XCTUnwrap(source.range(of: "private var showLiveIndicator:", range: headerStart.upperBound..<source.endIndex))
+        let header = String(source[headerStart.lowerBound..<headerEnd.lowerBound])
+        XCTAssertEqual(header.components(separatedBy: "RecentWorktreeBlock(details: RecentWorktreeDetails(workspace: agent.workspace))").count - 1, 1)
+        XCTAssertTrue(header.contains(".background(theme.base)"))
+    }
+
+    func testRenderedSheetDayNightMediumLargeAndAX3() async throws {
+        for type in [DynamicTypeSize.large, .accessibility3] {
+            for night in [false, true] {
+                for large in [false, true] {
+                    var agent = try decode(bound)
+                    agent.workspace.branch = "feature/a-long-branch-for-middle-truncation/sheet"
+                    agent.workspace.headSubject = String(repeating: "Keep the lane commit context visible without widening the sheet. ", count: 8)
+                    let name = "\(night ? "night" : "day")-\(large ? "large" : "medium")-\(type == .accessibility3 ? "ax3" : "default")"
+                    let image = try await sheetImage(agent, night: night, large: large, type: type)
+                    let text = try recognizedText(image)
+                    XCTAssertTrue(text.contains("abcdef1"), text)
+                    XCTAssertTrue(text.contains("558"), text)
+                    XCTAssertTrue(text.contains("passing"), text)
+                    XCTAssertTrue(text.contains("+2"), "capped closes-list must remain visible: \(text)")
+                    try save(image, name: name)
+                }
+            }
+        }
+        for night in [false, true] {
+            let absent = try decode(#"{"repo":"corral"}"#)
+            let image = try await sheetImage(absent, night: night, large: false, type: .large)
+            let text = try recognizedText(image)
+            XCTAssertFalse(text.contains("abcdef1") || text.contains("passing") || text.contains("closes") || text.contains("clean"), text)
+            try save(image, name: "\(night ? "night" : "day")-medium-absent")
+        }
+    }
+
+    private func blockImage(_ workspace: Workspace, theme: ThemeStore,
+                            type: DynamicTypeSize = .large, fixedHeight: Bool = true) throws -> UIImage {
+        let renderer = ImageRenderer(content: RecentWorktreeBlock(details: RecentWorktreeDetails(workspace: workspace))
+            .frame(width: 358, height: fixedHeight ? 220 : nil, alignment: .topLeading)
+            .background(theme.base).environmentObject(theme).environment(\.dynamicTypeSize, type))
+        renderer.scale = 3
+        return try XCTUnwrap(renderer.uiImage)
+    }
+
+    private func sheetImage(_ agent: Agent, night: Bool, large: Bool, type: DynamicTypeSize) async throws -> UIImage {
+        let suite = "RecentWorktreeBlockTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let signer = DeviceSigner(key: Curve25519.Signing.PrivateKey())
+        let model = AppModel(defaults: defaults, identityLoader: { (signer, .insecureFallback) },
+                             loadMeta: { nil }, saveMeta: { _ in }, wipeIdentity: {})
+        model.enterDemo()
+        model.fleet.seedDemo(agents: [agent.agentId: agent], rev: 1)
+        let theme = ThemeStore(defaults: defaults, reduceMotionProvider: { true })
+        theme.setFlavor(night ? .mocha : .latte)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
+        window.overrideUserInterfaceStyle = night ? .dark : .light
+        let presenter = UIHostingController(rootView: FleetView(model: model).environmentObject(theme))
+        window.rootViewController = presenter
+        window.makeKeyAndVisible()
+        defer { presenter.dismiss(animated: false); window.isHidden = true; window.rootViewController = nil; model.stopLive() }
+        let sheet = UIHostingController(rootView: RecentOutputSheet(agentId: agent.agentId, hostProfileID: nil, model: model)
+            .environmentObject(theme).environment(\.dynamicTypeSize, type))
+        sheet.modalPresentationStyle = .pageSheet
+        let presentation = try XCTUnwrap(sheet.sheetPresentationController)
+        presentation.detents = [.medium(), .large()]
+        presentation.selectedDetentIdentifier = large ? .large : .medium
+        presenter.present(sheet, animated: false)
+        try await Task.sleep(for: .milliseconds(900))
+        window.layoutIfNeeded()
+        XCTAssertEqual(presentation.selectedDetentIdentifier, large ? .large : .medium)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 3
+        let image = UIGraphicsImageRenderer(bounds: window.bounds, format: format).image { _ in
+            window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+        }
+        print("G558_SHEET night=\(night) large=\(large) type=\(type) window=\(window.bounds) sheet=\(sheet.view.frame) label=\(RecentWorktreeDetails(workspace: agent.workspace).accessibilityLabel)")
+        return image
+    }
+
+    private func recognizedText(_ image: UIImage) throws -> String {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.recognitionLanguages = ["en-US"]
+        try VNImageRequestHandler(cgImage: XCTUnwrap(image.cgImage)).perform([request])
+        let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+        print("G558_OCR \(text)")
+        return text
+    }
+
+    private func save(_ image: UIImage, name: String) throws {
+        let attachment = XCTAttachment(image: image)
+        attachment.name = "558-" + name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        let directory = try XCTUnwrap(FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first)
+            .appendingPathComponent("g558-evidence")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try XCTUnwrap(image.pngData()).write(to: directory.appendingPathComponent(name + ".png"))
+    }
+}
+
 // MARK: - Optional host GitHub binding (#556)
 
 @MainActor

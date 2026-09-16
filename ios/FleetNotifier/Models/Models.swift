@@ -35,10 +35,13 @@ enum Capability: String, Codable, CaseIterable, Sendable {
 }
 
 /// Git topology + task-centric read-model fields (P2). Every field defaults
-/// so P1-shaped payloads still decode. The `issues` join (G23) was removed
-/// with the Issues browser cut (#354 L2) — unknown wire keys are ignored by
-/// Codable, so snapshots from a transitional daemon still decode.
+/// so P1-shaped payloads still decode. The sheet's commit and closes-list
+/// fields are optional; older payloads do not invent missing facts.
 struct Workspace: Codable, Equatable, Sendable {
+    struct Issue: Codable, Equatable, Sendable {
+        var number: UInt64
+    }
+
     var repo: String?
     var branch: String?
     var worktreePath: String?
@@ -47,6 +50,9 @@ struct Workspace: Codable, Equatable, Sendable {
     var dirty: Bool
     var ahead: UInt64
     var behind: UInt64
+    var headSha: String?
+    var headSubject: String?
+    var issues: [Issue]?
 
     enum CodingKeys: String, CodingKey {
         case repo, branch
@@ -54,11 +60,15 @@ struct Workspace: Codable, Equatable, Sendable {
         case prNumber = "pr_number"
         case ciStatus = "ci_status"
         case dirty, ahead, behind
+        case headSha = "head_sha"
+        case headSubject = "head_subject"
+        case issues
     }
 
     init(repo: String? = nil, branch: String? = nil, worktreePath: String? = nil,
          prNumber: UInt64? = nil, ciStatus: CiStatus? = nil, dirty: Bool = false,
-         ahead: UInt64 = 0, behind: UInt64 = 0) {
+         ahead: UInt64 = 0, behind: UInt64 = 0, headSha: String? = nil,
+         headSubject: String? = nil, issues: [Issue]? = nil) {
         self.repo = repo
         self.branch = branch
         self.worktreePath = worktreePath
@@ -67,6 +77,9 @@ struct Workspace: Codable, Equatable, Sendable {
         self.dirty = dirty
         self.ahead = ahead
         self.behind = behind
+        self.headSha = headSha
+        self.headSubject = headSubject
+        self.issues = issues
     }
 
     init(from decoder: Decoder) throws {
@@ -79,6 +92,9 @@ struct Workspace: Codable, Equatable, Sendable {
         dirty = try c.decodeIfPresent(Bool.self, forKey: .dirty) ?? false
         ahead = try c.decodeIfPresent(UInt64.self, forKey: .ahead) ?? 0
         behind = try c.decodeIfPresent(UInt64.self, forKey: .behind) ?? 0
+        headSha = try c.decodeIfPresent(String.self, forKey: .headSha)
+        headSubject = try c.decodeIfPresent(String.self, forKey: .headSubject)
+        issues = try c.decodeIfPresent([Issue].self, forKey: .issues)
     }
 }
 

@@ -1,152 +1,152 @@
 {
   "surface": "RecentOutputSheet hosted over FleetView in a 390x844 pt XCTest UIWindow, 3x screenshots (1170x2532 px) \u2014 the #558 evidence path; the harness does not composite the presentationBackground material, so the sheet surface in these frames is the system sheet fill (white / #1c1c1e) rather than the app's flavored translucent backdrop",
-  "source": "lane worktree render output copied from /tmp/g569-frames-final",
+  "source": "lane worktree render output copied from /tmp/g569-frames-fix",
   "state_frames": "day|night x default|ax3 x loading|empty|error|permission",
   "chip_frames": "latte|mocha x corral|sendmeter|synergy-apps|other",
   "captures": [
     {
       "file": "frames/chip-latte-corral.png",
-      "sha256": "4588604358e501dab752a0530abdeae4887b8ff9999285cf3145f8350b315bf3",
-      "bytes": 452415,
-      "origin": "/tmp/g569-frames-final/chip-latte-corral.png"
+      "sha256": "431c3923c75d8971ee9939f252653e243a42ba02a66a6165bc2cb9494b287fc5",
+      "bytes": 452338,
+      "origin": "/tmp/g569-frames-fix/chip-latte-corral.png"
     },
     {
       "file": "frames/chip-latte-other.png",
-      "sha256": "679b3a3c8c6d3b0333de6e091d0c0348b5f5bb429d7e86ceb90a630036fffc01",
-      "bytes": 452018,
-      "origin": "/tmp/g569-frames-final/chip-latte-other.png"
+      "sha256": "87c20f467fa9679352b3044328be456c44269ff8caeda336601fbe38b2e229af",
+      "bytes": 452010,
+      "origin": "/tmp/g569-frames-fix/chip-latte-other.png"
     },
     {
       "file": "frames/chip-latte-sendmeter.png",
-      "sha256": "77b3efcfac93a83a0553eb5a170001c745cea9086a6a1f9d5a5624094f4a153c",
-      "bytes": 457161,
-      "origin": "/tmp/g569-frames-final/chip-latte-sendmeter.png"
+      "sha256": "8e1eb2132f2c2dddf774e4ee17eaad3ed46cde781e07910d57c4023a385df70c",
+      "bytes": 457157,
+      "origin": "/tmp/g569-frames-fix/chip-latte-sendmeter.png"
     },
     {
       "file": "frames/chip-latte-synergy-apps.png",
-      "sha256": "a862f10bcd85a685a98c696d8a68d1b730f5995f0b69d3dd61900c7a86aa20b5",
-      "bytes": 461202,
-      "origin": "/tmp/g569-frames-final/chip-latte-synergy-apps.png"
+      "sha256": "8b63405fda408435fc9ac067bd8a0d6d2aae84bae9c9851a39e669432ca9b66b",
+      "bytes": 461088,
+      "origin": "/tmp/g569-frames-fix/chip-latte-synergy-apps.png"
     },
     {
       "file": "frames/chip-mocha-corral.png",
-      "sha256": "b14703af402520eaadd9fecebdfd3aae8c694c29dbaaafc9415508db1715919a",
-      "bytes": 467840,
-      "origin": "/tmp/g569-frames-final/chip-mocha-corral.png"
+      "sha256": "f564aede0578e965fc708449e051922b029a1789debdade7557f4ccfad6d7bda",
+      "bytes": 464198,
+      "origin": "/tmp/g569-frames-fix/chip-mocha-corral.png"
     },
     {
       "file": "frames/chip-mocha-other.png",
-      "sha256": "89806a8838fb9189d14193f3907bf130bd2fb01f16b46b6ef7749b79b8427b60",
-      "bytes": 465693,
-      "origin": "/tmp/g569-frames-final/chip-mocha-other.png"
+      "sha256": "121c55c109264cd5d735b1c592982e729750bc87254be8837c405d953d1dc3a4",
+      "bytes": 462743,
+      "origin": "/tmp/g569-frames-fix/chip-mocha-other.png"
     },
     {
       "file": "frames/chip-mocha-sendmeter.png",
-      "sha256": "11aa493726cb74518964277cb1b4fd861efb76248d88743e207195058b20b150",
-      "bytes": 467938,
-      "origin": "/tmp/g569-frames-final/chip-mocha-sendmeter.png"
+      "sha256": "d85109e86dad466fe7adbf10a56723e2138403e9824842df715440bf50e66714",
+      "bytes": 461100,
+      "origin": "/tmp/g569-frames-fix/chip-mocha-sendmeter.png"
     },
     {
       "file": "frames/chip-mocha-synergy-apps.png",
-      "sha256": "15e32dd1b2a1559f6dd3477d53390ddb63459cf8cc019860af6a74f2f33a5785",
-      "bytes": 473549,
-      "origin": "/tmp/g569-frames-final/chip-mocha-synergy-apps.png"
+      "sha256": "480dc824ed0eb3fc6c119c872d0c7ae16d8edb899053e959d62ae32b30a7a583",
+      "bytes": 471326,
+      "origin": "/tmp/g569-frames-fix/chip-mocha-synergy-apps.png"
     },
     {
       "file": "frames/day-ax3-empty.png",
       "sha256": "5f17dbd83e39c105efdd5a6863c332254a00d7168c3c44c62d02bad3eb454953",
       "bytes": 391693,
-      "origin": "/tmp/g569-frames-final/day-ax3-empty.png"
+      "origin": "/tmp/g569-frames-fix/day-ax3-empty.png"
     },
     {
       "file": "frames/day-ax3-error.png",
       "sha256": "5c948199ebf19c15e070301013e09a35297fd116d334ee47d425288777104373",
       "bytes": 386773,
-      "origin": "/tmp/g569-frames-final/day-ax3-error.png"
+      "origin": "/tmp/g569-frames-fix/day-ax3-error.png"
     },
     {
       "file": "frames/day-ax3-loading.png",
       "sha256": "a57499ba83cffad04951f5ab057134e787329c5c580ebc6962224750ef048434",
       "bytes": 363560,
-      "origin": "/tmp/g569-frames-final/day-ax3-loading.png"
+      "origin": "/tmp/g569-frames-fix/day-ax3-loading.png"
     },
     {
       "file": "frames/day-ax3-permission.png",
       "sha256": "7d9033a7c71a4f95f3768c3a9f8b0f4fe32cc156a37cfee7d3d3db6a8b9897ec",
       "bytes": 450211,
-      "origin": "/tmp/g569-frames-final/day-ax3-permission.png"
+      "origin": "/tmp/g569-frames-fix/day-ax3-permission.png"
     },
     {
       "file": "frames/day-default-empty.png",
-      "sha256": "947163cbcf4ea36a74d2c96c39944069c8ef15fda1946a6b7d2a39cad50350d6",
-      "bytes": 257323,
-      "origin": "/tmp/g569-frames-final/day-default-empty.png"
+      "sha256": "c78e3ab8a602fb59bac40ebd7441cb5b29ffd67f4e4919c5b6eba1cba03629b3",
+      "bytes": 257237,
+      "origin": "/tmp/g569-frames-fix/day-default-empty.png"
     },
     {
       "file": "frames/day-default-error.png",
       "sha256": "eb17ebbba949b86105b12e9adc54c10524ed0a2df49933801cbeaccb9a7aad16",
       "bytes": 256158,
-      "origin": "/tmp/g569-frames-final/day-default-error.png"
+      "origin": "/tmp/g569-frames-fix/day-default-error.png"
     },
     {
       "file": "frames/day-default-loading.png",
-      "sha256": "f8e13162dde86bce98cf4a4b31993f64d7b30696edfab6f7c484aa77610f2a41",
-      "bytes": 248268,
-      "origin": "/tmp/g569-frames-final/day-default-loading.png"
+      "sha256": "7d8f0c106ccace6a2eac05c8e357d391a2c730796b822fcfa7463636e1b31edb",
+      "bytes": 248189,
+      "origin": "/tmp/g569-frames-fix/day-default-loading.png"
     },
     {
       "file": "frames/day-default-permission.png",
       "sha256": "ab4a112747cc2832c9c993e2f1067da6300e236313852ddc66145bd5f327625b",
       "bytes": 274988,
-      "origin": "/tmp/g569-frames-final/day-default-permission.png"
+      "origin": "/tmp/g569-frames-fix/day-default-permission.png"
     },
     {
       "file": "frames/night-ax3-empty.png",
       "sha256": "4de4249c1950e266a66d769290ce8082893b8a2d660e5a06d8b2c24bad086279",
       "bytes": 413013,
-      "origin": "/tmp/g569-frames-final/night-ax3-empty.png"
+      "origin": "/tmp/g569-frames-fix/night-ax3-empty.png"
     },
     {
       "file": "frames/night-ax3-error.png",
       "sha256": "5d86aeac456f23adda7b8599b28d91420de1eff5231417e5b8961c829568d1cb",
       "bytes": 408363,
-      "origin": "/tmp/g569-frames-final/night-ax3-error.png"
+      "origin": "/tmp/g569-frames-fix/night-ax3-error.png"
     },
     {
       "file": "frames/night-ax3-loading.png",
       "sha256": "41015d0201e22dea24a6f3c73e3606c19c3a8c7da69bf96c822d39b26a31c2e3",
       "bytes": 384552,
-      "origin": "/tmp/g569-frames-final/night-ax3-loading.png"
+      "origin": "/tmp/g569-frames-fix/night-ax3-loading.png"
     },
     {
       "file": "frames/night-ax3-permission.png",
       "sha256": "d5fdbb650aa5eac0ea18099128d89fb69f8437f0aed0eb5b29f7ca32b896dbbe",
       "bytes": 474540,
-      "origin": "/tmp/g569-frames-final/night-ax3-permission.png"
+      "origin": "/tmp/g569-frames-fix/night-ax3-permission.png"
     },
     {
       "file": "frames/night-default-empty.png",
       "sha256": "ee59c7e4a58b4acc30b94a2c7b62806ef2293cc29e728f2a455f5c14019a68b0",
       "bytes": 294435,
-      "origin": "/tmp/g569-frames-final/night-default-empty.png"
+      "origin": "/tmp/g569-frames-fix/night-default-empty.png"
     },
     {
       "file": "frames/night-default-error.png",
       "sha256": "3cf43d6d99369c8612d891327a94f802438b1f669c88dc4453150a8abd82b439",
       "bytes": 292955,
-      "origin": "/tmp/g569-frames-final/night-default-error.png"
+      "origin": "/tmp/g569-frames-fix/night-default-error.png"
     },
     {
       "file": "frames/night-default-loading.png",
       "sha256": "cdd465a0eb851990f1904bfe7b730dc6f277024232ec8ddca2255b613119bdd5",
       "bytes": 284573,
-      "origin": "/tmp/g569-frames-final/night-default-loading.png"
+      "origin": "/tmp/g569-frames-fix/night-default-loading.png"
     },
     {
       "file": "frames/night-default-permission.png",
       "sha256": "ab48588288d4d6fa41e1b7733353a726080b6c278471371c5cbeea25186f4e1b",
       "bytes": 311900,
-      "origin": "/tmp/g569-frames-final/night-default-permission.png"
+      "origin": "/tmp/g569-frames-fix/night-default-permission.png"
     }
   ]
 }

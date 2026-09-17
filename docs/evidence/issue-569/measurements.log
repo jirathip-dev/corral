@@ -1,0 +1,503 @@
+===== /tmp/g569-gates5.log
+G569_CONTRAST state=loading flavor=latte size=default ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=empty flavor=latte size=default ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error flavor=latte size=default ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error-glyph flavor=latte size=default ink=#d20f39 backdrop=#ffffff ratio=5.43
+G569_CONTRAST state=permission flavor=latte size=default ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=loading flavor=latte size=ax3 ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=empty flavor=latte size=ax3 ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error flavor=latte size=ax3 ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error-glyph flavor=latte size=ax3 ink=#d20f39 backdrop=#ffffff ratio=5.43
+G569_CONTRAST state=permission flavor=latte size=ax3 ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=loading flavor=mocha size=default ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=empty flavor=mocha size=default ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error flavor=mocha size=default ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error-glyph flavor=mocha size=default ink=#f38ba8 backdrop=#1c1c1e ratio=7.35
+G569_CONTRAST state=permission flavor=mocha size=default ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=loading flavor=mocha size=ax3 ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=empty flavor=mocha size=ax3 ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error flavor=mocha size=ax3 ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error-glyph flavor=mocha size=ax3 ink=#f38ba8 backdrop=#1c1c1e ratio=7.35
+G569_CONTRAST state=permission flavor=mocha size=ax3 ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_BOARD_CHIP flavor=latte repo=synergy-apps hue=#209fb5 dot_pixels=264 dot_rows=16
+G569_BOARD_CHIP flavor=latte repo=Other hue=#acb0be dot_pixels=269 dot_rows=16
+G569_BOARD_CHIP flavor=latte repo=sendmeter hue=#df8e1d dot_pixels=264 dot_rows=16
+G569_BOARD_CHIP flavor=latte repo=corral hue=#179299 dot_pixels=264 dot_rows=16
+G569_CHIP flavor=latte repo=synergy-apps hue=#209fb5 dot_pixels=248 dot_rows=16 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=latte repo=Other hue=#acb0be dot_pixels=291 dot_rows=16 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=latte repo=sendmeter hue=#df8e1d dot_pixels=248 dot_rows=16 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=latte repo=corral hue=#179299 dot_pixels=248 dot_rows=16 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_BOARD_CHIP flavor=mocha repo=synergy-apps hue=#74c7ec dot_pixels=1874 dot_rows=20
+G569_BOARD_CHIP flavor=mocha repo=Other hue=#585b70 dot_pixels=271 dot_rows=16
+G569_BOARD_CHIP flavor=mocha repo=sendmeter hue=#f9e2af dot_pixels=1538 dot_rows=18
+G569_BOARD_CHIP flavor=mocha repo=corral hue=#94e2d5 dot_pixels=910 dot_rows=18
+G569_CHIP flavor=mocha repo=synergy-apps hue=#74c7ec dot_pixels=1858 dot_rows=20 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=mocha repo=Other hue=#585b70 dot_pixels=477 dot_rows=16 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=mocha repo=sendmeter hue=#f9e2af dot_pixels=1522 dot_rows=18 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=mocha repo=corral hue=#94e2d5 dot_pixels=894 dot_rows=18 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_TIER flavor=latte text=5.04 tailMuted=3.95 tailQuiet=2.50 red=3.43 mauve=3.42
+G569_TIER flavor=mocha text=6.44 tailMuted=4.19 tailQuiet=1.91 red=4.02 mauve=4.59
+	 Executed 4 tests, with 0 failures (0 unexpected) in 57.503 (57.504) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 57.503 (57.504) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 57.503 (57.505) seconds
+** TEST SUCCEEDED **
+	 Executed 7 tests, with 0 failures (0 unexpected) in 0.063 (0.065) seconds
+	 Executed 19 tests, with 0 failures (0 unexpected) in 3.146 (3.151) seconds
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.092 (0.095) seconds
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.002 (0.003) seconds
+	 Executed 11 tests, with 0 failures (0 unexpected) in 0.004 (0.010) seconds
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.003 (0.004) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.012 (0.013) seconds
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.007 (0.008) seconds
+	 Executed 10 tests, with 0 failures (0 unexpected) in 0.004 (0.006) seconds
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.001 (0.002) seconds
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.969 (0.970) seconds
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.005 (0.008) seconds
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.067 (0.069) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.605 (0.606) seconds
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.004 (0.005) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.134 (0.135) seconds
+	 Executed 10 tests, with 0 failures (0 unexpected) in 3.420 (3.423) seconds
+	 Executed 8 tests, with 0 failures (0 unexpected) in 0.003 (0.010) seconds
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.011 (0.012) seconds
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.003 (0.004) seconds
+	 Executed 25 tests, with 0 failures (0 unexpected) in 0.028 (0.035) seconds
+	 Executed 20 tests, with 0 failures (0 unexpected) in 1.293 (1.297) seconds
+	 Executed 18 tests, with 0 failures (0 unexpected) in 0.027 (0.038) seconds
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.006 (0.008) seconds
+	 Executed 7 tests, with 0 failures (0 unexpected) in 0.330 (0.335) seconds
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.082 (0.084) seconds
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.010 (0.011) seconds
+	 Executed 19 tests, with 1 test skipped and 0 failures (0 unexpected) in 3.104 (3.110) seconds
+	 Executed 8 tests, with 0 failures (0 unexpected) in 36.419 (36.421) seconds
+	 Executed 11 tests, with 0 failures (0 unexpected) in 1.169 (1.173) seconds
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.663 (0.664) seconds
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.009 (0.009) seconds
+	 Executed 6 tests, with 0 failures (0 unexpected) in 25.491 (25.495) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.007 (0.009) seconds
+	 Executed 13 tests, with 0 failures (0 unexpected) in 0.135 (0.138) seconds
+	 Executed 6 tests, with 0 failures (0 unexpected) in 39.125 (39.126) seconds
+	 Executed 21 tests, with 0 failures (0 unexpected) in 7.155 (7.163) seconds
+	 Executed 14 tests, with 0 failures (0 unexpected) in 3.965 (3.968) seconds
+	 Executed 8 tests, with 0 failures (0 unexpected) in 0.969 (0.971) seconds
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.006 (0.008) seconds
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.043 (0.044) seconds
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.417 (0.418) seconds
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.005 (0.007) seconds
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.020 (0.020) seconds
+	 Executed 10 tests, with 0 failures (0 unexpected) in 0.016 (0.019) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.064 (0.064) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.089 (0.090) seconds
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.097 (0.098) seconds
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.005 (0.006) seconds
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.004 (0.004) seconds
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.325 (0.326) seconds
+	 Executed 8 tests, with 0 failures (0 unexpected) in 3.055 (3.059) seconds
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.002 (0.003) seconds
+	 Executed 9 tests, with 0 failures (0 unexpected) in 0.012 (0.016) seconds
+	 Executed 7 tests, with 0 failures (0 unexpected) in 0.027 (0.029) seconds
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.007 (0.008) seconds
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.078 (0.079) seconds
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.039 (0.039) seconds
+	 Executed 15 tests, with 0 failures (0 unexpected) in 15.497 (15.505) seconds
+	 Executed 8 tests, with 0 failures (0 unexpected) in 0.281 (0.286) seconds
+	 Executed 8 tests, with 0 failures (0 unexpected) in 1.669 (1.674) seconds
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.002 (0.003) seconds
+	 Executed 8 tests, with 0 failures (0 unexpected) in 0.361 (0.364) seconds
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.449 (0.452) seconds
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.003 (0.004) seconds
+	 Executed 6 tests, with 0 failures (0 unexpected) in 5.534 (5.539) seconds
+	 Executed 9 tests, with 0 failures (0 unexpected) in 8.362 (8.369) seconds
+	 Executed 8 tests, with 0 failures (0 unexpected) in 0.805 (0.809) seconds
+	 Executed 9 tests, with 0 failures (0 unexpected) in 0.005 (0.007) seconds
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.230 (0.231) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.002 (0.003) seconds
+	 Executed 22 tests, with 0 failures (0 unexpected) in 0.026 (0.039) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.236 (0.238) seconds
+	 Executed 7 tests, with 0 failures (0 unexpected) in 22.893 (22.895) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.002 (0.022) seconds
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.766 (0.769) seconds
+	 Executed 8 tests, with 0 failures (0 unexpected) in 0.011 (0.014) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.096 (0.098) seconds
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.004 (0.006) seconds
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.002 (0.003) seconds
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.045 (0.046) seconds
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.878 (0.879) seconds
+	 Executed 9 tests, with 0 failures (0 unexpected) in 0.017 (0.021) seconds
+	 Executed 7 tests, with 0 failures (0 unexpected) in 5.519 (5.524) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.189 (0.190) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.073 (0.074) seconds
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.115 (0.116) seconds
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.067 (0.068) seconds
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.097 (0.097) seconds
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.003 (0.003) seconds
+G569_CONTRAST state=loading flavor=latte size=default ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=empty flavor=latte size=default ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error flavor=latte size=default ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error-glyph flavor=latte size=default ink=#d20f39 backdrop=#ffffff ratio=5.43
+G569_CONTRAST state=permission flavor=latte size=default ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=loading flavor=latte size=ax3 ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=empty flavor=latte size=ax3 ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error flavor=latte size=ax3 ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error-glyph flavor=latte size=ax3 ink=#d20f39 backdrop=#ffffff ratio=5.43
+G569_CONTRAST state=permission flavor=latte size=ax3 ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=loading flavor=mocha size=default ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=empty flavor=mocha size=default ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error flavor=mocha size=default ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error-glyph flavor=mocha size=default ink=#f38ba8 backdrop=#1c1c1e ratio=7.35
+G569_CONTRAST state=permission flavor=mocha size=default ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=loading flavor=mocha size=ax3 ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=empty flavor=mocha size=ax3 ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error flavor=mocha size=ax3 ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error-glyph flavor=mocha size=ax3 ink=#f38ba8 backdrop=#1c1c1e ratio=7.35
+G569_CONTRAST state=permission flavor=mocha size=ax3 ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_BOARD_CHIP flavor=latte repo=sendmeter hue=#df8e1d dot_pixels=264 dot_rows=16
+G569_BOARD_CHIP flavor=latte repo=Other hue=#acb0be dot_pixels=269 dot_rows=16
+G569_BOARD_CHIP flavor=latte repo=synergy-apps hue=#209fb5 dot_pixels=264 dot_rows=16
+G569_BOARD_CHIP flavor=latte repo=corral hue=#179299 dot_pixels=264 dot_rows=16
+G569_CHIP flavor=latte repo=sendmeter hue=#df8e1d dot_pixels=248 dot_rows=16 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=latte repo=Other hue=#acb0be dot_pixels=291 dot_rows=16 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=latte repo=synergy-apps hue=#209fb5 dot_pixels=248 dot_rows=16 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=latte repo=corral hue=#179299 dot_pixels=248 dot_rows=16 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_BOARD_CHIP flavor=mocha repo=sendmeter hue=#f9e2af dot_pixels=1538 dot_rows=18
+G569_BOARD_CHIP flavor=mocha repo=Other hue=#585b70 dot_pixels=271 dot_rows=16
+G569_BOARD_CHIP flavor=mocha repo=synergy-apps hue=#74c7ec dot_pixels=1874 dot_rows=20
+G569_BOARD_CHIP flavor=mocha repo=corral hue=#94e2d5 dot_pixels=910 dot_rows=18
+G569_CHIP flavor=mocha repo=sendmeter hue=#f9e2af dot_pixels=1522 dot_rows=18 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=mocha repo=Other hue=#585b70 dot_pixels=477 dot_rows=16 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=mocha repo=synergy-apps hue=#74c7ec dot_pixels=1858 dot_rows=20 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=mocha repo=corral hue=#94e2d5 dot_pixels=894 dot_rows=18 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_TIER flavor=latte text=5.04 tailMuted=3.95 tailQuiet=2.50 red=3.43 mauve=3.42
+G569_TIER flavor=mocha text=6.44 tailMuted=4.19 tailQuiet=1.91 red=4.02 mauve=4.59
+	 Executed 4 tests, with 0 failures (0 unexpected) in 56.993 (56.994) seconds
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.080 (0.093) seconds
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.001 (0.001) seconds
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.112 (0.113) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.008 (0.009) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.018 (0.019) seconds
+	 Executed 18 tests, with 0 failures (0 unexpected) in 8.178 (8.185) seconds
+	 Executed 7 tests, with 0 failures (0 unexpected) in 0.040 (0.042) seconds
+	 Executed 10 tests, with 0 failures (0 unexpected) in 1.270 (1.274) seconds
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.224 (0.225) seconds
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.002 (0.003) seconds
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.002 (0.003) seconds
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.016 (0.016) seconds
+	 Executed 669 tests, with 1 test skipped and 0 failures (0 unexpected) in 264.042 (264.370) seconds
+	 Executed 669 tests, with 1 test skipped and 0 failures (0 unexpected) in 264.042 (264.370) seconds
+** TEST SUCCEEDED **
+===== /tmp/g569-redwitness-final.log
+G569_CONTRAST state=loading flavor=latte size=default ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=empty flavor=latte size=default ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error flavor=latte size=default ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error-glyph flavor=latte size=default ink=#d20f39 backdrop=#ffffff ratio=5.43
+G569_CONTRAST state=permission flavor=latte size=default ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=loading flavor=latte size=ax3 ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=empty flavor=latte size=ax3 ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error flavor=latte size=ax3 ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error-glyph flavor=latte size=ax3 ink=#d20f39 backdrop=#ffffff ratio=5.43
+G569_CONTRAST state=permission flavor=latte size=ax3 ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=loading flavor=mocha size=default ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=empty flavor=mocha size=default ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error flavor=mocha size=default ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error-glyph flavor=mocha size=default ink=#f38ba8 backdrop=#1c1c1e ratio=7.35
+G569_CONTRAST state=permission flavor=mocha size=default ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=loading flavor=mocha size=ax3 ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=empty flavor=mocha size=ax3 ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error flavor=mocha size=ax3 ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error-glyph flavor=mocha size=ax3 ink=#f38ba8 backdrop=#1c1c1e ratio=7.35
+G569_CONTRAST state=permission flavor=mocha size=ax3 ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_BOARD_CHIP flavor=latte repo=corral hue=#179299 dot_pixels=264 dot_rows=16
+G569_BOARD_CHIP flavor=latte repo=sendmeter hue=#df8e1d dot_pixels=264 dot_rows=16
+G569_BOARD_CHIP flavor=latte repo=Other hue=#acb0be dot_pixels=269 dot_rows=16
+G569_BOARD_CHIP flavor=latte repo=synergy-apps hue=#209fb5 dot_pixels=264 dot_rows=16
+G569_CHIP flavor=latte repo=corral hue=#179299 dot_pixels=0 dot_rows=0 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=latte repo=sendmeter hue=#df8e1d dot_pixels=0 dot_rows=0 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=latte repo=Other hue=#acb0be dot_pixels=41 dot_rows=0 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=latte repo=synergy-apps hue=#209fb5 dot_pixels=0 dot_rows=0 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_BOARD_CHIP flavor=mocha repo=corral hue=#94e2d5 dot_pixels=910 dot_rows=18
+G569_BOARD_CHIP flavor=mocha repo=sendmeter hue=#f9e2af dot_pixels=1538 dot_rows=18
+G569_BOARD_CHIP flavor=mocha repo=Other hue=#585b70 dot_pixels=271 dot_rows=16
+G569_BOARD_CHIP flavor=mocha repo=synergy-apps hue=#74c7ec dot_pixels=1874 dot_rows=20
+G569_CHIP flavor=mocha repo=corral hue=#94e2d5 dot_pixels=0 dot_rows=0 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=mocha repo=sendmeter hue=#f9e2af dot_pixels=0 dot_rows=0 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=mocha repo=Other hue=#585b70 dot_pixels=238 dot_rows=0 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=mocha repo=synergy-apps hue=#74c7ec dot_pixels=0 dot_rows=0 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_TIER flavor=latte text=5.04 tailMuted=3.95 tailQuiet=2.50 red=3.43 mauve=3.42
+G569_TIER flavor=mocha text=6.44 tailMuted=4.19 tailQuiet=1.91 red=4.02 mauve=4.59
+	 Executed 4 tests, with 18 failures (0 unexpected) in 57.414 (57.456) seconds
+	 Executed 4 tests, with 18 failures (0 unexpected) in 57.414 (57.457) seconds
+	 Executed 4 tests, with 18 failures (0 unexpected) in 57.414 (57.457) seconds
+** TEST FAILED **
+RED_RUN_EXIT=65
+G569_CONTRAST state=loading flavor=latte size=default ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=empty flavor=latte size=default ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error flavor=latte size=default ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error-glyph flavor=latte size=default ink=#d20f39 backdrop=#ffffff ratio=5.43
+G569_CONTRAST state=permission flavor=latte size=default ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=loading flavor=latte size=ax3 ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=empty flavor=latte size=ax3 ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error flavor=latte size=ax3 ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error-glyph flavor=latte size=ax3 ink=#d20f39 backdrop=#ffffff ratio=5.43
+G569_CONTRAST state=permission flavor=latte size=ax3 ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=loading flavor=mocha size=default ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=empty flavor=mocha size=default ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error flavor=mocha size=default ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error-glyph flavor=mocha size=default ink=#f38ba8 backdrop=#1c1c1e ratio=7.35
+G569_CONTRAST state=permission flavor=mocha size=default ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=loading flavor=mocha size=ax3 ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=empty flavor=mocha size=ax3 ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error flavor=mocha size=ax3 ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error-glyph flavor=mocha size=ax3 ink=#f38ba8 backdrop=#1c1c1e ratio=7.35
+G569_CONTRAST state=permission flavor=mocha size=ax3 ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_BOARD_CHIP flavor=latte repo=Other hue=#acb0be dot_pixels=269 dot_rows=16
+G569_BOARD_CHIP flavor=latte repo=sendmeter hue=#df8e1d dot_pixels=264 dot_rows=16
+G569_BOARD_CHIP flavor=latte repo=corral hue=#179299 dot_pixels=264 dot_rows=16
+G569_BOARD_CHIP flavor=latte repo=synergy-apps hue=#209fb5 dot_pixels=264 dot_rows=16
+G569_CHIP flavor=latte repo=Other hue=#acb0be dot_pixels=291 dot_rows=16 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=latte repo=sendmeter hue=#df8e1d dot_pixels=248 dot_rows=16 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=latte repo=corral hue=#179299 dot_pixels=248 dot_rows=16 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=latte repo=synergy-apps hue=#209fb5 dot_pixels=248 dot_rows=16 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_BOARD_CHIP flavor=mocha repo=Other hue=#585b70 dot_pixels=271 dot_rows=16
+G569_BOARD_CHIP flavor=mocha repo=sendmeter hue=#f9e2af dot_pixels=1538 dot_rows=18
+G569_BOARD_CHIP flavor=mocha repo=corral hue=#94e2d5 dot_pixels=910 dot_rows=18
+G569_BOARD_CHIP flavor=mocha repo=synergy-apps hue=#74c7ec dot_pixels=1874 dot_rows=20
+G569_CHIP flavor=mocha repo=Other hue=#585b70 dot_pixels=477 dot_rows=16 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=mocha repo=sendmeter hue=#f9e2af dot_pixels=1522 dot_rows=18 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=mocha repo=corral hue=#94e2d5 dot_pixels=894 dot_rows=18 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=mocha repo=synergy-apps hue=#74c7ec dot_pixels=1858 dot_rows=20 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_TIER flavor=latte text=5.04 tailMuted=3.95 tailQuiet=2.50 red=3.43 mauve=3.42
+G569_TIER flavor=mocha text=6.44 tailMuted=4.19 tailQuiet=1.91 red=4.02 mauve=4.59
+	 Executed 4 tests, with 0 failures (0 unexpected) in 57.231 (57.232) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 57.231 (57.233) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 57.231 (57.233) seconds
+** TEST SUCCEEDED **
+SCRATCH_GREEN_EXIT=0
+===== /tmp/g569-gates4.log
+G569_CONTRAST state=loading flavor=latte size=default ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=empty flavor=latte size=default ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error flavor=latte size=default ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error-glyph flavor=latte size=default ink=#d20f39 backdrop=#ffffff ratio=5.43
+G569_CONTRAST state=permission flavor=latte size=default ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=loading flavor=latte size=ax3 ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=empty flavor=latte size=ax3 ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error flavor=latte size=ax3 ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error-glyph flavor=latte size=ax3 ink=#d20f39 backdrop=#ffffff ratio=5.43
+G569_CONTRAST state=permission flavor=latte size=ax3 ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=loading flavor=mocha size=default ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=empty flavor=mocha size=default ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error flavor=mocha size=default ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error-glyph flavor=mocha size=default ink=#f38ba8 backdrop=#1c1c1e ratio=7.35
+G569_CONTRAST state=permission flavor=mocha size=default ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=loading flavor=mocha size=ax3 ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=empty flavor=mocha size=ax3 ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error flavor=mocha size=ax3 ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error-glyph flavor=mocha size=ax3 ink=#f38ba8 backdrop=#1c1c1e ratio=7.35
+G569_CONTRAST state=permission flavor=mocha size=ax3 ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_BOARD_CHIP flavor=latte repo=Other hue=#acb0be dot_pixels=269 dot_rows=16
+G569_BOARD_CHIP flavor=latte repo=sendmeter hue=#df8e1d dot_pixels=264 dot_rows=16
+G569_BOARD_CHIP flavor=latte repo=synergy-apps hue=#209fb5 dot_pixels=264 dot_rows=16
+G569_BOARD_CHIP flavor=latte repo=corral hue=#179299 dot_pixels=264 dot_rows=16
+G569_CHIP flavor=latte repo=Other hue=#acb0be dot_pixels=291 dot_rows=16 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=latte repo=sendmeter hue=#df8e1d dot_pixels=248 dot_rows=16 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=latte repo=synergy-apps hue=#209fb5 dot_pixels=248 dot_rows=16 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=latte repo=corral hue=#179299 dot_pixels=248 dot_rows=16 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_BOARD_CHIP flavor=mocha repo=Other hue=#585b70 dot_pixels=271 dot_rows=16
+G569_BOARD_CHIP flavor=mocha repo=sendmeter hue=#f9e2af dot_pixels=1538 dot_rows=18
+G569_BOARD_CHIP flavor=mocha repo=synergy-apps hue=#74c7ec dot_pixels=1874 dot_rows=20
+G569_BOARD_CHIP flavor=mocha repo=corral hue=#94e2d5 dot_pixels=910 dot_rows=18
+G569_CHIP flavor=mocha repo=Other hue=#585b70 dot_pixels=477 dot_rows=16 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=mocha repo=sendmeter hue=#f9e2af dot_pixels=1522 dot_rows=18 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=mocha repo=synergy-apps hue=#74c7ec dot_pixels=1858 dot_rows=20 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=mocha repo=corral hue=#94e2d5 dot_pixels=894 dot_rows=18 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_TIER flavor=latte text=5.04 tailMuted=3.95 tailQuiet=2.50 red=3.43 mauve=3.42
+G569_TIER flavor=mocha text=6.44 tailMuted=4.19 tailQuiet=1.91 red=4.02 mauve=4.59
+	 Executed 4 tests, with 0 failures (0 unexpected) in 57.449 (57.450) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 57.449 (57.450) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 57.449 (57.451) seconds
+** TEST SUCCEEDED **
+	 Executed 7 tests, with 0 failures (0 unexpected) in 0.059 (0.061) seconds
+	 Executed 19 tests, with 0 failures (0 unexpected) in 3.178 (3.181) seconds
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.090 (0.091) seconds
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.002 (0.003) seconds
+	 Executed 11 tests, with 0 failures (0 unexpected) in 0.004 (0.021) seconds
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.002 (0.009) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.011 (0.012) seconds
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.007 (0.008) seconds
+	 Executed 10 tests, with 0 failures (0 unexpected) in 0.004 (0.006) seconds
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.001 (0.002) seconds
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.836 (0.837) seconds
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.007 (0.009) seconds
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.077 (0.079) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.896 (0.897) seconds
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.004 (0.005) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.137 (0.139) seconds
+	 Executed 10 tests, with 0 failures (0 unexpected) in 3.496 (3.499) seconds
+	 Executed 8 tests, with 0 failures (0 unexpected) in 0.004 (0.008) seconds
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.016 (0.017) seconds
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.004 (0.005) seconds
+	 Executed 25 tests, with 0 failures (0 unexpected) in 0.031 (0.055) seconds
+	 Executed 20 tests, with 0 failures (0 unexpected) in 1.719 (1.723) seconds
+	 Executed 18 tests, with 0 failures (0 unexpected) in 0.023 (0.034) seconds
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.004 (0.010) seconds
+	 Executed 7 tests, with 0 failures (0 unexpected) in 0.345 (0.347) seconds
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.090 (0.091) seconds
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.009 (0.010) seconds
+	 Executed 19 tests, with 1 test skipped and 0 failures (0 unexpected) in 3.112 (3.117) seconds
+	 Executed 8 tests, with 0 failures (0 unexpected) in 36.481 (36.483) seconds
+	 Executed 11 tests, with 0 failures (0 unexpected) in 1.131 (1.133) seconds
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.665 (0.665) seconds
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.008 (0.009) seconds
+	 Executed 6 tests, with 0 failures (0 unexpected) in 25.374 (25.378) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.011 (0.013) seconds
+	 Executed 13 tests, with 0 failures (0 unexpected) in 0.147 (0.150) seconds
+	 Executed 6 tests, with 0 failures (0 unexpected) in 38.879 (38.880) seconds
+	 Executed 21 tests, with 0 failures (0 unexpected) in 7.178 (7.185) seconds
+	 Executed 14 tests, with 0 failures (0 unexpected) in 3.904 (3.908) seconds
+	 Executed 8 tests, with 0 failures (0 unexpected) in 0.997 (1.000) seconds
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.006 (0.009) seconds
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.046 (0.047) seconds
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.418 (0.420) seconds
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.005 (0.007) seconds
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.017 (0.018) seconds
+	 Executed 10 tests, with 0 failures (0 unexpected) in 0.016 (0.018) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.067 (0.068) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.089 (0.090) seconds
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.093 (0.093) seconds
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.003 (0.005) seconds
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.030 (0.030) seconds
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.323 (0.323) seconds
+	 Executed 8 tests, with 0 failures (0 unexpected) in 3.017 (3.021) seconds
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.001 (0.001) seconds
+	 Executed 9 tests, with 0 failures (0 unexpected) in 0.013 (0.015) seconds
+	 Executed 7 tests, with 0 failures (0 unexpected) in 0.015 (0.024) seconds
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.005 (0.006) seconds
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.075 (0.076) seconds
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.040 (0.040) seconds
+	 Executed 15 tests, with 0 failures (0 unexpected) in 15.523 (15.533) seconds
+	 Executed 8 tests, with 0 failures (0 unexpected) in 0.279 (0.283) seconds
+	 Executed 8 tests, with 0 failures (0 unexpected) in 1.642 (1.645) seconds
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.002 (0.003) seconds
+	 Executed 8 tests, with 0 failures (0 unexpected) in 0.358 (0.362) seconds
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.453 (0.456) seconds
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.004 (0.005) seconds
+	 Executed 6 tests, with 0 failures (0 unexpected) in 5.482 (5.487) seconds
+	 Executed 9 tests, with 0 failures (0 unexpected) in 8.335 (8.342) seconds
+	 Executed 8 tests, with 0 failures (0 unexpected) in 0.788 (0.792) seconds
+	 Executed 9 tests, with 0 failures (0 unexpected) in 0.006 (0.008) seconds
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.233 (0.234) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.002 (0.003) seconds
+	 Executed 22 tests, with 0 failures (0 unexpected) in 0.023 (0.033) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.241 (0.244) seconds
+	 Executed 7 tests, with 0 failures (0 unexpected) in 22.826 (22.829) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.002 (0.048) seconds
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.751 (0.754) seconds
+	 Executed 8 tests, with 0 failures (0 unexpected) in 0.017 (0.020) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.097 (0.098) seconds
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.005 (0.008) seconds
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.004 (0.008) seconds
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.046 (0.049) seconds
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.643 (0.644) seconds
+	 Executed 9 tests, with 0 failures (0 unexpected) in 0.018 (0.022) seconds
+	 Executed 7 tests, with 0 failures (0 unexpected) in 5.475 (5.479) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.188 (0.189) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.075 (0.076) seconds
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.114 (0.115) seconds
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.064 (0.065) seconds
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.098 (0.099) seconds
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.003 (0.006) seconds
+G569_CONTRAST state=loading flavor=latte size=default ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=empty flavor=latte size=default ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error flavor=latte size=default ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error-glyph flavor=latte size=default ink=#d20f39 backdrop=#ffffff ratio=5.43
+G569_CONTRAST state=permission flavor=latte size=default ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=loading flavor=latte size=ax3 ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=empty flavor=latte size=ax3 ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error flavor=latte size=ax3 ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error-glyph flavor=latte size=ax3 ink=#d20f39 backdrop=#ffffff ratio=5.43
+G569_CONTRAST state=permission flavor=latte size=ax3 ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=loading flavor=mocha size=default ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=empty flavor=mocha size=default ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error flavor=mocha size=default ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error-glyph flavor=mocha size=default ink=#f38ba8 backdrop=#1c1c1e ratio=7.35
+G569_CONTRAST state=permission flavor=mocha size=default ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=loading flavor=mocha size=ax3 ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=empty flavor=mocha size=ax3 ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error flavor=mocha size=ax3 ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error-glyph flavor=mocha size=ax3 ink=#f38ba8 backdrop=#1c1c1e ratio=7.35
+G569_CONTRAST state=permission flavor=mocha size=ax3 ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_BOARD_CHIP flavor=latte repo=corral hue=#179299 dot_pixels=264 dot_rows=16
+G569_BOARD_CHIP flavor=latte repo=sendmeter hue=#df8e1d dot_pixels=264 dot_rows=16
+G569_BOARD_CHIP flavor=latte repo=Other hue=#acb0be dot_pixels=269 dot_rows=16
+G569_BOARD_CHIP flavor=latte repo=synergy-apps hue=#209fb5 dot_pixels=264 dot_rows=16
+G569_CHIP flavor=latte repo=corral hue=#179299 dot_pixels=248 dot_rows=16 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=latte repo=sendmeter hue=#df8e1d dot_pixels=248 dot_rows=16 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=latte repo=Other hue=#acb0be dot_pixels=291 dot_rows=16 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=latte repo=synergy-apps hue=#209fb5 dot_pixels=248 dot_rows=16 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_BOARD_CHIP flavor=mocha repo=corral hue=#94e2d5 dot_pixels=910 dot_rows=18
+G569_BOARD_CHIP flavor=mocha repo=sendmeter hue=#f9e2af dot_pixels=1538 dot_rows=18
+G569_BOARD_CHIP flavor=mocha repo=Other hue=#585b70 dot_pixels=271 dot_rows=16
+G569_BOARD_CHIP flavor=mocha repo=synergy-apps hue=#74c7ec dot_pixels=1874 dot_rows=20
+G569_CHIP flavor=mocha repo=corral hue=#94e2d5 dot_pixels=894 dot_rows=18 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=mocha repo=sendmeter hue=#f9e2af dot_pixels=1522 dot_rows=18 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=mocha repo=Other hue=#585b70 dot_pixels=477 dot_rows=16 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=mocha repo=synergy-apps hue=#74c7ec dot_pixels=1858 dot_rows=20 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_TIER flavor=latte text=5.04 tailMuted=3.95 tailQuiet=2.50 red=3.43 mauve=3.42
+G569_TIER flavor=mocha text=6.44 tailMuted=4.19 tailQuiet=1.91 red=4.02 mauve=4.59
+	 Executed 4 tests, with 0 failures (0 unexpected) in 56.805 (56.806) seconds
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.086 (0.087) seconds
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.001 (0.001) seconds
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.110 (0.110) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.008 (0.009) seconds
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.018 (0.019) seconds
+	 Executed 18 tests, with 0 failures (0 unexpected) in 8.612 (8.620) seconds
+	 Executed 7 tests, with 0 failures (0 unexpected) in 0.041 (0.043) seconds
+	 Executed 10 tests, with 0 failures (0 unexpected) in 1.277 (1.281) seconds
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.217 (0.218) seconds
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.002 (0.007) seconds
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.001 (0.001) seconds
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.002 (0.040) seconds
+	 Executed 669 tests, with 1 test skipped and 0 failures (0 unexpected) in 264.197 (264.597) seconds
+	 Executed 669 tests, with 1 test skipped and 0 failures (0 unexpected) in 264.197 (264.598) seconds
+** TEST SUCCEEDED **
+===== /tmp/g569-focused5.log
+G569_CONTRAST state=loading flavor=latte size=default ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=empty flavor=latte size=default ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error flavor=latte size=default ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error-glyph flavor=latte size=default ink=#d20f39 backdrop=#ffffff ratio=5.43
+G569_CONTRAST state=permission flavor=latte size=default ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=loading flavor=latte size=ax3 ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=empty flavor=latte size=ax3 ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error flavor=latte size=ax3 ink=#4c4f69 backdrop=#ffffff ratio=7.99 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error-glyph flavor=latte size=ax3 ink=#d20f39 backdrop=#ffffff ratio=5.43
+G569_CONTRAST state=permission flavor=latte size=ax3 ink=#4c4f69 backdrop=#eff1f5 ratio=7.06 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=loading flavor=mocha size=default ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=empty flavor=mocha size=default ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error flavor=mocha size=default ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error-glyph flavor=mocha size=default ink=#f38ba8 backdrop=#1c1c1e ratio=7.35
+G569_CONTRAST state=permission flavor=mocha size=default ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=loading flavor=mocha size=ax3 ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=empty flavor=mocha size=ax3 ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error flavor=mocha size=ax3 ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_CONTRAST state=error-glyph flavor=mocha size=ax3 ink=#f38ba8 backdrop=#1c1c1e ratio=7.35
+G569_CONTRAST state=permission flavor=mocha size=ax3 ink=#cdd6f4 backdrop=#1c1c1e ratio=11.77 crop=(0.0, 59.0, 390.0, 785.0)
+G569_BOARD_CHIP flavor=latte repo=sendmeter hue=#df8e1d dot_pixels=264 dot_rows=16
+G569_BOARD_CHIP flavor=latte repo=corral hue=#179299 dot_pixels=264 dot_rows=16
+G569_BOARD_CHIP flavor=latte repo=synergy-apps hue=#209fb5 dot_pixels=264 dot_rows=16
+G569_BOARD_CHIP flavor=latte repo=Other hue=#acb0be dot_pixels=269 dot_rows=16
+G569_CHIP flavor=latte repo=sendmeter hue=#df8e1d dot_pixels=248 dot_rows=16 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=latte repo=corral hue=#179299 dot_pixels=248 dot_rows=16 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=latte repo=synergy-apps hue=#209fb5 dot_pixels=248 dot_rows=16 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=latte repo=Other hue=#acb0be dot_pixels=291 dot_rows=16 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_BOARD_CHIP flavor=mocha repo=sendmeter hue=#f9e2af dot_pixels=1538 dot_rows=18
+G569_BOARD_CHIP flavor=mocha repo=corral hue=#94e2d5 dot_pixels=910 dot_rows=18
+G569_BOARD_CHIP flavor=mocha repo=synergy-apps hue=#74c7ec dot_pixels=1874 dot_rows=20
+G569_BOARD_CHIP flavor=mocha repo=Other hue=#585b70 dot_pixels=271 dot_rows=16
+G569_CHIP flavor=mocha repo=sendmeter hue=#f9e2af dot_pixels=1522 dot_rows=18 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=mocha repo=corral hue=#94e2d5 dot_pixels=894 dot_rows=18 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=mocha repo=synergy-apps hue=#74c7ec dot_pixels=1858 dot_rows=20 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+G569_CHIP flavor=mocha repo=Other hue=#585b70 dot_pixels=477 dot_rows=16 band=(0.0, 59.0, 390.0, 140.0) crop=(0.0, 59.0, 390.0, 785.0)
+	 Executed 3 tests, with 0 failures (0 unexpected) in 72.222 (72.225) seconds
+	 Executed 3 tests, with 0 failures (0 unexpected) in 72.222 (72.227) seconds
+	 Executed 3 tests, with 0 failures (0 unexpected) in 72.222 (72.228) seconds
+** TEST SUCCEEDED **
+XCODEBUILD_EXIT=0

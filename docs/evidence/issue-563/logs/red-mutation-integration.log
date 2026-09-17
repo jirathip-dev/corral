@@ -1,5 +1,5 @@
    Compiling corrald v0.1.0 (/Users/jirathip/.herdr/worktrees/corral/impl563-hashedid)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.39s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.45s
      Running tests/integration.rs (target/debug/deps/integration-06e07254ebaeed52)
 
 running 1 test

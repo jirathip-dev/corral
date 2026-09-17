@@ -1,7 +1,7 @@
 {
   "issue": 563,
   "driver": "docs/evidence/issue-563/redgreen.sh",
-  "head": "d735568bf45dc8795cc591b32ae74d752005b9e6",
+  "head": "c6cda7f88f564734a92c21c841cea03c0b93d968",
   "base": "e0fe2e6c46d8dc3ecec36680850c29dd6778323e",
   "fence_sha256": {"src/adapters/gh_plane.rs": "9971c8c68c7aedec89e6a9f2b98b87da90c8cd6f4caf12c7096f0d2f453f6fc1", "src/integrate/mod.rs": "1e81ebd61eef323c6b718a8d04b6d9137987f4da8857568136ae1f7fd49de071"},
   "phases": [

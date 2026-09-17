@@ -1,6 +1,6 @@
    Compiling corrald v0.1.0 (/Users/jirathip/.herdr/worktrees/corral/impl563-hashedid)
    Compiling corrald-client v0.1.0 (/Users/jirathip/.herdr/worktrees/corral/impl563-hashedid/crates/corrald-client)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.29s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.79s
      Running unittests src/lib.rs (target/debug/deps/corrald-8e911e71c9133835)
 
 running 1 test

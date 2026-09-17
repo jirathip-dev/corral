@@ -1,0 +1,984 @@
+warning[license-not-encountered]: license was not encountered
+   ┌─ /Users/jirathip/.herdr/worktrees/corral/impl563-hashedid/deny.toml:39:6
+   │
+39 │     "Zlib",
+   │      ━━━━ unmatched license allowance
+
+warning[duplicate]: found 2 duplicate entries for crate 'base64'
+   ┌─ /Users/jirathip/.herdr/worktrees/corral/impl563-hashedid/Cargo.lock:22:1
+   │
+22 │ ╭ base64 0.22.1 registry+https://github.com/rust-lang/crates.io-index
+23 │ │ base64 0.23.1 registry+https://github.com/rust-lang/crates.io-index
+   │ ╰───────────────────────────────────────────────────────────────────┘ lock entries
+   │
+   ├ base64 v0.22.1
+     ├── axum v0.8.9
+     │   └── corrald v0.1.0
+     │       └── (dev) corrald v0.1.0 (*)
+     ├── hyper-util v0.1.20
+     │   ├── axum v0.8.9 (*)
+     │   ├── hyper-rustls v0.27.9
+     │   │   └── reqwest v0.13.4
+     │   │       └── corrald v0.1.0 (*)
+     │   └── reqwest v0.13.4 (*)
+     └── reqwest v0.13.4 (*)
+   ├ base64 v0.23.1
+     └── corrald v0.1.0
+         └── (dev) corrald v0.1.0 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'block-buffer'
+   ┌─ /Users/jirathip/.herdr/worktrees/corral/impl563-hashedid/Cargo.lock:26:1
+   │
+26 │ ╭ block-buffer 0.10.4 registry+https://github.com/rust-lang/crates.io-index
+27 │ │ block-buffer 0.12.1 registry+https://github.com/rust-lang/crates.io-index
+   │ ╰─────────────────────────────────────────────────────────────────────────┘ lock entries
+   │
+   ├ block-buffer v0.10.4
+     └── digest v0.10.7
+         ├── hmac v0.12.1
+         │   └── hkdf v0.12.4
+         │       └── secret-service v5.1.0
+         │           └── zbus-secret-service-keyring-store v1.0.1
+         │               └── keyring v4.1.6
+         │                   └── corrald v0.1.0
+         │                       └── (dev) corrald v0.1.0 (*)
+         ├── sha1 v0.10.7
+         │   ├── axum v0.8.9
+         │   │   └── corrald v0.1.0 (*)
+         │   └── tungstenite v0.29.0
+         │       └── tokio-tungstenite v0.29.0
+         │           ├── axum v0.8.9 (*)
+         │           └── (dev) corrald v0.1.0 (*)
+         └── sha2 v0.10.9
+             └── secret-service v5.1.0 (*)
+   ├ block-buffer v0.12.1
+     └── digest v0.11.3
+         ├── curve25519-dalek v5.0.0
+         │   ├── ed25519-dalek v3.0.0
+         │   │   └── corrald v0.1.0
+         │   │       └── (dev) corrald v0.1.0 (*)
+         │   └── x25519-dalek v3.0.0
+         │       └── corrald v0.1.0 (*)
+         ├── ecdsa v0.17.0
+         │   └── p256 v0.14.0
+         │       └── corrald v0.1.0 (*)
+         ├── elliptic-curve v0.14.1
+         │   ├── ecdsa v0.17.0 (*)
+         │   ├── p256 v0.14.0 (*)
+         │   └── primeorder v0.14.0
+         │       └── p256 v0.14.0 (*)
+         ├── hmac v0.13.0
+         │   └── rfc6979 v0.6.0
+         │       └── ecdsa v0.17.0 (*)
+         ├── sha2 v0.11.0
+         │   ├── corrald v0.1.0 (*)
+         │   ├── ed25519-dalek v3.0.0 (*)
+         │   └── p256 v0.14.0 (*)
+         └── signature v3.0.0
+             ├── ecdsa v0.17.0 (*)
+             └── ed25519 v3.0.0
+                 └── ed25519-dalek v3.0.0 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'core-foundation'
+   ┌─ /Users/jirathip/.herdr/worktrees/corral/impl563-hashedid/Cargo.lock:43:1
+   │
+43 │ ╭ core-foundation 0.9.4 registry+https://github.com/rust-lang/crates.io-index
+44 │ │ core-foundation 0.10.1 registry+https://github.com/rust-lang/crates.io-index
+   │ ╰────────────────────────────────────────────────────────────────────────────┘ lock entries
+   │
+   ├ core-foundation v0.9.4
+     └── system-configuration v0.7.0
+         └── hyper-util v0.1.20
+             ├── axum v0.8.9
+             │   └── corrald v0.1.0
+             │       └── (dev) corrald v0.1.0 (*)
+             ├── hyper-rustls v0.27.9
+             │   └── reqwest v0.13.4
+             │       └── corrald v0.1.0 (*)
+             └── reqwest v0.13.4 (*)
+   ├ core-foundation v0.10.1
+     ├── rustls-platform-verifier v0.7.0
+     │   └── reqwest v0.13.4
+     │       └── corrald v0.1.0
+     │           └── (dev) corrald v0.1.0 (*)
+     └── security-framework v3.7.0
+         ├── apple-native-keyring-store v1.0.2
+         │   └── keyring v4.1.6
+         │       └── corrald v0.1.0 (*)
+         ├── rustls-native-certs v0.8.4
+         │   └── rustls-platform-verifier v0.7.0 (*)
+         └── rustls-platform-verifier v0.7.0 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'cpufeatures'
+   ┌─ /Users/jirathip/.herdr/worktrees/corral/impl563-hashedid/Cargo.lock:48:1
+   │
+48 │ ╭ cpufeatures 0.2.17 registry+https://github.com/rust-lang/crates.io-index
+49 │ │ cpufeatures 0.3.0 registry+https://github.com/rust-lang/crates.io-index
+   │ ╰───────────────────────────────────────────────────────────────────────┘ lock entries
+   │
+   ├ cpufeatures v0.2.17
+     ├── aes v0.8.4
+     │   └── secret-service v5.1.0
+     │       └── zbus-secret-service-keyring-store v1.0.1
+     │           └── keyring v4.1.6
+     │               └── corrald v0.1.0
+     │                   └── (dev) corrald v0.1.0 (*)
+     ├── sha1 v0.10.7
+     │   ├── axum v0.8.9
+     │   │   └── corrald v0.1.0 (*)
+     │   └── tungstenite v0.29.0
+     │       └── tokio-tungstenite v0.29.0
+     │           ├── axum v0.8.9 (*)
+     │           └── (dev) corrald v0.1.0 (*)
+     └── sha2 v0.10.9
+         └── secret-service v5.1.0 (*)
+   ├ cpufeatures v0.3.0
+     ├── curve25519-dalek v5.0.0
+     │   ├── ed25519-dalek v3.0.0
+     │   │   └── corrald v0.1.0
+     │   │       └── (dev) corrald v0.1.0 (*)
+     │   └── x25519-dalek v3.0.0
+     │       └── corrald v0.1.0 (*)
+     └── sha2 v0.11.0
+         ├── corrald v0.1.0 (*)
+         ├── ed25519-dalek v3.0.0 (*)
+         └── p256 v0.14.0
+             └── corrald v0.1.0 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'crypto-common'
+   ┌─ /Users/jirathip/.herdr/worktrees/corral/impl563-hashedid/Cargo.lock:52:1
+   │
+52 │ ╭ crypto-common 0.1.7 registry+https://github.com/rust-lang/crates.io-index
+53 │ │ crypto-common 0.2.2 registry+https://github.com/rust-lang/crates.io-index
+   │ ╰─────────────────────────────────────────────────────────────────────────┘ lock entries
+   │
+   ├ crypto-common v0.1.7
+     ├── cipher v0.4.4
+     │   ├── aes v0.8.4
+     │   │   └── secret-service v5.1.0
+     │   │       └── zbus-secret-service-keyring-store v1.0.1
+     │   │           └── keyring v4.1.6
+     │   │               └── corrald v0.1.0
+     │   │                   └── (dev) corrald v0.1.0 (*)
+     │   └── cbc v0.1.2
+     │       └── secret-service v5.1.0 (*)
+     └── digest v0.10.7
+         ├── hmac v0.12.1
+         │   └── hkdf v0.12.4
+         │       └── secret-service v5.1.0 (*)
+         ├── sha1 v0.10.7
+         │   ├── axum v0.8.9
+         │   │   └── corrald v0.1.0 (*)
+         │   └── tungstenite v0.29.0
+         │       └── tokio-tungstenite v0.29.0
+         │           ├── axum v0.8.9 (*)
+         │           └── (dev) corrald v0.1.0 (*)
+         └── sha2 v0.10.9
+             └── secret-service v5.1.0 (*)
+   ├ crypto-common v0.2.2
+     ├── digest v0.11.3
+     │   ├── curve25519-dalek v5.0.0
+     │   │   ├── ed25519-dalek v3.0.0
+     │   │   │   └── corrald v0.1.0
+     │   │   │       └── (dev) corrald v0.1.0 (*)
+     │   │   └── x25519-dalek v3.0.0
+     │   │       └── corrald v0.1.0 (*)
+     │   ├── ecdsa v0.17.0
+     │   │   └── p256 v0.14.0
+     │   │       └── corrald v0.1.0 (*)
+     │   ├── elliptic-curve v0.14.1
+     │   │   ├── ecdsa v0.17.0 (*)
+     │   │   ├── p256 v0.14.0 (*)
+     │   │   └── primeorder v0.14.0
+     │   │       └── p256 v0.14.0 (*)
+     │   ├── hmac v0.13.0
+     │   │   └── rfc6979 v0.6.0
+     │   │       └── ecdsa v0.17.0 (*)
+     │   ├── sha2 v0.11.0
+     │   │   ├── corrald v0.1.0 (*)
+     │   │   ├── ed25519-dalek v3.0.0 (*)
+     │   │   └── p256 v0.14.0 (*)
+     │   └── signature v3.0.0
+     │       ├── ecdsa v0.17.0 (*)
+     │       └── ed25519 v3.0.0
+     │           └── ed25519-dalek v3.0.0 (*)
+     ├── elliptic-curve v0.14.1 (*)
+     └── primefield v0.14.0
+         ├── p256 v0.14.0 (*)
+         ├── primeorder v0.14.0 (*)
+         └── wnaf v0.14.1
+             └── primeorder v0.14.0 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'digest'
+   ┌─ /Users/jirathip/.herdr/worktrees/corral/impl563-hashedid/Cargo.lock:59:1
+   │
+59 │ ╭ digest 0.10.7 registry+https://github.com/rust-lang/crates.io-index
+60 │ │ digest 0.11.3 registry+https://github.com/rust-lang/crates.io-index
+   │ ╰───────────────────────────────────────────────────────────────────┘ lock entries
+   │
+   ├ digest v0.10.7
+     ├── hmac v0.12.1
+     │   └── hkdf v0.12.4
+     │       └── secret-service v5.1.0
+     │           └── zbus-secret-service-keyring-store v1.0.1
+     │               └── keyring v4.1.6
+     │                   └── corrald v0.1.0
+     │                       └── (dev) corrald v0.1.0 (*)
+     ├── sha1 v0.10.7
+     │   ├── axum v0.8.9
+     │   │   └── corrald v0.1.0 (*)
+     │   └── tungstenite v0.29.0
+     │       └── tokio-tungstenite v0.29.0
+     │           ├── axum v0.8.9 (*)
+     │           └── (dev) corrald v0.1.0 (*)
+     └── sha2 v0.10.9
+         └── secret-service v5.1.0 (*)
+   ├ digest v0.11.3
+     ├── curve25519-dalek v5.0.0
+     │   ├── ed25519-dalek v3.0.0
+     │   │   └── corrald v0.1.0
+     │   │       └── (dev) corrald v0.1.0 (*)
+     │   └── x25519-dalek v3.0.0
+     │       └── corrald v0.1.0 (*)
+     ├── ecdsa v0.17.0
+     │   └── p256 v0.14.0
+     │       └── corrald v0.1.0 (*)
+     ├── elliptic-curve v0.14.1
+     │   ├── ecdsa v0.17.0 (*)
+     │   ├── p256 v0.14.0 (*)
+     │   └── primeorder v0.14.0
+     │       └── p256 v0.14.0 (*)
+     ├── hmac v0.13.0
+     │   └── rfc6979 v0.6.0
+     │       └── ecdsa v0.17.0 (*)
+     ├── sha2 v0.11.0
+     │   ├── corrald v0.1.0 (*)
+     │   ├── ed25519-dalek v3.0.0 (*)
+     │   └── p256 v0.14.0 (*)
+     └── signature v3.0.0
+         ├── ecdsa v0.17.0 (*)
+         └── ed25519 v3.0.0
+             └── ed25519-dalek v3.0.0 (*)
+
+warning[duplicate]: found 3 duplicate entries for crate 'getrandom'
+   ┌─ /Users/jirathip/.herdr/worktrees/corral/impl563-hashedid/Cargo.lock:94:1
+   │
+94 │ ╭ getrandom 0.2.17 registry+https://github.com/rust-lang/crates.io-index
+95 │ │ getrandom 0.3.4 registry+https://github.com/rust-lang/crates.io-index
+96 │ │ getrandom 0.4.3 registry+https://github.com/rust-lang/crates.io-index
+   │ ╰─────────────────────────────────────────────────────────────────────┘ lock entries
+   │
+   ├ getrandom v0.2.17
+     └── secret-service v5.1.0
+         └── zbus-secret-service-keyring-store v1.0.1
+             └── keyring v4.1.6
+                 └── corrald v0.1.0
+                     └── (dev) corrald v0.1.0 (*)
+   ├ getrandom v0.3.4
+     └── rand_core v0.9.5
+         ├── rand v0.9.5
+         │   └── tungstenite v0.29.0
+         │       └── tokio-tungstenite v0.29.0
+         │           ├── axum v0.8.9
+         │           │   └── corrald v0.1.0
+         │           │       └── (dev) corrald v0.1.0 (*)
+         │           └── (dev) corrald v0.1.0 (*)
+         └── rand_chacha v0.9.0
+             └── rand v0.9.5 (*)
+   ├ getrandom v0.4.3
+     ├── corrald v0.1.0
+     │   └── (dev) corrald v0.1.0 (*)
+     ├── crypto-bigint v0.7.5
+     │   ├── elliptic-curve v0.14.1
+     │   │   ├── ecdsa v0.17.0
+     │   │   │   └── p256 v0.14.0
+     │   │   │       └── corrald v0.1.0 (*)
+     │   │   ├── p256 v0.14.0 (*)
+     │   │   └── primeorder v0.14.0
+     │   │       └── p256 v0.14.0 (*)
+     │   ├── primefield v0.14.0
+     │   │   ├── p256 v0.14.0 (*)
+     │   │   ├── primeorder v0.14.0 (*)
+     │   │   └── wnaf v0.14.1
+     │   │       └── primeorder v0.14.0 (*)
+     │   └── rfc6979 v0.6.0
+     │       └── ecdsa v0.17.0 (*)
+     ├── crypto-common v0.2.2
+     │   ├── digest v0.11.3
+     │   │   ├── curve25519-dalek v5.0.0
+     │   │   │   ├── ed25519-dalek v3.0.0
+     │   │   │   │   └── corrald v0.1.0 (*)
+     │   │   │   └── x25519-dalek v3.0.0
+     │   │   │       └── corrald v0.1.0 (*)
+     │   │   ├── ecdsa v0.17.0 (*)
+     │   │   ├── elliptic-curve v0.14.1 (*)
+     │   │   ├── hmac v0.13.0
+     │   │   │   └── rfc6979 v0.6.0 (*)
+     │   │   ├── sha2 v0.11.0
+     │   │   │   ├── corrald v0.1.0 (*)
+     │   │   │   ├── ed25519-dalek v3.0.0 (*)
+     │   │   │   └── p256 v0.14.0 (*)
+     │   │   └── signature v3.0.0
+     │   │       ├── ecdsa v0.17.0 (*)
+     │   │       └── ed25519 v3.0.0
+     │   │           └── ed25519-dalek v3.0.0 (*)
+     │   ├── elliptic-curve v0.14.1 (*)
+     │   └── primefield v0.14.0 (*)
+     ├── jobserver v0.1.35
+     │   └── cc v1.4.3
+     │       ├── (build) aws-lc-sys v0.44.0
+     │       │   └── aws-lc-rs v1.18.0
+     │       │       ├── rustls v0.23.45
+     │       │       │   ├── hyper-rustls v0.27.9
+     │       │       │   │   └── reqwest v0.13.4
+     │       │       │   │       └── corrald v0.1.0 (*)
+     │       │       │   ├── reqwest v0.13.4 (*)
+     │       │       │   ├── rustls-platform-verifier v0.7.0
+     │       │       │   │   └── reqwest v0.13.4 (*)
+     │       │       │   └── tokio-rustls v0.26.4
+     │       │       │       ├── hyper-rustls v0.27.9 (*)
+     │       │       │       └── reqwest v0.13.4 (*)
+     │       │       └── rustls-webpki v0.103.14
+     │       │           ├── rustls v0.23.45 (*)
+     │       │           └── rustls-platform-verifier v0.7.0 (*)
+     │       ├── cmake v0.1.58
+     │       │   └── (build) aws-lc-sys v0.44.0 (*)
+     │       ├── (build) iana-time-zone-haiku v0.1.2
+     │       │   └── iana-time-zone v0.1.65
+     │       │       └── chrono v0.4.45
+     │       │           └── corrald v0.1.0 (*)
+     │       ├── (build) libgit2-sys v0.18.8+1.9.7
+     │       │   └── git2 v0.21.0
+     │       │       └── corrald v0.1.0 (*)
+     │       └── (build) libz-sys v1.1.29
+     │           └── libgit2-sys v0.18.8+1.9.7 (*)
+     └── tempfile v3.27.0
+         ├── (dev) corrald v0.1.0 (*)
+         └── uds_windows v1.2.1
+             └── zbus v5.19.0
+                 ├── secret-service v5.1.0
+                 │   └── zbus-secret-service-keyring-store v1.0.1
+                 │       └── keyring v4.1.6
+                 │           └── corrald v0.1.0 (*)
+                 └── zbus-secret-service-keyring-store v1.0.1 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'hmac'
+    ┌─ /Users/jirathip/.herdr/worktrees/corral/impl563-hashedid/Cargo.lock:104:1
+    │
+104 │ ╭ hmac 0.12.1 registry+https://github.com/rust-lang/crates.io-index
+105 │ │ hmac 0.13.0 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰─────────────────────────────────────────────────────────────────┘ lock entries
+    │
+    ├ hmac v0.12.1
+      └── hkdf v0.12.4
+          └── secret-service v5.1.0
+              └── zbus-secret-service-keyring-store v1.0.1
+                  └── keyring v4.1.6
+                      └── corrald v0.1.0
+                          └── (dev) corrald v0.1.0 (*)
+    ├ hmac v0.13.0
+      └── rfc6979 v0.6.0
+          └── ecdsa v0.17.0
+              └── p256 v0.14.0
+                  └── corrald v0.1.0
+                      └── (dev) corrald v0.1.0 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'r-efi'
+    ┌─ /Users/jirathip/.herdr/worktrees/corral/impl563-hashedid/Cargo.lock:186:1
+    │
+186 │ ╭ r-efi 5.3.0 registry+https://github.com/rust-lang/crates.io-index
+187 │ │ r-efi 6.0.0 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰─────────────────────────────────────────────────────────────────┘ lock entries
+    │
+    ├ r-efi v5.3.0
+      └── getrandom v0.3.4
+          └── rand_core v0.9.5
+              ├── rand v0.9.5
+              │   └── tungstenite v0.29.0
+              │       └── tokio-tungstenite v0.29.0
+              │           ├── axum v0.8.9
+              │           │   └── corrald v0.1.0
+              │           │       └── (dev) corrald v0.1.0 (*)
+              │           └── (dev) corrald v0.1.0 (*)
+              └── rand_chacha v0.9.0
+                  └── rand v0.9.5 (*)
+    ├ r-efi v6.0.0
+      └── getrandom v0.4.3
+          ├── corrald v0.1.0
+          │   └── (dev) corrald v0.1.0 (*)
+          ├── crypto-bigint v0.7.5
+          │   ├── elliptic-curve v0.14.1
+          │   │   ├── ecdsa v0.17.0
+          │   │   │   └── p256 v0.14.0
+          │   │   │       └── corrald v0.1.0 (*)
+          │   │   ├── p256 v0.14.0 (*)
+          │   │   └── primeorder v0.14.0
+          │   │       └── p256 v0.14.0 (*)
+          │   ├── primefield v0.14.0
+          │   │   ├── p256 v0.14.0 (*)
+          │   │   ├── primeorder v0.14.0 (*)
+          │   │   └── wnaf v0.14.1
+          │   │       └── primeorder v0.14.0 (*)
+          │   └── rfc6979 v0.6.0
+          │       └── ecdsa v0.17.0 (*)
+          ├── crypto-common v0.2.2
+          │   ├── digest v0.11.3
+          │   │   ├── curve25519-dalek v5.0.0
+          │   │   │   ├── ed25519-dalek v3.0.0
+          │   │   │   │   └── corrald v0.1.0 (*)
+          │   │   │   └── x25519-dalek v3.0.0
+          │   │   │       └── corrald v0.1.0 (*)
+          │   │   ├── ecdsa v0.17.0 (*)
+          │   │   ├── elliptic-curve v0.14.1 (*)
+          │   │   ├── hmac v0.13.0
+          │   │   │   └── rfc6979 v0.6.0 (*)
+          │   │   ├── sha2 v0.11.0
+          │   │   │   ├── corrald v0.1.0 (*)
+          │   │   │   ├── ed25519-dalek v3.0.0 (*)
+          │   │   │   └── p256 v0.14.0 (*)
+          │   │   └── signature v3.0.0
+          │   │       ├── ecdsa v0.17.0 (*)
+          │   │       └── ed25519 v3.0.0
+          │   │           └── ed25519-dalek v3.0.0 (*)
+          │   ├── elliptic-curve v0.14.1 (*)
+          │   └── primefield v0.14.0 (*)
+          ├── jobserver v0.1.35
+          │   └── cc v1.4.3
+          │       ├── (build) aws-lc-sys v0.44.0
+          │       │   └── aws-lc-rs v1.18.0
+          │       │       ├── rustls v0.23.45
+          │       │       │   ├── hyper-rustls v0.27.9
+          │       │       │   │   └── reqwest v0.13.4
+          │       │       │   │       └── corrald v0.1.0 (*)
+          │       │       │   ├── reqwest v0.13.4 (*)
+          │       │       │   ├── rustls-platform-verifier v0.7.0
+          │       │       │   │   └── reqwest v0.13.4 (*)
+          │       │       │   └── tokio-rustls v0.26.4
+          │       │       │       ├── hyper-rustls v0.27.9 (*)
+          │       │       │       └── reqwest v0.13.4 (*)
+          │       │       └── rustls-webpki v0.103.14
+          │       │           ├── rustls v0.23.45 (*)
+          │       │           └── rustls-platform-verifier v0.7.0 (*)
+          │       ├── cmake v0.1.58
+          │       │   └── (build) aws-lc-sys v0.44.0 (*)
+          │       ├── (build) iana-time-zone-haiku v0.1.2
+          │       │   └── iana-time-zone v0.1.65
+          │       │       └── chrono v0.4.45
+          │       │           └── corrald v0.1.0 (*)
+          │       ├── (build) libgit2-sys v0.18.8+1.9.7
+          │       │   └── git2 v0.21.0
+          │       │       └── corrald v0.1.0 (*)
+          │       └── (build) libz-sys v1.1.29
+          │           └── libgit2-sys v0.18.8+1.9.7 (*)
+          └── tempfile v3.27.0
+              ├── (dev) corrald v0.1.0 (*)
+              └── uds_windows v1.2.1
+                  └── zbus v5.19.0
+                      ├── secret-service v5.1.0
+                      │   └── zbus-secret-service-keyring-store v1.0.1
+                      │       └── keyring v4.1.6
+                      │           └── corrald v0.1.0 (*)
+                      └── zbus-secret-service-keyring-store v1.0.1 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'rand_core'
+    ┌─ /Users/jirathip/.herdr/worktrees/corral/impl563-hashedid/Cargo.lock:190:1
+    │
+190 │ ╭ rand_core 0.9.5 registry+https://github.com/rust-lang/crates.io-index
+191 │ │ rand_core 0.10.1 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰──────────────────────────────────────────────────────────────────────┘ lock entries
+    │
+    ├ rand_core v0.9.5
+      ├── rand v0.9.5
+      │   └── tungstenite v0.29.0
+      │       └── tokio-tungstenite v0.29.0
+      │           ├── axum v0.8.9
+      │           │   └── corrald v0.1.0
+      │           │       └── (dev) corrald v0.1.0 (*)
+      │           └── (dev) corrald v0.1.0 (*)
+      └── rand_chacha v0.9.0
+          └── rand v0.9.5 (*)
+    ├ rand_core v0.10.1
+      ├── crypto-bigint v0.7.5
+      │   ├── elliptic-curve v0.14.1
+      │   │   ├── ecdsa v0.17.0
+      │   │   │   └── p256 v0.14.0
+      │   │   │       └── corrald v0.1.0
+      │   │   │           └── (dev) corrald v0.1.0 (*)
+      │   │   ├── p256 v0.14.0 (*)
+      │   │   └── primeorder v0.14.0
+      │   │       └── p256 v0.14.0 (*)
+      │   ├── primefield v0.14.0
+      │   │   ├── p256 v0.14.0 (*)
+      │   │   ├── primeorder v0.14.0 (*)
+      │   │   └── wnaf v0.14.1
+      │   │       └── primeorder v0.14.0 (*)
+      │   └── rfc6979 v0.6.0
+      │       └── ecdsa v0.17.0 (*)
+      ├── crypto-common v0.2.2
+      │   ├── digest v0.11.3
+      │   │   ├── curve25519-dalek v5.0.0
+      │   │   │   ├── ed25519-dalek v3.0.0
+      │   │   │   │   └── corrald v0.1.0 (*)
+      │   │   │   └── x25519-dalek v3.0.0
+      │   │   │       └── corrald v0.1.0 (*)
+      │   │   ├── ecdsa v0.17.0 (*)
+      │   │   ├── elliptic-curve v0.14.1 (*)
+      │   │   ├── hmac v0.13.0
+      │   │   │   └── rfc6979 v0.6.0 (*)
+      │   │   ├── sha2 v0.11.0
+      │   │   │   ├── corrald v0.1.0 (*)
+      │   │   │   ├── ed25519-dalek v3.0.0 (*)
+      │   │   │   └── p256 v0.14.0 (*)
+      │   │   └── signature v3.0.0
+      │   │       ├── ecdsa v0.17.0 (*)
+      │   │       └── ed25519 v3.0.0
+      │   │           └── ed25519-dalek v3.0.0 (*)
+      │   ├── elliptic-curve v0.14.1 (*)
+      │   └── primefield v0.14.0 (*)
+      ├── elliptic-curve v0.14.1 (*)
+      ├── ff v0.14.0
+      │   ├── elliptic-curve v0.14.1 (*)
+      │   ├── group v0.14.0
+      │   │   ├── elliptic-curve v0.14.1 (*)
+      │   │   └── wnaf v0.14.1 (*)
+      │   ├── primefield v0.14.0 (*)
+      │   └── wnaf v0.14.1 (*)
+      ├── getrandom v0.4.3
+      │   ├── corrald v0.1.0 (*)
+      │   ├── crypto-bigint v0.7.5 (*)
+      │   ├── crypto-common v0.2.2 (*)
+      │   ├── jobserver v0.1.35
+      │   │   └── cc v1.4.3
+      │   │       ├── (build) aws-lc-sys v0.44.0
+      │   │       │   └── aws-lc-rs v1.18.0
+      │   │       │       ├── rustls v0.23.45
+      │   │       │       │   ├── hyper-rustls v0.27.9
+      │   │       │       │   │   └── reqwest v0.13.4
+      │   │       │       │   │       └── corrald v0.1.0 (*)
+      │   │       │       │   ├── reqwest v0.13.4 (*)
+      │   │       │       │   ├── rustls-platform-verifier v0.7.0
+      │   │       │       │   │   └── reqwest v0.13.4 (*)
+      │   │       │       │   └── tokio-rustls v0.26.4
+      │   │       │       │       ├── hyper-rustls v0.27.9 (*)
+      │   │       │       │       └── reqwest v0.13.4 (*)
+      │   │       │       └── rustls-webpki v0.103.14
+      │   │       │           ├── rustls v0.23.45 (*)
+      │   │       │           └── rustls-platform-verifier v0.7.0 (*)
+      │   │       ├── cmake v0.1.58
+      │   │       │   └── (build) aws-lc-sys v0.44.0 (*)
+      │   │       ├── (build) iana-time-zone-haiku v0.1.2
+      │   │       │   └── iana-time-zone v0.1.65
+      │   │       │       └── chrono v0.4.45
+      │   │       │           └── corrald v0.1.0 (*)
+      │   │       ├── (build) libgit2-sys v0.18.8+1.9.7
+      │   │       │   └── git2 v0.21.0
+      │   │       │       └── corrald v0.1.0 (*)
+      │   │       └── (build) libz-sys v1.1.29
+      │   │           └── libgit2-sys v0.18.8+1.9.7 (*)
+      │   └── tempfile v3.27.0
+      │       ├── (dev) corrald v0.1.0 (*)
+      │       └── uds_windows v1.2.1
+      │           └── zbus v5.19.0
+      │               ├── secret-service v5.1.0
+      │               │   └── zbus-secret-service-keyring-store v1.0.1
+      │               │       └── keyring v4.1.6
+      │               │           └── corrald v0.1.0 (*)
+      │               └── zbus-secret-service-keyring-store v1.0.1 (*)
+      ├── group v0.14.0 (*)
+      ├── primefield v0.14.0 (*)
+      ├── signature v3.0.0 (*)
+      └── x25519-dalek v3.0.0 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'sha2'
+    ┌─ /Users/jirathip/.herdr/worktrees/corral/impl563-hashedid/Cargo.lock:222:1
+    │
+222 │ ╭ sha2 0.10.9 registry+https://github.com/rust-lang/crates.io-index
+223 │ │ sha2 0.11.0 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰─────────────────────────────────────────────────────────────────┘ lock entries
+    │
+    ├ sha2 v0.10.9
+      └── secret-service v5.1.0
+          └── zbus-secret-service-keyring-store v1.0.1
+              └── keyring v4.1.6
+                  └── corrald v0.1.0
+                      └── (dev) corrald v0.1.0 (*)
+    ├ sha2 v0.11.0
+      ├── corrald v0.1.0
+      │   └── (dev) corrald v0.1.0 (*)
+      ├── ed25519-dalek v3.0.0
+      │   └── corrald v0.1.0 (*)
+      └── p256 v0.14.0
+          └── corrald v0.1.0 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'syn'
+    ┌─ /Users/jirathip/.herdr/worktrees/corral/impl563-hashedid/Cargo.lock:236:1
+    │
+236 │ ╭ syn 2.0.119 registry+https://github.com/rust-lang/crates.io-index
+237 │ │ syn 3.0.3 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰───────────────────────────────────────────────────────────────┘ lock entries
+    │
+    ├ syn v2.0.119
+      ├── async-recursion v1.1.1
+      │   └── zbus v5.19.0
+      │       ├── secret-service v5.1.0
+      │       │   └── zbus-secret-service-keyring-store v1.0.1
+      │       │       └── keyring v4.1.6
+      │       │           └── corrald v0.1.0
+      │       │               └── (dev) corrald v0.1.0 (*)
+      │       └── zbus-secret-service-keyring-store v1.0.1 (*)
+      ├── curve25519-dalek-derive v0.1.1
+      │   └── curve25519-dalek v5.0.0
+      │       ├── ed25519-dalek v3.0.0
+      │       │   └── corrald v0.1.0 (*)
+      │       └── x25519-dalek v3.0.0
+      │           └── corrald v0.1.0 (*)
+      ├── enumflags2_derive v0.7.12
+      │   └── enumflags2 v0.7.12
+      │       ├── zbus v5.19.0 (*)
+      │       └── zvariant v5.14.0
+      │           ├── zbus v5.19.0 (*)
+      │           ├── zbus_macros v5.19.0
+      │           │   └── zbus v5.19.0 (*)
+      │           └── zbus_names v4.3.4
+      │               ├── zbus v5.19.0 (*)
+      │               └── zbus_macros v5.19.0 (*)
+      ├── jni-macros v0.22.4
+      │   └── jni v0.22.4
+      │       └── rustls-platform-verifier v0.7.0
+      │           └── reqwest v0.13.4
+      │               └── corrald v0.1.0 (*)
+      ├── jni-sys-macros v0.4.1
+      │   └── jni-sys v0.4.1
+      │       └── jni v0.22.4 (*)
+      ├── synstructure v0.13.2
+      │   ├── yoke-derive v0.8.2
+      │   │   └── yoke v0.8.3
+      │   │       ├── icu_collections v2.3.0
+      │   │       │   ├── icu_normalizer v2.3.0
+      │   │       │   │   └── idna_adapter v1.2.2
+      │   │       │   │       └── idna v1.1.0
+      │   │       │   │           └── url v2.5.8
+      │   │       │   │               ├── reqwest v0.13.4 (*)
+      │   │       │   │               └── tower-http v0.6.11
+      │   │       │   │                   └── reqwest v0.13.4 (*)
+      │   │       │   └── icu_properties v2.3.0
+      │   │       │       └── idna_adapter v1.2.2 (*)
+      │   │       ├── icu_provider v2.3.0
+      │   │       │   ├── icu_normalizer v2.3.0 (*)
+      │   │       │   └── icu_properties v2.3.0 (*)
+      │   │       ├── zerotrie v0.2.5
+      │   │       │   ├── icu_properties v2.3.0 (*)
+      │   │       │   └── icu_provider v2.3.0 (*)
+      │   │       └── zerovec v0.11.7
+      │   │           ├── icu_collections v2.3.0 (*)
+      │   │           ├── icu_locale_core v2.3.0
+      │   │           │   ├── icu_properties v2.3.0 (*)
+      │   │           │   └── icu_provider v2.3.0 (*)
+      │   │           ├── icu_normalizer v2.3.0 (*)
+      │   │           ├── icu_properties v2.3.0 (*)
+      │   │           ├── icu_provider v2.3.0 (*)
+      │   │           ├── potential_utf v0.1.6
+      │   │           │   └── icu_collections v2.3.0 (*)
+      │   │           └── tinystr v0.8.4
+      │   │               └── icu_locale_core v2.3.0 (*)
+      │   └── zerofrom-derive v0.1.7
+      │       └── zerofrom v0.1.8
+      │           ├── icu_collections v2.3.0 (*)
+      │           ├── icu_provider v2.3.0 (*)
+      │           ├── yoke v0.8.3 (*)
+      │           ├── zerotrie v0.2.5 (*)
+      │           └── zerovec v0.11.7 (*)
+      ├── tracing-attributes v0.1.31
+      │   └── tracing v0.1.44
+      │       ├── axum v0.8.9
+      │       │   └── corrald v0.1.0 (*)
+      │       ├── axum-core v0.5.6
+      │       │   └── axum v0.8.9 (*)
+      │       ├── corrald v0.1.0 (*)
+      │       ├── h2 v0.4.16
+      │       │   ├── hyper v1.11.0
+      │       │   │   ├── axum v0.8.9 (*)
+      │       │   │   ├── hyper-rustls v0.27.9
+      │       │   │   │   └── reqwest v0.13.4 (*)
+      │       │   │   ├── hyper-util v0.1.20
+      │       │   │   │   ├── axum v0.8.9 (*)
+      │       │   │   │   ├── hyper-rustls v0.27.9 (*)
+      │       │   │   │   └── reqwest v0.13.4 (*)
+      │       │   │   └── reqwest v0.13.4 (*)
+      │       │   └── reqwest v0.13.4 (*)
+      │       ├── hyper-util v0.1.20 (*)
+      │       ├── tower v0.5.3
+      │       │   ├── axum v0.8.9 (*)
+      │       │   ├── (dev) corrald v0.1.0 (*)
+      │       │   ├── reqwest v0.13.4 (*)
+      │       │   └── tower-http v0.6.11 (*)
+      │       ├── tracing-subscriber v0.3.23
+      │       │   └── corrald v0.1.0 (*)
+      │       └── zbus v5.19.0 (*)
+      ├── wasm-bindgen-macro-support v0.2.127
+      │   └── wasm-bindgen-macro v0.2.127
+      │       └── wasm-bindgen v0.2.127
+      │           ├── chrono v0.4.45
+      │           │   └── corrald v0.1.0 (*)
+      │           ├── iana-time-zone v0.1.65
+      │           │   └── chrono v0.4.45 (*)
+      │           ├── js-sys v0.3.104
+      │           │   ├── chrono v0.4.45 (*)
+      │           │   ├── iana-time-zone v0.1.65 (*)
+      │           │   ├── reqwest v0.13.4 (*)
+      │           │   ├── wasm-bindgen-futures v0.4.77
+      │           │   │   └── reqwest v0.13.4 (*)
+      │           │   └── web-sys v0.3.104
+      │           │       └── reqwest v0.13.4 (*)
+      │           ├── reqwest v0.13.4 (*)
+      │           ├── wasm-bindgen-futures v0.4.77 (*)
+      │           └── web-sys v0.3.104 (*)
+      ├── windows-implement v0.60.2
+      │   └── windows-core v0.62.2
+      │       └── iana-time-zone v0.1.65 (*)
+      ├── windows-interface v0.59.3
+      │   └── windows-core v0.62.2 (*)
+      ├── yoke-derive v0.8.2 (*)
+      └── zerofrom-derive v0.1.7 (*)
+    ├ syn v3.0.3
+      ├── async-trait v0.1.92
+      │   └── zbus v5.19.0
+      │       ├── secret-service v5.1.0
+      │       │   └── zbus-secret-service-keyring-store v1.0.1
+      │       │       └── keyring v4.1.6
+      │       │           └── corrald v0.1.0
+      │       │               └── (dev) corrald v0.1.0 (*)
+      │       └── zbus-secret-service-keyring-store v1.0.1 (*)
+      ├── displaydoc v0.2.7
+      │   ├── icu_collections v2.3.0
+      │   │   ├── icu_normalizer v2.3.0
+      │   │   │   └── idna_adapter v1.2.2
+      │   │   │       └── idna v1.1.0
+      │   │   │           └── url v2.5.8
+      │   │   │               ├── reqwest v0.13.4
+      │   │   │               │   └── corrald v0.1.0 (*)
+      │   │   │               └── tower-http v0.6.11
+      │   │   │                   └── reqwest v0.13.4 (*)
+      │   │   └── icu_properties v2.3.0
+      │   │       └── idna_adapter v1.2.2 (*)
+      │   ├── icu_locale_core v2.3.0
+      │   │   ├── icu_properties v2.3.0 (*)
+      │   │   └── icu_provider v2.3.0
+      │   │       ├── icu_normalizer v2.3.0 (*)
+      │   │       └── icu_properties v2.3.0 (*)
+      │   ├── icu_properties v2.3.0 (*)
+      │   ├── icu_provider v2.3.0 (*)
+      │   ├── tinystr v0.8.4
+      │   │   └── icu_locale_core v2.3.0 (*)
+      │   └── zerotrie v0.2.5
+      │       ├── icu_properties v2.3.0 (*)
+      │       └── icu_provider v2.3.0 (*)
+      ├── futures-macro v0.3.34
+      │   └── futures-util v0.3.34
+      │       ├── axum v0.8.9
+      │       │   └── corrald v0.1.0 (*)
+      │       ├── futures v0.3.34
+      │       │   └── corrald v0.1.0 (*)
+      │       ├── futures-executor v0.3.34
+      │       │   └── futures v0.3.34 (*)
+      │       ├── hyper-util v0.1.20
+      │       │   ├── axum v0.8.9 (*)
+      │       │   ├── hyper-rustls v0.27.9
+      │       │   │   └── reqwest v0.13.4 (*)
+      │       │   └── reqwest v0.13.4 (*)
+      │       ├── js-sys v0.3.104
+      │       │   ├── chrono v0.4.45
+      │       │   │   └── corrald v0.1.0 (*)
+      │       │   ├── iana-time-zone v0.1.65
+      │       │   │   └── chrono v0.4.45 (*)
+      │       │   ├── reqwest v0.13.4 (*)
+      │       │   ├── wasm-bindgen-futures v0.4.77
+      │       │   │   └── reqwest v0.13.4 (*)
+      │       │   └── web-sys v0.3.104
+      │       │       └── reqwest v0.13.4 (*)
+      │       ├── secret-service v5.1.0 (*)
+      │       ├── tokio-tungstenite v0.29.0
+      │       │   ├── axum v0.8.9 (*)
+      │       │   └── (dev) corrald v0.1.0 (*)
+      │       ├── tower v0.5.3
+      │       │   ├── axum v0.8.9 (*)
+      │       │   ├── (dev) corrald v0.1.0 (*)
+      │       │   ├── reqwest v0.13.4 (*)
+      │       │   └── tower-http v0.6.11 (*)
+      │       └── tower-http v0.6.11 (*)
+      ├── serde_derive v1.0.229
+      │   └── serde v1.0.229
+      │       ├── corrald v0.1.0 (*)
+      │       ├── enumflags2 v0.7.12
+      │       │   ├── zbus v5.19.0 (*)
+      │       │   └── zvariant v5.14.0
+      │       │       ├── zbus v5.19.0 (*)
+      │       │       ├── zbus_macros v5.19.0
+      │       │       │   └── zbus v5.19.0 (*)
+      │       │       └── zbus_names v4.3.4
+      │       │           ├── zbus v5.19.0 (*)
+      │       │           └── zbus_macros v5.19.0 (*)
+      │       ├── reqwest v0.13.4 (*)
+      │       ├── secret-service v5.1.0 (*)
+      │       ├── serde_urlencoded v0.7.1
+      │       │   └── axum v0.8.9 (*)
+      │       ├── zbus v5.19.0 (*)
+      │       ├── zbus_names v4.3.4 (*)
+      │       ├── zcheapstr v1.1.0
+      │       │   └── zvariant v5.14.0 (*)
+      │       ├── zvariant v5.14.0 (*)
+      │       └── zvariant_utils v4.0.0
+      │           ├── zbus_macros v5.19.0 (*)
+      │           ├── zvariant v5.14.0 (*)
+      │           └── zvariant_derive v5.14.0
+      │               └── zvariant v5.14.0 (*)
+      ├── serde_repr v0.1.21
+      │   └── zbus v5.19.0 (*)
+      ├── thiserror-impl v2.0.20
+      │   └── thiserror v2.0.20
+      │       ├── jni v0.22.4
+      │       │   └── rustls-platform-verifier v0.7.0
+      │       │       └── reqwest v0.13.4 (*)
+      │       └── tungstenite v0.29.0
+      │           └── tokio-tungstenite v0.29.0 (*)
+      ├── tokio-macros v2.7.2
+      │   └── tokio v1.53.1
+      │       ├── axum v0.8.9 (*)
+      │       ├── corrald v0.1.0 (*)
+      │       ├── h2 v0.4.16
+      │       │   ├── hyper v1.11.0
+      │       │   │   ├── axum v0.8.9 (*)
+      │       │   │   ├── hyper-rustls v0.27.9 (*)
+      │       │   │   ├── hyper-util v0.1.20 (*)
+      │       │   │   └── reqwest v0.13.4 (*)
+      │       │   └── reqwest v0.13.4 (*)
+      │       ├── hyper v1.11.0 (*)
+      │       ├── hyper-rustls v0.27.9 (*)
+      │       ├── hyper-util v0.1.20 (*)
+      │       ├── reqwest v0.13.4 (*)
+      │       ├── tokio-rustls v0.26.4
+      │       │   ├── hyper-rustls v0.27.9 (*)
+      │       │   └── reqwest v0.13.4 (*)
+      │       ├── tokio-tungstenite v0.29.0 (*)
+      │       ├── tokio-util v0.7.19
+      │       │   └── h2 v0.4.16 (*)
+      │       └── tower v0.5.3 (*)
+      ├── zbus_macros v5.19.0 (*)
+      ├── zerovec-derive v0.11.4
+      │   └── zerovec v0.11.7
+      │       ├── icu_collections v2.3.0 (*)
+      │       ├── icu_locale_core v2.3.0 (*)
+      │       ├── icu_normalizer v2.3.0 (*)
+      │       ├── icu_properties v2.3.0 (*)
+      │       ├── icu_provider v2.3.0 (*)
+      │       ├── potential_utf v0.1.6
+      │       │   └── icu_collections v2.3.0 (*)
+      │       └── tinystr v0.8.4 (*)
+      ├── zvariant_derive v5.14.0 (*)
+      └── zvariant_utils v4.0.0 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'windows-sys'
+    ┌─ /Users/jirathip/.herdr/worktrees/corral/impl563-hashedid/Cargo.lock:295:1
+    │
+295 │ ╭ windows-sys 0.60.2 registry+https://github.com/rust-lang/crates.io-index
+296 │ │ windows-sys 0.61.2 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰────────────────────────────────────────────────────────────────────────┘ lock entries
+    │
+    ├ windows-sys v0.60.2
+      └── notify v8.2.0
+          └── corrald v0.1.0
+              └── (dev) corrald v0.1.0 (*)
+    ├ windows-sys v0.61.2
+      ├── async-io v2.6.0
+      │   ├── async-process v2.5.0
+      │   │   └── zbus v5.19.0
+      │   │       ├── secret-service v5.1.0
+      │   │       │   └── zbus-secret-service-keyring-store v1.0.1
+      │   │       │       └── keyring v4.1.6
+      │   │       │           └── corrald v0.1.0
+      │   │       │               └── (dev) corrald v0.1.0 (*)
+      │   │       └── zbus-secret-service-keyring-store v1.0.1 (*)
+      │   ├── async-signal v0.2.14
+      │   │   └── async-process v2.5.0 (*)
+      │   └── zbus v5.19.0 (*)
+      ├── async-signal v0.2.14 (*)
+      ├── errno v0.3.14
+      │   ├── rustix v1.1.4
+      │   │   ├── async-io v2.6.0 (*)
+      │   │   ├── async-process v2.5.0 (*)
+      │   │   ├── async-signal v0.2.14 (*)
+      │   │   ├── polling v3.11.0
+      │   │   │   └── async-io v2.6.0 (*)
+      │   │   ├── tempfile v3.27.0
+      │   │   │   ├── (dev) corrald v0.1.0 (*)
+      │   │   │   └── uds_windows v1.2.1
+      │   │   │       └── zbus v5.19.0 (*)
+      │   │   └── zbus v5.19.0 (*)
+      │   └── signal-hook-registry v1.4.8
+      │       ├── async-signal v0.2.14 (*)
+      │       └── tokio v1.53.1
+      │           ├── axum v0.8.9
+      │           │   └── corrald v0.1.0 (*)
+      │           ├── corrald v0.1.0 (*)
+      │           ├── h2 v0.4.16
+      │           │   ├── hyper v1.11.0
+      │           │   │   ├── axum v0.8.9 (*)
+      │           │   │   ├── hyper-rustls v0.27.9
+      │           │   │   │   └── reqwest v0.13.4
+      │           │   │   │       └── corrald v0.1.0 (*)
+      │           │   │   ├── hyper-util v0.1.20
+      │           │   │   │   ├── axum v0.8.9 (*)
+      │           │   │   │   ├── hyper-rustls v0.27.9 (*)
+      │           │   │   │   └── reqwest v0.13.4 (*)
+      │           │   │   └── reqwest v0.13.4 (*)
+      │           │   └── reqwest v0.13.4 (*)
+      │           ├── hyper v1.11.0 (*)
+      │           ├── hyper-rustls v0.27.9 (*)
+      │           ├── hyper-util v0.1.20 (*)
+      │           ├── reqwest v0.13.4 (*)
+      │           ├── tokio-rustls v0.26.4
+      │           │   ├── hyper-rustls v0.27.9 (*)
+      │           │   └── reqwest v0.13.4 (*)
+      │           ├── tokio-tungstenite v0.29.0
+      │           │   ├── axum v0.8.9 (*)
+      │           │   └── (dev) corrald v0.1.0 (*)
+      │           ├── tokio-util v0.7.19
+      │           │   └── h2 v0.4.16 (*)
+      │           └── tower v0.5.3
+      │               ├── axum v0.8.9 (*)
+      │               ├── (dev) corrald v0.1.0 (*)
+      │               ├── reqwest v0.13.4 (*)
+      │               └── tower-http v0.6.11
+      │                   └── reqwest v0.13.4 (*)
+      ├── mio v1.2.2
+      │   ├── notify v8.2.0
+      │   │   └── corrald v0.1.0 (*)
+      │   └── tokio v1.53.1 (*)
+      ├── nu-ansi-term v0.50.3
+      │   └── tracing-subscriber v0.3.23
+      │       └── corrald v0.1.0 (*)
+      ├── polling v3.11.0 (*)
+      ├── rustix v1.1.4 (*)
+      ├── rustls-platform-verifier v0.7.0
+      │   └── reqwest v0.13.4 (*)
+      ├── schannel v0.1.29
+      │   └── rustls-native-certs v0.8.4
+      │       └── rustls-platform-verifier v0.7.0 (*)
+      ├── socket2 v0.6.5
+      │   ├── hyper-util v0.1.20 (*)
+      │   └── tokio v1.53.1 (*)
+      ├── tempfile v3.27.0 (*)
+      ├── tokio v1.53.1 (*)
+      ├── uds_windows v1.2.1 (*)
+      ├── winapi-util v0.1.11
+      │   ├── same-file v1.0.6
+      │   │   └── walkdir v2.5.0
+      │   │       ├── (build) jni v0.22.4
+      │   │       │   └── rustls-platform-verifier v0.7.0 (*)
+      │   │       └── notify v8.2.0 (*)
+      │   └── walkdir v2.5.0 (*)
+      ├── windows-native-keyring-store v1.1.0
+      │   └── keyring v4.1.6 (*)
+      └── zbus v5.19.0 (*)
+
+advisories ok, bans ok, licenses ok, sources ok

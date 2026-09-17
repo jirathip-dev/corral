@@ -1,9 +1,10 @@
    Compiling corrald v0.1.0 (/Users/jirathip/.herdr/worktrees/corral/impl563-hashedid)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.69s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.36s
      Running tests/gh_plane.rs (target/debug/deps/gh_plane-dac870d069710de0)
 
-running 1 test
-test g563_credential_shaped_refs_are_redacted_end_to_end_and_still_bind ... ok
+running 2 tests
+test g563_credential_shaped_refs_never_reach_the_wire ... ok
+test g563_credential_shaped_refs_still_bind_and_never_egress ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 15 filtered out; finished in 0.04s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 15 filtered out; finished in 0.03s
 

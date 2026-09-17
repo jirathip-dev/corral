@@ -514,12 +514,21 @@ struct WorkspaceLine: View {
                     .foregroundStyle(theme.subtext1)
                     .layoutPriority(SegmentPolicy.priority(for: .badge))
             }
-            if w.dirty {
+            // #564: `dirty` and `↑ahead↓behind` are POSITIVE git facts, so
+            // they render only while the row's worktree fact is FRESH. A
+            // stale row and a row with no fact show NEITHER — the trailing
+            // band simply drops out (no placeholder, no invented
+            // "stale"/"clean" affordance), so nothing unbacked is presented
+            // as current and the row keeps its geometry. Identity segments
+            // (repo/branch/basename) and the GitHub-plane `#pr` (which the
+            // daemon itself clears when the binding is not fresh, #556) are
+            // unchanged.
+            if w.gitFactFreshness.isCurrent, w.dirty {
                 Text("dirty").font(.caption2.weight(.semibold))
                     .foregroundStyle(theme.peach)
                     .layoutPriority(SegmentPolicy.priority(for: .badge))
             }
-            if w.ahead > 0 || w.behind > 0 {
+            if w.gitFactFreshness.isCurrent, w.ahead > 0 || w.behind > 0 {
                 Text("↑\(w.ahead)↓\(w.behind)")
                     .font(.caption2.monospaced())
                     .foregroundStyle(theme.subtext1)

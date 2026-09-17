@@ -1,0 +1,11 @@
+{
+  "base_rows": 0,
+  "head_rows": 0,
+  "base_by_file_rule": {},
+  "head_by_file_rule": {},
+  "added_file_rule": {},
+  "removed_file_rule": {},
+  "added_messages": [],
+  "removed_messages": [],
+  "identity": "relative path + rule (+ message text set); line/column dropped"
+}

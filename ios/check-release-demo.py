@@ -575,7 +575,7 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # #568: measured complete-row settlement and whole-group edge visibility;
     # recomputed with release_source_digest (the test-source pin is unchanged).
     # #568 amendment 2: remove renderer filesystem recording; recomputed from sources.
-    "0cfb553b095c8e63ab1f740de34fb76371fc92d9b35e414305a112c77fd21223"
+    "e81e0a5c308efaf6ecee4d208eb4c063bd901d0a3f45a0a931eb69ebcc6b340b"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

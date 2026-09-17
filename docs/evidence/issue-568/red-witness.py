@@ -43,12 +43,17 @@ def main():
         Path('/tmp/g568-a2-red-witness.json').write_text(json.dumps(evidence, indent=2) + '\n')
     log = Path('/tmp/g568-a2-final-red/test.log').read_text()
     assert evidence['red_exit'] == 65, evidence
-    assert 'Executed 2 tests,' in log, 'must be assertion RED, not a compile failure'
+    assert 'Executed 2 tests, with 2 failures' in log, 'must be assertion RED, not a compile failure'
     for test in ['testEdgeOpacityBoundariesUseMeasuredCaptionAndViewport',
                  'testEdgeRowAndEndSnapsUseMeasuredRowsAndAreIdempotent']:
         assert f"{test}]' failed" in log, test
     evidence['green_exit'] = run('final-green-restored', [''])
     Path('/tmp/g568-a2-red-witness.json').write_text(json.dumps(evidence, indent=2) + '\n')
+    # The restored GREEN leg is the deterministic Herd class; the group-anchor
+    # regression also lives in it, so it runs inside the focused Herd suite.
+    green_log = Path('/tmp/g568-a2-final-green-restored/test.log').read_text()
+    assert evidence['green_exit'] == 0, evidence
+    assert 'Executed 21 tests, with 0 failures' in green_log, green_log[-2000:]
     print(json.dumps(evidence, indent=2))
     assert evidence['green_exit'] == 0
 

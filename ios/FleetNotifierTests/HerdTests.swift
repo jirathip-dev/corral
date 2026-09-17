@@ -42,19 +42,26 @@ final class HerdTests: XCTestCase {
 
     @MainActor private final class FocusProbe: ObservableObject {
         @Published var focused: String?
+        @Published var expanded = false
+        @Published var extraGrowth = false
+        @Published var dragging = false
+        @Published var active = true
         var samples: [String:HerdEdgeSample] = [:]
+        var offset: CGFloat = 0
     }
     private struct FocusFixture: View {
         @ObservedObject var probe: FocusProbe
         let horses: [HerdHorse]
         var body: some View {
-            HerdPaddockScroll(horses:horses,paddockID:"focus",focusedHorse:probe.focused) { horse,viewport in
+            HerdPaddockScroll(horses:horses,paddockID:"focus",focusedHorse:probe.focused,fingerDown:probe.dragging,isActive:probe.active) { horse,viewport in
                 HerdEdgeGroup(id:horse.id,viewport:viewport,artBounds:.zero,allowsOversized:false) {
-                    Text(horse.id).frame(height:140)
+                    Text(horse.id).frame(height:horse.id == "::focus-2"
+                        ? (probe.expanded ? 200 : 140)+(probe.extraGrowth ? 60 : 0) : 140)
                 } semantic: { Button(horse.id) {} }
             }
             .frame(height:280)
             .onPreferenceChange(HerdEdgeSamples.self) { probe.samples = $0 }
+            .onPreferenceChange(HerdContentOffset.self) { if let first = $0[0] { probe.offset = first } }
         }
     }
 
@@ -85,6 +92,38 @@ final class HerdTests: XCTestCase {
         XCTAssertEqual(revealed.group.minY-revealed.viewport.minY,8,accuracy:0.5)
         XCTAssertLessThan(revealed.group.maxY,revealed.viewport.maxY-1)
         print("G568_FOCUS_REVEAL target=\(target) sample=\(revealed)")
+        XCTAssertGreaterThan(probe.offset,0,"the observed content offset follows the native scroll")
+        print("G568_CONTENT_OFFSET \(probe.offset)")
+        // A real caption update can change an earlier row just AFTER the last
+        // flick ends. Preserve the settled row's identity, not its old offset.
+        let settledOffset = probe.offset
+        probe.dragging = true
+        probe.expanded = true
+        try await Task.sleep(for:.milliseconds(250))
+        let held = try XCTUnwrap(probe.samples[target])
+        // An earlier row grew by 60 pt, so every later group shifts down 60 pt
+        // IN CONTENT SPACE while the finger is down; only the scroll offset
+        // itself must stay put (no settle may fight a held finger).
+        XCTAssertEqual(held.group.minY-held.viewport.minY,68,accuracy:0.5,
+                       "a held drag must not be fought by remeasure-settling")
+        XCTAssertEqual(probe.offset,settledOffset,accuracy:0.5,
+                       "the scroll offset must not change during an active drag")
+        probe.dragging = false
+        try await Task.sleep(for:.milliseconds(250))
+        let remeasured = try XCTUnwrap(probe.samples[target])
+        XCTAssertEqual(remeasured.group.minY-remeasured.viewport.minY,8,accuracy:0.5,
+                       "live remeasurement must preserve the settled complete-row anchor")
+        print("G568_LIVE_ROW_ANCHOR target=\(target) sample=\(remeasured)")
+        let activeOffset = probe.offset
+        probe.active = false
+        probe.extraGrowth = true
+        try await Task.sleep(for:.milliseconds(250))
+        XCTAssertEqual(probe.offset,activeOffset,accuracy:0.5,
+                       "an offscreen repository must not scroll itself back into view")
+        probe.active = true
+        try await Task.sleep(for:.milliseconds(250))
+        let returned = try XCTUnwrap(probe.samples[target])
+        XCTAssertEqual(returned.group.minY-returned.viewport.minY,8,accuracy:0.5)
     }
 
     @MainActor func testEdgeOpacityBoundariesUseMeasuredCaptionAndViewport() async throws {
@@ -194,7 +233,7 @@ final class HerdTests: XCTestCase {
         XCTAssertTrue(group.contains(".transaction{$0.animation=nil}"),"opacity must never lag behind the scroll")
         XCTAssertFalse(group.contains(".mask("))
         XCTAssertTrue(source.contains(".accessibilityFocused($focusedHorse,equals:horse.id)"))
-        XCTAssertTrue(source.contains("HerdPaddockScroll(horses:paddock.field,paddockID:paddock.id,focusedHorse:focusedHorse)"))
+        XCTAssertTrue(source.contains("HerdPaddockScroll(horses:paddock.field,paddockID:paddock.id,focusedHorse:focusedHorse,fingerDown:dragging,isActive:paddockID==paddock.id||(paddockID==nil&&paddock.id==paddocks.first?.id))"))
         XCTAssertTrue(source.contains("reader.scrollTo(index/columns*columns,anchor:.top)"))
         XCTAssertTrue(source.contains(".scrollTargetBehavior(HerdRowSnap(rows:"))
     }

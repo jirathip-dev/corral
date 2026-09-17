@@ -451,7 +451,8 @@ struct HerdView: View {
                             paddockField(paddock,width:width,viewport:viewport)
                         } else {
                             HerdPaddockScroll(horses:paddock.field,paddockID:paddock.id,
-                                              focusedHorse:focusedHorse) { horse,visible in
+                                              focusedHorse:focusedHorse,fingerDown:dragging,
+                                              isActive:paddockID == paddock.id || (paddockID == nil && paddock.id == paddocks.first?.id)) { horse,visible in
                                 boundedHorse(horse,viewport:visible)
                             }
                         }
@@ -701,17 +702,35 @@ struct HerdRowSnap: ScrollTargetBehavior {
     }
 }
 
+private struct HerdSettlingContent: Equatable {
+    let offset: CGFloat
+    let rows: [CGRect]
+    let fingerDown: Bool
+    let isActive: Bool
+}
+struct HerdContentOffset: PreferenceKey {
+    static var defaultValue: [Int:CGFloat] { [:] }
+    static func reduce(value:inout [Int:CGFloat],nextValue:()->[Int:CGFloat]) {
+        value.merge(nextValue(),uniquingKeysWith:{ _,new in new })
+    }
+}
 struct HerdPaddockScroll<Content:View>: View {
     let horses: [HerdHorse]
     let paddockID: String
     let focusedHorse: String?
+    let fingerDown: Bool
+    let isActive: Bool
     @ViewBuilder var horse: (HerdHorse,CGRect) -> Content
     @State private var frames: [Int:CGRect] = [:]
+    @State private var scrollOffset: CGFloat = 0
+    @State private var needsRemeasurement = false
+
     var body: some View {
         GeometryReader { visible in
             let columns = HerdEdgeGeometry.columns(width:visible.size.width)
             let starts = Array(stride(from:0,to:horses.count,by:columns))
             let space = "herd-rows-"+paddockID
+            let viewport = visible.frame(in:.global)
             ScrollViewReader { reader in
                 ScrollView(.vertical) {
                     // Eager rows are deliberate: a fast flick's proposed target
@@ -732,6 +751,8 @@ struct HerdPaddockScroll<Content:View>: View {
                             .id(start)
                             .background(GeometryReader { row in
                                 Color.clear.preference(key:HerdRowFrames.self,value:[start:row.frame(in:.named(space))])
+                                    .preference(key:HerdContentOffset.self,
+                                        value:start == 0 ? [0:viewport.minY-row.frame(in:.global).minY] : [:])
                             })
                         }
                     }
@@ -742,7 +763,26 @@ struct HerdPaddockScroll<Content:View>: View {
                 }
                 .accessibilityIdentifier("herd-field-"+paddockID)
                 .scrollTargetBehavior(HerdRowSnap(rows:frames.sorted { $0.key < $1.key }.map(\.value)))
-                .onPreferenceChange(HerdRowFrames.self) { frames = $0 }
+                .onPreferenceChange(HerdContentOffset.self) { if let first = $0[0] { scrollOffset = first } }
+                .onPreferenceChange(HerdRowFrames.self) { updated in
+                    if !frames.isEmpty && frames != updated { needsRemeasurement = true }
+                    frames = updated
+                }
+                .task(id:HerdSettlingContent(offset:scrollOffset,
+                    rows:frames.sorted { $0.key < $1.key }.map(\.value),fingerDown:fingerDown,isActive:isActive)) {
+                    guard needsRemeasurement, !fingerDown, isActive else { return }
+                    // A caption can reflow AFTER native deceleration ends. Wait
+                    // for measured offset quiescence, never fight a held finger
+                    // or momentum, then restore a complete row without animation.
+                    do { try await Task.sleep(for:.milliseconds(150)) } catch { return }
+                    needsRemeasurement = false
+                    guard !frames.values.contains(where:{
+                        $0.height+HerdEdgeGeometry.inset > visible.size.height
+                    }) else { return }
+                    if let row = frames.min(by:{ abs($0.value.minY-scrollOffset) < abs($1.value.minY-scrollOffset) }) {
+                        reader.scrollTo(row.key,anchor:.top)
+                    }
+                }
                 .onChange(of:focusedHorse) { _,id in
                     if let index = horses.firstIndex(where:{ $0.id == id }) {
                         // No withAnimation: Reduce Motion and VoiceOver reveal

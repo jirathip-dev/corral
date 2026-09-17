@@ -1,0 +1,124 @@
+    Finished `test` profile [unoptimized] target(s) in 0.40s
+     Running unittests src/lib.rs (/tmp/g560-target/debug/deps/corrald-e422046a6a80e4fc)
+
+running 6 tests
+test core::store::publication_tests::g560_equal_age_still_refreshes_its_time_origin ... ok
+G560_INVALIDATION upsert/noop/update/remove/reinsert/expiry/stop/recovery verified
+test core::store::publication_tests::g560_agent_cache_invalidates_on_content_and_stale_projection ... ok
+G560_CACHED_BYTES states=64 snapshots=64 sse_frames=64 agent_encodings=0
+test core::store::publication_tests::g560_cached_encoder_matches_independent_bytes ... ok
+G560_CHANGE background_ms=2003
+G560_DEAD_TICK wait_ms=2023 agent_encodings=0 age_ms=12011
+G560_CHANGE foreground_ms=253
+test core::store::publication_tests::g560_real_change_reaches_http_and_sse_within_bound ... ok
+G560_IDENTITY enabled=false agents=200 republications=0/10
+G560_DEAD_TICK wait_ms=2021 agent_encodings=0 age_ms=14035
+G560_IDENTITY enabled=true agents=200 republications=0/10
+test core::store::publication_tests::g560_unchanged_ticks_keep_publication_identity ... ok
+G560_DEAD_TICK wait_ms=2010 agent_encodings=0 age_ms=16061
+G560_DEAD agents=200 republications=3/3 agent_encodings=0/3
+test core::store::publication_tests::g560_dead_plane_ages_reuse_agent_encoding ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 313 filtered out; finished in 6.07s
+
+     Running unittests src/main.rs (/tmp/g560-target/debug/deps/corrald-85d3bbaec2c4f8fa)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+     Running tests/auth.rs (/tmp/g560-target/debug/deps/auth-b8afaa2d570dfcdd)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.00s
+
+     Running tests/drive.rs (/tmp/g560-target/debug/deps/drive-0b51c33105305d8a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+     Running tests/enrollment.rs (/tmp/g560-target/debug/deps/enrollment-c76f61412bc80126)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+     Running tests/gh_plane.rs (/tmp/g560-target/debug/deps/gh_plane-4430a87d53b35791)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 15 filtered out; finished in 0.00s
+
+     Running tests/git_plane.rs (/tmp/g560-target/debug/deps/git_plane-c4951e737112f8b0)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/history.rs (/tmp/g560-target/debug/deps/history-f9707bc761ed2bc8)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+
+     Running tests/http.rs (/tmp/g560-target/debug/deps/http-1efc1b37c19865c5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.00s
+
+     Running tests/integration.rs (/tmp/g560-target/debug/deps/integration-2143b9dd63b8ea62)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s
+
+     Running tests/model.rs (/tmp/g560-target/debug/deps/model-28a84decf04844cb)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+
+     Running tests/provenance.rs (/tmp/g560-target/debug/deps/provenance-f2156e80bad9474b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+
+     Running tests/push.rs (/tmp/g560-target/debug/deps/push-b7aa14fe26649e7c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/read_logging.rs (/tmp/g560-target/debug/deps/read_logging-31974ab8c50660dc)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/readonly_cut.rs (/tmp/g560-target/debug/deps/readonly_cut-57744f830f82953a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+     Running tests/redact.rs (/tmp/g560-target/debug/deps/redact-4ec482e2fb3fce27)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/snapshot_load.rs (/tmp/g560-target/debug/deps/snapshot_load-d4307cf36a880c22)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/store.rs (/tmp/g560-target/debug/deps/store-2342b52a5072ac55)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s

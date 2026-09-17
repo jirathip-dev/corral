@@ -1,0 +1,2 @@
+src/core/store/published.rs:27:        let bytes = serde_json::to_vec(&serde_json::to_value(&state).expect("agents serialize"))
+src/core/store/published.rs:151:    let mut value = serde_json::to_value(data).expect("delta/snapshot serializes");

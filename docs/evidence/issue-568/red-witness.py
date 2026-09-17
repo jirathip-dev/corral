@@ -43,7 +43,10 @@ def main():
         Path('/tmp/g568-a2-red-witness.json').write_text(json.dumps(evidence, indent=2) + '\n')
     log = Path('/tmp/g568-a2-final-red/test.log').read_text()
     assert evidence['red_exit'] == 65, evidence
-    assert 'Executed 2 tests, with 2 failures' in log, 'must be assertion RED, not a compile failure'
+    # Both named tests must fail on REAL assertions (the measured counts are
+    # recorded, never guessed) — a compile break would report no executed tests.
+    assert 'Executed 2 tests,' in log and 'with 0 failures' not in log, 'must be assertion RED, not a compile failure'
+    assert 'XCTAssert' in log, 'the RED must be a failed assertion, not a compile error'
     for test in ['testEdgeOpacityBoundariesUseMeasuredCaptionAndViewport',
                  'testEdgeRowAndEndSnapsUseMeasuredRowsAndAreIdempotent']:
         assert f"{test}]' failed" in log, test

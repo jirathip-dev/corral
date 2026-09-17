@@ -165,9 +165,10 @@ impl Default for Store {
         };
         let (published, _) = watch::channel(Arc::new(PublishedSnapshot::new(
             &epoch,
-            &initial,
+            initial,
             Instant::now(),
             VecDeque::new(),
+            None,
         )));
         Self {
             epoch,
@@ -358,13 +359,16 @@ impl Store {
     /// Coalesce and publish. Abort the owning task to stop. The idle timer
     /// also observes backlog-atomic changes that do not emit agent changes.
     pub async fn run_coalescer(&self) {
+        let mut refresh_deadline = tokio::time::Instant::now() + BACKGROUND_TICK;
         loop {
             let notified = tokio::select! {
                 _ = self.notify.notified() => true,
-                _ = tokio::time::sleep(BACKGROUND_TICK) => false,
+                _ = tokio::time::sleep_until(refresh_deadline) => false,
             };
             if notified {
-                let mut deadline = tokio::time::Instant::now() + BACKGROUND_TICK;
+                // A late notification must not postpone the idle age refresh
+                // by another background window, even if no agent changed.
+                let mut deadline = refresh_deadline;
                 loop {
                     if self.subscriber_count() > 0 {
                         // Joining SSE shortens an already-running background
@@ -378,6 +382,7 @@ impl Store {
                 }
             }
             self.flush().await;
+            refresh_deadline = tokio::time::Instant::now() + BACKGROUND_TICK;
         }
     }
 
@@ -386,15 +391,14 @@ impl Store {
         let publication_guard = self.publish_lock.clone().lock_owned().await;
         let mut inner = self.inner.lock().await;
         let previous = self.published();
-        if !inner.pending_any
-            // Once wired, publish ages/health even for an idle or dead plane.
-            // This uses the same <=2s coalescer, never the HTTP request path.
-            && !self.git_plane_health.enabled.load(Ordering::Acquire)
-            && previous.git_plane_backlog == self.git_plane_backlog.load(Ordering::Acquire)
-        {
+        let mut snapshot = self.snapshot_locked(&inner);
+        // Compare the projected map, not only pending writes: expiry/stop and
+        // recovery can change visible bindings without an adapter event.
+        let same_agents = snapshot.agents == previous.agents.state;
+        if !inner.pending_any && same_agents && previous.same_health(&snapshot) {
             return None;
         }
-        let mut snapshot = self.snapshot_locked(&inner);
+        let cached_agents = same_agents.then(|| previous.agents.clone());
         let stale_bindings: BTreeSet<String> = snapshot
             .agents
             .iter()
@@ -459,7 +463,8 @@ impl Store {
                     history.pop_front();
                 }
             }
-            let next = PublishedSnapshot::new(&epoch, &snapshot, captured_at, history);
+            let next =
+                PublishedSnapshot::new(&epoch, snapshot, captured_at, history, cached_agents);
             // Publish BEFORE broadcasting: initial snapshot + subscribed
             // deltas always share a boundary, including lag recovery.
             published.send_replace(Arc::new(next));

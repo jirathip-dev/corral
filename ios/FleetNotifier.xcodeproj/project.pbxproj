@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		03F31AE41D84A522B5AE065D /* SheetPolishTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B658F30E778CA2080501273 /* SheetPolishTests.swift */; };
 		04FEAD293E09FF31A5CF356A /* CorraldClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44FA86DC0C83D2F4FF8AE707 /* CorraldClient.swift */; };
 		07BCD4DDA01FCF6529B8CB0B /* DemoFleet.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA101747C96FC7E0499AD652 /* DemoFleet.swift */; };
 		0CA9DE90ADE04F5216501014 /* HostProfileStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3B71810DA086A9B4A1F4DDA /* HostProfileStore.swift */; };
@@ -110,6 +111,7 @@
 		79AC919735AE5168BF651BE6 /* PreflightRetryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreflightRetryTests.swift; sourceTree = "<group>"; };
 		8439EED775F825EE1DE8EAC3 /* FleetViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FleetViews.swift; sourceTree = "<group>"; };
 		8470E35133BD2D64F9DDA7FC /* EnrollmentPayloadTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnrollmentPayloadTests.swift; sourceTree = "<group>"; };
+		8B658F30E778CA2080501273 /* SheetPolishTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SheetPolishTests.swift; sourceTree = "<group>"; };
 		8D352A1E84318BD30D5AF512 /* SSEParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSEParser.swift; sourceTree = "<group>"; };
 		941405F0173F249F1F8CD8E9 /* EnrollmentClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnrollmentClient.swift; sourceTree = "<group>"; };
 		943C844EB2836A1AC2E77659 /* RanchWind.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RanchWind.swift; sourceTree = "<group>"; };
@@ -187,6 +189,7 @@
 				BA6724B7E29BAE37678BF8A8 /* HerdTests.swift */,
 				301E6FD848CFA9843D5E35E5 /* HerdWindTests.swift */,
 				79AC919735AE5168BF651BE6 /* PreflightRetryTests.swift */,
+				8B658F30E778CA2080501273 /* SheetPolishTests.swift */,
 				D48969B39CAC1EDAC289B97C /* StateStyleTests.swift */,
 				F977DD3F71E92A3EFB9D7EC1 /* StreamRetryBackoffTests.swift */,
 				B79F7EC88E38AB98DD73849D /* ThemeTests.swift */,
@@ -628,6 +631,7 @@
 				F2CF3ACD1811505E1FCAE1BC /* HerdTests.swift in Sources */,
 				8F3BA72D285997DE16AF46A2 /* HerdWindTests.swift in Sources */,
 				9D8814F4DA572FE4936AAF32 /* PreflightRetryTests.swift in Sources */,
+				03F31AE41D84A522B5AE065D /* SheetPolishTests.swift in Sources */,
 				C0DE384BE4B4265BEB4C1808 /* StateStyleTests.swift in Sources */,
 				732AD2E20EBA2919797BB81A /* StreamRetryBackoffTests.swift in Sources */,
 				ABD378861F032E17454B664B /* ThemeTests.swift in Sources */,

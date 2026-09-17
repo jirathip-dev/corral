@@ -5950,7 +5950,14 @@ struct RecentOutputSheet: View {
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 0) {
+                // #569: the header keeps its ideal height under AX3
+                // pressure (the wrapped permission copy is the tallest
+                // state): the identity row and the worktree block are never
+                // crushed up into the navigation chrome — the state copy
+                // compresses instead, exactly the ellipsizing the base
+                // sheet already did at accessibility sizes.
                 header
+                    .layoutPriority(1)
                 Divider()
                 content
             }
@@ -6040,12 +6047,19 @@ struct RecentOutputSheet: View {
                     Text(style.label)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(stateColor)
+                        .fixedSize()
                         .accessibilityLabel(style.accessibilityLabel)
-                    if let repo = agent.workspace.repo {
-                        Text(repo)
-                            .font(.caption2.monospaced())
-                            .foregroundStyle(theme.tailMuted)
-                    }
+                    // #569: the repo is the Board's own hue chip — one
+                    // identity across the Board, its subgroups and the
+                    // sheet — so the duplicated flat muted repo label the
+                    // owner flagged is gone. `nil`/unknown resolves through
+                    // RepoLabelChip's Other gray (never an accent ring).
+                    // The chip outranks the branch text so the repo NAME
+                    // (the identity) survives AX3 instead of ellipsizing to
+                    // "co…" — the branch truncates first (the board's own
+                    // segment-priority vocabulary).
+                    RepoLabelChip(repo: agent.workspace.repo, repos: repos)
+                        .layoutPriority(1)
                     if let branch = agent.workspace.branch {
                         Text(branch)
                             .font(.caption2.monospaced())
@@ -6055,10 +6069,7 @@ struct RecentOutputSheet: View {
                     }
                     Spacer()
                     if let reference = agent.attachment?.reference {
-                        Text(reference)
-                            .font(.caption2.monospaced())
-                            .foregroundStyle(theme.tailQuiet)
-                            .accessibilityLabel("Pane \(reference)")
+                        paneCapsule(reference)
                     }
                     if showLiveIndicator {
                         Circle()
@@ -6091,10 +6102,48 @@ struct RecentOutputSheet: View {
         .padding(.vertical, 10)
     }
 
+    /// #569: the sheet resolves the repo hue against the SAME fleet-wide
+    /// repo set the Board's chips resolve against (`BoardModel.repoFilters`
+    /// — the order-sensitive `RepoHue` input), so one repo keeps one hue
+    /// on the Board, its subgroup headers and the sheet.
+    private var repos: [String] {
+        BoardModel.repoFilters(Array(model.fleet.agents.values)).map(\.repo)
+    }
+
+    /// #569: the pane reference is a capsule using the app's existing chip
+    /// chrome (the same `surface0` capsule as `githubBinding`), with the
+    /// metadata tier ink the header band's backing keeps at AA. The short
+    /// identifier never wraps or ellipsizes — the branch text absorbs AX3
+    /// pressure instead.
+    private func paneCapsule(_ reference: String) -> some View {
+        Text(reference)
+            .font(.caption2.monospaced())
+            .foregroundStyle(theme.tailMuted)
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(theme.surface0, in: Capsule())
+            .accessibilityLabel("Pane \(reference)")
+    }
+
     private var showLiveIndicator: Bool {
         RecentOutputModel.shouldShowLiveIndicator(
             isLiveMode: model.mode == .live,
             hasFreshNonErrorTail: RecentOutputModel.hasFreshNonErrorTail(tail))
+    }
+
+    /// #569: a state panel holds copy that Dynamic Type can make taller
+    /// than the space under the header (AX3 + the wrapped permission copy).
+    /// Panels therefore scroll inside the content area exactly like the
+    /// loaded block stream does: the copy keeps its own height and can be
+    /// scrolled, and a tall state can never overflow the sheet and push the
+    /// header up into the navigation chrome.
+    private func statePanel<Panel: View>(@ViewBuilder _ panel: () -> Panel) -> some View {
+        ScrollView {
+            panel()
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
     }
 
     @ViewBuilder
@@ -6102,30 +6151,46 @@ struct RecentOutputSheet: View {
         Group {
             switch RecentOutputModel.phase(for: tail) {
             case .loading:
-                // #385: the non-loaded states keep an OPAQUE base backing
-                // (they paint directly on the sheet surface, which is now
-                // translucent) so their muted ink keeps today's AA.
-                // #428: the backing hugs the tier — the background area
-                // around it stays on the shared translucent backdrop (the
-                // board reads through the rest of the state panel).
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(theme.accent)
-                    Text("Loading recent output…")
-                        .font(.caption)
-                        .foregroundStyle(theme.tailMuted)
+                // #569: NO backing (#428's opaque slab is gone). The copy
+                // sits directly on the sheet surface inside the header's
+                // grid; it rides the AA text tier because the muted tiers
+                // cannot be guaranteed over the translucent backdrop (the
+                // sheet's own SheetBackdrop worst-case model — see the
+                // #569 evidence numbers).
+                statePanel {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(theme.accent)
+                        Text("Loading recent output…")
+                            .font(.caption)
+                            .foregroundStyle(theme.text)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
                 }
-                .padding(16)
-                .background(theme.base)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             case .empty:
-                Text("No output yet.")
-                    .font(.caption)
-                    .foregroundStyle(theme.tailMuted)
-                    .padding(16)
-                    .background(theme.base)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                // #569: a deliberate state block — small icon + headline +
+                // one short next step, existing tokens only, top-left on
+                // the same 16/10 grid, no backing.
+                statePanel {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Image(systemName: "terminal")
+                            .font(.footnote)
+                            .foregroundStyle(theme.tailMuted)
+                            .accessibilityHidden(true)
+                        Text("No output yet.")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(theme.text)
+                        Text("Send the agent a task to see its output here.")
+                            .font(.caption)
+                            .foregroundStyle(theme.text)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .accessibilityElement(children: .combine)
+                }
             case .error(let failure):
                 // #424: a not_granted refusal is a PERMISSION state — the
                 // host owner must grant read_tail before any output can
@@ -6133,37 +6198,50 @@ struct RecentOutputSheet: View {
                 // copy must never appear. VoiceOver reads the headline +
                 // the next step as one element; Dynamic Type scales the
                 // system fonts.
+                // #569: no backing — the copy rides the AA text tier over
+                // the translucent surface; the semantic red moves to the
+                // warning ICON (non-text, ≥3:1 measured) because red TEXT
+                // cannot hold AA over the backdrop in Day.
                 if TranscriptText.isGrantDenial(failure) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Label(TranscriptText.notGrantedPermissionText,
-                              systemImage: "lock.shield")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(theme.tailMuted)
-                        Text(TranscriptText.notGrantedGuidanceText)
-                            .font(.caption)
-                            .foregroundStyle(theme.tailMuted)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .padding(16)
-                    .background(theme.base)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .accessibilityElement(children: .combine)
-                } else {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Label(TranscriptText.errorText(failure), systemImage: "exclamationmark.triangle")
-                            .font(.caption)
-                            .foregroundStyle(theme.codeDeletion)
-                            .accessibilityLabel(TranscriptText.errorText(failure))
-                        Button("Retry") {
-                            refresh()
+                    statePanel {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label(TranscriptText.notGrantedPermissionText,
+                                  systemImage: "lock.shield")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(theme.text)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Text(TranscriptText.notGrantedGuidanceText)
+                                .font(.caption)
+                                .foregroundStyle(theme.text)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
-                        .buttonStyle(.bordered)
-                        .tint(theme.accent)
-                        .accessibilityLabel("Retry recent output")
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .accessibilityElement(children: .combine)
                     }
-                    .padding(16)
-                    .background(theme.base)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                } else {
+                    statePanel {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label {
+                                Text(TranscriptText.errorText(failure))
+                                    .font(.caption)
+                                    .foregroundStyle(theme.text)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            } icon: {
+                                Image(systemName: "exclamationmark.triangle")
+                                    .foregroundStyle(theme.codeDeletion)
+                            }
+                            .accessibilityLabel(TranscriptText.errorText(failure))
+                            Button("Retry") {
+                                refresh()
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(theme.accent)
+                            .accessibilityLabel("Retry recent output")
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                    }
                 }
             case .loaded:
                 // #385: the loaded block stream floats over the translucent

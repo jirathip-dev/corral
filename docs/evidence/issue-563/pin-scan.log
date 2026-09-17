@@ -1,0 +1,86 @@
+== #563 pin scan (brief step 1) — 2026-09-17T11:25:17Z ==
+
+== [1] pin tokens inside the fence files and their tests ==
+src/adapters/gh_plane.rs:820:/// The digest placeholder for `raw` — used when a ref must be masked whatever
+src/adapters/gh_plane.rs:821:/// its shape (e.g. it carries the ACTIVE credential). The digest is computed
+src/adapters/gh_plane.rs:1734:    /// The #563 placeholder digest, computed independently of the production
+src/adapters/gh_plane.rs:1737:        use sha2::{Digest, Sha256};
+src/adapters/gh_plane.rs:1738:        let hex: String = Sha256::digest(raw.as_bytes())
+src/integrate/mod.rs:407:                        // credential-shaped branch egresses as its digest
+src/integrate/mod.rs:428:                    // digest placeholder instead of egressing the secret.
+src/integrate/mod.rs:549:    // compares as its digest placeholder — redaction never costs a binding —
+tests/gh_plane.rs:1168:        use sha2::{Digest, Sha256};
+tests/gh_plane.rs:1169:        let hex: String = Sha256::digest(raw.as_bytes())
+tests/integration.rs:917:/// (`headRefOid`/`headRefName`) arrives as its digest placeholder, the LOCAL
+tests/integration.rs:926:        use sha2::{Digest, Sha256};
+tests/integration.rs:927:        let hex: String = Sha256::digest(raw.as_bytes())
+grep_exit=0 (1 = no match: no pin token in the fence)
+
+== [2] tracked non-src files naming the fence paths ==
+.report.md
+docs/DEVELOPING.md
+docs/audits/lean-488-490/audit-488-read-diff-and-issues.md
+docs/audits/lean-488-490/audit-489-git-github-fields.md
+docs/corral/P2-brief.md
+docs/corral/public-review.md
+docs/design/evidence/issue-270/README.md
+docs/design/evidence/issue-340/README.md
+docs/evidence/issue-492/logs/g492-verified-workspace.log
+docs/evidence/issue-499/compatibility-decision.md
+docs/evidence/issue-500/compatibility-decision.md
+docs/evidence/issue-556/ast-response.json
+docs/evidence/issue-556/mutations.json
+docs/evidence/issue-556/regression-evidence.py
+docs/evidence/issue-560/runs/coverage.log
+docs/evidence/issue-560/runs/green-focused.log
+docs/evidence/issue-560/runs/green-regression.log
+docs/evidence/issue-560/runs/oracle.log
+docs/evidence/issue-560/runs/workspace.log
+git_grep_exit=0
+
+== [3] tracked gate/pin scripts hashing a Rust source set ==
+.github/workflows/release.yml
+.github/workflows/secret-scan.yml
+.report.md
+docs/design/evidence/issue-316/implementation/capture.log
+docs/design/evidence/issue-384/implementation/capture.log
+docs/design/evidence/issue-385/implementation/capture.log
+docs/design/evidence/issue-386/implementation/capture.log
+docs/design/evidence/issue-387/implementation/capture.log
+docs/design/evidence/issue-455/package-verification/README.md
+docs/design/evidence/issue-455/package-verification/reconcile.py
+docs/design/evidence/issue-455/references/r2/fixtures.py
+docs/design/evidence/issue-455/references/v1/fixtures.py
+docs/design/evidence/issue-455/tools/build.py
+docs/design/evidence/issue-455/tools/check-reachability.py
+docs/design/evidence/issue-455/tools/gather.py
+docs/design/evidence/issue-455/tools/package.py
+docs/design/evidence/issue-455/tools/record-motion.py
+docs/design/evidence/issue-455/tools/verify-browser.py
+docs/design/evidence/issue-455/tools/verify-layers.py
+docs/evidence/issue-492/bazzite-proof.py
+docs/evidence/issue-492/mac-cost-correction.py
+docs/evidence/issue-492/mac-proof.py
+docs/evidence/issue-492/measure.py
+docs/evidence/issue-533/amend1-check-pins.py
+docs/evidence/issue-533/check-pins.py
+docs/evidence/issue-533/package-logs.py
+docs/evidence/issue-533/probe-refresh.py
+docs/evidence/issue-533/run-native.py
+docs/evidence/issue-539/README.md
+docs/evidence/issue-539/bazzite-proof.py
+docs/evidence/issue-539/run-proof.py
+docs/evidence/issue-547/probes.py
+docs/evidence/issue-547/report-round2.md
+docs/evidence/issue-548/collect.py
+docs/evidence/issue-548/lane-report.md
+docs/evidence/issue-548/probes.py
+docs/evidence/issue-551/probes.py
+docs/evidence/issue-552/probes.py
+docs/evidence/issue-554/f1-retirement-repair.md
+docs/evidence/issue-554/lane-report.md
+git_grep_exit=0
+
+== [4] the issue-556 evidence anchors that reference the fence files ==
+docs/evidence/issue-556/regression-evidence.py:12:    ("permissions", "src/adapters/gh_plane.rs", "meta.permissions().mode() & 0o077 == 0",
+docs/evidence/issue-556/regression-evidence.py:16:    ("response-redaction", "src/adapters/gh_plane.rs", "        redact_response(&mut response, token);",

@@ -1,0 +1,19 @@
+{
+  "issue": 563,
+  "driver": "docs/evidence/issue-563/redgreen.sh",
+  "head": "c6cda7f88f564734a92c21c841cea03c0b93d968",
+  "base": "e0fe2e6c46d8dc3ecec36680850c29dd6778323e",
+  "fence_sha256": {"src/adapters/gh_plane.rs": "9971c8c68c7aedec89e6a9f2b98b87da90c8cd6f4caf12c7096f0d2f453f6fc1", "src/integrate/mod.rs": "1e81ebd61eef323c6b718a8d04b6d9137987f4da8857568136ae1f7fd49de071"},
+  "phases": [
+    {"phase": "red-base", "file": "src/adapters/gh_plane.rs", "test": "cargo test --test gh_plane g563_", "exit": 101},
+    {"phase": "red-base", "file": "src/integrate/mod.rs", "test": "cargo test --test integration credential_shaped", "exit": 101},
+    {"phase": "green-fixed", "test": "cargo test --test gh_plane g563_", "exit": 0},
+    {"phase": "green-fixed", "test": "cargo test --test integration credential_shaped", "exit": 0},
+    {"phase": "green-fixed", "test": "cargo test --lib g563_", "exit": 0},
+    {"phase": "green-fixed", "test": "cargo test --lib g556_redaction_preserves_binding_identity", "exit": 0},
+    {"phase": "red-mutation-naive-mask", "test": "cargo test --test gh_plane g563_", "exit": 101},
+    {"phase": "red-mutation-naive-mask", "test": "cargo test --test integration credential_shaped", "exit": 0},
+    {"phase": "restored", "test": "cargo test --test gh_plane g563_", "exit": 0},
+    {"phase": "restored", "test": "cargo test --test integration credential_shaped", "exit": 0}
+  ]
+}

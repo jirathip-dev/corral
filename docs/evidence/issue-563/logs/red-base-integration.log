@@ -1,0 +1,22 @@
+   Compiling corrald v0.1.0 (/Users/jirathip/.herdr/worktrees/corral/impl563-hashedid)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.98s
+     Running tests/integration.rs (target/debug/deps/integration-06e07254ebaeed52)
+
+running 1 test
+test credential_shaped_refs_bind_via_hashed_identity_and_never_egress ... FAILED
+
+failures:
+
+---- credential_shaped_refs_bind_via_hashed_identity_and_never_egress stdout ----
+
+thread 'credential_shaped_refs_bind_via_hashed_identity_and_never_egress' (15754553) panicked at tests/integration.rs:110:5:
+timed out waiting for agent a to converge
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    credential_shaped_refs_bind_via_hashed_identity_and_never_egress
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 16 filtered out; finished in 2.94s
+
+error: test failed, to rerun pass `-p corrald --test integration`

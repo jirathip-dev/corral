@@ -529,8 +529,10 @@ final class SheetPolishTests: XCTestCase {
                        + "all keep the 10pt vertical grid")
         XCTAssertEqual(sheet.components(separatedBy: ".background(theme.base)").count - 1, 1,
                        "only the #428 header band keeps an opaque base backing — no state slab")
-        XCTAssertTrue(sheet.contains("RepoLabelChip(repo: agent.workspace.repo, repos: repos)"),
-                      "the sheet's repo identity is the Board's hue chip component")
+        XCTAssertTrue(sheet.contains("RepoLabelChip(repo: agent.workspace.repo, repos: repos, compact: true)"),
+                      "the sheet's repo identity is the Board's hue chip component, in its "
+                      + "COMPACT variant so the caption row keeps the pre-#569 height the "
+                      + "#558 commit line's render depends on")
         XCTAssertFalse(sheet.contains("Text(repo)"),
                        "the flat muted repo label is gone (the chip carries the identity)")
         XCTAssertTrue(sheet.contains(".accessibilityLabel(\"Pane \\(reference)\")"),

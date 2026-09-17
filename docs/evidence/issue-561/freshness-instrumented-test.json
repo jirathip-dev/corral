@@ -1,0 +1,18 @@
+{
+  "command": [
+    "cargo",
+    "llvm-cov",
+    "--no-report",
+    "-p",
+    "corrald",
+    "--lib",
+    "--",
+    "g561_changed_inventory_and_missed_change_converge",
+    "--nocapture"
+  ],
+  "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl561-hydrate",
+  "raw_exit": 0,
+  "timed_out": false,
+  "elapsed_s": 52.853628083998046,
+  "log": "freshness-instrumented-test.log"
+}

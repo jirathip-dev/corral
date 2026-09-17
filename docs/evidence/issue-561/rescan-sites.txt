@@ -1,0 +1,15 @@
+src/adapters/git_plane.rs:881:        self.rescan(&sink).await;
+src/adapters/git_plane.rs:1214:        self.rescan(sink).await
+src/adapters/git_plane.rs:1311:        let added = self.rescan(&sink).await;
+src/adapters/git_plane.rs:3270:            plane.rescan(&sink).await;
+src/adapters/git_plane.rs:3313:        plane.rescan(&sink).await;
+src/adapters/git_plane.rs:3335:        plane.rescan(&sink).await;
+src/adapters/git_plane.rs:3337:            plane.rescan(&sink).await;
+src/adapters/git_plane.rs:3389:        plane.rescan(&sink).await;
+src/adapters/git_plane.rs:3398:            plane.rescan(&sink).await;
+src/adapters/git_plane.rs:3533:        plane.rescan(&sink).await;
+src/adapters/git_plane.rs:3647:        plane.rescan(&sink).await;
+src/adapters/git_plane.rs:3738:        plane.rescan(&sink).await;
+src/adapters/git_plane.rs:3874:        plane.rescan(&sink).await;
+src/adapters/git_plane.rs:4011:        plane.rescan(&sink).await;
+src/adapters/git_plane.rs:4115:        plane.rescan(&sink).await;

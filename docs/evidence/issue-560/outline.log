@@ -1,0 +1,52 @@
+src/core/store/published.rs
+12: pub struct PublishedSnapshot
+22: impl PublishedSnapshot
+72: pub(crate) fn wire_bytes(epoch: &str, data: &impl serde::Serialize) -> Bytes
+84: pub(crate) fn event_bytes(kind: &str, rev: u64, body: &[u8]) -> Bytes
+
+src/core/store/publication_tests.rs
+ 14: fn random(seed: &mut u64) -> u64
+ 22: fn agent(seed: &mut u64, id: usize) -> Agent
+ 59: fn old_wire_value(epoch: &str, data: &impl serde::Serialize) -> serde_json::Value
+ 68: async fn old_event(kind: &str, rev: u64, epoch: &str, data: &impl serde::Serialize) -> Bytes
+ 84: async fn randomized_publications_match_old_snapshot_and_sse_bytes()
+186: async fn reads_and_initial_sse_do_not_wait_for_writer_or_publisher()
+237: async fn publication_is_atomic_and_retained_buffers_stay_unchanged()
+278: async fn cached_resume_matches_epoch_and_history_rules()
+329: async fn sse_subscribe_boundary_and_lag_recovery_never_replay_older_deltas()
+
+src/core/store.rs
+ 29: mod publication_tests
+ 30: mod published
+ 35: const HISTORY_CAP: usize
+ 37: const BROADCAST_CAP: usize
+ 39: const FOREGROUND_TICK: Duration
+ 45: const BACKGROUND_TICK: Duration
+ 48: struct Inner
+ 68: pub struct GitPlaneHealth
+ 77: impl Default for GitPlaneHealth
+ 90: impl GitPlaneHealth
+109: impl GitFactAge
+121: pub struct Store
+150: impl Default for Store
+188: impl Store
+661: fn now_millis() -> u64
+668: fn new_epoch() -> String
+
+src/main.rs
+ 30: mod bounded_log
+ 34: const DEFAULT_BIND: &str
+ 35: const DEFAULT_PORT: u16
+ 39: const INTEGRATOR_RECONNECT_BASE: Duration
+ 40: const INTEGRATOR_RECONNECT_MAX: Duration
+ 41: const INTEGRATOR_RECONNECT_RESET_AFTER: Duration
+ 43: const DIGEST_DEFAULT_WINDOW: Duration
+ 46: fn config_dir() -> PathBuf
+ 53: fn main()
+ 83: fn run_digest(args: &[String])
+133: fn parse_args(args: &[String]) -> (PathBuf, SocketAddr, Vec<String>)
+249: fn origin_valid(origin: &str) -> bool
+268: fn bind_permitted(ip: &std::net::IpAddr) -> bool
+281: async fn async_main(socket_path: PathBuf, addr: SocketAddr, cors_origins: Vec<String>)
+427: async fn supervise_planes(
+481: mod tests

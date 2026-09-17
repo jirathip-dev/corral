@@ -1,0 +1,28 @@
+{
+  "command": [
+    "flock",
+    "/tmp/n.lock",
+    "python3",
+    "docs/evidence/issue-560/gates.py"
+  ],
+  "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip",
+  "raw_exit": 0,
+  "timed_out": false,
+  "source_sha256": {
+    "src/core/store.rs": "9eb41d39b247999e2320e92b66e0d5e9e0aea922e3e2d7ed22397791b0f31f9f",
+    "src/core/store/published.rs": "c0126cb923563d98a72da715aecfe1c5ef29a68da13d08172ca25cb393d6a558",
+    "src/core/store/publication_tests.rs": "f715e7a84ad9490302b2502b78c611f8a5b4e6318a717b1feb08ecda6d8a5d2b",
+    "src/main.rs": "d0af3ef031fd10eaaaf27e2dd29e078e459284b57cabe8378c15f40c4a7b0b50"
+  },
+  "elapsed_seconds": 977.5614792500055,
+  "log": "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/evidence/issue-560/runs/focused-battery.log",
+  "head": "7696af2a83f64df7ae9841284a9a7eae20df1d45",
+  "environment": {
+    "CARGO_TARGET_DIR": "/tmp/g560-target",
+    "CARGO_BUILD_JOBS": "2",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_TERM_COLOR": "never"
+  }
+}

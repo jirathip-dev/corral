@@ -1,0 +1,37 @@
+[
+  {
+    "path": "docs/evidence/issue-560/runs/deny.log",
+    "raw_path": "/tmp/g560-raw-logs/deny.log",
+    "raw_sha256": "80b8a6ae59cd4b00241f2e1bc1eaba4b4b30621ba54992515119dd0d6550c4b5",
+    "committed_sha256": "78f55a682212964883b927fa185039029fdf786d51f68214866119e894554a91",
+    "normalization": "only line-ending/trailing whitespace; exit receipts unmodified"
+  },
+  {
+    "path": "docs/evidence/issue-560/runs/green-focused.log",
+    "raw_path": "/tmp/g560-raw-logs/green-focused.log",
+    "raw_sha256": "89a152d2302f998befe3f0051be2765b5ae28e6c6a6572d38f45b1d72ca95ad4",
+    "committed_sha256": "f61aa927f1d0bc128f9460f8f507bdd24604fbea6a93eb04e95b38d52427445b",
+    "normalization": "only line-ending/trailing whitespace; exit receipts unmodified"
+  },
+  {
+    "path": "docs/evidence/issue-560/runs/green-regression.log",
+    "raw_path": "/tmp/g560-raw-logs/green-regression.log",
+    "raw_sha256": "8b9511aeb34f8955e4cc7ba1b26d5eb37efbbd53fde4ebcfee2fe8869b717857",
+    "committed_sha256": "5f6db1b7615b49423bd2d30b419ee8440f7c3e311160bd4c580a1a9fce4d4df0",
+    "normalization": "only line-ending/trailing whitespace; exit receipts unmodified"
+  },
+  {
+    "path": "docs/evidence/issue-560/runs/oracle.log",
+    "raw_path": "/tmp/g560-raw-logs/oracle.log",
+    "raw_sha256": "53669faa849e1e36de26a6884f6a7a10dacddb723c678a8e5c2cd986fddd3125",
+    "committed_sha256": "e8df7dacb3b77d098d0a1c579c2e597206f1e88dd2bebdb3f0341ea6a9dca08b",
+    "normalization": "only line-ending/trailing whitespace; exit receipts unmodified"
+  },
+  {
+    "path": "docs/evidence/issue-560/runs/workspace.log",
+    "raw_path": "/tmp/g560-raw-logs/workspace.log",
+    "raw_sha256": "59ca9c7560b65f6d06b98ee92f5f698d7cc936758c28424ba01c8d35d0f0e0a5",
+    "committed_sha256": "ee5dfeab9fa2d7cba797c3b910b53f7adb2f28a5e118d6e9160c2f8cbf6fb075",
+    "normalization": "only line-ending/trailing whitespace; exit receipts unmodified"
+  }
+]

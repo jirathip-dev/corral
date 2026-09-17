@@ -1,0 +1,162 @@
+info: cargo-llvm-cov currently setting cfg(coverage); you can opt-out it by passing --no-cfg-coverage
+
+running 319 tests
+....................................................................................... 87/319
+....................................................................................... 174/319
+....................................................................................... 261/319
+..........................................................
+test result: ok. 319 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 16.72s
+
+
+running 7 tests
+.......
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+
+running 18 tests
+..................
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.21s
+
+
+running 19 tests
+...................
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.82s
+
+
+running 10 tests
+..........
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.31s
+
+
+running 15 tests
+i..............
+test result: ok. 14 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.44s
+
+
+running 4 tests
+i...
+test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 12.72s
+
+
+running 13 tests
+i............
+test result: ok. 12 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.38s
+
+
+running 23 tests
+.......................
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.21s
+
+
+running 16 tests
+................
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+
+running 13 tests
+.............
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 13 tests
+.............
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+
+
+running 2 tests
+..
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.65s
+
+
+running 1 test
+.
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+
+running 5 tests
+.....
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+
+running 3 tests
+...
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+
+running 1 test
+i
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+test: snapshot_load_measurement, ignore_message: bounded CPU-load evidence; run via docs/evidence/issue-555/daemon-run.py
+
+
+running 12 tests
+............
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.34s
+
+
+running 14 tests
+..............
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+
+running 1 test
+.
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 12 tests
+iiiiiii.....
+test result: ok. 5 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+Filename                                  Regions    Missed Regions     Cover   Functions  Missed Functions  Executed       Lines      Missed Lines     Cover    Branches   Missed Branches     Cover
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+crates/corrald-client/src/approval.rs          71                12    83.10%           6                 1    83.33%          37                 8    78.38%           0                 0         -
+crates/corrald-client/src/client.rs           506               438    13.44%          57                50    12.28%         393               341    13.23%           0                 0         -
+crates/corrald-client/src/drive.rs             32                20    37.50%           5                 3    40.00%          20                14    30.00%           0                 0         -
+crates/corrald-client/src/errors.rs           239                60    74.90%          19                 7    63.16%         162                37    77.16%           0                 0         -
+crates/corrald-client/src/keypair.rs          166                 5    96.99%          12                 1    91.67%          87                 3    96.55%           0                 0         -
+crates/corrald-client/src/model.rs             97                13    86.60%           3                 1    66.67%          60                 8    86.67%           0                 0         -
+crates/corrald-client/src/sse.rs              345               243    29.57%          23                14    39.13%         244               164    32.79%           0                 0         -
+crates/corrald-client/src/stepup.rs            22                16    27.27%           4                 3    25.00%          18                15    16.67%           0                 0         -
+src/adapters/gh_plane.rs                     2576               189    92.66%         143                15    89.51%        1672               134    91.99%           0                 0         -
+src/adapters/git_plane.rs                    4749               325    93.16%         240                21    91.25%        2763               182    93.41%           0                 0         -
+src/adapters/herdr.rs                        8561               326    96.19%         413                13    96.85%        5003               210    95.80%           0                 0         -
+src/adapters/mod.rs                            62                18    70.97%          11                 4    63.64%          60                20    66.67%           0                 0         -
+src/api/cors.rs                                68                 1    98.53%           6                 0   100.00%          40                 0   100.00%           0                 0         -
+src/api/drive.rs                              461                52    88.72%          32                 7    78.12%         373                51    86.33%           0                 0         -
+src/api/events.rs                             166                 8    95.18%          14                 0   100.00%         114                11    90.35%           0                 0         -
+src/api/issues.rs                             100                 0   100.00%          14                 0   100.00%          71                 0   100.00%           0                 0         -
+src/api/mod.rs                                888                34    96.17%          37                 0   100.00%         614                19    96.91%           0                 0         -
+src/api/read_timing.rs                        137                 0   100.00%           9                 0   100.00%          81                 0   100.00%           0                 0         -
+src/api/repo.rs                                60                 0   100.00%          11                 0   100.00%          47                 0   100.00%           0                 0         -
+src/auth/audit.rs                             766                38    95.04%          32                 4    87.50%         393                18    95.42%           0                 0         -
+src/auth/authorizer.rs                         60                 7    88.33%           3                 1    66.67%          36                 5    86.11%           0                 0         -
+src/auth/enrollment.rs                        621                53    91.47%          28                 5    82.14%         380                46    87.89%           0                 0         -
+src/auth/host_identity.rs                     171                 6    96.49%          12                 1    91.67%          89                 3    96.63%           0                 0         -
+src/auth/http.rs                              197                33    83.25%          21                 1    95.24%         152                30    80.26%           0                 0         -
+src/auth/mod.rs                               391                50    87.21%          47                11    76.60%         230                23    90.00%           0                 0         -
+src/auth/owner.rs                             475                86    81.89%          43                 7    83.72%         344                51    85.17%           0                 0         -
+src/auth/registry.rs                         1263                60    95.25%          64                11    82.81%         711                31    95.64%           0                 0         -
+src/bounded_log.rs                            221                32    85.52%          13                 1    92.31%         125                14    88.80%           0                 0         -
+src/core/blocks.rs                           1673                82    95.10%          98                 8    91.84%        1024                43    95.80%           0                 0         -
+src/core/diff.rs                              709                61    91.40%          46                12    73.91%         361                23    93.63%           0                 0         -
+src/core/events.rs                             95                 1    98.95%           5                 0   100.00%          96                 0   100.00%           0                 0         -
+src/core/model.rs                              25                 0   100.00%           3                 0   100.00%          18                 0   100.00%           0                 0         -
+src/core/provenance.rs                        594                34    94.28%          42                 2    95.24%         308                22    92.86%           0                 0         -
+src/core/redact.rs                            587                11    98.13%          31                 0   100.00%         331                 4    98.79%           0                 0         -
+src/core/store.rs                             664                11    98.34%          63                 1    98.41%         431                 5    98.84%           0                 0         -
+src/core/store/published.rs                   185                 2    98.92%          17                 0   100.00%         125                 0   100.00%           0                 0         -
+src/core/util.rs                               38                 0   100.00%           3                 0   100.00%          24                 0   100.00%           0                 0         -
+src/core/workspace.rs                         451                36    92.02%          21                 3    85.71%         234                17    92.74%           0                 0         -
+src/drive/mod.rs                              179                 6    96.65%          13                 1    92.31%         109                 4    96.33%           0                 0         -
+src/history/digest.rs                         517                14    97.29%          33                 3    90.91%         289                 9    96.89%           0                 0         -
+src/history/ring.rs                           346                43    87.57%          25                 1    96.00%         229                29    87.34%           0                 0         -
+src/integrate/mod.rs                         1059                27    97.45%          76                 1    98.68%         686                17    97.52%           0                 0         -
+src/main.rs                                   816               356    56.37%          45                22    51.11%         550               215    60.91%           0                 0         -
+src/push/config.rs                            191                30    84.29%          10                 4    60.00%          86                22    74.42%           0                 0         -
+src/push/mod.rs                              1224                77    93.71%          72                 3    95.83%         772                52    93.26%           0                 0         -
+src/push/payload.rs                           425                 5    98.82%          21                 0   100.00%         262                 4    98.47%           0                 0         -
+src/push/provider.rs                          519               157    69.75%          39                13    66.67%         341               102    70.09%           0                 0         -
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+TOTAL                                       33768              3078    90.88%        1985               256    87.10%       20595              2006    90.26%           0                 0         -

@@ -1,0 +1,12 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--workspace"
+  ],
+  "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl561-hydrate",
+  "raw_exit": 0,
+  "timed_out": false,
+  "elapsed_s": 77.97340529200301,
+  "log": "final-full.log"
+}

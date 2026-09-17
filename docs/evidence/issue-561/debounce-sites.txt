@@ -1,0 +1,7 @@
+src/adapters/git_plane.rs:895:            self.debounce(worktree, sink.clone());
+src/adapters/git_plane.rs:1317:            self.debounce(wt, sink.clone());
+src/adapters/git_plane.rs:3657:        plane.debounce(worktree.clone(), sink.clone());
+src/adapters/git_plane.rs:3662:            plane.debounce(worktree.clone(), sink.clone());
+src/adapters/git_plane.rs:3743:            plane.debounce(worktree.clone(), sink.clone());
+src/adapters/git_plane.rs:4037:            plane.debounce(w, sink.clone());
+src/adapters/git_plane.rs:4155:            plane.debounce(w, sink.clone());

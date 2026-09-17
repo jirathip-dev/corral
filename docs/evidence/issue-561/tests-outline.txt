@@ -1,0 +1,10 @@
+src/adapters/git_plane_issue561_tests.rs
+  3: async fn g561_stop(
+ 17: async fn g561_generation_preserves_facts()
+ 74: fn g561_git(repo: &Path, args: &[&str])
+ 89: async fn g561_changed_inventory_and_missed_change_converge()
+235: async fn g561_panic_between_cache_and_send_reemits_all_facts()
+307: async fn g561_cancelled_publication_replays_complete_facts()
+357: async fn g561_watcher_boot_has_zero_hydration_for_known_facts()
+388: fn g561_cpu_seconds() -> f64
+406: async fn g561_restart_cost_measurement()

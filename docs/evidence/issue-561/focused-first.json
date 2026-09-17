@@ -1,0 +1,16 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "-p",
+    "corrald",
+    "g561_",
+    "--",
+    "--nocapture"
+  ],
+  "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl561-hydrate",
+  "raw_exit": 101,
+  "timed_out": false,
+  "elapsed_s": 10.877144833000784,
+  "log": "focused-first.log"
+}

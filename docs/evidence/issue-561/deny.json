@@ -1,0 +1,14 @@
+{
+  "command": [
+    "cargo",
+    "deny",
+    "--locked",
+    "--workspace",
+    "check"
+  ],
+  "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl561-hydrate",
+  "raw_exit": 0,
+  "timed_out": false,
+  "elapsed_s": 2.2260592919992632,
+  "log": "deny.log"
+}

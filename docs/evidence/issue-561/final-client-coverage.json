@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cargo",
+    "llvm-cov",
+    "report",
+    "--locked",
+    "--package",
+    "corrald-client",
+    "--fail-under-lines",
+    "40",
+    "--fail-under-functions",
+    "35"
+  ],
+  "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl561-hydrate",
+  "raw_exit": 0,
+  "timed_out": false,
+  "elapsed_s": 2.029083041998092,
+  "log": "final-client-coverage.log"
+}

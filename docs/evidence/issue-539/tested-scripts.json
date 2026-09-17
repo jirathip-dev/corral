@@ -1,0 +1,9 @@
+{
+  "install-corral.sh": "ed9ca68fdac433df6148fc15a266658984f5071da8d0e80345422c503221c8a1",
+  "test-install-corral-linux.sh": "8a0c755455a4c4669f766241eb8c232bf7b3d4f38ade0f6cb025037881d5ccc3",
+  "setup-corrald.sh": "dfa4de2d05067751a7c95a1158d07cb7d8f5825f5fc77fae907dd0ca28f91ad1",
+  "setup-corrald-linux.sh": "7e675f1d88180028511862fb4b2999e80086de08fd5cb2604e5116e9a9cade48",
+  "update-corral.sh": "24fc43b7a1b072db2d9e06c59941b316898378a7ad8f484c262c2b0adde9d58f",
+  "lib-corral-update-path.sh": "dd178a5a4d4140e768763e57056e2b236777550a618a7d4894de87128d3f5425",
+  "rotate-corral-logs.sh": "7a33fe6b35c8c8a32984116fe7914dbca3ecfa198f7f1cb220b2c345966cf9c6"
+}

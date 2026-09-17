@@ -1,0 +1,120 @@
+{
+  "head": "d6a533a9c6c09fafc73de108e802e82a7769cda9",
+  "gates": [
+    {
+      "name": "final-source",
+      "command": [
+        "/Users/jirathip/.local/bin/python3",
+        "ios/check-release-demo.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/g568-a2-final-source-driver.log"
+    },
+    {
+      "name": "final-project",
+      "command": [
+        "/Users/jirathip/.local/bin/python3",
+        "docs/evidence/issue-568/check-project.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/g568-a2-final-project-driver.log"
+    },
+    {
+      "name": "final-provenance",
+      "command": [
+        "/Users/jirathip/.local/bin/python3",
+        "docs/evidence/issue-568/provenance.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/g568-a2-final-provenance-driver.log"
+    },
+    {
+      "name": "final-focused",
+      "command": [
+        "/Users/jirathip/.local/bin/python3",
+        "docs/evidence/issue-568/run-simulator.py",
+        "--label",
+        "final-focused"
+      ],
+      "exit": 0,
+      "log": "/tmp/g568-a2-final-focused-driver.log"
+    },
+    {
+      "name": "final-full",
+      "command": [
+        "/Users/jirathip/.local/bin/python3",
+        "docs/evidence/issue-568/run-simulator.py",
+        "--label",
+        "final-full",
+        "--only",
+        "FleetNotifierTests"
+      ],
+      "exit": 0,
+      "log": "/tmp/g568-a2-final-full-driver.log"
+    },
+    {
+      "name": "final-short-ui",
+      "command": [
+        "/Users/jirathip/.local/bin/python3",
+        "docs/evidence/issue-568/run-simulator.py",
+        "--label",
+        "final-short-ui",
+        "--video",
+        "--only",
+        "FleetNotifierUITests/HerdEdgeGestureTests"
+      ],
+      "exit": 0,
+      "log": "/tmp/g568-a2-final-short-ui-driver.log"
+    },
+    {
+      "name": "final-tall-ui",
+      "command": [
+        "/Users/jirathip/.local/bin/python3",
+        "docs/evidence/issue-568/run-simulator.py",
+        "--label",
+        "final-tall-ui",
+        "--device",
+        "tall",
+        "--video",
+        "--only",
+        "FleetNotifierUITests/HerdEdgeGestureTests/testDayEmptyRailEdges",
+        "--only",
+        "FleetNotifierUITests/HerdEdgeGestureTests/testDayBlockedRailEdges",
+        "--only",
+        "FleetNotifierUITests/HerdEdgeGestureTests/testNightEmptyRailEdges",
+        "--only",
+        "FleetNotifierUITests/HerdEdgeGestureTests/testNightBlockedRailEdges"
+      ],
+      "exit": 0,
+      "log": "/tmp/g568-a2-final-tall-ui-driver.log"
+    },
+    {
+      "name": "red-witness",
+      "command": [
+        "/Users/jirathip/.local/bin/python3",
+        "docs/evidence/issue-568/red-witness.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/g568-a2-red-witness-driver.log"
+    },
+    {
+      "name": "restored-source",
+      "command": [
+        "/Users/jirathip/.local/bin/python3",
+        "ios/check-release-demo.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/g568-a2-restored-source-driver.log"
+    },
+    {
+      "name": "final-diff",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit": 0,
+      "log": "/tmp/g568-a2-final-diff-driver.log"
+    }
+  ]
+}

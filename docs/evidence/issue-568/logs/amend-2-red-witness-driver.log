@@ -1,0 +1,26 @@
+COMMAND ["xcrun", "simctl", "boot", "89ABB542-766E-40C9-8A17-E851B9CA8DFA"]
+RAW_EXIT=0 LOG=/tmp/g568-a2-final-red/boot.log
+COMMAND ["xcrun", "simctl", "bootstatus", "89ABB542-766E-40C9-8A17-E851B9CA8DFA", "-b"]
+RAW_EXIT=0 LOG=/tmp/g568-a2-final-red/bootstatus.log
+COMMAND ["xcodebuild", "-project", "ios/FleetNotifier.xcodeproj", "-scheme", "FleetNotifier", "-configuration", "Debug", "-destination", "platform=iOS Simulator,id=89ABB542-766E-40C9-8A17-E851B9CA8DFA", "-derivedDataPath", "/tmp/g568-dd", "CODE_SIGNING_ALLOWED=NO", "-parallel-testing-enabled", "NO", "-resultBundlePath", "/tmp/g568-a2-final-red/result.xcresult", "-only-testing:FleetNotifierTests/HerdTests/testEdgeOpacityBoundariesUseMeasuredCaptionAndViewport", "-only-testing:FleetNotifierTests/HerdTests/testEdgeRowAndEndSnapsUseMeasuredRowsAndAreIdempotent", "test"]
+RAW_EXIT=65 LOG=/tmp/g568-a2-final-red/test.log
+COMMAND ["xcrun", "simctl", "shutdown", "89ABB542-766E-40C9-8A17-E851B9CA8DFA"]
+RAW_EXIT=0 LOG=/tmp/g568-a2-final-red/shutdown.log
+RECEIPT /tmp/g568-a2-final-red/receipt.json
+COMMAND ["xcrun", "simctl", "boot", "89ABB542-766E-40C9-8A17-E851B9CA8DFA"]
+RAW_EXIT=0 LOG=/tmp/g568-a2-final-green-restored/boot.log
+COMMAND ["xcrun", "simctl", "bootstatus", "89ABB542-766E-40C9-8A17-E851B9CA8DFA", "-b"]
+RAW_EXIT=0 LOG=/tmp/g568-a2-final-green-restored/bootstatus.log
+COMMAND ["xcodebuild", "-project", "ios/FleetNotifier.xcodeproj", "-scheme", "FleetNotifier", "-configuration", "Debug", "-destination", "platform=iOS Simulator,id=89ABB542-766E-40C9-8A17-E851B9CA8DFA", "-derivedDataPath", "/tmp/g568-dd", "CODE_SIGNING_ALLOWED=NO", "-parallel-testing-enabled", "NO", "-resultBundlePath", "/tmp/g568-a2-final-green-restored/result.xcresult", "-only-testing:FleetNotifierTests/HerdTests", "test"]
+RAW_EXIT=0 LOG=/tmp/g568-a2-final-green-restored/test.log
+COMMAND ["xcrun", "simctl", "shutdown", "89ABB542-766E-40C9-8A17-E851B9CA8DFA"]
+RAW_EXIT=0 LOG=/tmp/g568-a2-final-green-restored/shutdown.log
+RECEIPT /tmp/g568-a2-final-green-restored/receipt.json
+{
+  "before_sha256": "a707b0db85e59a252a1d8e662aee91abdba3564440f2ddeca0a8b9f694bf51cd",
+  "mutation_sha256": "1171a49e5d497d60e601a71d63436c378591f72c4b676ae9d58fece4f29218c5",
+  "mutation": "Disable painted group opacity and return unsnapped proposed offset.",
+  "red_exit": 65,
+  "restored_sha256": "a707b0db85e59a252a1d8e662aee91abdba3564440f2ddeca0a8b9f694bf51cd",
+  "green_exit": 0
+}

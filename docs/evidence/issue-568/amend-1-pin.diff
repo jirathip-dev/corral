@@ -1,0 +1,9 @@
+diff --git a/ios/check-release-demo.py b/ios/check-release-demo.py
+index 85f6a1e..1ef911c 100644
+--- a/ios/check-release-demo.py
++++ b/ios/check-release-demo.py
+@@ -575 +575,3 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
+-    "b4f8a24d91e1b267ad7a5a77767a0acc419539a05fa1033a16453d62b7f7c785"
++    # #568: measured complete-row settlement and whole-group edge visibility;
++    # recomputed with release_source_digest (the test-source pin is unchanged).
++    "d22cdaf7396eb0bd8e50677a736c81ea864d011118110397080f0820d82bbd09"

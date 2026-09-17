@@ -1,0 +1,170 @@
+diff --git a/ios/FleetNotifier.xcodeproj/project.pbxproj b/ios/FleetNotifier.xcodeproj/project.pbxproj
+index f8c9ba1..7cc381a 100644
+--- a/ios/FleetNotifier.xcodeproj/project.pbxproj
++++ b/ios/FleetNotifier.xcodeproj/project.pbxproj
+@@ -43,0 +44 @@
++		9E7B6727B6D78544B63D4BDA /* HerdEdgeGestureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA62178D9460CF2B4CD3134C /* HerdEdgeGestureTests.swift */; };
+@@ -75,0 +77,7 @@
++		5CD0EAE48CF90E6AE079122C /* PBXContainerItemProxy */ = {
++			isa = PBXContainerItemProxy;
++			containerPortal = 32FDEBCD6A0858FFC02D5E44 /* Project object */;
++			proxyType = 1;
++			remoteGlobalIDString = A31F86A1A65C19815A6F3D0D;
++			remoteInfo = FleetNotifier;
++		};
+@@ -117,0 +126 @@
++		BA62178D9460CF2B4CD3134C /* HerdEdgeGestureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdEdgeGestureTests.swift; sourceTree = "<group>"; };
+@@ -125,0 +135 @@
++		CFA63FE0801E092906B9A96F /* FleetNotifierUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = FleetNotifierUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+@@ -192,0 +203 @@
++				710F44B13A701B34653C060B /* FleetNotifierUITests */,
+@@ -248,0 +260,8 @@
++		710F44B13A701B34653C060B /* FleetNotifierUITests */ = {
++			isa = PBXGroup;
++			children = (
++				BA62178D9460CF2B4CD3134C /* HerdEdgeGestureTests.swift */,
++			);
++			path = FleetNotifierUITests;
++			sourceTree = "<group>";
++		};
+@@ -287,0 +307 @@
++				CFA63FE0801E092906B9A96F /* FleetNotifierUITests.xctest */,
+@@ -324,0 +345,18 @@
++		0A52586EB529E993D526A64F /* FleetNotifierUITests */ = {
++			isa = PBXNativeTarget;
++			buildConfigurationList = E4CCF1F9D9E78B44C9D773AF /* Build configuration list for PBXNativeTarget "FleetNotifierUITests" */;
++			buildPhases = (
++				FB8399C7936A04B86B7DB27B /* Sources */,
++			);
++			buildRules = (
++			);
++			dependencies = (
++				E04F8D6DD6D04795DB814694 /* PBXTargetDependency */,
++			);
++			name = FleetNotifierUITests;
++			packageProductDependencies = (
++			);
++			productName = FleetNotifierUITests;
++			productReference = CFA63FE0801E092906B9A96F /* FleetNotifierUITests.xctest */;
++			productType = "com.apple.product-type.bundle.ui-testing";
++		};
+@@ -372,0 +411,5 @@
++					0A52586EB529E993D526A64F = {
++						DevelopmentTeam = 9244PWFYD7;
++						ProvisioningStyle = Automatic;
++						TestTargetID = A31F86A1A65C19815A6F3D0D;
++					};
+@@ -398,0 +442 @@
++				0A52586EB529E993D526A64F /* FleetNotifierUITests */,
+@@ -592,0 +637,8 @@
++		FB8399C7936A04B86B7DB27B /* Sources */ = {
++			isa = PBXSourcesBuildPhase;
++			buildActionMask = 2147483647;
++			files = (
++				9E7B6727B6D78544B63D4BDA /* HerdEdgeGestureTests.swift in Sources */,
++			);
++			runOnlyForDeploymentPostprocessing = 0;
++		};
+@@ -600,0 +653,5 @@
++		E04F8D6DD6D04795DB814694 /* PBXTargetDependency */ = {
++			isa = PBXTargetDependency;
++			target = A31F86A1A65C19815A6F3D0D /* FleetNotifier */;
++			targetProxy = 5CD0EAE48CF90E6AE079122C /* PBXContainerItemProxy */;
++		};
+@@ -670,0 +728,17 @@
++		A5D2330D34C8B10ADCCF5226 /* Release */ = {
++			isa = XCBuildConfiguration;
++			buildSettings = {
++				BUNDLE_LOADER = "$(TEST_HOST)";
++				GENERATE_INFOPLIST_FILE = YES;
++				LD_RUNPATH_SEARCH_PATHS = (
++					"$(inherited)",
++					"@executable_path/Frameworks",
++					"@loader_path/Frameworks",
++				);
++				PRODUCT_BUNDLE_IDENTIFIER = com.corral.fleetnotifier.uitests;
++				SDKROOT = iphoneos;
++				TARGETED_DEVICE_FAMILY = "1,2";
++				TEST_TARGET_NAME = FleetNotifier;
++			};
++			name = Release;
++		};
+@@ -801,0 +876,17 @@
++		B8E32D8E80D9C81CD127D14B /* Debug */ = {
++			isa = XCBuildConfiguration;
++			buildSettings = {
++				BUNDLE_LOADER = "$(TEST_HOST)";
++				GENERATE_INFOPLIST_FILE = YES;
++				LD_RUNPATH_SEARCH_PATHS = (
++					"$(inherited)",
++					"@executable_path/Frameworks",
++					"@loader_path/Frameworks",
++				);
++				PRODUCT_BUNDLE_IDENTIFIER = com.corral.fleetnotifier.uitests;
++				SDKROOT = iphoneos;
++				TARGETED_DEVICE_FAMILY = "1,2";
++				TEST_TARGET_NAME = FleetNotifier;
++			};
++			name = Debug;
++		};
+@@ -839,0 +931,9 @@
++		E4CCF1F9D9E78B44C9D773AF /* Build configuration list for PBXNativeTarget "FleetNotifierUITests" */ = {
++			isa = XCConfigurationList;
++			buildConfigurations = (
++				B8E32D8E80D9C81CD127D14B /* Debug */,
++				A5D2330D34C8B10ADCCF5226 /* Release */,
++			);
++			defaultConfigurationIsVisible = 0;
++			defaultConfigurationName = Debug;
++		};
+diff --git a/ios/FleetNotifier.xcodeproj/xcshareddata/xcschemes/FleetNotifier.xcscheme b/ios/FleetNotifier.xcodeproj/xcshareddata/xcschemes/FleetNotifier.xcscheme
+index 7c3df86..c121e66 100644
+--- a/ios/FleetNotifier.xcodeproj/xcshareddata/xcschemes/FleetNotifier.xcscheme
++++ b/ios/FleetNotifier.xcodeproj/xcshareddata/xcschemes/FleetNotifier.xcscheme
+@@ -37,0 +38,14 @@
++         <BuildActionEntry
++            buildForTesting = "YES"
++            buildForRunning = "NO"
++            buildForProfiling = "NO"
++            buildForArchiving = "NO"
++            buildForAnalyzing = "NO">
++            <BuildableReference
++               BuildableIdentifier = "primary"
++               BlueprintIdentifier = "0A52586EB529E993D526A64F"
++               BuildableName = "FleetNotifierUITests.xctest"
++               BlueprintName = "FleetNotifierUITests"
++               ReferencedContainer = "container:FleetNotifier.xcodeproj">
++            </BuildableReference>
++         </BuildActionEntry>
+@@ -66,0 +81,11 @@
++         <TestableReference
++            skipped = "NO"
++            parallelizable = "NO">
++            <BuildableReference
++               BuildableIdentifier = "primary"
++               BlueprintIdentifier = "0A52586EB529E993D526A64F"
++               BuildableName = "FleetNotifierUITests.xctest"
++               BlueprintName = "FleetNotifierUITests"
++               ReferencedContainer = "container:FleetNotifier.xcodeproj">
++            </BuildableReference>
++         </TestableReference>
+diff --git a/ios/project.yml b/ios/project.yml
+index 524f114..00a35d5 100644
+--- a/ios/project.yml
++++ b/ios/project.yml
+@@ -235,0 +236,11 @@ targets:
++  FleetNotifierUITests:
++    type: bundle.ui-testing
++    platform: iOS
++    sources:
++      - FleetNotifierUITests
++    dependencies:
++      - target: FleetNotifier
++    settings:
++      base:
++        PRODUCT_BUNDLE_IDENTIFIER: com.corral.fleetnotifier.uitests
++        GENERATE_INFOPLIST_FILE: YES
+@@ -241,0 +253 @@ schemes:
++        FleetNotifierUITests: [test]
+@@ -247,0 +260 @@ schemes:
++        - FleetNotifierUITests

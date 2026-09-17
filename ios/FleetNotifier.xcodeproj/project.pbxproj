@@ -41,6 +41,7 @@
 		8F3BA72D285997DE16AF46A2 /* HerdWindTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 301E6FD848CFA9843D5E35E5 /* HerdWindTests.swift */; };
 		925B3FC0D4179A1672C6D5AA /* SSEParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D352A1E84318BD30D5AF512 /* SSEParser.swift */; };
 		9D8814F4DA572FE4936AAF32 /* PreflightRetryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79AC919735AE5168BF651BE6 /* PreflightRetryTests.swift */; };
+		9E7B6727B6D78544B63D4BDA /* HerdEdgeGestureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA62178D9460CF2B4CD3134C /* HerdEdgeGestureTests.swift */; };
 		ABD378861F032E17454B664B /* ThemeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B79F7EC88E38AB98DD73849D /* ThemeTests.swift */; };
 		B10C6261618C257FA945BC8A /* EnrollmentClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 941405F0173F249F1F8CD8E9 /* EnrollmentClient.swift */; };
 		B1B753021D4BD35EA747E260 /* HostStreamCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A568381FE0489171C5D7AFF7 /* HostStreamCoordinator.swift */; };
@@ -67,6 +68,13 @@
 
 /* Begin PBXContainerItemProxy section */
 		403EF73F6A4E4DDF05BB514D /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 32FDEBCD6A0858FFC02D5E44 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A31F86A1A65C19815A6F3D0D;
+			remoteInfo = FleetNotifier;
+		};
+		5CD0EAE48CF90E6AE079122C /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 32FDEBCD6A0858FFC02D5E44 /* Project object */;
 			proxyType = 1;
@@ -115,6 +123,7 @@
 		B8277522F2489E093BC28309 /* BoardModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardModel.swift; sourceTree = "<group>"; };
 		B939A1BC80A600F3B697DB3B /* AppIconPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIconPicker.swift; sourceTree = "<group>"; };
 		B95E9B064296CFE296E3717E /* HerdModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdModel.swift; sourceTree = "<group>"; };
+		BA62178D9460CF2B4CD3134C /* HerdEdgeGestureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdEdgeGestureTests.swift; sourceTree = "<group>"; };
 		BA6724B7E29BAE37678BF8A8 /* HerdTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdTests.swift; sourceTree = "<group>"; };
 		C07EBB7872D62A8E042D4DB1 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		C0C20FA082A4EB189EDC30F9 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
@@ -123,6 +132,7 @@
 		C9ADF5D60D93CC23C54718AE /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		CA101747C96FC7E0499AD652 /* DemoFleet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoFleet.swift; sourceTree = "<group>"; };
 		CF92562A8A194C8D6E670B35 /* EnrollmentScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnrollmentScannerView.swift; sourceTree = "<group>"; };
+		CFA63FE0801E092906B9A96F /* FleetNotifierUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = FleetNotifierUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		D373587F14C8226A6B41DE77 /* HerdEvidence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdEvidence.swift; sourceTree = "<group>"; };
 		D3F69E69DEE5BCC3A5CBDC5E /* CanonicalJSON.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanonicalJSON.swift; sourceTree = "<group>"; };
 		D48969B39CAC1EDAC289B97C /* StateStyleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StateStyleTests.swift; sourceTree = "<group>"; };
@@ -190,6 +200,7 @@
 				2B5070218CAB8DAB992B6B00 /* Fixtures */,
 				7D8334B18E7321E5C5F850E4 /* FleetNotifier */,
 				19046018A86CD11555F070AF /* FleetNotifierTests */,
+				710F44B13A701B34653C060B /* FleetNotifierUITests */,
 				ACC02147A1A8360BA16C8448 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -246,6 +257,14 @@
 			path = Network;
 			sourceTree = "<group>";
 		};
+		710F44B13A701B34653C060B /* FleetNotifierUITests */ = {
+			isa = PBXGroup;
+			children = (
+				BA62178D9460CF2B4CD3134C /* HerdEdgeGestureTests.swift */,
+			);
+			path = FleetNotifierUITests;
+			sourceTree = "<group>";
+		};
 		74E1EC77F4C4AB8A71290CEA /* Herd */ = {
 			isa = PBXGroup;
 			children = (
@@ -285,6 +304,7 @@
 			children = (
 				C4857B5F4535FFC7B0AA0F5D /* FleetNotifier.app */,
 				0C6D9CFBBF9EDC1179F7E4D4 /* FleetNotifierTests.xctest */,
+				CFA63FE0801E092906B9A96F /* FleetNotifierUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -322,6 +342,24 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		0A52586EB529E993D526A64F /* FleetNotifierUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E4CCF1F9D9E78B44C9D773AF /* Build configuration list for PBXNativeTarget "FleetNotifierUITests" */;
+			buildPhases = (
+				FB8399C7936A04B86B7DB27B /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E04F8D6DD6D04795DB814694 /* PBXTargetDependency */,
+			);
+			name = FleetNotifierUITests;
+			packageProductDependencies = (
+			);
+			productName = FleetNotifierUITests;
+			productReference = CFA63FE0801E092906B9A96F /* FleetNotifierUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 		47E0D125C909FE62D70E47E6 /* FleetNotifierTests */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = F65A5933BF9ECD17FFF304B5 /* Build configuration list for PBXNativeTarget "FleetNotifierTests" */;
@@ -370,6 +408,11 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
+					0A52586EB529E993D526A64F = {
+						DevelopmentTeam = 9244PWFYD7;
+						ProvisioningStyle = Automatic;
+						TestTargetID = A31F86A1A65C19815A6F3D0D;
+					};
 					47E0D125C909FE62D70E47E6 = {
 						DevelopmentTeam = 9244PWFYD7;
 						ProvisioningStyle = Automatic;
@@ -396,6 +439,7 @@
 			targets = (
 				A31F86A1A65C19815A6F3D0D /* FleetNotifier */,
 				47E0D125C909FE62D70E47E6 /* FleetNotifierTests */,
+				0A52586EB529E993D526A64F /* FleetNotifierUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -590,6 +634,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		FB8399C7936A04B86B7DB27B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				9E7B6727B6D78544B63D4BDA /* HerdEdgeGestureTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -597,6 +649,11 @@
 			isa = PBXTargetDependency;
 			target = A31F86A1A65C19815A6F3D0D /* FleetNotifier */;
 			targetProxy = 403EF73F6A4E4DDF05BB514D /* PBXContainerItemProxy */;
+		};
+		E04F8D6DD6D04795DB814694 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A31F86A1A65C19815A6F3D0D /* FleetNotifier */;
+			targetProxy = 5CD0EAE48CF90E6AE079122C /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -665,6 +722,23 @@
 				PRODUCT_NAME = FleetNotifier;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		A5D2330D34C8B10ADCCF5226 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.corral.fleetnotifier.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = FleetNotifier;
 			};
 			name = Release;
 		};
@@ -799,6 +873,23 @@
 			};
 			name = Debug;
 		};
+		B8E32D8E80D9C81CD127D14B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.corral.fleetnotifier.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = FleetNotifier;
+			};
+			name = Debug;
+		};
 		E8951E4F8E2109641F502D54 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -833,6 +924,15 @@
 			buildConfigurations = (
 				38A5E46A8C2B5C9A145F271E /* Debug */,
 				7F3AD32ECE65F2E00367288E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		E4CCF1F9D9E78B44C9D773AF /* Build configuration list for PBXNativeTarget "FleetNotifierUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B8E32D8E80D9C81CD127D14B /* Debug */,
+				A5D2330D34C8B10ADCCF5226 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

@@ -35,6 +35,20 @@
                ReferencedContainer = "container:FleetNotifier.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "NO"
+            buildForProfiling = "NO"
+            buildForArchiving = "NO"
+            buildForAnalyzing = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "0A52586EB529E993D526A64F"
+               BuildableName = "FleetNotifierUITests.xctest"
+               BlueprintName = "FleetNotifierUITests"
+               ReferencedContainer = "container:FleetNotifier.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
       </BuildActionEntries>
    </BuildAction>
    <TestAction
@@ -61,6 +75,17 @@
                BlueprintIdentifier = "47E0D125C909FE62D70E47E6"
                BuildableName = "FleetNotifierTests.xctest"
                BlueprintName = "FleetNotifierTests"
+               ReferencedContainer = "container:FleetNotifier.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "0A52586EB529E993D526A64F"
+               BuildableName = "FleetNotifierUITests.xctest"
+               BlueprintName = "FleetNotifierUITests"
                ReferencedContainer = "container:FleetNotifier.xcodeproj">
             </BuildableReference>
          </TestableReference>

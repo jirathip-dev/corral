@@ -1,0 +1,151 @@
+[
+  {
+    "label": "syntax",
+    "command": "/bin/bash -c 'for f in scripts/*.sh; do bash -n \"$f\" || exit; done; printf \"bash -n: all scripts OK\\n\"'",
+    "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl539-curl-install",
+    "raw_exit": 0,
+    "expected_exit": 0
+  },
+  {
+    "label": "shellcheck-installer",
+    "command": "shellcheck scripts/install-corral.sh",
+    "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl539-curl-install",
+    "raw_exit": 0,
+    "expected_exit": 0
+  },
+  {
+    "label": "shellcheck-suite",
+    "command": "shellcheck -e SC2016 scripts/test-install-corral-linux.sh",
+    "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl539-curl-install",
+    "raw_exit": 0,
+    "expected_exit": 0
+  },
+  {
+    "label": "macos-path",
+    "command": "/bin/bash --noprofile --norc -c 'command -v gh'",
+    "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl539-curl-install",
+    "raw_exit": 1,
+    "expected_exit": 1,
+    "environment": {
+      "PATH": "/usr/bin:/bin",
+      "HOME": "/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/corral539-local-4wh1l09n/home",
+      "TMPDIR": "/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/corral539-local-4wh1l09n/tmp",
+      "CORRAL_TEST_EVIDENCE_DIR": "/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/corral539-local-4wh1l09n/macos-logs"
+    }
+  },
+  {
+    "label": "macos",
+    "command": "/bin/bash scripts/test-install-corral-linux.sh",
+    "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl539-curl-install",
+    "raw_exit": 0,
+    "expected_exit": 0,
+    "environment": {
+      "PATH": "/usr/bin:/bin",
+      "HOME": "/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/corral539-local-4wh1l09n/home",
+      "TMPDIR": "/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/corral539-local-4wh1l09n/tmp",
+      "CORRAL_TEST_EVIDENCE_DIR": "/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/corral539-local-4wh1l09n/macos-logs"
+    }
+  },
+  {
+    "label": "base-source",
+    "command": "git show 05dafa0801c264de193e3f518914738c5ed1357d:scripts/install-corral.sh",
+    "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl539-curl-install",
+    "raw_exit": 0,
+    "expected_exit": 0
+  },
+  {
+    "label": "base-red",
+    "command": "/bin/bash scripts/test-install-corral-linux.sh",
+    "cwd": "/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/corral539-local-4wh1l09n/base",
+    "raw_exit": 1,
+    "expected_exit": 1,
+    "environment": {
+      "PATH": "/usr/bin:/bin",
+      "HOME": "/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/corral539-local-4wh1l09n/home",
+      "TMPDIR": "/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/corral539-local-4wh1l09n/tmp",
+      "CORRAL_TEST_EVIDENCE_DIR": "/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/corral539-local-4wh1l09n/base-logs"
+    }
+  },
+  {
+    "label": "remote-create",
+    "command": "ssh -o BatchMode=yes -o ConnectTimeout=10 bazzite 'mktemp -d /tmp/corral539-proof-XXXXXXXX'",
+    "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl539-curl-install",
+    "raw_exit": 0,
+    "expected_exit": 0
+  },
+  {
+    "label": "remote-marker",
+    "command": "ssh -o BatchMode=yes -o ConnectTimeout=10 bazzite 'touch /tmp/corral539-proof-pc4ute00/.created-for-539'",
+    "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl539-curl-install",
+    "raw_exit": 0,
+    "expected_exit": 0
+  },
+  {
+    "label": "remote-copy",
+    "command": "scp -o BatchMode=yes -o ConnectTimeout=10 /var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/corral539-local-4wh1l09n/scripts.tar.gz bazzite:/tmp/corral539-proof-pc4ute00/scripts.tar.gz",
+    "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl539-curl-install",
+    "raw_exit": 0,
+    "expected_exit": 0
+  },
+  {
+    "label": "remote-extract",
+    "command": "ssh -o BatchMode=yes -o ConnectTimeout=10 bazzite 'tar -xzf /tmp/corral539-proof-pc4ute00/scripts.tar.gz -C /tmp/corral539-proof-pc4ute00'",
+    "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl539-curl-install",
+    "raw_exit": 0,
+    "expected_exit": 0
+  },
+  {
+    "label": "bazzite-driver",
+    "command": "ssh -o BatchMode=yes -o ConnectTimeout=10 bazzite 'env PATH=/usr/bin:/bin /usr/bin/python3 /tmp/corral539-proof-pc4ute00/bazzite-proof.py /tmp/corral539-proof-pc4ute00'",
+    "raw_exit": 0
+  },
+  {
+    "label": "remote-receipt",
+    "command": "scp -o BatchMode=yes -o ConnectTimeout=10 bazzite:/tmp/corral539-proof-pc4ute00/results/isolation.json /Users/jirathip/.herdr/worktrees/corral/impl539-curl-install/docs/evidence/issue-539/bazzite-isolation.json",
+    "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl539-curl-install",
+    "raw_exit": 0,
+    "expected_exit": 0
+  },
+  {
+    "label": "remote-fetch-suite.log",
+    "command": "scp -o BatchMode=yes -o ConnectTimeout=10 bazzite:/tmp/corral539-proof-pc4ute00/results/suite.log /var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/corral539-local-4wh1l09n/suite.log",
+    "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl539-curl-install",
+    "raw_exit": 0,
+    "expected_exit": 0
+  },
+  {
+    "label": "remote-fetch-bazzite-exits.tsv",
+    "command": "scp -o BatchMode=yes -o ConnectTimeout=10 bazzite:/tmp/corral539-proof-pc4ute00/results/scenario-logs/exits.tsv /Users/jirathip/.herdr/worktrees/corral/impl539-curl-install/docs/evidence/issue-539/bazzite-exits.tsv",
+    "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl539-curl-install",
+    "raw_exit": 0,
+    "expected_exit": 0
+  },
+  {
+    "label": "remote-fetch-bazzite-forbidden.log",
+    "command": "scp -o BatchMode=yes -o ConnectTimeout=10 bazzite:/tmp/corral539-proof-pc4ute00/results/scenario-logs/forbidden.log /Users/jirathip/.herdr/worktrees/corral/impl539-curl-install/docs/evidence/issue-539/bazzite-forbidden.log",
+    "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl539-curl-install",
+    "raw_exit": 0,
+    "expected_exit": 0
+  },
+  {
+    "label": "remote-cleanup",
+    "command": "ssh -o BatchMode=yes -o ConnectTimeout=10 bazzite '/usr/bin/python3 -c '\"'\"'import pathlib,shutil; p=pathlib.Path('\"'\"'\"'\"'\"'\"'\"'\"'/tmp/corral539-proof-pc4ute00'\"'\"'\"'\"'\"'\"'\"'\"'); assert (p/'\"'\"'\"'\"'\"'\"'\"'\"'.created-for-539'\"'\"'\"'\"'\"'\"'\"'\"').is_file(); items=sorted(str(x.relative_to(p)) for x in p.rglob('\"'\"'\"'\"'\"'\"'\"'\"'*'\"'\"'\"'\"'\"'\"'\"'\"')); print('\"'\"'\"'\"'\"'\"'\"'\"'REMOVED_ROOT'\"'\"'\"'\"'\"'\"'\"'\"', p); print('\"'\"'\"'\"'\"'\"'\"'\"'CREATED_AND_REMOVED'\"'\"'\"'\"'\"'\"'\"'\"', items); shutil.rmtree(p); assert not p.exists(); print('\"'\"'\"'\"'\"'\"'\"'\"'CLEANUP_VERIFIED absent'\"'\"'\"'\"'\"'\"'\"'\"')'\"'\"''",
+    "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl539-curl-install",
+    "raw_exit": 0,
+    "expected_exit": 0
+  },
+  {
+    "label": "remote-cleanup-readback",
+    "command": "ssh -o BatchMode=yes -o ConnectTimeout=10 bazzite 'test ! -e /tmp/corral539-proof-pc4ute00 && systemctl --user is-active corrald'",
+    "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl539-curl-install",
+    "raw_exit": 0,
+    "expected_exit": 0
+  },
+  {
+    "label": "diff-check",
+    "command": "git diff --check",
+    "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl539-curl-install",
+    "raw_exit": 0,
+    "expected_exit": 0
+  }
+]

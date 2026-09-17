@@ -1,0 +1,1 @@
+gh api repos/jirathip-dev/corral/releases/latest --jq .tag_name

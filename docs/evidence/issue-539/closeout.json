@@ -1,0 +1,44 @@
+{
+  "implementation_head": "d588c98845ccb9f87c0603891b043c987bce3532",
+  "base": "05dafa0801c264de193e3f518914738c5ed1357d",
+  "branch": "g539-curl-install",
+  "append_only": {
+    "prior_bytes": 188196,
+    "prior_sha256": "4cafd683386e25247759f40d1a6c1d81ffb17b1120afd2203b62023360365537",
+    "prefix_equal": true,
+    "appended_bytes": 18586
+  },
+  "scope_fence_pass": true,
+  "tested_scripts_match": "7/7",
+  "checks": [
+    {
+      "command": "git diff --check",
+      "raw_exit": 0,
+      "output": ""
+    },
+    {
+      "command": "git diff --check 05dafa0801c264de193e3f518914738c5ed1357d",
+      "raw_exit": 0,
+      "output": ""
+    },
+    {
+      "command": "git status --porcelain",
+      "raw_exit": 0,
+      "output": " M .report.md\n?? docs/evidence/issue-539/\n"
+    },
+    {
+      "command": "git diff --numstat 05dafa0801c264de193e3f518914738c5ed1357d",
+      "raw_exit": 0,
+      "output": "261\t0\t.report.md\n71\t29\tscripts/install-corral.sh\n276\t41\tscripts/test-install-corral-linux.sh\n"
+    }
+  ],
+  "local_diagnostics_removed": [
+    "/tmp/corral539-macos-focused",
+    "/tmp/corral539-ast.json",
+    "/tmp/corral539-lists.json",
+    "/tmp/corral539-shellcheck.log",
+    "/tmp/corral539-focused.log",
+    "/tmp/corral539-proof-driver.log"
+  ],
+  "final_status_note": "Status here is the exact pre-delivery-commit status. Final commit/status are independently read back after committing; HEAD is not embedded in its own tree."
+}

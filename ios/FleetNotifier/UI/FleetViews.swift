@@ -158,6 +158,20 @@ struct RepoLabelChip: View {
     /// The fleet repo set for deterministic hue assignment (the same list
     /// the filter chips and subgroup headers resolve against).
     var repos: [String] = []
+    /// #569: the recents sheet renders the chip COMPACT. The capsule is
+    /// drawn exactly as the Board draws it (its 2 pt padding stays); what
+    /// changes is the chip's LAYOUT box, which loses that padding again so
+    /// the chip never sizes the sheet's caption row. The caption row is
+    /// sized by the caption-semibold state label instead — exactly as it
+    /// was before #569 — so the #558 worktree block below it (and the
+    /// loaded content under that) keeps its render position. Without this
+    /// the row grows 3 pt and the whole block shifts 9 px, where the
+    /// protected render check's OCR of the commit short-sha degrades
+    /// (`RecentWorktreeBlockTests.testRenderedSheetDayNightMediumLargeAndAX3`
+    /// reads `abodef1` instead of `abcdef1` at that offset). A negative
+    /// padding only affects layout — the capsule still paints in full.
+    /// The board's own rows keep the padded chip (default `false`).
+    var compact: Bool = false
     @EnvironmentObject private var theme: ThemeStore
 
     var body: some View {
@@ -181,6 +195,9 @@ struct RepoLabelChip: View {
         .padding(.vertical, 2)
         .background(theme.repoChipFill(for: hue), in: Capsule())
         .overlay(Capsule().stroke(theme.repoChipBorder(for: hue), lineWidth: 1))
+        // `compact` shrinks the LAYOUT box back by the vertical padding the
+        // capsule is drawn with; the drawing above is untouched.
+        .padding(.vertical, compact ? -2 : 0)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(name)
     }
@@ -6054,11 +6071,17 @@ struct RecentOutputSheet: View {
                     // sheet — so the duplicated flat muted repo label the
                     // owner flagged is gone. `nil`/unknown resolves through
                     // RepoLabelChip's Other gray (never an accent ring).
-                    // The chip outranks the branch text so the repo NAME
-                    // (the identity) survives AX3 instead of ellipsizing to
-                    // "co…" — the branch truncates first (the board's own
-                    // segment-priority vocabulary).
-                    RepoLabelChip(repo: agent.workspace.repo, repos: repos)
+                    // COMPACT: the chip's drawing is the Board's (see
+                    // RepoLabelChip), but its layout box must not size this
+                    // row — the caption-semibold state label does, exactly
+                    // as before #569. A padded box would grow the row 3 pt
+                    // and shift the whole #558 worktree block 9 px, where
+                    // the protected render check's OCR misreads the commit
+                    // short-sha. The chip also outranks the branch text so
+                    // the repo NAME (the identity) survives AX3 instead of
+                    // ellipsizing to "co…" (the board's own segment-priority
+                    // vocabulary).
+                    RepoLabelChip(repo: agent.workspace.repo, repos: repos, compact: true)
                         .layoutPriority(1)
                     if let branch = agent.workspace.branch {
                         Text(branch)

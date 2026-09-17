@@ -570,7 +570,9 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # creation happens inside Foundation's own async machinery one await hop
     # after any caller-side guard; re-pinned over the round-3 source set
     # (recomputed from the tree, never hand-edited).
-    "d58dd8adf1b70f72049678b0da464d65ab7fe3c064c93d57a7f38d5c4cb4027d"
+    # 2026-09-17 #533: ThemeStore observes only its injected defaults;
+    # re-pinned with release_source_digest over the scoped-observer sources.
+    "b4f8a24d91e1b267ad7a5a77767a0acc419539a05fa1033a16453d62b7f7c785"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

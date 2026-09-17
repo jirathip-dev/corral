@@ -68,6 +68,14 @@
 //!   (repo, branch) fallback via the PR's `headRefName`, then the
 //!   still-open bound PR. The winning path is noted on the record as
 //!   `workspace.pr_match_source` (debug-only).
+//! - **#563 identity is hash-equality on BOTH sides**: the gh plane folds
+//!   a credential-shaped `headRefOid`/`headRefName` (and the local `branch`
+//!   that egresses on `/snapshot`/SSE) through
+//!   [`ref_identity`](crate::adapters::gh_plane::ref_identity), and every
+//!   comparison below projects the LOCAL fact through that same function —
+//!   so a redacted ref still binds, an ordinary ref is byte-unchanged, and
+//!   two distinct credential-shaped refs can never collapse onto one
+//!   `[REDACTED]` identity.
 //! - `workspace.issues` is populated ONLY from the bound PR's authoritative
 //!   `closingIssuesReferences` (#23) — no heuristic, no branch-name
 //!   inference; empty when the PR links none or no PR is bound.
@@ -85,6 +93,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
+use crate::adapters::gh_plane::ref_identity;
 use crate::api::issues::IssuesCache;
 use crate::api::repo::live_workspace_repos;
 use crate::core::events::{GhIssueRef, GhRepoState, GitEvent, GitStatus, PlaneEvent};
@@ -232,7 +241,8 @@ impl Integrator {
                 subject,
             } => {
                 let worktree = canonicalize_existing_prefix(&worktree);
-                self.attribution.record_branch(&worktree, &branch);
+                self.attribution
+                    .record_branch(&worktree, &ref_identity(&branch));
                 self.git
                     .lock()
                     .unwrap()
@@ -250,7 +260,15 @@ impl Integrator {
                 // Wire-level distinction only: the read-model impact equals
                 // HeadMoved's (branch + head commit facts).
                 let worktree = canonicalize_existing_prefix(&worktree);
-                self.attribution.record_branch(&worktree, &branch);
+                // #563: the shared attribution's branch fact is what every
+                // record builder (this module's convergence fallback, the
+                // Herdr adapter's fresh/preserved records) copies onto
+                // `workspace.branch`, so it stores the REDACTED identity —
+                // the value that may egress — never the raw git string. The
+                // raw branch stays in the local git-facts cache, which is the
+                // comparison input and is projected at each comparison site.
+                self.attribution
+                    .record_branch(&worktree, &ref_identity(&branch));
                 self.git
                     .lock()
                     .unwrap()
@@ -381,29 +399,38 @@ impl Integrator {
                         // F7: detached HEAD reports the literal "HEAD" —
                         // never a branch; normalize to None.
                         //
-                        // TODO(F2, W4 review follow-up): branch is a git-plane
-                        // fact VALUE that serializes to /snapshot and SSE and
-                        // currently bypasses the D9 redactor (a branch label
-                        // like `test-ghp_…` would egress unredacted). Redact
-                        // here at the integrate boundary — facts are keyed by
-                        // path/repo, so matching is unaffected.
-                        ws.branch = (branch != "HEAD").then(|| branch.clone());
+                        // #563 (resolves the F2/W4 TODO above): `branch` is a
+                        // git-plane fact VALUE that serializes to /snapshot and
+                        // SSE, so it now goes through the SAME
+                        // identity-preserving redaction as the gh wire's
+                        // `headRefName` (`gh_plane::ref_identity`). A
+                        // credential-shaped branch egresses as its digest
+                        // placeholder — the protected boundary is "no
+                        // credential-shaped string reaches the phone", and a
+                        // user's own tooling leaking a secret into a ref is
+                        // exactly the case that must not ship unredacted while
+                        // every other field redacts. Identity survives because
+                        // `apply_pr_facts` compares the SAME function of the
+                        // local branch against the wire value.
+                        ws.branch = (branch != "HEAD").then(|| ref_identity(branch));
                     }
                     // G21: the head commit the PR matcher already resolves is
                     // carried onto the snapshot (sha + first-line subject) —
-                    // same probe, no extra git calls. The workspace head
-                    // mirrors the cached facts exactly: `None` (null on the
+                    // same probe, no extra git calls. `None` (null on the
                     // wire) for unborn/empty checkouts, whose probe never
                     // produces a head fact.
-                    ws.head_sha = facts.commit.clone();
+                    //
+                    // #563: the head commit is projected through the same
+                    // identity function as the branch — a real git oid is
+                    // lowercase hex and passes through BYTE-UNCHANGED (rule 4
+                    // does not fire), while any credential-shaped value (only
+                    // reachable from a malformed probe) is redacted to its
+                    // digest placeholder instead of egressing the secret.
+                    ws.head_sha = facts.commit.as_deref().map(ref_identity);
                     // D9: `head_subject` is DISPLAY text (arbitrary commit
                     // prose), so it goes through the same redaction pass as
                     // herdr pane text before it lands on the wire — a
                     // subject like `fix: rotate ghp_…` must not egress raw.
-                    // `head_sha` stays raw: identity, not display (a sha
-                    // fails rule 4 by design). Unlike `branch` (F2 TODO
-                    // above), the subject is already redacted here, so the
-                    // snapshot/SSE egress is covered at this boundary.
                     ws.head_subject = facts.subject.as_deref().map(|s| redact(s).into_owned());
                     if let Some(status) = &facts.status {
                         ws.dirty = status.is_dirty();
@@ -515,14 +542,23 @@ fn apply_pr_facts(ws: &mut Workspace, state: Option<&GhRepoState>, facts: &GitFa
     // F7 normalization: the git plane reports detached HEAD as "HEAD" —
     // never a branch, so it must not match a PR's headRefName.
     let branch = facts.branch.as_deref().filter(|b| *b != "HEAD");
-    let by_head = commit.and_then(|c| {
+    // #563: identity matching is hash-equality on BOTH sides. The gh wire
+    // carries `ref_identity(raw)` for `headRefOid`/`headRefName`
+    // (`gh_plane::redact_response`), so the local facts are projected through
+    // the SAME function before comparing: a credential-shaped branch/commit
+    // compares as its digest placeholder — redaction never costs a binding —
+    // while an ordinary sha/branch is unchanged by the projection (raw
+    // equality, exactly the pre-#563 semantics).
+    let commit_identity = commit.map(ref_identity);
+    let branch_identity = branch.map(ref_identity);
+    let by_head = commit_identity.as_deref().and_then(|c| {
         state
             .prs
             .iter()
             .filter(|pr| pr.head_sha == c)
             .max_by_key(|pr| pr.pr_number)
     });
-    let by_branch = branch.and_then(|b| {
+    let by_branch = branch_identity.as_deref().and_then(|b| {
         state
             .prs
             .iter()

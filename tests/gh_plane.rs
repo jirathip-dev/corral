@@ -16,10 +16,11 @@ use std::time::Duration;
 use corrald::adapters::gh_plane::{
     GhPlane, GhPlaneConfig, GhRepoSpec, GhTransport, herdr_workspace_specs,
 };
-use corrald::core::events::{GhRepoState, Plane, PlaneEvent, plane_channel};
+use corrald::core::events::{GhRepoState, GitEvent, Plane, PlaneEvent, plane_channel};
 use corrald::core::model::{Agent, AgentState, Change, Workspace};
 use corrald::core::store::Store;
 use corrald::core::workspace::{RepoRoot, WorkspaceAttribution};
+use corrald::integrate::Integrator;
 use serde_json::{Value, json};
 
 /// Canned GraphQL success body shaped like GitHub's real response.
@@ -1152,5 +1153,281 @@ async fn live_round_trip_all_repos() {
     assert!(
         elapsed < Duration::from_secs(3),
         "round-trip budget exceeded: {elapsed:?} (>3s)"
+    );
+}
+
+/// #563, wire half: a credential-shaped `headRefName`/`headRefOid` arrives in
+/// a provider-shaped GraphQL response and the plane's emitted state — what
+/// every consumer of the channel (and the daemon's own read model) sees — must
+/// carry only the hashed placeholders.
+#[tokio::test]
+async fn g563_credential_shaped_refs_never_reach_the_wire() {
+    /// The #563 placeholder, computed independently of the production helper.
+    fn placeholder(raw: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let hex: String = Sha256::digest(raw.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        format!("[REDACTED:sha256:{hex}]")
+    }
+
+    const SECRET_OID: &str = "Branch0123456789ABCDEFGHIJKabcdefghijk";
+    // Assembled at runtime: no source line carries a contiguous token.
+    let secret_branch = format!("test-{}FAKE563BranchAbCdEf123456", "ghp_");
+
+    // The RAW provider response: every tracked repo's PR carries
+    // credential-shaped refs, which is exactly the leak #563 is about.
+    let mut response = canned_response();
+    for i in 0..TEST_TRACKED_REPOS.len() {
+        let nodes = &mut response["data"][format!("q{i}")]["pullRequests"]["nodes"];
+        nodes[0]["headRefName"] = json!(secret_branch);
+        nodes[0]["headRefOid"] = json!(SECRET_OID);
+    }
+    assert!(
+        response.to_string().contains("FAKE563"),
+        "the fixture must start on the wire, unredacted"
+    );
+
+    let store = Arc::new(Store::new());
+    let mock = Arc::new(MockTransport::new(vec![response]));
+    let plane = configured_plane(
+        store.clone(),
+        mock,
+        Some("test-token".to_string()),
+        fast_config(),
+    );
+    let (sink, mut rx) = plane_channel();
+    let _subscriber = store.subscribe(); // first SSE client ever -> immediate poll
+    plane.start(sink);
+
+    let mut states: Vec<GhRepoState> = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while states.len() < TEST_TRACKED_REPOS.len() && std::time::Instant::now() < deadline {
+        if let Ok(Some(PlaneEvent::Gh(state))) =
+            tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
+        {
+            states.push(state);
+        }
+    }
+    assert_eq!(
+        states.len(),
+        TEST_TRACKED_REPOS.len(),
+        "every tracked repo must report its state"
+    );
+    for state in &states {
+        assert_eq!(
+            state.prs[0].head_branch,
+            placeholder(&secret_branch),
+            "wire headRefName for {}",
+            state.repo
+        );
+        assert_eq!(
+            state.prs[0].head_sha,
+            placeholder(SECRET_OID),
+            "wire headRefOid for {}",
+            state.repo
+        );
+    }
+    let wire = serde_json::to_string(&states).unwrap();
+    assert!(!wire.contains("ghp_"), "no PAT may reach the wire");
+    assert!(
+        !wire.contains("FAKE563"),
+        "no token payload may reach the wire"
+    );
+    assert!(
+        !wire.contains(SECRET_OID),
+        "no secret oid may reach the wire"
+    );
+}
+
+/// #563 end to end: a credential-shaped `headRefName`/`headRefOid` arrives in
+/// a provider-shaped GraphQL response, is redacted by the production response
+/// sanitizer, is mapped into the plane's emitted state, is folded onto the
+/// store by the production integrator — and both match paths still bind while
+/// the served snapshot/deltas carry no raw secret.
+#[tokio::test]
+async fn g563_credential_shaped_refs_still_bind_and_never_egress() {
+    /// The #563 placeholder, computed independently of the production helper.
+    fn placeholder(raw: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let hex: String = Sha256::digest(raw.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        format!("[REDACTED:sha256:{hex}]")
+    }
+
+    const SECRET_OID: &str = "Branch0123456789ABCDEFGHIJKabcdefghijk";
+    // Assembled at runtime: no source line carries a contiguous token.
+    let secret_branch = format!("test-{}FAKE563BranchAbCdEf123456", "ghp_");
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let branch_leg = temp.path().join("branch-leg");
+    let head_leg = temp.path().join("head-leg");
+    init_git_checkout(&branch_leg, "https://github.com/fixture-owner/one.git");
+    init_git_checkout(&head_leg, "https://github.com/fixture-owner/one.git");
+
+    let store = Store::new();
+    store
+        .apply(Change::upsert(agent_for(
+            "herdr",
+            "branch-leg",
+            &branch_leg,
+        )))
+        .await;
+    store
+        .apply(Change::upsert(agent_for("herdr", "head-leg", &head_leg)))
+        .await;
+    let attribution = WorkspaceAttribution::from_roots(
+        [
+            RepoRoot {
+                path: branch_leg.clone(),
+                repo: "owner-one".to_string(),
+            },
+            RepoRoot {
+                path: head_leg.clone(),
+                repo: "owner-one".to_string(),
+            },
+        ],
+        temp.path().join("worktrees"),
+    );
+
+    // The RAW provider response (never a hand-built state): PR 563's ref
+    // fields are credential-shaped, which is exactly the leak #563 is about.
+    let response = json!({ "data": { "q0": {
+        "name": "one",
+        "pullRequests": { "nodes": [{
+            "number": 563,
+            "headRefOid": SECRET_OID,
+            "headRefName": secret_branch,
+            "closingIssuesReferences": { "nodes": [] },
+            "statusCheckRollup": { "state": "PENDING", "contexts": { "nodes": [
+                { "__typename": "CheckRun", "status": "IN_PROGRESS" }
+            ]}}
+        }]},
+        "issues": { "nodes": [] }
+    }}});
+    assert!(
+        response.to_string().contains(SECRET_OID),
+        "the fixture must start on the wire, unredacted"
+    );
+
+    let mock = Arc::new(MockTransport::new(vec![response]));
+    let plane = Arc::new(GhPlane::with_config_and_herdr_scope(
+        store.clone().into(),
+        mock.clone(),
+        Some("test-token".to_string()),
+        fast_config(),
+        attribution.clone(),
+    ));
+    let integrator = Integrator::new_with_attribution(store.clone(), attribution);
+
+    // Daemon wiring: the plane feeds the production integrator through the
+    // real plane channel (the same shape main.rs wires).
+    let (sink, rx) = plane_channel();
+    tokio::spawn(async move { integrator.run(rx).await });
+    // The subscriber both makes the plane poll (first SSE client ever) and
+    // collects the exact delta bytes an SSE client would receive.
+    let mut deltas = store.subscribe();
+    plane.start(sink.clone());
+
+    // Local git facts: the branch leg is committed-but-unpushed on the
+    // credential-shaped branch; the head leg's HEAD IS the credential-shaped
+    // oid (its branch is ordinary).
+    sink.send(PlaneEvent::Git(GitEvent::HeadMoved {
+        worktree: branch_leg.clone(),
+        branch: secret_branch.clone(),
+        commit: "def456".to_string(),
+        subject: None,
+    }))
+    .await
+    .unwrap();
+    sink.send(PlaneEvent::Git(GitEvent::HeadMoved {
+        worktree: head_leg.clone(),
+        branch: "topic/plain".to_string(),
+        commit: SECRET_OID.to_string(),
+        subject: None,
+    }))
+    .await
+    .unwrap();
+
+    // Binding legs FIRST (this is the property the naive mask breaks):
+    // both rows still bind — head-SHA (hashed) and the branch fallback
+    // (hashed) — while the ordinary branch is untouched. Bounded waits with
+    // the observed record printed on failure.
+    let branch_row = bound_row(&store, "branch-leg", 563).await;
+    assert_eq!(
+        branch_row.workspace.pr_match_source.as_deref(),
+        Some("branch"),
+        "committed-but-unpushed row binds through the hashed branch identity"
+    );
+    assert_eq!(
+        branch_row.workspace.branch.as_deref(),
+        Some(placeholder(&secret_branch).as_str()),
+        "the credential-shaped local branch is redacted"
+    );
+
+    let head_row = bound_row(&store, "head-leg", 563).await;
+    assert_eq!(
+        head_row.workspace.pr_match_source.as_deref(),
+        Some("head_sha"),
+        "the credential-shaped oid binds through the hashed head-SHA identity"
+    );
+    assert_eq!(
+        head_row.workspace.branch.as_deref(),
+        Some("topic/plain"),
+        "an ordinary branch still passes through verbatim"
+    );
+
+    let mut payloads: Vec<(&str, String)> = vec![(
+        "snapshot",
+        serde_json::to_string(&store.snapshot().await).unwrap(),
+    )];
+    while let Ok(delta) = deltas.try_recv() {
+        payloads.push(("delta", serde_json::to_string(&delta).unwrap()));
+    }
+    if let Some(delta) = store.flush().await {
+        payloads.push(("delta-flush", serde_json::to_string(&delta).unwrap()));
+    }
+    for (what, payload) in &payloads {
+        assert!(!payload.contains("ghp_"), "{what} leaked a PAT prefix");
+        assert!(!payload.contains("FAKE563"), "{what} leaked the raw branch");
+        assert!(!payload.contains(SECRET_OID), "{what} leaked the raw oid");
+    }
+    assert!(
+        payloads
+            .iter()
+            .any(|(_, payload)| payload.contains(&placeholder(&secret_branch))),
+        "the redacted placeholder must reach a served payload"
+    );
+    assert!(
+        payloads
+            .iter()
+            .any(|(_, payload)| payload.contains("topic/plain")),
+        "an ordinary branch must still reach a served payload verbatim"
+    );
+}
+
+/// Bounded wait for `id` to bind `pr`. The panic prints the observed record,
+/// so a failing run (e.g. under a masking mutation) shows what the daemon
+/// actually held: no binding means the redaction cost the identity.
+async fn bound_row(store: &Store, id: &str, pr: u64) -> Agent {
+    let mut last: Option<Agent> = None;
+    for _ in 0..600 {
+        if let Some(agent) = store.get(id).await {
+            if agent.workspace.pr_number == Some(pr) {
+                return agent;
+            }
+            last = Some(agent);
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let ws = last.as_ref().map(|agent| &agent.workspace);
+    panic!(
+        "{id} never bound PR {pr}: observed pr_number={:?} pr_match_source={:?} branch={:?}",
+        ws.and_then(|ws| ws.pr_number),
+        ws.and_then(|ws| ws.pr_match_source.clone()),
+        ws.and_then(|ws| ws.branch.clone()),
     );
 }

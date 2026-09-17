@@ -913,6 +913,144 @@ async fn unchanged_facts_produce_no_delta() {
     assert_eq!(delta.upd[0].agent_id, "b");
 }
 
+/// #563: a credential-shaped ref binds through hashed identity — the wire
+/// (`headRefOid`/`headRefName`) arrives as its digest placeholder, the LOCAL
+/// branch is projected by the same function before comparing, and neither the
+/// snapshot nor the delta payload carries the raw secret. Both match paths
+/// (head-SHA and the committed-but-unpushed branch fallback) are exercised,
+/// and an ordinary ref stays byte-unchanged (no regression).
+#[tokio::test]
+async fn credential_shaped_refs_bind_via_hashed_identity_and_never_egress() {
+    /// The #563 placeholder, computed independently of the production helper.
+    fn placeholder(raw: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let hex: String = Sha256::digest(raw.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        format!("[REDACTED:sha256:{hex}]")
+    }
+
+    const WT_C: &str = "/Users/jirathip/.herdr/worktrees/herdr-board/g563-plain";
+    // Entropy-shaped (rule 4) and PAT-shaped fixtures; the PAT is assembled at
+    // runtime so no source line carries a contiguous token.
+    const SECRET_OID: &str = "Branch0123456789ABCDEFGHIJKabcdefghijk";
+    let secret_branch = format!("test-{}FAKE563BranchAbCdEf123456", "ghp_");
+
+    let (store, sink) = setup().await;
+    // Collected for the egress check: the exact bytes an SSE client receives.
+    let mut deltas = store.subscribe();
+    for (id, wt) in [("a", WT_A), ("b", WT_B), ("c", WT_C)] {
+        store.apply(Change::upsert(agent(id, Some(wt)))).await;
+    }
+    store.flush().await;
+
+    // Local facts. Agent a's HEAD is the credential-shaped oid; agents a and b
+    // are both checked out on the credential-shaped branch; agent b is
+    // committed-but-unpushed (its HEAD is NOT the PR's head oid), which is the
+    // #22 fallback's reason to exist; agent c is the ordinary-branch control.
+    sink.send(PlaneEvent::Git(GitEvent::HeadMoved {
+        worktree: PathBuf::from(WT_A),
+        branch: secret_branch.clone(),
+        commit: SECRET_OID.to_string(),
+        subject: None,
+    }))
+    .await
+    .unwrap();
+    sink.send(head(WT_B, &secret_branch, "def456"))
+        .await
+        .unwrap();
+    sink.send(head(WT_C, "ws2/gh-plane", "ccc333"))
+        .await
+        .unwrap();
+    wait_for(&store, "c", |a| a.workspace.branch.is_some()).await;
+
+    // The gh wire as the plane delivers it after #563 redaction: both ref
+    // fields are placeholders, PR 42 is an ordinary PR (raw passthrough).
+    sink.send(PlaneEvent::Gh(gh_state(
+        "herdr-board",
+        vec![
+            pr_with_branch(42, "aaa111", "ws2/gh-plane", "SUCCESS"),
+            pr_with_branch(
+                563,
+                &placeholder(SECRET_OID),
+                &placeholder(&secret_branch),
+                "PENDING",
+            ),
+        ],
+    )))
+    .await
+    .unwrap();
+
+    // head-SHA leg: the local commit and the wire oid are the SAME secret;
+    // only hash-equality can bind them.
+    let a = wait_for(&store, "a", |a| a.workspace.pr_number == Some(563)).await;
+    assert_eq!(
+        a.workspace.pr_match_source.as_deref(),
+        Some("head_sha"),
+        "the credential-shaped oid binds via hashed head-SHA identity"
+    );
+    assert_eq!(a.workspace.ci_status, Some(CiStatus::Pending));
+    assert_eq!(
+        a.workspace.branch.as_deref(),
+        Some(placeholder(&secret_branch).as_str()),
+        "the credential-shaped LOCAL branch is redacted in the read model"
+    );
+
+    // branch-fallback leg: committed-but-unpushed, so only the hashed
+    // (repo, branch) identity can bind this PR.
+    let b = wait_for(&store, "b", |a| a.workspace.pr_number == Some(563)).await;
+    assert_eq!(
+        b.workspace.pr_match_source.as_deref(),
+        Some("branch"),
+        "the committed-but-unpushed fallback still binds a redacted branch"
+    );
+    assert_eq!(
+        b.workspace.branch.as_deref(),
+        Some(placeholder(&secret_branch).as_str())
+    );
+
+    // Control: an ordinary branch is untouched and still binds (AC4).
+    let c = wait_for(&store, "c", |a| a.workspace.pr_number == Some(42)).await;
+    assert_eq!(c.workspace.pr_match_source.as_deref(), Some("branch"));
+    assert_eq!(c.workspace.branch.as_deref(), Some("ws2/gh-plane"));
+    // The head field is projected the same way: a credential-shaped value is
+    // redacted, a real oid is byte-unchanged (see the c row's raw sha below).
+    assert_eq!(
+        a.workspace.head_sha.as_deref(),
+        Some(placeholder(SECRET_OID).as_str())
+    );
+    assert_eq!(c.workspace.head_sha.as_deref(), Some("ccc333"));
+
+    // Egress: the served snapshot and every published delta (the SSE unit)
+    // must be free of the raw secret.
+    let mut payloads: Vec<(&str, String)> = vec![(
+        "snapshot",
+        serde_json::to_string(&store.snapshot().await).unwrap(),
+    )];
+    while let Ok(delta) = deltas.try_recv() {
+        payloads.push(("delta", serde_json::to_string(&delta).unwrap()));
+    }
+    if let Some(delta) = store.flush().await {
+        payloads.push(("delta-flush", serde_json::to_string(&delta).unwrap()));
+    }
+    for (what, payload) in &payloads {
+        for (label, secret) in [("branch", &secret_branch), ("oid", &SECRET_OID.to_string())] {
+            assert!(
+                !payload.contains(secret.as_str()),
+                "{what} leaked the raw credential-shaped {label}"
+            );
+        }
+        assert!(!payload.contains("ghp_"), "{what} leaked a PAT prefix");
+    }
+    assert!(
+        payloads
+            .iter()
+            .any(|(_, payload)| payload.contains(&placeholder(&secret_branch))),
+        "the redacted placeholder must reach a served payload"
+    );
+}
+
 /// D9 regression (G21 re-review F1): a commit subject containing a seeded
 /// secret must reach the read model (the snapshot's source) redacted —
 /// never the raw token — while `head_sha` (identity) stays raw.

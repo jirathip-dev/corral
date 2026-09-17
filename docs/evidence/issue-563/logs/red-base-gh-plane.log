@@ -1,0 +1,24 @@
+   Compiling corrald v0.1.0 (/Users/jirathip/.herdr/worktrees/corral/impl563-hashedid)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.05s
+     Running tests/gh_plane.rs (target/debug/deps/gh_plane-dac870d069710de0)
+
+running 1 test
+test g563_credential_shaped_refs_are_redacted_end_to_end_and_still_bind ... FAILED
+
+failures:
+
+---- g563_credential_shaped_refs_are_redacted_end_to_end_and_still_bind stdout ----
+
+thread 'g563_credential_shaped_refs_are_redacted_end_to_end_and_still_bind' (15722759) panicked at tests/gh_plane.rs:1299:5:
+assertion `left == right` failed: the credential-shaped local branch is redacted
+  left: Some("test-ghp_FAKE563BranchAbCdEf123456")
+ right: Some("[REDACTED:sha256:2bf52de77c710de3c622965953d93edb455b29d1ed2eec468b2d3089ce2a1c68]")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    g563_credential_shaped_refs_are_redacted_end_to_end_and_still_bind
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 15 filtered out; finished in 0.04s
+
+error: test failed, to rerun pass `-p corrald --test gh_plane`

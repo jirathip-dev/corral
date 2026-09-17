@@ -798,6 +798,37 @@ impl GhPlane {
     }
 }
 
+/// #563: identity-preserving redaction for a ref VALUE — the wire's
+/// `headRefOid`/`headRefName` and the LOCAL branch/commit they bind against.
+///
+/// A credential-shaped value is replaced by [`ref_identity_placeholder`]
+/// computed from the RAW value: the secret cannot egress, while the identity
+/// survives because BOTH sides of the binding run this same projection before
+/// comparing (`integrate::apply_pr_facts`). Distinct refs get distinct
+/// placeholders and the same ref always gets the same one — deterministic
+/// across polls, restarts and daemon generations. An ordinary value passes
+/// through untouched, so every normal branch/oid reaches the snapshot and the
+/// UI verbatim.
+pub(crate) fn ref_identity(raw: &str) -> String {
+    if crate::core::redact::redact(raw).as_ref() == raw {
+        raw.to_string()
+    } else {
+        ref_identity_placeholder(raw)
+    }
+}
+
+/// The digest placeholder for `raw` — used when a ref must be masked whatever
+/// its shape (e.g. it carries the ACTIVE credential). The digest is computed
+/// from the raw value, so the binding identity is preserved exactly as for
+/// [`ref_identity`]: no raw byte of the value survives, and two distinct refs
+/// can never collide onto the same marker.
+pub(crate) fn ref_identity_placeholder(raw: &str) -> String {
+    format!(
+        "[REDACTED:sha256:{}]",
+        crate::core::provenance::text_sha256_hex(raw)
+    )
+}
+
 /// Sanitize provider text before it can reach facts, snapshots or issue caches.
 fn redact_response(value: &mut Value, token: &str) {
     match value {
@@ -813,10 +844,19 @@ fn redact_response(value: &mut Value, token: &str) {
                 if matches!(key.as_str(), "headRefOid" | "headRefName")
                     && let Value::String(identity) = value
                 {
-                    // Preserve binding identities, not the display-text entropy
-                    // heuristic. An actual active credential still cannot escape.
-                    if !token.is_empty() {
-                        *identity = identity.replace(token, crate::core::redact::REDACTED);
+                    // #563: the ref keys are NOT exempt from redaction. They
+                    // carry an identity the LOCAL side still has to match, so
+                    // a credential-shaped value becomes its hashed identity
+                    // placeholder — never the raw string (the old carve-out)
+                    // and never a shared `[REDACTED]` (which would collide
+                    // two distinct refs onto one identity). The active token
+                    // is masked the same way even when the value is not
+                    // credential-shaped, so an inlined credential still
+                    // cannot escape.
+                    if !token.is_empty() && identity.contains(token) {
+                        *identity = ref_identity_placeholder(identity);
+                    } else {
+                        *identity = ref_identity(identity);
                     }
                 } else {
                     redact_response(value, token);
@@ -1683,17 +1723,108 @@ mod tests {
         assert_eq!(snapshot.agents["missing-head"].workspace.ci_status, None);
     }
 
+    /// #563 fixtures: one documented GitHub PAT shape and one entropy-shaped
+    /// (rule 4) branch/oid. The PAT is assembled at runtime so no source line
+    /// carries a contiguous token.
+    fn g563_secret_branch() -> String {
+        format!("test-{}FAKE563BranchAbCdEf123456", "ghp_")
+    }
+    const G563_SECRET_OID: &str = "Branch0123456789ABCDEFGHIJKabcdefghijk";
+
+    /// The #563 placeholder digest, computed independently of the production
+    /// helper: the test pins the FORMAT and the DIGEST.
+    fn g563_placeholder(raw: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let hex: String = Sha256::digest(raw.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        format!("[REDACTED:sha256:{hex}]")
+    }
+
     #[test]
     fn g556_redaction_preserves_binding_identity() {
-        let identity = "Branch0123456789ABCDEFGHIJKabcdefghijk";
+        // #563 update: the ref keys are no longer exempt from redaction. This
+        // test's INTENT (identity survives sanitization) still holds — the
+        // identity now survives as the hashed placeholder the binding
+        // compares on both sides, never as the raw string.
+        let identity = G563_SECRET_OID;
         assert_ne!(crate::core::redact::redact(identity), identity);
         let mut response = json!({"headRefName":identity,"headRefOid":identity,"title":identity});
         redact_response(&mut response, "opaque-fixture");
-        assert_eq!(response["headRefName"], identity);
-        assert_eq!(response["headRefOid"], identity);
+        assert_eq!(response["headRefName"], g563_placeholder(identity));
+        assert_eq!(response["headRefOid"], g563_placeholder(identity));
         assert_eq!(response["title"], "[REDACTED]");
+        // Re-applying (even with the value itself as the active token) is
+        // idempotent: a placeholder is never re-redacted nor leaked raw.
         redact_response(&mut response, identity);
-        assert_eq!(response["headRefName"], "[REDACTED]");
+        assert_eq!(response["headRefName"], g563_placeholder(identity));
+        assert_eq!(response["headRefOid"], g563_placeholder(identity));
+    }
+
+    /// #563: a credential-shaped `headRefName`/`headRefOid` is replaced by
+    /// its hashed identity (never the raw string, never a shared
+    /// `[REDACTED]`), two distinct refs never collapse onto one placeholder,
+    /// the active token is masked too, and an ordinary ref passes through
+    /// byte-unchanged.
+    #[test]
+    fn g563_credential_shaped_refs_are_hashed_not_exempt() {
+        let branch = g563_secret_branch();
+        let oid = G563_SECRET_OID;
+        for secret in [branch.as_str(), oid] {
+            assert_ne!(
+                crate::core::redact::redact(secret),
+                secret,
+                "fixture must be credential-shaped"
+            );
+        }
+
+        let mut response = json!({
+            "headRefName": branch,
+            "headRefOid": oid,
+            "title": branch,
+            "nested": [{"headRefName": branch}],
+        });
+        redact_response(&mut response, "opaque-fixture");
+        assert_eq!(response["headRefName"], g563_placeholder(&branch));
+        assert_eq!(response["headRefOid"], g563_placeholder(oid));
+        assert_eq!(
+            response["nested"][0]["headRefName"],
+            g563_placeholder(&branch),
+            "nested ref keys take the same rule"
+        );
+        assert_eq!(response["title"], "test-[REDACTED]");
+        assert_ne!(
+            g563_placeholder(&branch),
+            g563_placeholder(oid),
+            "distinct refs must not collapse onto one [REDACTED] identity"
+        );
+        let wire = response.to_string();
+        assert!(!wire.contains("ghp_"), "no PAT may survive on the wire");
+        assert!(!wire.contains("FAKE563"), "no token payload may survive");
+        assert!(!wire.contains(oid), "no secret oid may survive on the wire");
+
+        // Idempotent under re-apply (poll loops re-redact the same state).
+        let once = response.clone();
+        redact_response(&mut response, "opaque-fixture");
+        assert_eq!(response, once);
+
+        // A non-credential-shaped ref passes through byte-unchanged.
+        let mut plain = json!({"headRefName": "ws2/gh-plane", "headRefOid": "abc123"});
+        redact_response(&mut plain, "test-token");
+        assert_eq!(
+            plain,
+            json!({"headRefName": "ws2/gh-plane", "headRefOid": "abc123"})
+        );
+
+        // The ACTIVE token is masked even when the value is not otherwise
+        // credential-shaped — and the mask still carries the identity.
+        let mut tainted = json!({"headRefName": "release/opaque-fixture"});
+        redact_response(&mut tainted, "opaque-fixture");
+        assert_eq!(
+            tainted["headRefName"],
+            g563_placeholder("release/opaque-fixture")
+        );
     }
 
     #[test]

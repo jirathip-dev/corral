@@ -1,0 +1,122 @@
+{
+  "device": "74BFBFFC-246C-42B9-989E-77C64F6FE145",
+  "device_type": "com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro-Max",
+  "runtime": "com.apple.CoreSimulator.SimRuntime.iOS-26-5",
+  "label": "final-tall-ui",
+  "head": "d6a533a9c6c09fafc73de108e802e82a7769cda9",
+  "status": "?? .amend-1.md\n?? .amend-2.md\n",
+  "source_blobs": {
+    "ios/FleetNotifier/UI/Herd/HerdView.swift": "51ec1b68cec6a6f6bcc0ef1b4bf42cd798bf7e04",
+    "ios/FleetNotifierTests/HerdTests.swift": "7a494ec9a25ad38f8f38c438f8ec76816e567d1c",
+    "ios/FleetNotifierUITests/HerdEdgeGestureTests.swift": "49bedf80ff16db77a9cc5806d902aa9efdc824dc"
+  },
+  "command": [
+    "xcodebuild",
+    "-project",
+    "ios/FleetNotifier.xcodeproj",
+    "-scheme",
+    "FleetNotifier",
+    "-configuration",
+    "Debug",
+    "-destination",
+    "platform=iOS Simulator,id=74BFBFFC-246C-42B9-989E-77C64F6FE145",
+    "-derivedDataPath",
+    "/tmp/g568-dd",
+    "CODE_SIGNING_ALLOWED=NO",
+    "-parallel-testing-enabled",
+    "NO",
+    "-resultBundlePath",
+    "/tmp/g568-a2-final-tall-ui/result.xcresult",
+    "-only-testing:FleetNotifierUITests/HerdEdgeGestureTests/testDayEmptyRailEdges",
+    "-only-testing:FleetNotifierUITests/HerdEdgeGestureTests/testDayBlockedRailEdges",
+    "-only-testing:FleetNotifierUITests/HerdEdgeGestureTests/testNightEmptyRailEdges",
+    "-only-testing:FleetNotifierUITests/HerdEdgeGestureTests/testNightBlockedRailEdges",
+    "test"
+  ],
+  "start_epoch": 1789624174.222889,
+  "exit": 0,
+  "end_epoch": 1789624558.304158,
+  "recordings": [
+    {
+      "name": "day-blocked",
+      "command": [
+        "xcrun",
+        "simctl",
+        "io",
+        "74BFBFFC-246C-42B9-989E-77C64F6FE145",
+        "recordVideo",
+        "--codec",
+        "h264",
+        "--force",
+        "/tmp/g568-a2-final-tall-ui/day-blocked.mov"
+      ],
+      "start_epoch": 1789624230.1806111,
+      "case_epoch": 1789624230.071482,
+      "path": "/tmp/g568-a2-final-tall-ui/day-blocked.mov",
+      "exit": 0,
+      "complete": true,
+      "stop_epoch": 1789624324.34195
+    },
+    {
+      "name": "day-empty",
+      "command": [
+        "xcrun",
+        "simctl",
+        "io",
+        "74BFBFFC-246C-42B9-989E-77C64F6FE145",
+        "recordVideo",
+        "--codec",
+        "h264",
+        "--force",
+        "/tmp/g568-a2-final-tall-ui/day-empty.mov"
+      ],
+      "start_epoch": 1789624332.066208,
+      "case_epoch": 1789624331.973775,
+      "path": "/tmp/g568-a2-final-tall-ui/day-empty.mov",
+      "exit": 0,
+      "complete": true,
+      "stop_epoch": 1789624396.278868
+    },
+    {
+      "name": "night-blocked",
+      "command": [
+        "xcrun",
+        "simctl",
+        "io",
+        "74BFBFFC-246C-42B9-989E-77C64F6FE145",
+        "recordVideo",
+        "--codec",
+        "h264",
+        "--force",
+        "/tmp/g568-a2-final-tall-ui/night-blocked.mov"
+      ],
+      "start_epoch": 1789624407.244642,
+      "case_epoch": 1789624407.1704001,
+      "path": "/tmp/g568-a2-final-tall-ui/night-blocked.mov",
+      "exit": 0,
+      "complete": true,
+      "stop_epoch": 1789624476.6194189
+    },
+    {
+      "name": "night-empty",
+      "command": [
+        "xcrun",
+        "simctl",
+        "io",
+        "74BFBFFC-246C-42B9-989E-77C64F6FE145",
+        "recordVideo",
+        "--codec",
+        "h264",
+        "--force",
+        "/tmp/g568-a2-final-tall-ui/night-empty.mov"
+      ],
+      "start_epoch": 1789624485.305168,
+      "case_epoch": 1789624485.246139,
+      "path": "/tmp/g568-a2-final-tall-ui/night-empty.mov",
+      "exit": 0,
+      "complete": true,
+      "stop_epoch": 1789624556.451541
+    }
+  ],
+  "shutdown_exit": 0
+}

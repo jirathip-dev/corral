@@ -1,0 +1,323 @@
+{
+  "run": "/tmp/g568-a2-final-short-ui",
+  "cases": [
+    {
+      "name": "day-blocked-accessibility",
+      "clip": "/tmp/g568-a2-final-short-ui/day-blocked-accessibility.mov",
+      "duration": 12.251667,
+      "sha256": "bfc756f9f040ef7a0e4ab4c724288c77f294cc3c4ecd8fb050d57eca9d6eb4a7",
+      "media_caveat": "media clock anchored to recordVideo start; \u00b11 s of the phase epoch",
+      "frames": [
+        {
+          "phase": "accessibility-oversized-scrolled",
+          "t": 5.367,
+          "path": "/tmp/g568-a2-frames-short/frames/day-blocked-accessibility-accessibility-oversized-scrolled.png"
+        },
+        {
+          "phase": "accessibility-oversized-reversal",
+          "t": 6.126,
+          "path": "/tmp/g568-a2-frames-short/frames/day-blocked-accessibility-accessibility-oversized-reversal.png"
+        }
+      ],
+      "sheet": "/tmp/g568-a2-frames-short/day-blocked-accessibility-phases.png"
+    },
+    {
+      "name": "day-empty-reduced",
+      "clip": "/tmp/g568-a2-final-short-ui/day-empty-reduced.mov",
+      "duration": 47.363333,
+      "sha256": "752fbcba11aeb0d36409449adcd1b091575e1839e1bc818aea4d62e0c11a17cc",
+      "media_caveat": "media clock anchored to recordVideo start; \u00b11 s of the phase epoch",
+      "frames": [
+        {
+          "phase": "day-empty-reduced-first-row",
+          "t": 2.166,
+          "path": "/tmp/g568-a2-frames-short/frames/day-empty-reduced-day-empty-reduced-first-row.png"
+        },
+        {
+          "phase": "day-empty-reduced-top-overscroll-settle",
+          "t": 6.07,
+          "path": "/tmp/g568-a2-frames-short/frames/day-empty-reduced-day-empty-reduced-top-overscroll-settle.png"
+        },
+        {
+          "phase": "day-empty-reduced-top-reversal-settle",
+          "t": 11.023,
+          "path": "/tmp/g568-a2-frames-short/frames/day-empty-reduced-day-empty-reduced-top-reversal-settle.png"
+        },
+        {
+          "phase": "day-empty-reduced-bottom-flick-settle",
+          "t": 20.677,
+          "path": "/tmp/g568-a2-frames-short/frames/day-empty-reduced-day-empty-reduced-bottom-flick-settle.png"
+        },
+        {
+          "phase": "day-empty-reduced-bottom-overscroll-settle",
+          "t": 25.648,
+          "path": "/tmp/g568-a2-frames-short/frames/day-empty-reduced-day-empty-reduced-bottom-overscroll-settle.png"
+        },
+        {
+          "phase": "day-empty-reduced-bottom-reversal-settle",
+          "t": 30.664,
+          "path": "/tmp/g568-a2-frames-short/frames/day-empty-reduced-day-empty-reduced-bottom-reversal-settle.png"
+        },
+        {
+          "phase": "day-empty-reduced-top-flick-settle",
+          "t": 40.135,
+          "path": "/tmp/g568-a2-frames-short/frames/day-empty-reduced-day-empty-reduced-top-flick-settle.png"
+        },
+        {
+          "phase": "day-empty-reduced-navigation-restored",
+          "t": 47.163,
+          "path": "/tmp/g568-a2-frames-short/frames/day-empty-reduced-day-empty-reduced-navigation-restored.png"
+        }
+      ],
+      "sheet": "/tmp/g568-a2-frames-short/day-empty-reduced-phases.png"
+    },
+    {
+      "name": "day-blocked",
+      "clip": "/tmp/g568-a2-final-short-ui/day-blocked.mov",
+      "duration": 61.338333,
+      "sha256": "c48912c80d644bac30f66367c7c3ded4441ad48dd5aea3f8410c135c3ba87609",
+      "media_caveat": "media clock anchored to recordVideo start; \u00b11 s of the phase epoch",
+      "frames": [
+        {
+          "phase": "day-blocked-first-row",
+          "t": 2.589,
+          "path": "/tmp/g568-a2-frames-short/frames/day-blocked-day-blocked-first-row.png"
+        },
+        {
+          "phase": "day-blocked-top-overscroll-settle",
+          "t": 7.908,
+          "path": "/tmp/g568-a2-frames-short/frames/day-blocked-day-blocked-top-overscroll-settle.png"
+        },
+        {
+          "phase": "day-blocked-top-reversal-settle",
+          "t": 15.755,
+          "path": "/tmp/g568-a2-frames-short/frames/day-blocked-day-blocked-top-reversal-settle.png"
+        },
+        {
+          "phase": "day-blocked-bottom-flick-settle",
+          "t": 27.552,
+          "path": "/tmp/g568-a2-frames-short/frames/day-blocked-day-blocked-bottom-flick-settle.png"
+        },
+        {
+          "phase": "day-blocked-bottom-overscroll-settle",
+          "t": 33.561,
+          "path": "/tmp/g568-a2-frames-short/frames/day-blocked-day-blocked-bottom-overscroll-settle.png"
+        },
+        {
+          "phase": "day-blocked-bottom-reversal-settle",
+          "t": 40.38,
+          "path": "/tmp/g568-a2-frames-short/frames/day-blocked-day-blocked-bottom-reversal-settle.png"
+        },
+        {
+          "phase": "day-blocked-top-flick-settle",
+          "t": 51.009,
+          "path": "/tmp/g568-a2-frames-short/frames/day-blocked-day-blocked-top-flick-settle.png"
+        },
+        {
+          "phase": "day-blocked-navigation-restored",
+          "t": 61.138,
+          "path": "/tmp/g568-a2-frames-short/frames/day-blocked-day-blocked-navigation-restored.png"
+        }
+      ],
+      "sheet": "/tmp/g568-a2-frames-short/day-blocked-phases.png"
+    },
+    {
+      "name": "day-empty",
+      "clip": "/tmp/g568-a2-final-short-ui/day-empty.mov",
+      "duration": 50.703333,
+      "sha256": "d33d983ef0358700a72a2afc740e0f246e7872bc9680c668cbb272c95ed86401",
+      "media_caveat": "media clock anchored to recordVideo start; \u00b11 s of the phase epoch",
+      "frames": [
+        {
+          "phase": "day-empty-first-row",
+          "t": 2.184,
+          "path": "/tmp/g568-a2-frames-short/frames/day-empty-day-empty-first-row.png"
+        },
+        {
+          "phase": "day-empty-top-overscroll-settle",
+          "t": 6.234,
+          "path": "/tmp/g568-a2-frames-short/frames/day-empty-day-empty-top-overscroll-settle.png"
+        },
+        {
+          "phase": "day-empty-top-reversal-settle",
+          "t": 11.724,
+          "path": "/tmp/g568-a2-frames-short/frames/day-empty-day-empty-top-reversal-settle.png"
+        },
+        {
+          "phase": "day-empty-bottom-flick-settle",
+          "t": 21.382,
+          "path": "/tmp/g568-a2-frames-short/frames/day-empty-day-empty-bottom-flick-settle.png"
+        },
+        {
+          "phase": "day-empty-bottom-overscroll-settle",
+          "t": 26.364,
+          "path": "/tmp/g568-a2-frames-short/frames/day-empty-day-empty-bottom-overscroll-settle.png"
+        },
+        {
+          "phase": "day-empty-bottom-reversal-settle",
+          "t": 31.552,
+          "path": "/tmp/g568-a2-frames-short/frames/day-empty-day-empty-bottom-reversal-settle.png"
+        },
+        {
+          "phase": "day-empty-top-flick-settle",
+          "t": 41.412,
+          "path": "/tmp/g568-a2-frames-short/frames/day-empty-day-empty-top-flick-settle.png"
+        },
+        {
+          "phase": "day-empty-navigation-restored",
+          "t": 50.503,
+          "path": "/tmp/g568-a2-frames-short/frames/day-empty-day-empty-navigation-restored.png"
+        }
+      ],
+      "sheet": "/tmp/g568-a2-frames-short/day-empty-phases.png"
+    },
+    {
+      "name": "day-single",
+      "clip": "/tmp/g568-a2-final-short-ui/day-single.mov",
+      "duration": 3.738333,
+      "sha256": "6115a31fb611e69c23f0ec5d5616bffb44490943f868f1e35140376b9abb6803",
+      "media_caveat": "media clock anchored to recordVideo start; \u00b11 s of the phase epoch",
+      "frames": [
+        {
+          "phase": "single-row",
+          "t": 2.1,
+          "path": "/tmp/g568-a2-frames-short/frames/day-single-single-row.png"
+        },
+        {
+          "phase": "single-row-overscroll",
+          "t": 3.538,
+          "path": "/tmp/g568-a2-frames-short/frames/day-single-single-row-overscroll.png"
+        }
+      ],
+      "sheet": "/tmp/g568-a2-frames-short/day-single-phases.png"
+    },
+    {
+      "name": "day-no-field",
+      "clip": "/tmp/g568-a2-final-short-ui/day-no-field.mov",
+      "duration": 2.125,
+      "sha256": "fa380d155fc38cb0ec5507a2237c933615258885e94a873646b08c6ec4c2326c",
+      "media_caveat": "media clock anchored to recordVideo start; \u00b11 s of the phase epoch",
+      "frames": []
+    },
+    {
+      "name": "night-blocked",
+      "clip": "/tmp/g568-a2-final-short-ui/night-blocked.mov",
+      "duration": 50.6,
+      "sha256": "27aca59301404854ef6a8ef1e5dc4ccdcc278e6a4067d0be74a9cab9414dd903",
+      "media_caveat": "media clock anchored to recordVideo start; \u00b11 s of the phase epoch",
+      "frames": [
+        {
+          "phase": "night-blocked-first-row",
+          "t": 2.161,
+          "path": "/tmp/g568-a2-frames-short/frames/night-blocked-night-blocked-first-row.png"
+        },
+        {
+          "phase": "night-blocked-top-overscroll-settle",
+          "t": 6.147,
+          "path": "/tmp/g568-a2-frames-short/frames/night-blocked-night-blocked-top-overscroll-settle.png"
+        },
+        {
+          "phase": "night-blocked-top-reversal-settle",
+          "t": 11.56,
+          "path": "/tmp/g568-a2-frames-short/frames/night-blocked-night-blocked-top-reversal-settle.png"
+        },
+        {
+          "phase": "night-blocked-bottom-flick-settle",
+          "t": 21.04,
+          "path": "/tmp/g568-a2-frames-short/frames/night-blocked-night-blocked-bottom-flick-settle.png"
+        },
+        {
+          "phase": "night-blocked-bottom-overscroll-settle",
+          "t": 26.042,
+          "path": "/tmp/g568-a2-frames-short/frames/night-blocked-night-blocked-bottom-overscroll-settle.png"
+        },
+        {
+          "phase": "night-blocked-bottom-reversal-settle",
+          "t": 31.26,
+          "path": "/tmp/g568-a2-frames-short/frames/night-blocked-night-blocked-bottom-reversal-settle.png"
+        },
+        {
+          "phase": "night-blocked-top-flick-settle",
+          "t": 40.781,
+          "path": "/tmp/g568-a2-frames-short/frames/night-blocked-night-blocked-top-flick-settle.png"
+        },
+        {
+          "phase": "night-blocked-navigation-restored",
+          "t": 50.4,
+          "path": "/tmp/g568-a2-frames-short/frames/night-blocked-night-blocked-navigation-restored.png"
+        }
+      ],
+      "sheet": "/tmp/g568-a2-frames-short/night-blocked-phases.png"
+    },
+    {
+      "name": "night-empty",
+      "clip": "/tmp/g568-a2-final-short-ui/night-empty.mov",
+      "duration": 50.376667,
+      "sha256": "7d119b804777637fb6737ab6a3310770328b196bafa389260ea936265f83a579",
+      "media_caveat": "media clock anchored to recordVideo start; \u00b11 s of the phase epoch",
+      "frames": [
+        {
+          "phase": "night-empty-first-row",
+          "t": 2.171,
+          "path": "/tmp/g568-a2-frames-short/frames/night-empty-night-empty-first-row.png"
+        },
+        {
+          "phase": "night-empty-top-overscroll-settle",
+          "t": 6.11,
+          "path": "/tmp/g568-a2-frames-short/frames/night-empty-night-empty-top-overscroll-settle.png"
+        },
+        {
+          "phase": "night-empty-top-reversal-settle",
+          "t": 11.312,
+          "path": "/tmp/g568-a2-frames-short/frames/night-empty-night-empty-top-reversal-settle.png"
+        },
+        {
+          "phase": "night-empty-bottom-flick-settle",
+          "t": 21.163,
+          "path": "/tmp/g568-a2-frames-short/frames/night-empty-night-empty-bottom-flick-settle.png"
+        },
+        {
+          "phase": "night-empty-bottom-overscroll-settle",
+          "t": 26.194,
+          "path": "/tmp/g568-a2-frames-short/frames/night-empty-night-empty-bottom-overscroll-settle.png"
+        },
+        {
+          "phase": "night-empty-bottom-reversal-settle",
+          "t": 31.308,
+          "path": "/tmp/g568-a2-frames-short/frames/night-empty-night-empty-bottom-reversal-settle.png"
+        },
+        {
+          "phase": "night-empty-top-flick-settle",
+          "t": 40.714,
+          "path": "/tmp/g568-a2-frames-short/frames/night-empty-night-empty-top-flick-settle.png"
+        },
+        {
+          "phase": "night-empty-navigation-restored",
+          "t": 50.177,
+          "path": "/tmp/g568-a2-frames-short/frames/night-empty-night-empty-navigation-restored.png"
+        }
+      ],
+      "sheet": "/tmp/g568-a2-frames-short/night-empty-phases.png"
+    },
+    {
+      "name": "day-empty-taps",
+      "clip": "/tmp/g568-a2-final-short-ui/day-empty-taps.mov",
+      "duration": 11.03,
+      "sha256": "6f5ce58f60cbd07a3ef4be0edf771e16a51a4caa8f6b637893eaf52d8739b614",
+      "media_caveat": "media clock anchored to recordVideo start; \u00b11 s of the phase epoch",
+      "frames": [
+        {
+          "phase": "tap-baseline",
+          "t": 2.139,
+          "path": "/tmp/g568-a2-frames-short/frames/day-empty-taps-tap-baseline.png"
+        },
+        {
+          "phase": "tap-revealed",
+          "t": 7.253,
+          "path": "/tmp/g568-a2-frames-short/frames/day-empty-taps-tap-revealed.png"
+        }
+      ],
+      "sheet": "/tmp/g568-a2-frames-short/day-empty-taps-phases.png"
+    }
+  ]
+}

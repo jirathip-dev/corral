@@ -1,0 +1,63 @@
+{
+  "head": "93bd57899c74e342cdfd5206af1774db43bec0d2",
+  "gates": [
+    {
+      "name": "source",
+      "command": [
+        "/Users/jirathip/.local/bin/python3",
+        "ios/check-release-demo.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/g568-a2-posthead-source-driver.log"
+    },
+    {
+      "name": "project",
+      "command": [
+        "/Users/jirathip/.local/bin/python3",
+        "docs/evidence/issue-568/check-project.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/g568-a2-posthead-project-driver.log"
+    },
+    {
+      "name": "provenance",
+      "command": [
+        "/Users/jirathip/.local/bin/python3",
+        "docs/evidence/issue-568/provenance.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/g568-a2-posthead-provenance-driver.log"
+    },
+    {
+      "name": "focused",
+      "command": [
+        "/Users/jirathip/.local/bin/python3",
+        "docs/evidence/issue-568/run-simulator.py",
+        "--label",
+        "posthead-focused"
+      ],
+      "exit": 0,
+      "log": "/tmp/g568-a2-posthead-focused-driver.log"
+    },
+    {
+      "name": "red-witness",
+      "command": [
+        "/Users/jirathip/.local/bin/python3",
+        "docs/evidence/issue-568/red-witness.py"
+      ],
+      "exit": 0,
+      "log": "/tmp/g568-a2-posthead-red-witness-driver.log"
+    },
+    {
+      "name": "diff",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit": 0,
+      "log": "/tmp/g568-a2-posthead-diff-driver.log"
+    }
+  ],
+  "ios_diff_vs_battery_head": 0
+}

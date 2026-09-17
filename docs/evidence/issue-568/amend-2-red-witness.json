@@ -1,0 +1,8 @@
+{
+  "before_sha256": "a707b0db85e59a252a1d8e662aee91abdba3564440f2ddeca0a8b9f694bf51cd",
+  "mutation_sha256": "1171a49e5d497d60e601a71d63436c378591f72c4b676ae9d58fece4f29218c5",
+  "mutation": "Disable painted group opacity and return unsnapped proposed offset.",
+  "red_exit": 65,
+  "restored_sha256": "a707b0db85e59a252a1d8e662aee91abdba3564440f2ddeca0a8b9f694bf51cd",
+  "green_exit": 0
+}

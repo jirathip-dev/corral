@@ -117,10 +117,19 @@ use crate::core::workspace::{RepoRoot, WorkspaceAttribution};
 const DEBOUNCE: Duration = Duration::from_millis(300);
 /// Safety-net sweep cadence. FSEvents is the primary signal; this is only a
 /// bounded backstop for events the OS coalesced or missed, so it must not be
-/// a hot poll loop of its own.
+/// a hot poll loop of its own. After a normal generation, known paths get
+/// ZERO eager hydration probes; this paced sweep still re-reads all of them.
+/// At 130 paths its last slot is before 60s (+ startup, scan/permit latency
+/// and the 200ms execution budget). Over-budget/error probes retry next round;
+/// their observation ages are not refreshed by the generation itself.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 const HEARTBEAT: Duration = Duration::from_secs(1);
 const STALL_TIMEOUT: Duration = Duration::from_secs(120);
+// #561 measured envelope (130 seeded paths, three 65s post-generation windows):
+// normal restart transition <= 1.358s; <= 35.539 CPU seconds over <= 66.372 wall
+// seconds including backoff AND steady-state work. This is measured, not a
+// host-independent CPU/deadline guarantee; zero eager probes is the pinned bound.
+// Reproduce with g561_restart_cost_measurement; docs/evidence/issue-561.
 const RESTART_DELAY: Duration = Duration::from_secs(1);
 const WARN_INTERVAL: Duration = Duration::from_secs(5 * 60);
 /// Registry-only safety-net cadence. FSEvents plus a one-shot startup rescan
@@ -476,6 +485,8 @@ struct WorktreeState {
     commit: Option<String>,
     subject: Option<String>,
     status: Option<GitStatus>,
+    /// A cancelled publication must replay even when the next probe is equal.
+    publication_pending: bool,
     /// The last probe exceeded the per-worktree budget. Keep cached facts
     /// until a later round completes instead of publishing a partial result.
     stale: bool,
@@ -774,6 +785,7 @@ impl GitPlane {
 
     async fn supervise(self: Arc<Self>, sink: PlaneSink) {
         self.health.enabled.store(true, Ordering::Release);
+        let mut recover_after_panic = false;
         loop {
             self.stopped.store(false, Ordering::Relaxed);
             self.retry_scheduled.store(false, Ordering::Relaxed);
@@ -781,24 +793,30 @@ impl GitPlane {
                 let mut state = self.lock_state();
                 state.pending.clear();
                 state.rerun.clear();
-                // Re-emit complete observations after a panic, including a
-                // panic between updating this cache and sending its events.
-                for worktree in state.worktrees.values_mut() {
-                    worktree.branch = None;
-                    worktree.commit = None;
-                    worktree.subject = None;
-                    worktree.status = None;
+                // A normal exit/stall preserves observations and their ages.
+                // Only a panicked child makes the cache untrustworthy: it may
+                // have unwound between updating facts and sending their events.
+                if recover_after_panic {
+                    for worktree in state.worktrees.values_mut() {
+                        worktree.branch = None;
+                        worktree.commit = None;
+                        worktree.subject = None;
+                        worktree.status = None;
+                    }
                 }
             }
-            for observed in self
-                .health
-                .facts
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .values_mut()
-            {
-                *observed = None;
+            if recover_after_panic {
+                for observed in self
+                    .health
+                    .facts
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .values_mut()
+                {
+                    *observed = None;
+                }
             }
+            recover_after_panic = false;
             self.progress(0);
             self.progress(1);
             self.progress(2);
@@ -816,6 +834,7 @@ impl GitPlane {
                         match result {
                             Some(Ok(false)) => continue, // completed debounce/retry
                             Some(Err(ref failure)) => {
+                                recover_after_panic |= failure.is_panic();
                                 self.health.alive.store(false, Ordering::Release);
                                 error!(error = %failure, "git plane child failed; restarting generation");
                             }
@@ -848,7 +867,13 @@ impl GitPlane {
                 .abort_all();
             // Join every old child BEFORE re-arming. No detached probe may
             // publish an old generation's result after replacement starts.
-            while self.next_task().await.is_some() {}
+            while let Some(result) = self.next_task().await {
+                // A concurrent panic can already be queued when another child
+                // exits or the heartbeat fires; aborting does not erase it.
+                if let Err(failure) = result {
+                    recover_after_panic |= failure.is_panic();
+                }
+            }
             if sink.is_closed() {
                 break;
             }
@@ -888,9 +913,16 @@ impl GitPlane {
                 "git plane: fsevents watchers live"
             );
         }
-        // A paced safety sweep is not boot hydration. Re-probe all cached
-        // paths now (also after recovery), using the same four admission slots.
-        let initial: Vec<_> = self.lock_state().worktrees.keys().cloned().collect();
+        // Hydrate only new/unobserved paths (all paths after panic recovery).
+        // Known facts survive a normal generation; the independently paced
+        // status sweep still re-reads EVERY path, including missed changes.
+        let initial: Vec<_> = self
+            .lock_state()
+            .worktrees
+            .iter()
+            .filter(|(_, st)| st.commit.is_none() || st.status.is_none() || st.publication_pending)
+            .map(|(wt, _)| wt.clone())
+            .collect();
         for worktree in initial {
             self.debounce(worktree, sink.clone());
         }
@@ -1512,7 +1544,7 @@ impl GitPlane {
             let commit_changed = st.commit.as_deref() != Some(probe.commit.as_str());
             let branch_changed = st.branch.as_deref() != Some(probe.branch.as_str());
             let head_changed = commit_changed || branch_changed;
-            if head_changed {
+            if head_changed || st.publication_pending {
                 events.push(GitEvent::HeadMoved {
                     worktree: wt.to_path_buf(),
                     branch: probe.branch.clone(),
@@ -1528,12 +1560,13 @@ impl GitPlane {
                     });
                 }
             }
-            if st.status.as_ref() != Some(&probe.status) {
+            if st.status.as_ref() != Some(&probe.status) || st.publication_pending {
                 events.push(GitEvent::DirtyChanged {
                     worktree: wt.to_path_buf(),
                     status: probe.status.clone(),
                 });
             }
+            st.publication_pending = !events.is_empty();
             st.branch = Some(probe.branch.clone());
             st.commit = Some(probe.commit.clone());
             st.subject = probe.subject.clone();
@@ -1557,6 +1590,16 @@ impl GitPlane {
             if sink.send(PlaneEvent::Git(event)).await.is_err() {
                 self.stopped.store(true, Ordering::Relaxed);
                 return;
+            }
+        }
+        {
+            let mut state = self.lock_state();
+            if let Some(st) = state.worktrees.get_mut(wt)
+                && st.commit.as_deref() == Some(&probe.commit)
+                && st.branch.as_deref() == Some(&probe.branch)
+                && st.status.as_ref() == Some(&probe.status)
+            {
+                st.publication_pending = false;
             }
         }
         self.health
@@ -2494,6 +2537,7 @@ impl Plane for GitPlane {
 mod tests {
     use super::*;
     include!("git_plane_issue492_tests.rs");
+    include!("git_plane_issue561_tests.rs");
 
     /// Poll `rx` until a `WorktreeRemoved` for `want` arrives or `timeout`
     /// elapses. Non-matching events (boot-scan `WorktreeAdded`, head facts,

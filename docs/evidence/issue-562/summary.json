@@ -1,0 +1,95 @@
+{
+  "issue": 562,
+  "branch": "g562-pathmatch",
+  "base": "79781ead3336550e6f792e354df875f7d42f3715",
+  "head": "043546eef43d2a02d8eb415c519052b78a7c2324",
+  "source_sha256": {
+    "src/core/store.rs": "efe754fe3a729cd3f71ae8ad9c8959f80cca52bbabc5324024f4af454544e890",
+    "src/core/store/publication_tests.rs": "32fbd083968571c3a5c11ce20d380246bd5798dce1df2f264b263fded49b056b",
+    "docs/evidence/issue-562/compare.py": "522c8ca8ee58908e064bb0f2175f2a846af4ace005aede1508171521fb797f94"
+  },
+  "red": {
+    "command": "cargo test -p corrald g562_ -- --nocapture",
+    "production_source": "unmodified base (git diff --exit-code src/core/store.rs = 0 before the fix)",
+    "raw_exit": 101,
+    "passed": 1,
+    "failed": 1,
+    "log": "red3.log.gz"
+  },
+  "green": {
+    "command": "cargo test -p corrald g562_ -- --nocapture",
+    "raw_exit": 0,
+    "passed": 2,
+    "failed": 0,
+    "log": "green.log.gz"
+  },
+  "canonical_byte_identity": {
+    "command": "python3 docs/evidence/issue-562/compare.py /tmp/g562-red3.log /tmp/g562-green.log",
+    "raw_exit": 0,
+    "cases": 4,
+    "masked": [
+      "epoch",
+      "generated_at"
+    ]
+  },
+  "agent_population": "herdr agent list -> 50 agents, 0 aliased cwds (agent-count.json)",
+  "gates": {
+    "workspace": {
+      "command": "cargo test --workspace",
+      "raw_exit": 0,
+      "seconds": 279.758,
+      "executed": {},
+      "log": "workspace.log.gz"
+    },
+    "clippy": {
+      "command": "cargo clippy --all-targets --all-features -- -D warnings",
+      "raw_exit": 0,
+      "seconds": 115.304,
+      "executed": {},
+      "log": "clippy.log.gz"
+    },
+    "deny": {
+      "command": "cargo deny --locked --workspace check",
+      "raw_exit": 0,
+      "seconds": 2.28,
+      "executed": {},
+      "log": "deny.log.gz"
+    },
+    "audit": {
+      "command": "cargo audit --deny warnings",
+      "raw_exit": 0,
+      "seconds": 3.365,
+      "executed": {},
+      "log": "audit.log.gz"
+    },
+    "release": {
+      "command": "cargo build --release",
+      "raw_exit": 0,
+      "seconds": 376.487,
+      "executed": {},
+      "log": "release.log.gz"
+    },
+    "coverage-clean": {
+      "command": "cargo llvm-cov clean --locked --workspace",
+      "raw_exit": 0,
+      "seconds": 0.628,
+      "executed": {},
+      "log": "coverage-clean.log.gz"
+    },
+    "coverage": {
+      "command": "cargo llvm-cov --locked --package corrald --package corrald-client --all-targets --no-fail-fast --quiet --fail-under-lines 85 --fail-under-functions 82",
+      "raw_exit": 0,
+      "seconds": 344.632,
+      "executed": {},
+      "log": "coverage.log.gz"
+    },
+    "coverage-client": {
+      "command": "cargo llvm-cov report --locked --package corrald-client --fail-under-lines 40 --fail-under-functions 35",
+      "raw_exit": 0,
+      "seconds": 2.304,
+      "executed": {},
+      "log": "coverage-client.log.gz"
+    }
+  },
+  "head_note": "head is the commit whose tree carried these source bytes when the gates ran; the only later change to that commit is the evidence/report byte diff itself (a report cannot carry its own final SHA). source_sha256 pins the reviewed sources."
+}

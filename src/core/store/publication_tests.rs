@@ -666,6 +666,175 @@ async fn g560_cached_encoder_matches_independent_bytes() {
     println!("G560_CACHED_BYTES states=64 snapshots=64 sse_frames=64 agent_encodings=0");
 }
 
+fn g562_fixture_agents() -> BTreeMap<String, Agent> {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../docs/evidence/issue-556/rust/fixture-fresh.json"
+    ))
+    .unwrap();
+    serde_json::from_value(fixture["agents"].clone()).unwrap()
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn g562_aliased_worktree_binding_tracks_fact_freshness() {
+    use crate::core::util::canonicalize_existing_prefix;
+    use crate::core::workspace::paths_match;
+
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let canonical = root.join("repo/worktree");
+    std::fs::create_dir_all(&canonical).unwrap();
+    for name in ["a-link", "z-link"] {
+        std::os::unix::fs::symlink(root.join("repo"), root.join(name)).unwrap();
+    }
+    let fixture = g562_fixture_agents();
+    for alias in [
+        root.join("a-link/worktree"),
+        root.join("z-link/worktree"),
+        canonical.join("../worktree"),
+        PathBuf::from(format!("{}//worktree/", root.join("repo").display())),
+    ] {
+        assert_ne!(alias.as_os_str(), canonical.as_os_str());
+        assert_eq!(canonicalize_existing_prefix(&alias), canonical);
+        assert!(paths_match(&alias, &canonical));
+        let store = Store::new();
+        let health = store.git_plane_health();
+        health.enabled.store(true, Ordering::Release);
+        let mut row = fixture["bound"].clone();
+        row.workspace.worktree_path = Some(alias.to_string_lossy().into_owned());
+        let mut peer = row.clone();
+        peer.agent_id = "canonical-peer".into();
+        peer.workspace.worktree_path = Some(canonical.to_string_lossy().into_owned());
+        store.apply(Change::upsert(row.clone())).await;
+        store.apply(Change::upsert(peer)).await;
+        for (label, alive, age, bound) in [
+            ("fresh", true, Some(0), true),
+            ("expired", true, Some(121), false),
+            ("recovered", true, Some(0), true),
+            ("stopped", false, Some(0), false),
+            ("absent", true, None, false),
+            ("fresh-again", true, Some(0), true),
+        ] {
+            health.alive.store(alive, Ordering::Release);
+            {
+                let mut facts = health.facts.lock().unwrap();
+                facts.clear();
+                if let Some(age) = age {
+                    facts.insert(
+                        canonical.clone(),
+                        Some(Instant::now() - Duration::from_secs(age)),
+                    );
+                }
+            }
+            let delta = store.flush().await;
+            assert_eq!(
+                delta.is_some(),
+                label != "absent",
+                "{label}: binding transition delta"
+            );
+            let published = store.published();
+            let wire: serde_json::Value = serde_json::from_slice(&published.body).unwrap();
+            println!(
+                "G562_ALIAS alias={} canonical={} phase={label} snapshot={wire}",
+                alias.display(),
+                canonical.display()
+            );
+            for id in ["bound", "canonical-peer"] {
+                let ws = &published.agents.state[id].workspace;
+                assert_eq!(
+                    ws.pr_number,
+                    bound.then_some(556),
+                    "{label}: fresh aliased worktree must retain its PR binding ({})",
+                    alias.display()
+                );
+                assert_eq!(
+                    ws.ci_status,
+                    bound.then_some(row.workspace.ci_status.unwrap())
+                );
+                assert_eq!(
+                    ws.pr_match_source,
+                    bound.then_some(row.workspace.pr_match_source.clone().unwrap())
+                );
+                assert_eq!(ws.issues.len(), usize::from(bound));
+                if let Some(delta) = &delta {
+                    assert_eq!(
+                        delta
+                            .upd
+                            .iter()
+                            .find(|a| a.agent_id == id)
+                            .unwrap()
+                            .workspace,
+                        *ws
+                    );
+                }
+            }
+            if age.is_some() {
+                assert_eq!(
+                    wire["git_worktree_facts"].as_object().unwrap().len(),
+                    1,
+                    "an alias must not manufacture a stale fact"
+                );
+            }
+            assert_eq!(
+                store.get("bound").await.unwrap(),
+                row,
+                "projection must not destroy recoverable facts"
+            );
+        }
+    }
+    println!("G562_ALIAS_VERIFIED spellings=4 transitions=24 agents_per_transition=2");
+}
+
+#[tokio::test]
+async fn g562_canonical_snapshot_fixtures() {
+    let fresh = g562_fixture_agents();
+    for (label, alive, observed) in [
+        // A future monotonic instant fixes the fixture age at zero without
+        // normalizing any health fields out of the byte comparison.
+        (
+            "fresh",
+            true,
+            Some(Instant::now() + Duration::from_secs(60)),
+        ),
+        (
+            "stopped",
+            false,
+            Some(Instant::now() + Duration::from_secs(60)),
+        ),
+        ("unobserved", true, None),
+        ("absent", true, None),
+    ] {
+        let store = Store::new();
+        let health = store.git_plane_health();
+        health.enabled.store(true, Ordering::Release);
+        health.alive.store(alive, Ordering::Release);
+        for row in fresh.values() {
+            if label != "absent" {
+                health.facts.lock().unwrap().insert(
+                    PathBuf::from(row.workspace.worktree_path.as_ref().unwrap()),
+                    observed,
+                );
+            }
+            store.apply(Change::upsert(row.clone())).await;
+        }
+        store.flush().await;
+        let publication = store.published();
+        let actual: serde_json::Value = serde_json::from_slice(&publication.body).unwrap();
+        assert_eq!(
+            actual["agents"]["bound"]["workspace"]["pr_number"],
+            if label == "fresh" {
+                serde_json::json!(556)
+            } else {
+                serde_json::Value::Null
+            }
+        );
+        println!(
+            "G562_CANONICAL {label} {}",
+            std::str::from_utf8(&publication.body).unwrap()
+        );
+    }
+}
+
 #[tokio::test]
 async fn g560_equal_age_still_refreshes_its_time_origin() {
     let store = Store::new();

@@ -99,8 +99,19 @@ async fn g561_changed_inventory_and_missed_change_converge() {
     );
     let removed = fs::canonicalize(removed).unwrap();
     let store = crate::core::store::Store::new();
-    let plane =
-        Arc::new(GitPlane::new(repo.clone(), worktrees).with_health(store.git_plane_health()));
+    // Keep the production pacing mechanism, but compress the fixture's cadence:
+    // a legitimate over-budget probe retries next round, not within its slot.
+    // The ignored cost witness separately exercises the real 60s cadence.
+    assert_eq!(SWEEP_INTERVAL, Duration::from_secs(60));
+    let intervals = SweepIntervals {
+        status: Duration::from_secs(1),
+        ..PRODUCTION_SWEEP_INTERVALS
+    };
+    let plane = Arc::new(
+        GitPlane::new(repo.clone(), worktrees)
+            .with_health(store.git_plane_health())
+            .with_sweep_intervals(intervals),
+    );
     let (sink, mut rx) = crate::core::plane_channel();
     let supervisor = tokio::spawn(plane.clone().supervise(sink));
     until(|| {
@@ -142,7 +153,7 @@ async fn g561_changed_inventory_and_missed_change_converge() {
     assert_eq!(plane.health.facts.lock().unwrap()[&repo], observed);
     drop(permits);
     let started = Instant::now();
-    tokio::time::timeout(SWEEP_INTERVAL + Duration::from_secs(5), async {
+    tokio::time::timeout(intervals.status + Duration::from_secs(5), async {
         loop {
             let ready = {
                 let state = plane.lock_state();
@@ -165,7 +176,15 @@ async fn g561_changed_inventory_and_missed_change_converge() {
         }
     })
     .await
-    .expect("changed facts did not converge within one paced sweep + 5s allowance");
+    .unwrap_or_else(|error| {
+        panic!(
+            "changed facts did not converge within fixture sweep + 5s retry allowance: \
+             {error}; skipped={}; facts={:?}; state={:?}",
+            plane.health.skipped.load(Ordering::Relaxed),
+            plane.health.facts.lock().unwrap(),
+            plane.lock_state().worktrees,
+        )
+    });
     let mut saw_added = false;
     let mut saw_removed = false;
     while let Ok(event) = rx.try_recv() {

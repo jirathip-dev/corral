@@ -53,6 +53,16 @@ struct Workspace: Codable, Equatable, Sendable {
     var headSha: String?
     var headSubject: String?
     var issues: [Issue]?
+    /// #564: the daemon's per-worktree git-fact verdict for THIS row's
+    /// canonical `worktreePath`, resolved from the frame's
+    /// `git_worktree_facts` map (#492 additive wire fields). NOT a wire field
+    /// of `Workspace` itself: the daemon publishes facts per canonical path
+    /// at the FRAME level, so this is the client-side projection of that map
+    /// for this row. It stays `.noFact` until a facts-bearing frame resolves
+    /// it, and a delta frame that carries no facts map (today's wire, #492
+    /// model.rs) leaves a row it replaces at `.noFact` — fail closed, never
+    /// presented as current.
+    var gitFactFreshness: WorktreeFactFreshness = .noFact
 
     enum CodingKeys: String, CodingKey {
         case repo, branch
@@ -68,7 +78,8 @@ struct Workspace: Codable, Equatable, Sendable {
     init(repo: String? = nil, branch: String? = nil, worktreePath: String? = nil,
          prNumber: UInt64? = nil, ciStatus: CiStatus? = nil, dirty: Bool = false,
          ahead: UInt64 = 0, behind: UInt64 = 0, headSha: String? = nil,
-         headSubject: String? = nil, issues: [Issue]? = nil) {
+         headSubject: String? = nil, issues: [Issue]? = nil,
+         gitFactFreshness: WorktreeFactFreshness = .noFact) {
         self.repo = repo
         self.branch = branch
         self.worktreePath = worktreePath
@@ -80,6 +91,7 @@ struct Workspace: Codable, Equatable, Sendable {
         self.headSha = headSha
         self.headSubject = headSubject
         self.issues = issues
+        self.gitFactFreshness = gitFactFreshness
     }
 
     init(from decoder: Decoder) throws {
@@ -192,6 +204,109 @@ struct Agent: Codable, Equatable, Identifiable, Sendable {
     var isBlocked: Bool { state == .blocked }
 }
 
+/// #564: one worktree's git-fact freshness row, exactly as the daemon
+/// publishes it (#492 additive wire shape): `git_worktree_facts` maps a
+/// CANONICAL worktree path to this pair.
+struct GitFactAge: Codable, Equatable, Sendable {
+    /// Millis since the last successful local-git observation, relative to
+    /// the frame's `generated_at`. `nil` = never observed.
+    var factAgeMs: UInt64?
+    /// The daemon's OWN stale verdict for this row — authoritative. The
+    /// client renders this verdict; it never re-derives staleness from
+    /// `factAgeMs` with a threshold of its own.
+    var stale: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case factAgeMs = "fact_age_ms"
+        case stale
+    }
+
+    init(factAgeMs: UInt64? = nil, stale: Bool) {
+        self.factAgeMs = factAgeMs
+        self.stale = stale
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        factAgeMs = try c.decodeIfPresent(UInt64.self, forKey: .factAgeMs)
+        // Fail closed: a row that does not carry the daemon's verdict is
+        // never treated as current.
+        stale = try c.decodeIfPresent(Bool.self, forKey: .stale) ?? true
+    }
+}
+
+/// #564: the three states a worktree's git fact can be in for a consumer —
+/// fresh, stale or absent, deterministically and without conflation.
+enum WorktreeFactFreshness: Equatable, Sendable {
+    /// A fact row exists and the daemon marked it current (`stale: false`).
+    case fresh
+    /// A fact row exists but the daemon marked it stale (`stale: true`) —
+    /// aged out, plane stopped, or never observed (`fact_age_ms: null`).
+    case stale
+    /// No fact row for this canonical path (a frame without a facts map, or
+    /// a row dropped by a replacement): there is nothing to claim.
+    case noFact
+
+    /// Only a fresh fact may be presented as current.
+    var isCurrent: Bool { self == .fresh }
+}
+
+/// #564: the client-side RETENTION table for per-worktree git facts, so the
+/// three states survive a frame sequence instead of being re-invented per
+/// frame.
+///
+/// Rows are keyed by the CANONICAL worktree path — the daemon's own key
+/// (`git_worktree_facts` keys are canonical paths, and
+/// `Workspace.worktreePath` carries the same spelling). One table belongs to
+/// one host's frame stream: a delta for host A can never mutate host B's
+/// rows, and retention is per table.
+///
+/// A full snapshot REPLACES the table — it is an authoritative
+/// point-in-time map, including an EMPTY map, which means every path is
+/// `noFact`. A delta UPSERTS only the rows it carries; unmentioned rows are
+/// RETAINED with their own verdicts, so omission can never promote a row
+/// (a delta without a facts map changes nothing at all). A row therefore
+/// transitions fresh -> stale by an upsert/replacement that carries
+/// `stale: true`, and stale -> no fact only by a replacement that no longer
+/// carries the row.
+struct WorktreeFactTable: Equatable, Sendable {
+    private(set) var rows: [String: GitFactAge]
+
+    init(rows: [String: GitFactAge] = [:]) {
+        self.rows = rows
+    }
+
+    /// The state of one canonical worktree path: fresh / stale / no fact.
+    /// A nil or unknown path has no fact to report.
+    func freshness(forWorktreePath path: String?) -> WorktreeFactFreshness {
+        guard let path, let row = rows[path] else { return .noFact }
+        return row.stale ? .stale : .fresh
+    }
+
+    /// This frame's row, with its verdict resolved for the row's own
+    /// canonical worktree path (`noFact` when the frame carries no row).
+    func resolving(_ agent: Agent) -> Agent {
+        var resolved = agent
+        resolved.workspace.gitFactFreshness =
+            freshness(forWorktreePath: agent.workspace.worktreePath)
+        return resolved
+    }
+
+    /// A facts-bearing snapshot: authoritative replacement (never a merge).
+    func replacing(with snapshot: Snapshot) -> WorktreeFactTable {
+        WorktreeFactTable(rows: snapshot.gitWorktreeFacts)
+    }
+
+    /// A facts-bearing delta: upsert its rows, retain everything else. A
+    /// delta that carries no facts map leaves this table untouched.
+    func merging(_ delta: Delta) -> WorktreeFactTable {
+        guard let update = delta.gitWorktreeFacts else { return self }
+        var next = self
+        for (path, row) in update { next.rows[path] = row }
+        return next
+    }
+}
+
 /// Full point-in-time state, served by `GET /snapshot` and by SSE when a
 /// client's cursor is too old.
 struct Snapshot: Codable, Sendable {
@@ -204,12 +319,17 @@ struct Snapshot: Codable, Sendable {
     var generatedAt: UInt64
     /// Flat keyed records (NOT JSON Patch; JSON, not CBOR).
     var agents: [String: Agent]
+    /// #564: canonical worktree path -> the daemon's git-fact row (#492
+    /// additive wire field). Absent on a pre-#492 daemon, which decodes to
+    /// an EMPTY map — every path is then `noFact`, never "fresh by default".
+    var gitWorktreeFacts: [String: GitFactAge]
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
         case epoch, rev
         case generatedAt = "generated_at"
         case agents
+        case gitWorktreeFacts = "git_worktree_facts"
     }
 
     init(
@@ -218,12 +338,15 @@ struct Snapshot: Codable, Sendable {
         generatedAt: UInt64,
         agents: [String: Agent],
         epoch: String? = nil,
+        gitWorktreeFacts: [String: GitFactAge] = [:]
     ) {
+        let table = WorktreeFactTable(rows: gitWorktreeFacts)
         self.schemaVersion = schemaVersion
         self.epoch = epoch
         self.rev = rev
         self.generatedAt = generatedAt
-        self.agents = agents
+        self.agents = agents.mapValues(table.resolving)
+        self.gitWorktreeFacts = gitWorktreeFacts
     }
 
     init(from decoder: Decoder) throws {
@@ -232,7 +355,13 @@ struct Snapshot: Codable, Sendable {
         epoch = try container.decodeIfPresent(String.self, forKey: .epoch)
         rev = try container.decode(UInt64.self, forKey: .rev)
         generatedAt = try container.decode(UInt64.self, forKey: .generatedAt)
+        // Preserve the facts map on the snapshot, then resolve every row's
+        // verdict from its own canonical worktree path.
+        gitWorktreeFacts =
+            try container.decodeIfPresent([String: GitFactAge].self, forKey: .gitWorktreeFacts) ?? [:]
+        let table = WorktreeFactTable(rows: gitWorktreeFacts)
         agents = try container.decode([String: Agent].self, forKey: .agents)
+            .mapValues(table.resolving)
     }
 }
 
@@ -245,12 +374,41 @@ struct Delta: Codable, Equatable, Sendable {
     var upd: [Agent]
     /// agent_ids to delete.
     var del: [String]
+    /// #564: the per-worktree git-fact rows this delta carries, keyed by
+    /// canonical worktree path (#492 additive fields). Today's daemon
+    /// publishes the map on full frames only, so this is `nil` for a wire
+    /// delta — `nil` means "this frame says nothing about facts", and a
+    /// consumer's retained table must keep its rows (never reset them).
+    /// A delta that DOES carry the map upserts exactly the rows it names.
+    var gitWorktreeFacts: [String: GitFactAge]?
 
-    init(rev: UInt64, upd: [Agent], del: [String], epoch: String? = nil) {
+    enum CodingKeys: String, CodingKey {
+        case epoch, rev, upd, del
+        case gitWorktreeFacts = "git_worktree_facts"
+    }
+
+    init(rev: UInt64, upd: [Agent], del: [String], epoch: String? = nil,
+         gitWorktreeFacts: [String: GitFactAge]? = nil) {
         self.epoch = epoch
         self.rev = rev
-        self.upd = upd
+        self.gitWorktreeFacts = gitWorktreeFacts
+        // A delta's rows take their verdict from the map THIS delta carries;
+        // an omitted map resolves them to `.noFact` (fail closed: this frame
+        // carries no verdict). The consumer's retained table — not this
+        // frame — remains the authority for rows a delta does not name.
+        let table = WorktreeFactTable(rows: gitWorktreeFacts ?? [:])
+        self.upd = upd.map(table.resolving)
         self.del = del
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        epoch = try c.decodeIfPresent(String.self, forKey: .epoch)
+        rev = try c.decode(UInt64.self, forKey: .rev)
+        gitWorktreeFacts = try c.decodeIfPresent([String: GitFactAge].self, forKey: .gitWorktreeFacts)
+        let table = WorktreeFactTable(rows: gitWorktreeFacts ?? [:])
+        upd = try c.decode([Agent].self, forKey: .upd).map(table.resolving)
+        del = try c.decode([String].self, forKey: .del)
     }
 }
 

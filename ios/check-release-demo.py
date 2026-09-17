@@ -575,7 +575,13 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # #568: measured complete-row settlement and whole-group edge visibility;
     # recomputed with release_source_digest (the test-source pin is unchanged).
     # #568 amendment 2: remove renderer filesystem recording; recomputed from sources.
-    "e81e0a5c308efaf6ecee4d208eb4c063bd901d0a3f45a0a931eb69ebcc6b340b"
+    # #564: per-worktree git-fact freshness — Models.swift decodes and
+    # preserves `git_worktree_facts` on Snapshot AND Delta (three-state
+    # retained table, fail-closed) and the FleetViews Board card gates its
+    # positive git signals on that verdict; recomputed with
+    # release_source_digest over this tree (the test-source pin is unchanged:
+    # the new tests are NEW files, FleetNotifierTests.swift is untouched).
+    "4415c0b63ebcbec5c7a57a3e24ab3671dd5dd1c934e1cc063f679f9715b28e59"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

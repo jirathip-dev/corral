@@ -1,0 +1,28 @@
+=== docs/evidence/issue-556/rust/fixture-fresh.json ===
+rows=2 rev=1 epoch=2972a8d1aa3e2dbed679e2f3db234ad5
+row /private/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/.tmpsN9sSN/worktrees/repo/bound fact_age_ms=7 stale=false
+row /private/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/.tmpsN9sSN/worktrees/repo/unbound fact_age_ms=7 stale=false
+agent bound path=/private/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/.tmpsN9sSN/worktrees/repo/bound dirty=false state=fresh current=true
+agent unbound path=/private/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/.tmpsN9sSN/worktrees/repo/unbound dirty=false state=fresh current=true
+PROBE_EXIT=0
+=== docs/evidence/issue-556/rust/fixture-aged.json ===
+rows=2 rev=2 epoch=2972a8d1aa3e2dbed679e2f3db234ad5
+row /private/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/.tmpsN9sSN/worktrees/repo/bound fact_age_ms=120000 stale=true
+row /private/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/.tmpsN9sSN/worktrees/repo/unbound fact_age_ms=8 stale=false
+agent bound path=/private/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/.tmpsN9sSN/worktrees/repo/bound dirty=false state=stale current=false
+agent unbound path=/private/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/.tmpsN9sSN/worktrees/repo/unbound dirty=false state=fresh current=true
+PROBE_EXIT=0
+=== docs/evidence/issue-556/rust/fixture-stopped.json ===
+rows=2 rev=6 epoch=2972a8d1aa3e2dbed679e2f3db234ad5
+row /private/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/.tmpsN9sSN/worktrees/repo/bound fact_age_ms=2 stale=true
+row /private/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/.tmpsN9sSN/worktrees/repo/unbound fact_age_ms=10 stale=true
+agent bound path=/private/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/.tmpsN9sSN/worktrees/repo/bound dirty=false state=stale current=false
+agent unbound path=/private/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/.tmpsN9sSN/worktrees/repo/unbound dirty=false state=stale current=false
+PROBE_EXIT=0
+=== docs/evidence/issue-556/rust/fixture-absent.json ===
+rows=2 rev=4 epoch=2972a8d1aa3e2dbed679e2f3db234ad5
+row /private/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/.tmpsN9sSN/worktrees/repo/bound fact_age_ms=null stale=true
+row /private/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/.tmpsN9sSN/worktrees/repo/unbound fact_age_ms=9 stale=false
+agent bound path=/private/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/.tmpsN9sSN/worktrees/repo/bound dirty=false state=stale current=false
+agent unbound path=/private/var/folders/4k/fbv06j2j5bbd3h4wgbwk1ccm0000gn/T/.tmpsN9sSN/worktrees/repo/unbound dirty=false state=fresh current=true
+PROBE_EXIT=0

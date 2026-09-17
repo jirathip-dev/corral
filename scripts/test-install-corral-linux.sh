@@ -156,6 +156,44 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB_BIN/brew"
 chmod +x "$STUB_BIN/"*
 : > "$LOG_DIR/forbidden.log"
 
+# The runner may ship gh in /usr/bin AND /bin (usrmerge). Neither directory
+# belongs on the absent leg's PATH. Expose only tool names used by the installer,
+# its release setup helpers and our curl stub; gzip is tar's subprocess.
+make_gh_free_bin() { # destination, source PATH
+  local destination="$1" source_path="$2" tool resolved
+  mkdir -p "$destination"
+  for tool in bash curl awk sed tr tar gzip mktemp basename dirname grep head \
+    id uname mkdir rm mv chmod cat cmp cp sleep shasum sha256sum openssl plutil; do
+    # Hash tools are alternatives; plutil is macOS-only. Missing required tools
+    # still fail at the existing installer/helper checks, never reach host PATH.
+    if resolved="$(PATH="$source_path" command -v "$tool")"; then
+      ln -s "$resolved" "$destination/$tool"
+    fi
+  done
+}
+
+# Always simulate a runner tool directory containing gh, even on Macs without
+# /usr/bin/gh. The SAME builder then sanitizes that source for the whole suite.
+RUNNER_BIN="$WORK/runner-bin"
+ABSENT_BIN="$WORK/absent-bin"
+make_gh_free_bin "$RUNNER_BIN" /usr/bin:/bin
+cp "$POISON_BIN/gh" "$RUNNER_BIN/gh"
+check test -x "$RUNNER_BIN/gh"
+if source_gh="$(env -i PATH="$RUNNER_BIN" /bin/bash --noprofile --norc -c 'command -v gh')"; then source_rc=0; else source_rc=$?; fi
+check test "$source_rc" -eq 0
+check test "$source_gh" = "$RUNNER_BIN/gh"
+printf 'SOURCE_PATH=%s; command -v gh output=<%s>; RAW_EXIT=%s\n' "$RUNNER_BIN" "$source_gh" "$source_rc"
+make_gh_free_bin "$ABSENT_BIN" "$RUNNER_BIN"
+check test ! -e "$ABSENT_BIN/gh"
+check test ! -L "$ABSENT_BIN/gh"
+if farm_gh="$(env -i PATH="$ABSENT_BIN" /bin/bash --noprofile --norc -c 'command -v gh')"; then farm_rc=0; else farm_rc=$?; fi
+printf 'FARM_PATH=%s; command -v gh output=<%s>; RAW_EXIT=%s\n' "$ABSENT_BIN" "$farm_gh" "$farm_rc"
+check test "$farm_rc" -eq 1
+check test -z "$farm_gh"
+check test ! -s "$LOG_DIR/forbidden.log"
+echo "OK: farm excludes gh from contaminated source; executed assertions: $ASSERTIONS"
+if [[ "${1:-}" == --check-gh-free-path ]]; then exit 0; fi
+
 # ---- hash + fixture helpers -------------------------------------------------
 sha256_hex() {
   if command -v shasum >/dev/null 2>&1; then
@@ -313,6 +351,7 @@ resolution_case() { # name, expected exit, message, expected downloads, env...
   chmod 600 "$home/config/key"
   path="$STUB_BIN:/usr/bin:/bin"
   if [[ "$GH_MODE" == poison ]]; then path="$POISON_BIN:$path"; fi
+  if [[ "$GH_MODE" == absent ]]; then path="$STUB_BIN:$ABSENT_BIN"; fi
   if gh_path="$(env -i PATH="$path" /bin/bash --noprofile --norc -c 'command -v gh')"; then lookup_rc=0; else lookup_rc=$?; fi
   printf 'PATH=%s; command -v gh output=<%s>; RAW_EXIT=%s\n' "$path" "$gh_path" "$lookup_rc"
   if [[ "$GH_MODE" == absent ]]; then

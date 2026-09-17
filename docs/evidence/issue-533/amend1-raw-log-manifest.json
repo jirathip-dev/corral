@@ -1,0 +1,95 @@
+{
+  "amend1-red-harness-initial.log.gz": {
+    "raw_sha256": "a79bc94e44bdd9a4f90185d581b02950612672e4a292bae96fc9c70547aee0e9",
+    "raw_bytes": 270740,
+    "raw_lines": 2517,
+    "final_executed_lines": [
+      "Executed 5 tests, with 0 failures (0 unexpected) in 0.010 (0.011) seconds",
+      "Executed 5 tests, with 0 failures (0 unexpected) in 0.010 (0.012) seconds"
+    ],
+    "exit_lines": [
+      "red_exit=65"
+    ],
+    "restart_lines": [
+      "Restarting after unexpected exit, crash, or test timeout; summary will include totals from previous launches."
+    ]
+  },
+  "amend1-red.log.gz": {
+    "raw_sha256": "3c9c8677f64e209ad5f48fbd2ca97b9910d17bac88985990499ddab5c9310beb",
+    "raw_bytes": 146103,
+    "raw_lines": 1459,
+    "final_executed_lines": [
+      "Executed 17 tests, with 2 failures (0 unexpected) in 0.917 (0.926) seconds",
+      "Executed 17 tests, with 2 failures (0 unexpected) in 0.917 (0.926) seconds"
+    ],
+    "exit_lines": [
+      "red_exit=65"
+    ],
+    "restart_lines": []
+  },
+  "amend1-exact-base-red.log.gz": {
+    "raw_sha256": "62eb8f735e53ec5766072df543008b481c11b295539c8a4d843982b1552f6dab",
+    "raw_bytes": 213788,
+    "raw_lines": 2117,
+    "final_executed_lines": [
+      "Executed 17 tests, with 2 failures (0 unexpected) in 0.778 (0.911) seconds",
+      "Executed 17 tests, with 2 failures (0 unexpected) in 0.778 (0.912) seconds"
+    ],
+    "exit_lines": [
+      "red_exit=65"
+    ],
+    "restart_lines": []
+  },
+  "amend1-focused.log.gz": {
+    "raw_sha256": "56749888ac81e98ba79740c22f5e43a72782315aec11ec008aa3f0e4c0bec0c0",
+    "raw_bytes": 150256,
+    "raw_lines": 1480,
+    "final_executed_lines": [
+      "Executed 17 tests, with 0 failures (0 unexpected) in 1.673 (1.683) seconds",
+      "Executed 17 tests, with 0 failures (0 unexpected) in 1.673 (1.684) seconds"
+    ],
+    "exit_lines": [
+      "focused_exit=0"
+    ],
+    "restart_lines": []
+  },
+  "amend1-full.log.gz": {
+    "raw_sha256": "7b30f957f1d98bd7a86417f9f14adf686c2676764d2d5c5f19b19cc95daddbec",
+    "raw_bytes": 1013042,
+    "raw_lines": 7411,
+    "final_executed_lines": [
+      "Executed 659 tests, with 1 test skipped and 0 failures (0 unexpected) in 213.284 (215.006) seconds",
+      "Executed 659 tests, with 1 test skipped and 0 failures (0 unexpected) in 213.284 (215.008) seconds"
+    ],
+    "exit_lines": [
+      "full_exit=0"
+    ],
+    "restart_lines": []
+  },
+  "amend1-mutation.log.gz": {
+    "raw_sha256": "4eda692bbc784596af9eb94406b0f491f30b6e11706872458477dbcfdf87d4cc",
+    "raw_bytes": 225507,
+    "raw_lines": 2078,
+    "final_executed_lines": [
+      "Executed 1 test, with 1 failure (0 unexpected) in 1.921 (1.928) seconds",
+      "Executed 1 test, with 1 failure (0 unexpected) in 1.921 (1.930) seconds"
+    ],
+    "exit_lines": [
+      "mutation_exit=65"
+    ],
+    "restart_lines": []
+  },
+  "amend1-restore.log.gz": {
+    "raw_sha256": "451955279b1ce1ea883c10d929148d978c48ae714cd0b1904e8d229b3d22aebb",
+    "raw_bytes": 146957,
+    "raw_lines": 1447,
+    "final_executed_lines": [
+      "Executed 1 test, with 0 failures (0 unexpected) in 0.027 (0.028) seconds",
+      "Executed 1 test, with 0 failures (0 unexpected) in 0.027 (0.029) seconds"
+    ],
+    "exit_lines": [
+      "restore_exit=0"
+    ],
+    "restart_lines": []
+  }
+}

@@ -377,7 +377,7 @@ final class ThemeStore: ObservableObject {
         // change while a sheet is open.
         defaultsObserver = NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification,
-            object: nil,
+            object: defaults,
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in self?.refreshFromDefaults() }

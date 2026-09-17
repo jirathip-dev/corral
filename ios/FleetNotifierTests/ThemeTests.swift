@@ -232,6 +232,28 @@ final class RepoHueTests: XCTestCase {
 
 // MARK: - ThemeStore behavior
 
+private final class ThemeReadSpyDefaults: UserDefaults, @unchecked Sendable {
+    private let readLock = NSLock()
+    private var reads = 0
+    private var readExpectation: XCTestExpectation?
+
+    var stringReadCount: Int { readLock.withLock { reads } }
+
+    func watchReads(_ expectation: XCTestExpectation?) {
+        readLock.withLock { readExpectation = expectation }
+    }
+
+    override func string(forKey defaultName: String) -> String? {
+        let expectation = readLock.withLock {
+            reads += 1
+            defer { readExpectation = nil }
+            return readExpectation
+        }
+        expectation?.fulfill()
+        return super.string(forKey: defaultName)
+    }
+}
+
 @MainActor
 final class ThemeStoreTests: XCTestCase {
 
@@ -382,6 +404,38 @@ final class ThemeStoreTests: XCTestCase {
         XCTAssertEqual(store.flavor, .mocha,
                        "the shared herdEnvironment key drives the palette even when written "
                        + "outside the store")
+    }
+
+    /// A real write in another suite must not even re-read this store's
+    /// preferences, whether or not its resolved palette would change.
+    func testForeignSuiteWriteDoesNotRereadOwnDefaults() async throws {
+        let ownName = "theme-store-own-\(UUID().uuidString)"
+        let foreignName = "theme-store-foreign-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(ThemeReadSpyDefaults(suiteName: ownName))
+        let foreign = try XCTUnwrap(UserDefaults(suiteName: foreignName))
+        let store = ThemeStore(defaults: defaults, reduceMotionProvider: { false })
+        defer {
+            defaults.watchReads(nil)
+            withExtendedLifetime(store) {}
+            defaults.removePersistentDomain(forName: ownName)
+            foreign.removePersistentDomain(forName: foreignName)
+        }
+        let initialReads = defaults.stringReadCount
+        XCTAssertGreaterThan(initialReads, 0, "the spy must observe the store's real reads")
+        let unexpectedRead = XCTestExpectation(description: "foreign-suite write re-read own defaults")
+        unexpectedRead.isInverted = true
+        defaults.watchReads(unexpectedRead)
+        let foreignNotification = XCTestExpectation(description: "foreign suite emitted its real notification")
+        let observer = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification, object: foreign, queue: .main
+        ) { _ in foreignNotification.fulfill() }
+        defer { NotificationCenter.default.removeObserver(observer) }
+
+        foreign.set(HerdEnvironmentChoice.night.rawValue, forKey: ThemeStore.herdEnvironmentKey)
+        let result = await XCTWaiter.fulfillment(of: [foreignNotification, unexpectedRead], timeout: 1.2)
+        XCTAssertEqual(result, .completed, "foreign-suite notification must arrive without an own-suite read")
+        XCTAssertEqual(defaults.stringReadCount, initialReads,
+                       "a foreign-suite write must not wake the theme store's read path")
     }
 
     /// The store reads the SAME persisted presentation key AppModel owns —

@@ -73,6 +73,7 @@ struct HerdView: View {
     /// every non-evidence launch; Release never compiles this.
     @State var evidenceClockOffset: TimeInterval?
     @State private var edgeEvidenceSamples: [String:HerdEdgeSample] = [:]
+    @State private var edgeEvidenceUpdates: [TimeInterval] = []
 #endif
     private var paddocks: [HerdPaddock] { HerdProjection.paddocks(horses) }
     private var rail: [HerdHorse] { horses.filter(\.atRail) }
@@ -213,7 +214,6 @@ struct HerdView: View {
         .onPreferenceChange(HerdEdgeSamples.self) {
             if CommandLine.arguments.contains("-corral568EdgeEvidence") {
                 edgeEvidenceSamples = $0
-                HerdEdgeEvidence.record($0)
             }
         }
         .overlay(alignment:.bottomLeading) {
@@ -222,7 +222,7 @@ struct HerdView: View {
                     .accessibilityElement(children:.ignore)
                     .accessibilityLabel("Edge test measurements")
                     .accessibilityIdentifier("g568-geometry")
-                    .accessibilityValue(HerdEdgeEvidence.value(edgeEvidenceSamples))
+                    .accessibilityValue(HerdEdgeEvidence.value(edgeEvidenceSamples,updates:edgeEvidenceUpdates))
             }
         }
         // Record from the current rendered value, not the task's captured
@@ -483,12 +483,14 @@ struct HerdView: View {
         let index = paddocks.firstIndex { $0.id == paddockID } ?? 0
         return HStack {
             Button("Previous") { movePage(-1) }.disabled(index == 0).frame(minWidth:44,minHeight:44)
+                .accessibilityIdentifier("herd-previous")
                 .foregroundStyle(index == 0 ? ranchTokens.mutedColor : ranchTokens.inkColor)
                 .accessibilityHint(index == 0 ? "First repository paddock" : "Previous repository paddock")
             Spacer(minLength:4)
             Text("\(index+1) / \(paddocks.count)").font(.caption.monospacedDigit())
             Spacer(minLength:4)
             Button("Next") { movePage(1) }.disabled(index+1 >= paddocks.count).frame(minWidth:44,minHeight:44)
+                .accessibilityIdentifier("herd-next")
                 .foregroundStyle(index+1 >= paddocks.count ? ranchTokens.mutedColor : ranchTokens.inkColor)
                 .accessibilityHint(index+1 >= paddocks.count ? "Last repository paddock" : "Next repository paddock")
         }.font(.caption)
@@ -516,8 +518,13 @@ struct HerdView: View {
                       artBounds:herdArtBounds(horse,elapsed:elapsed,reduced:reduced || !motionEnabled),
                       allowsOversized:dynamicType.isAccessibilitySize) {
             horseButton(horse,rail:false)
+        } semantic: {
+            Button(herdHorseAccessibilityLabel(horse)) { select(horse) }
+                .disabled(horse.disconnected)
+                .accessibilityHint(horse.disconnected ? "Source disconnected" : "Opens recent output")
+                .accessibilityIdentifier("herd-horse-"+horse.id)
+                .accessibilityFocused($focusedHorse,equals:horse.id)
         }
-        .accessibilityFocused($focusedHorse,equals:horse.id)
     }
 
     private func horseCaption(name:String,status:String,hostName:String?,rail:Bool,
@@ -646,12 +653,13 @@ struct HerdEdgeSamples: PreferenceKey {
 /// A hidden intrinsic-size template lets GeometryReader paint the real button
 /// from THIS layout pass, without a delayed @State opacity or an interpolating
 /// animation that could leave a visible fragment during a fast reversal.
-struct HerdEdgeGroup<Content:View>: View {
+struct HerdEdgeGroup<Content:View,Semantic:View>: View {
     let id: String
     let viewport: CGRect
     let artBounds: CGRect
     let allowsOversized: Bool
     @ViewBuilder var content: () -> Content
+    @ViewBuilder var semantic: () -> Semantic
     var body: some View {
         content().hidden()
             .overlay {
@@ -674,8 +682,7 @@ struct HerdEdgeGroup<Content:View>: View {
             // Semantic content is independent of painted opacity: VoiceOver can
             // reach the next row; the focus binding scrolls it into complete view.
             // This representation creates no physical, invisible hit target.
-            .accessibilityRepresentation { content() }
-            .accessibilityIdentifier("herd-horse-"+id)
+            .accessibilityRepresentation { semantic() }
     }
 }
 
@@ -694,7 +701,7 @@ struct HerdRowSnap: ScrollTargetBehavior {
     }
 }
 
-private struct HerdPaddockScroll<Content:View>: View {
+struct HerdPaddockScroll<Content:View>: View {
     let horses: [HerdHorse]
     let paddockID: String
     let focusedHorse: String?
@@ -852,38 +859,13 @@ struct HerdGearGlyph: View {
 /// Opt-in data/measurement only. Gestures belong to the external XCUITest runner.
 @MainActor
 private enum HerdEdgeEvidence {
-    struct Record: Encodable {
-        let epoch: TimeInterval
+    struct Snapshot: Encodable {
         let samples: [String:HerdEdgeSample]
+        let updates: [TimeInterval]
     }
-    static var records = 0
-    static func value(_ samples:[String:HerdEdgeSample]) -> String {
-        do { return String(decoding:try JSONEncoder().encode(samples),as:UTF8.self) }
+    static func value(_ samples:[String:HerdEdgeSample],updates:[TimeInterval]) -> String {
+        do { return String(decoding:try JSONEncoder().encode(Snapshot(samples:samples,updates:updates)),as:UTF8.self) }
         catch { return "encoding failed: \(error)" }
-    }
-    static func record(_ samples:[String:HerdEdgeSample]) {
-        guard CommandLine.arguments.contains("-corral568EdgeEvidence"),!samples.isEmpty,records < 9000 else { return }
-        records += 1
-        do {
-            let directory = try FileManager.default.url(for:.documentDirectory,in:.userDomainMask,
-                                                         appropriateFor:nil,create:true)
-                .appendingPathComponent("g568")
-            try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
-            let name = ProcessInfo.processInfo.environment["CORRAL568_CASE"] ?? "day-empty"
-            let file = directory.appendingPathComponent(name+".jsonl")
-            if !FileManager.default.fileExists(atPath:file.path) {
-                FileManager.default.createFile(atPath:file.path,contents:nil)
-            }
-            let handle = try FileHandle(forWritingTo:file)
-            defer {
-                do { try handle.close() }
-                catch { print("G568_CLOSE_ERROR \(error)") }
-            }
-            try handle.seekToEnd()
-            var data = try JSONEncoder().encode(Record(epoch:Date().timeIntervalSince1970,samples:samples))
-            data.append(10)
-            try handle.write(contentsOf:data)
-        } catch { print("G568_RECORD_ERROR \(error)") }
     }
 }
 
@@ -910,11 +892,16 @@ extension HerdView {
             agents["rail"] = Agent(agentId:"rail",state:.blocked,workspace:Workspace(repo:"edge-meadow"),displayName:"rail")
         }
         HerdEvidence.model?.fleet.seedDemo(agents:agents,rev:10)
-        do { try await Task.sleep(for:.seconds(7)) }
+        do { try await Task.sleep(for:.seconds(12)) }
         catch { return }
-        agents["edge-07"]?.displayName = "edge-07-updated-caption-wraps-during-a-real-drag"
-        HerdEvidence.model?.fleet.seedDemo(agents:agents,rev:11)
-        print("G568_LIVE_UPDATE epoch=\(Date().timeIntervalSince1970)")
+        for step in 1...4 {
+            agents["edge-07"]?.displayName = step.isMultiple(of:2)
+                ? "edge-07-updated-caption-wraps-during-a-real-drag" : "edge-07-updated"
+            HerdEvidence.model?.fleet.seedDemo(agents:agents,rev:UInt64(10+step))
+            edgeEvidenceUpdates.append(Date().timeIntervalSince1970)
+            do { try await Task.sleep(for:.seconds(4)) }
+            catch { return }
+        }
     }
 
     /// #456 recorded-evidence driver (launch-arg gated; Release never

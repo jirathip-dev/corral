@@ -40,6 +40,53 @@ final class HerdTests: XCTestCase {
         ((view as? UIScrollView).map { [$0] } ?? []) + view.subviews.flatMap { edgeScrolls($0) }
     }
 
+    @MainActor private final class FocusProbe: ObservableObject {
+        @Published var focused: String?
+        var samples: [String:HerdEdgeSample] = [:]
+    }
+    private struct FocusFixture: View {
+        @ObservedObject var probe: FocusProbe
+        let horses: [HerdHorse]
+        var body: some View {
+            HerdPaddockScroll(horses:horses,paddockID:"focus",focusedHorse:probe.focused) { horse,viewport in
+                HerdEdgeGroup(id:horse.id,viewport:viewport,artBounds:.zero,allowsOversized:false) {
+                    Text(horse.id).frame(height:140)
+                } semantic: { Button(horse.id) {} }
+            }
+            .frame(height:280)
+            .onPreferenceChange(HerdEdgeSamples.self) { probe.samples = $0 }
+        }
+    }
+
+    @MainActor func testEdgeFocusChangeRevealsPreviouslyFadedRowWithoutAnimation() async throws {
+        let horses = (0..<9).map { herdHorse("focus-\($0)",repo:"focus",state:.working) }
+        let probe = FocusProbe()
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene:scene)
+        window.frame = CGRect(x:0,y:0,width:390,height:844)
+        window.rootViewController = UIHostingController(rootView:FocusFixture(probe:probe,horses:horses))
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        for _ in 0..<30 {
+            if probe.samples.count == horses.count { break }
+            try await Task.sleep(for:.milliseconds(50))
+        }
+        let target = try XCTUnwrap(horses.last).id
+        XCTAssertEqual(try XCTUnwrap(probe.samples[target]).opacity,0)
+        // This is the value passed by the production AccessibilityFocusState
+        // binding. Exercise its real ScrollViewReader path, not a scroll offset.
+        probe.focused = target
+        for _ in 0..<30 {
+            if probe.samples[target]?.opacity == 1 { break }
+            try await Task.sleep(for:.milliseconds(50))
+        }
+        let revealed = try XCTUnwrap(probe.samples[target])
+        XCTAssertEqual(revealed.opacity,1,"focus must reveal a previously fully faded row")
+        XCTAssertEqual(revealed.group.minY-revealed.viewport.minY,8,accuracy:0.5)
+        XCTAssertLessThan(revealed.group.maxY,revealed.viewport.maxY-1)
+        print("G568_FOCUS_REVEAL target=\(target) sample=\(revealed)")
+    }
+
     @MainActor func testEdgeOpacityBoundariesUseMeasuredCaptionAndViewport() async throws {
         for size in [CGSize(width:375,height:667),CGSize(width:430,height:932)] {
             let (window,probe) = try await edgeFixture(size:size)
@@ -126,8 +173,10 @@ final class HerdTests: XCTestCase {
                                              gait:horse.gait(elapsed:elapsed,reduceMotion:false)) {
                     let actual = ink.path.boundingRect.insetBy(dx:-ink.stroke/2,dy:-ink.stroke/2)
                         .offsetBy(dx:0,dy:8+horse.bob(elapsed:elapsed,reduceMotion:false,enabled:true))
-                    XCTAssertLessThanOrEqual(bounds.minY,actual.minY)
-                    XCTAssertGreaterThanOrEqual(bounds.maxY,actual.maxY)
+                    // CGRect union/offset reassociation can differ by a few ulps.
+                    // This tolerance is far below the one-point visibility guard.
+                    XCTAssertLessThanOrEqual(bounds.minY,actual.minY+1e-9)
+                    XCTAssertGreaterThanOrEqual(bounds.maxY,actual.maxY-1e-9)
                 }
             }
         }
@@ -141,10 +190,11 @@ final class HerdTests: XCTestCase {
         let group = String(source[start.lowerBound..<end.lowerBound])
         XCTAssertTrue(group.contains("content().compositingGroup().opacity(opacity)"))
         XCTAssertTrue(group.contains(".allowsHitTesting(opacity>0)"),"fully faded paint cannot intercept a touch")
-        XCTAssertTrue(group.contains(".accessibilityRepresentation{content()}"),"semantic rows survive paint fading")
+        XCTAssertTrue(group.contains(".accessibilityRepresentation{semantic()}"),"semantic rows survive paint fading")
         XCTAssertTrue(group.contains(".transaction{$0.animation=nil}"),"opacity must never lag behind the scroll")
         XCTAssertFalse(group.contains(".mask("))
         XCTAssertTrue(source.contains(".accessibilityFocused($focusedHorse,equals:horse.id)"))
+        XCTAssertTrue(source.contains("HerdPaddockScroll(horses:paddock.field,paddockID:paddock.id,focusedHorse:focusedHorse)"))
         XCTAssertTrue(source.contains("reader.scrollTo(index/columns*columns,anchor:.top)"))
         XCTAssertTrue(source.contains(".scrollTargetBehavior(HerdRowSnap(rows:"))
     }

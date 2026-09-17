@@ -15,7 +15,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, Notify, broadcast, watch};
 
 use super::model::{Agent, Change, Delta, GitFactAge, Resume, SCHEMA_VERSION, Snapshot};
+use super::workspace::paths_match;
 use crate::history::{HistoryEvent, HistoryRing, RotationPolicy};
 
 #[cfg(test)]
@@ -613,9 +614,10 @@ impl Store {
             })
             .collect();
         for agent in inner.agents.values() {
-            if let Some(path) = &agent.workspace.worktree_path {
-                ages.entry(path.clone())
-                    .or_insert_with(|| GitFactAge::at(None, alive));
+            if let Some(path) = &agent.workspace.worktree_path
+                && worktree_age(&ages, path).is_none()
+            {
+                ages.insert(path.clone(), GitFactAge::at(None, alive));
             }
         }
         let mut agents = inner.agents.clone();
@@ -628,7 +630,7 @@ impl Store {
                 let fresh = ws
                     .worktree_path
                     .as_ref()
-                    .and_then(|path| ages.get(path))
+                    .and_then(|path| worktree_age(&ages, path))
                     .is_some_and(|age| !age.stale);
                 if !fresh || (ws.head_sha.is_none() && ws.branch.is_none()) {
                     ws.pr_number = None;
@@ -661,6 +663,16 @@ impl Store {
         self.notify.notify_one();
         rx
     }
+}
+
+// Keep canonical-path hits cheap; only aliases/missing facts scan the keys.
+// Both fallback insertion and binding projection must use the same identity.
+fn worktree_age<'a>(ages: &'a BTreeMap<String, GitFactAge>, path: &str) -> Option<&'a GitFactAge> {
+    ages.get(path).or_else(|| {
+        ages.iter()
+            .find(|(key, _)| paths_match(Path::new(key), Path::new(path)))
+            .map(|(_, age)| age)
+    })
 }
 
 fn now_millis() -> u64 {

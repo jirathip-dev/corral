@@ -1,0 +1,117 @@
+[
+  {
+    "name": "workspace",
+    "command": [
+      "cargo",
+      "test",
+      "--workspace"
+    ],
+    "exit": 0,
+    "seconds": 279.758,
+    "log": "/tmp/g562-workspace.log"
+  },
+  {
+    "name": "clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "--all-targets",
+      "--all-features",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit": 0,
+    "seconds": 115.304,
+    "log": "/tmp/g562-clippy.log"
+  },
+  {
+    "name": "deny",
+    "command": [
+      "cargo",
+      "deny",
+      "--locked",
+      "--workspace",
+      "check"
+    ],
+    "exit": 0,
+    "seconds": 2.28,
+    "log": "/tmp/g562-deny.log"
+  },
+  {
+    "name": "audit",
+    "command": [
+      "cargo",
+      "audit",
+      "--deny",
+      "warnings"
+    ],
+    "exit": 0,
+    "seconds": 3.365,
+    "log": "/tmp/g562-audit.log"
+  },
+  {
+    "name": "release",
+    "command": [
+      "cargo",
+      "build",
+      "--release"
+    ],
+    "exit": 0,
+    "seconds": 376.487,
+    "log": "/tmp/g562-release.log"
+  },
+  {
+    "name": "coverage-clean",
+    "command": [
+      "cargo",
+      "llvm-cov",
+      "clean",
+      "--locked",
+      "--workspace"
+    ],
+    "exit": 0,
+    "seconds": 0.628,
+    "log": "/tmp/g562-coverage-clean.log"
+  },
+  {
+    "name": "coverage",
+    "command": [
+      "cargo",
+      "llvm-cov",
+      "--locked",
+      "--package",
+      "corrald",
+      "--package",
+      "corrald-client",
+      "--all-targets",
+      "--no-fail-fast",
+      "--quiet",
+      "--fail-under-lines",
+      "85",
+      "--fail-under-functions",
+      "82"
+    ],
+    "exit": 0,
+    "seconds": 344.632,
+    "log": "/tmp/g562-coverage.log"
+  },
+  {
+    "name": "coverage-client",
+    "command": [
+      "cargo",
+      "llvm-cov",
+      "report",
+      "--locked",
+      "--package",
+      "corrald-client",
+      "--fail-under-lines",
+      "40",
+      "--fail-under-functions",
+      "35"
+    ],
+    "exit": 0,
+    "seconds": 2.304,
+    "log": "/tmp/g562-coverage-client.log"
+  }
+]

@@ -576,13 +576,11 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # recomputed with release_source_digest (the test-source pin is unchanged).
     # #568 amendment 2: remove renderer filesystem recording; recomputed from sources.
     # #569: sheet polish — the repo rides RepoLabelChip's Board hue in the
-    # recents sheet (flat muted label removed; the repo chip rides the
-    # COMPACT variant so the caption row keeps its pre-#569 height and the
-    # #558 worktree block's render position is unchanged; fixed-size pane
-    # capsule and state label), state panels scroll inside the content area
-    # and paint no #428 backing on the header's 16/10 grid; computed with
-    # release_source_digest over the #569 set.
-    "726f77f1250c9a94b3a13dd60251cf11ece2d5c112f14539f45c7b10c17348a4"
+    # recents sheet (flat muted label removed; fixed-size pane capsule and
+    # state label so AX3 pressure can never wrap them), state panels scroll
+    # inside the content area and paint no #428 backing on the header's
+    # 16/10 grid; computed with release_source_digest over the #569 set.
+    "3a53eaafde55530e3ddec9d7755baa3f23b4b8c79ccb215de00cac70fd183d84"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

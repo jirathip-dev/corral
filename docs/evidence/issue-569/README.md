@@ -112,27 +112,3 @@ python3 docs/evidence/issue-569/collect.py --sim 6F816FE1-14D9-4602-BC6E-E48F4C1
 
 The collector's default `--frames` mode copies a directory of already-rendered PNGs (used for this
 package); `--sim` pulls them straight out of a booted simulator's app container.
-
-## Fix round (review STOP-and-FIX) — frames + witness re-collected at `99234658`
-
-The protected render check
-`RecentWorktreeBlockTests.testRenderedSheetDayNightMediumLargeAndAX3` regressed at
-the round-1 delivery head (`60c35e96`): its frame OCR read `abodef1` where the fixture
-renders `abcdef1`. Cause: the padded `RepoLabelChip` capsule is 19.0 pt tall while the
-pre-#569 caption row is 16 pt (sized by the caption-semibold state label), so the chip
-grew the row 3 pt and moved the whole #558 worktree block 9 px down. The fix
-(`RepoLabelChip.compact`) keeps the Board's capsule drawing but drops the chip's layout
-padding again, so the block sits at the base y again. Full detail: `.report-fix.md`.
-
-Consequences for this package (everything above stays as written for round 1):
-
-- every frame in `frames/` and every sha256/byte count in `captures.json` was
-  re-collected from the fixed head — the header geometry in these PNGs is base-accurate
-  (chip drawn 19.0 pt, block rows at 435 / 502 / 581 / 642 / 706 / 773 px @3x on the
-  390x844 pt window); `measurements.log` now carries the fixed-head `G569_*` telemetry;
-- the RED/GREEN witness was re-run at the fixed head: same assertion bites
-  (`RAW EXIT 65`, `Executed 4 tests, with 18 failures`, the `("0") is not greater than
-  ("6")` hue assertion), restore byte-identical, GREEN exit 0;
-- the restore hash cited above (`1890a0f2…`) was the round-1 head's file and is
-  superseded by `ef21a8585f8cedf33fbdb2f5822d6fcb4b822bc16b852c6e7e54878167875535`
-  (worktree == committed blob at `99234658`; log `/tmp/g569-fix-witness.log`).

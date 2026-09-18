@@ -1,0 +1,121 @@
+{
+  "surface": "RecentOutputSheet hosted over FleetView in a 390x844 pt XCTest UIWindow, 3x screenshots (1170x2532 px) on an iPhone 17 Pro simulator (iPhone18,1, iOS 26.5)",
+  "why": "the protected check testRenderedSheetDayNightMediumLargeAndAX3 reads the commit short-sha from these frames; head (delivered code) frames read abodef1 and assert RED, base + fixed frames read abcdef1",
+  "arms": [
+    {
+      "arm": "base",
+      "commit": "23bbfa66aa96b5419eebf0d8c30391f4f8991278",
+      "note": "A/B base arm",
+      "rc": "0"
+    },
+    {
+      "arm": "head",
+      "commit": "bc720cef019d7c668bf3fd11e9415a7a8fb5da07",
+      "note": "A/B head arm (delivered code)",
+      "rc": "65"
+    },
+    {
+      "arm": "fixed",
+      "commit": "d10f0b224732f3d77800506663f6d14228ae7aba",
+      "note": "A/B fixed-head arm",
+      "rc": "0"
+    }
+  ],
+  "cases": [
+    "night-large-default.png",
+    "night-medium-ax3.png",
+    "day-large-default.png"
+  ],
+  "captures": [
+    {
+      "file": "base-17pro-night-large-default.png",
+      "arm": "base",
+      "commit": "23bbfa66aa96b5419eebf0d8c30391f4f8991278",
+      "rc": "0",
+      "source": "/tmp/g569-ab-frames/B1",
+      "case": "night-large-default.png",
+      "sha256": "abfba098cbc9705960f340ea8104381c3684bab0df54df805fcc9626f89b6b75",
+      "bytes": 472010
+    },
+    {
+      "file": "base-17pro-night-medium-ax3.png",
+      "arm": "base",
+      "commit": "23bbfa66aa96b5419eebf0d8c30391f4f8991278",
+      "rc": "0",
+      "source": "/tmp/g569-ab-frames/B1",
+      "case": "night-medium-ax3.png",
+      "sha256": "6888c8f9e88000b993ba4242fa87b22d51740ffb06d086c21cb35afef920850f",
+      "bytes": 493969
+    },
+    {
+      "file": "base-17pro-day-large-default.png",
+      "arm": "base",
+      "commit": "23bbfa66aa96b5419eebf0d8c30391f4f8991278",
+      "rc": "0",
+      "source": "/tmp/g569-ab-frames/B1",
+      "case": "day-large-default.png",
+      "sha256": "35e67e41f71ae6b5806684844a45cfc2a58f077d5b2f75acf4c287158d56d9ef",
+      "bytes": 456490
+    },
+    {
+      "file": "head-17pro-night-large-default.png",
+      "arm": "head",
+      "commit": "bc720cef019d7c668bf3fd11e9415a7a8fb5da07",
+      "rc": "65",
+      "source": "/tmp/g569-ab-frames/H3",
+      "case": "night-large-default.png",
+      "sha256": "548f1d422e6cb34b71301ff00c39e69b22951071fc641eae1e358f582a1c6757",
+      "bytes": 476179
+    },
+    {
+      "file": "head-17pro-night-medium-ax3.png",
+      "arm": "head",
+      "commit": "bc720cef019d7c668bf3fd11e9415a7a8fb5da07",
+      "rc": "65",
+      "source": "/tmp/g569-ab-frames/H3",
+      "case": "night-medium-ax3.png",
+      "sha256": "85572c1c86b8decbd6c39aa0d68fe3d763fc5c595074ed0beff7eaa5452dc2bc",
+      "bytes": 502827
+    },
+    {
+      "file": "head-17pro-day-large-default.png",
+      "arm": "head",
+      "commit": "bc720cef019d7c668bf3fd11e9415a7a8fb5da07",
+      "rc": "65",
+      "source": "/tmp/g569-ab-frames/H3",
+      "case": "day-large-default.png",
+      "sha256": "ffc03fa6ded6cbcf7d8e0b908bc2e228a1b1eb88df28e6607aba20c47f325cc5",
+      "bytes": 461281
+    },
+    {
+      "file": "fixed-17pro-night-large-default.png",
+      "arm": "fixed",
+      "commit": "d10f0b224732f3d77800506663f6d14228ae7aba",
+      "rc": "0",
+      "source": "/tmp/g569-ab-frames/F1",
+      "case": "night-large-default.png",
+      "sha256": "866309c3f8836227fcc241a0047650065f3c231fd24c6f97cc7e55864024d39a",
+      "bytes": 475747
+    },
+    {
+      "file": "fixed-17pro-night-medium-ax3.png",
+      "arm": "fixed",
+      "commit": "d10f0b224732f3d77800506663f6d14228ae7aba",
+      "rc": "0",
+      "source": "/tmp/g569-ab-frames/F1",
+      "case": "night-medium-ax3.png",
+      "sha256": "aa1fa9a2e089c632cab0639388db6fe942f7dee78dbd37ec451f8c84a66fd356",
+      "bytes": 503045
+    },
+    {
+      "file": "fixed-17pro-day-large-default.png",
+      "arm": "fixed",
+      "commit": "d10f0b224732f3d77800506663f6d14228ae7aba",
+      "rc": "0",
+      "source": "/tmp/g569-ab-frames/F1",
+      "case": "day-large-default.png",
+      "sha256": "e2c6b9137c6546ec0bb1edf1f5c7f0c1a887707a77fba7cc0c7f0ebec0f58123",
+      "bytes": 461477
+    }
+  ]
+}

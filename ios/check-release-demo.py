@@ -575,13 +575,14 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # #568: measured complete-row settlement and whole-group edge visibility;
     # recomputed with release_source_digest (the test-source pin is unchanged).
     # #568 amendment 2: remove renderer filesystem recording; recomputed from sources.
-    # #564: per-worktree git-fact freshness — Models.swift decodes and
-    # preserves `git_worktree_facts` on Snapshot AND Delta (three-state
-    # retained table, fail-closed) and the FleetViews Board card gates its
-    # positive git signals on that verdict; recomputed with
-    # release_source_digest over this tree (the test-source pin is unchanged:
-    # the new tests are NEW files, FleetNotifierTests.swift is untouched).
-    "4415c0b63ebcbec5c7a57a3e24ab3671dd5dd1c934e1cc063f679f9715b28e59"
+    # #569: sheet polish — the repo rides RepoLabelChip's Board hue in the
+    # recents sheet (flat muted label removed; the repo chip rides the
+    # COMPACT variant so the caption row keeps its pre-#569 height and the
+    # #558 worktree block's render position is unchanged; fixed-size pane
+    # capsule and state label), state panels scroll inside the content area
+    # and paint no #428 backing on the header's 16/10 grid; computed with
+    # release_source_digest over the #569 set.
+    "baa735b0a83d876e4e3a6ce23fc8bcc867eec04dd553f139577fd962bbc78527"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

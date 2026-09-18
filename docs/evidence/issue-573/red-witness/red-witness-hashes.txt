@@ -1,0 +1,23 @@
+# #573 red-witness hashes
+
+Reversion driver: docs/evidence/issue-573/red-witness/red_witness.py
+  sha256 a43ab2c105a93d60834918c9d04f9dc96d2bef51e37264ce5d7501803c4aa80a
+Mechanism driver: docs/evidence/issue-573/red-witness/boot_initial_probe.py
+  sha256 d940bbda9f5dd90325628abf96c7af5802246980f91fc785ae8491ee772c1bce
+
+src/adapters/git_plane.rs (recorded by the reversion driver)
+  before_sha256   = 5ac3c4c1e7d1f35ee71ddd52f1782bd14dcaf99bb47c84fc32c107a34c4d967f
+  mutated_sha256  = 0bcce8131e3b751b0689abde0bf26e66c51de6616b9c1b3e7f5d8456bc6f456e
+  restored_sha256 = 5ac3c4c1e7d1f35ee71ddd52f1782bd14dcaf99bb47c84fc32c107a34c4d967f
+  current sha256  = 5ac3c4c1e7d1f35ee71ddd52f1782bd14dcaf99bb47c84fc32c107a34c4d967f
+
+src/adapters/git_plane_issue561_tests.rs (the witness lives here; untouched by the reversion)
+  current sha256  = 21530c6c4a4b932d5030be40c2d431d4b30f8279a5d3c1f3d47a0fe94bd2b3df
+
+Raw reversion run: red-final.log.gz
+  sha256 a91a7a159a42b44c9a1655ba307cc140edaa99203b59967374e1eca62b1bcada
+  raw_exit=101, byte_identical_restore=True
+
+Raw mechanism run (boot filter set printed at the pre-fix head): mechanism/boot-initial-instrumented.log.gz
+  sha256 c7818e8503a8da3d7893fa74e0735225bb0e24f111ad555a880f76dee35d9a28
+  raw_exit=101, G573_BOOT_INITIAL=[]

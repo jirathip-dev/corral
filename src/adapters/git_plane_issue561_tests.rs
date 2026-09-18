@@ -479,3 +479,80 @@ async fn g561_restart_cost_measurement() {
     }
     g561_stop(&plane, rx, supervisor).await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn g573_watcher_boot_ignores_registration_open_events() {
+    let _guard = PROBE_LOCK.lock().await;
+    let (_temp, repo, _) = scratch_repo("g573-boot-open");
+    let repo = fs::canonicalize(repo).unwrap();
+    let plane = Arc::new(GitPlane::new(repo.clone(), repo.join("worktrees")));
+    let (sink, rx) = crate::core::plane_channel();
+    plane.rescan(&sink).await;
+    let probe = probe_worktree(
+        &repo,
+        None,
+        None,
+        plane.git_command_budget.clone(),
+        plane.probe_runs.clone(),
+    )
+    .await;
+    plane.apply_probe(&repo, Instant::now(), probe, &sink).await;
+    let calls = plane.probe_runs.count();
+    // The Linux inotify backend reports one Access(Open) event per directory
+    // its recursive watch pass opens; arm the fixture so the boot race is
+    // forced deterministically on every platform (on Linux these events are
+    // real, and were the cause of the hosted rust-gate failure).
+    plane.registration_open_events.store(true, Ordering::Release);
+    let (tx, cmd_rx) = mpsc::channel(1);
+    let watcher = tokio::spawn(plane.clone().run_watcher(sink, cmd_rx, tx));
+    until(|| plane.progress_ms[0].load(Ordering::Acquire) > 0).await;
+    tokio::time::sleep(DEBOUNCE + Duration::from_millis(200)).await;
+    let hydration_probes = plane.probe_runs.count() - calls;
+    plane.stopped.store(true, Ordering::Relaxed);
+    drop(rx);
+    tokio::time::timeout(Duration::from_secs(3), watcher)
+        .await
+        .unwrap()
+        .unwrap();
+    plane.tasks.lock().unwrap().abort_all();
+    while plane.next_task().await.is_some() {}
+    assert_eq!(
+        hydration_probes, 0,
+        "registration-time access events are not changes and must not hydrate known paths"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn g573_access_events_are_not_change_signals() {
+    let commondir = PathBuf::from("/fake/repo/.git");
+    let wt = PathBuf::from("/fake/wts/wt");
+    let gitdir = commondir.join("worktrees/wt");
+    let plane = plane_with_state(|state| {
+        state.worktrees.insert(
+            wt.clone(),
+            WorktreeState {
+                gitdir: Some(gitdir.clone()),
+                ..Default::default()
+            },
+        );
+    });
+    let (sink, _rx) = crate::core::plane_channel();
+    let (cmd_tx, _cmd_rx) = mpsc::channel::<WatcherCommand>(1);
+    let open = Event::new(notify::EventKind::Access(notify::event::AccessKind::Open(
+        notify::event::AccessMode::Any,
+    )))
+    .add_path(gitdir.join("HEAD"));
+    assert!(
+        plane.handle_fs_event(&open, &sink, &cmd_tx).await.is_empty(),
+        "an open is not a change"
+    );
+    let modified = Event::new(notify::EventKind::Modify(
+        notify::event::ModifyKind::Data(notify::event::DataChange::Any),
+    ))
+    .add_path(gitdir.join("HEAD"));
+    assert_eq!(
+        plane.handle_fs_event(&modified, &sink, &cmd_tx).await,
+        vec![wt],
+        "a metadata change still refreshes the worktree"
+    );
+}

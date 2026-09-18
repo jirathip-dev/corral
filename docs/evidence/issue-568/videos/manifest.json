@@ -1,0 +1,356 @@
+{
+  "set": "representative size-bounded #568 gesture video",
+  "limit_bytes": 1400000,
+  "clips": [
+    {
+      "run": "short",
+      "name": "day-empty",
+      "raw_path": "/Users/jirathip/.config/fleet-operations/run/corral/evidence/issue-568/videos/short/day-empty.mov",
+      "raw_bytes": 32615111,
+      "raw_sha256": "d33d983ef0358700a72a2afc740e0f246e7872bc9680c668cbb272c95ed86401",
+      "raw_duration": 50.703333,
+      "clip_path": "/tmp/g568-a3-transcodes/short-day-empty.mp4",
+      "clip_bytes": 484917,
+      "clip_sha256": "db1c2c762ff112aac20de47a3c2b70595b740414519842dc2fe422ebcf756b36",
+      "clip_duration": 50.666667,
+      "transcode": {
+        "crf": 28,
+        "fps": 15,
+        "width": 430,
+        "command": "ffmpeg -v error -y -i /Users/jirathip/.config/fleet-operations/run/corral/evidence/issue-568/videos/short/day-empty.mov -an -vf scale=430:-2,fps=15 -c:v libx264 -preset medium -crf 28 -pix_fmt yuv420p -movflags +faststart /tmp/g568-a3-transcodes/short-day-empty.mp4",
+        "selected_from_ladder": [
+          [
+            28,
+            15,
+            430
+          ],
+          [
+            32,
+            15,
+            430
+          ],
+          [
+            34,
+            12,
+            380
+          ]
+        ]
+      }
+    },
+    {
+      "run": "short",
+      "name": "day-blocked",
+      "raw_path": "/Users/jirathip/.config/fleet-operations/run/corral/evidence/issue-568/videos/short/day-blocked.mov",
+      "raw_bytes": 27762382,
+      "raw_sha256": "c48912c80d644bac30f66367c7c3ded4441ad48dd5aea3f8410c135c3ba87609",
+      "raw_duration": 61.338333,
+      "clip_path": "/tmp/g568-a3-transcodes/short-day-blocked.mp4",
+      "clip_bytes": 537583,
+      "clip_sha256": "c885a703655127b3c2ae99d94c7bdd89de779cc875da2afd60c4030d67470db0",
+      "clip_duration": 61.333333,
+      "transcode": {
+        "crf": 28,
+        "fps": 15,
+        "width": 430,
+        "command": "ffmpeg -v error -y -i /Users/jirathip/.config/fleet-operations/run/corral/evidence/issue-568/videos/short/day-blocked.mov -an -vf scale=430:-2,fps=15 -c:v libx264 -preset medium -crf 28 -pix_fmt yuv420p -movflags +faststart /tmp/g568-a3-transcodes/short-day-blocked.mp4",
+        "selected_from_ladder": [
+          [
+            28,
+            15,
+            430
+          ],
+          [
+            32,
+            15,
+            430
+          ],
+          [
+            34,
+            12,
+            380
+          ]
+        ]
+      }
+    },
+    {
+      "run": "short",
+      "name": "night-empty",
+      "raw_path": "/Users/jirathip/.config/fleet-operations/run/corral/evidence/issue-568/videos/short/night-empty.mov",
+      "raw_bytes": 33819311,
+      "raw_sha256": "7d119b804777637fb6737ab6a3310770328b196bafa389260ea936265f83a579",
+      "raw_duration": 50.376667,
+      "clip_path": "/tmp/g568-a3-transcodes/short-night-empty.mp4",
+      "clip_bytes": 520640,
+      "clip_sha256": "36b5cbe19d0773169304f549a7f6455ae8d3634c650f57fdc8496f92b55f66b9",
+      "clip_duration": 50.4,
+      "transcode": {
+        "crf": 28,
+        "fps": 15,
+        "width": 430,
+        "command": "ffmpeg -v error -y -i /Users/jirathip/.config/fleet-operations/run/corral/evidence/issue-568/videos/short/night-empty.mov -an -vf scale=430:-2,fps=15 -c:v libx264 -preset medium -crf 28 -pix_fmt yuv420p -movflags +faststart /tmp/g568-a3-transcodes/short-night-empty.mp4",
+        "selected_from_ladder": [
+          [
+            28,
+            15,
+            430
+          ],
+          [
+            32,
+            15,
+            430
+          ],
+          [
+            34,
+            12,
+            380
+          ]
+        ]
+      }
+    },
+    {
+      "run": "short",
+      "name": "night-blocked",
+      "raw_path": "/Users/jirathip/.config/fleet-operations/run/corral/evidence/issue-568/videos/short/night-blocked.mov",
+      "raw_bytes": 31979617,
+      "raw_sha256": "27aca59301404854ef6a8ef1e5dc4ccdcc278e6a4067d0be74a9cab9414dd903",
+      "raw_duration": 50.6,
+      "clip_path": "/tmp/g568-a3-transcodes/short-night-blocked.mp4",
+      "clip_bytes": 535373,
+      "clip_sha256": "1925c24fa86cd49e5f3ec2d95c7b30f4d1969902f89687754933eea2621289a7",
+      "clip_duration": 50.666667,
+      "transcode": {
+        "crf": 28,
+        "fps": 15,
+        "width": 430,
+        "command": "ffmpeg -v error -y -i /Users/jirathip/.config/fleet-operations/run/corral/evidence/issue-568/videos/short/night-blocked.mov -an -vf scale=430:-2,fps=15 -c:v libx264 -preset medium -crf 28 -pix_fmt yuv420p -movflags +faststart /tmp/g568-a3-transcodes/short-night-blocked.mp4",
+        "selected_from_ladder": [
+          [
+            28,
+            15,
+            430
+          ],
+          [
+            32,
+            15,
+            430
+          ],
+          [
+            34,
+            12,
+            380
+          ]
+        ]
+      }
+    },
+    {
+      "run": "short",
+      "name": "day-empty-taps",
+      "raw_path": "/Users/jirathip/.config/fleet-operations/run/corral/evidence/issue-568/videos/short/day-empty-taps.mov",
+      "raw_bytes": 7378556,
+      "raw_sha256": "6f5ce58f60cbd07a3ef4be0edf771e16a51a4caa8f6b637893eaf52d8739b614",
+      "raw_duration": 11.03,
+      "clip_path": "/tmp/g568-a3-transcodes/short-day-empty-taps.mp4",
+      "clip_bytes": 143404,
+      "clip_sha256": "ddd974e7e8d7ff9a864c3f97d2f1916511a83a9c636b0125d4f0371c54bfd896",
+      "clip_duration": 11.066667,
+      "transcode": {
+        "crf": 28,
+        "fps": 15,
+        "width": 430,
+        "command": "ffmpeg -v error -y -i /Users/jirathip/.config/fleet-operations/run/corral/evidence/issue-568/videos/short/day-empty-taps.mov -an -vf scale=430:-2,fps=15 -c:v libx264 -preset medium -crf 28 -pix_fmt yuv420p -movflags +faststart /tmp/g568-a3-transcodes/short-day-empty-taps.mp4",
+        "selected_from_ladder": [
+          [
+            28,
+            15,
+            430
+          ],
+          [
+            32,
+            15,
+            430
+          ],
+          [
+            34,
+            12,
+            380
+          ]
+        ]
+      }
+    },
+    {
+      "run": "short",
+      "name": "day-blocked-accessibility",
+      "raw_path": "/Users/jirathip/.config/fleet-operations/run/corral/evidence/issue-568/videos/short/day-blocked-accessibility.mov",
+      "raw_bytes": 2580652,
+      "raw_sha256": "bfc756f9f040ef7a0e4ab4c724288c77f294cc3c4ecd8fb050d57eca9d6eb4a7",
+      "raw_duration": 12.251667,
+      "clip_path": "/tmp/g568-a3-transcodes/short-day-blocked-accessibility.mp4",
+      "clip_bytes": 81233,
+      "clip_sha256": "97e3627bfd657a51fc1596d18df7e12e2f6a65fa5f6ce50df7ceee860b3feb05",
+      "clip_duration": 11.466667,
+      "transcode": {
+        "crf": 28,
+        "fps": 15,
+        "width": 430,
+        "command": "ffmpeg -v error -y -i /Users/jirathip/.config/fleet-operations/run/corral/evidence/issue-568/videos/short/day-blocked-accessibility.mov -an -vf scale=430:-2,fps=15 -c:v libx264 -preset medium -crf 28 -pix_fmt yuv420p -movflags +faststart /tmp/g568-a3-transcodes/short-day-blocked-accessibility.mp4",
+        "selected_from_ladder": [
+          [
+            28,
+            15,
+            430
+          ],
+          [
+            32,
+            15,
+            430
+          ],
+          [
+            34,
+            12,
+            380
+          ]
+        ]
+      }
+    },
+    {
+      "run": "tall",
+      "name": "day-empty",
+      "raw_path": "/Users/jirathip/.config/fleet-operations/run/corral/evidence/issue-568/videos/tall/day-empty.mov",
+      "raw_bytes": 93255021,
+      "raw_sha256": "11c6f3571f786ef67244fee74f0b9842d0c480bc7aab117e7365a16534d7b223",
+      "raw_duration": 63.365,
+      "clip_path": "/tmp/g568-a3-transcodes/tall-day-empty.mp4",
+      "clip_bytes": 808743,
+      "clip_sha256": "e12f51b5768f41dab5f50080b0833122847bb92f9fa3016b875b8767200dca8b",
+      "clip_duration": 63.333333,
+      "transcode": {
+        "crf": 28,
+        "fps": 15,
+        "width": 430,
+        "command": "ffmpeg -v error -y -i /Users/jirathip/.config/fleet-operations/run/corral/evidence/issue-568/videos/tall/day-empty.mov -an -vf scale=430:-2,fps=15 -c:v libx264 -preset medium -crf 28 -pix_fmt yuv420p -movflags +faststart /tmp/g568-a3-transcodes/tall-day-empty.mp4",
+        "selected_from_ladder": [
+          [
+            28,
+            15,
+            430
+          ],
+          [
+            32,
+            15,
+            430
+          ],
+          [
+            34,
+            12,
+            380
+          ]
+        ]
+      }
+    },
+    {
+      "run": "tall",
+      "name": "day-blocked",
+      "raw_path": "/Users/jirathip/.config/fleet-operations/run/corral/evidence/issue-568/videos/tall/day-blocked.mov",
+      "raw_bytes": 98216988,
+      "raw_sha256": "9d33eed1a33c9b19b17942e44a73a4e9ba770068a2352ec6ba425142c4ae678b",
+      "raw_duration": 92.655,
+      "clip_path": "/tmp/g568-a3-transcodes/tall-day-blocked.mp4",
+      "clip_bytes": 962812,
+      "clip_sha256": "ff89e02987b970b00c3a5d771d731255a18dde23e2dd13403b19ac743ed8c87a",
+      "clip_duration": 92.666667,
+      "transcode": {
+        "crf": 28,
+        "fps": 15,
+        "width": 430,
+        "command": "ffmpeg -v error -y -i /Users/jirathip/.config/fleet-operations/run/corral/evidence/issue-568/videos/tall/day-blocked.mov -an -vf scale=430:-2,fps=15 -c:v libx264 -preset medium -crf 28 -pix_fmt yuv420p -movflags +faststart /tmp/g568-a3-transcodes/tall-day-blocked.mp4",
+        "selected_from_ladder": [
+          [
+            28,
+            15,
+            430
+          ],
+          [
+            32,
+            15,
+            430
+          ],
+          [
+            34,
+            12,
+            380
+          ]
+        ]
+      }
+    },
+    {
+      "run": "tall",
+      "name": "night-empty",
+      "raw_path": "/Users/jirathip/.config/fleet-operations/run/corral/evidence/issue-568/videos/tall/night-empty.mov",
+      "raw_bytes": 93704827,
+      "raw_sha256": "27e234709c91361b9c5f3a66f57e927ce68629d198624521e1723a13f852046e",
+      "raw_duration": 70.263333,
+      "clip_path": "/tmp/g568-a3-transcodes/tall-night-empty.mp4",
+      "clip_bytes": 929377,
+      "clip_sha256": "13ae3f8c7e468512c430f8f725f57f2840345cdc79c43ad2b77b55fe7ff03ce2",
+      "clip_duration": 70.266667,
+      "transcode": {
+        "crf": 28,
+        "fps": 15,
+        "width": 430,
+        "command": "ffmpeg -v error -y -i /Users/jirathip/.config/fleet-operations/run/corral/evidence/issue-568/videos/tall/night-empty.mov -an -vf scale=430:-2,fps=15 -c:v libx264 -preset medium -crf 28 -pix_fmt yuv420p -movflags +faststart /tmp/g568-a3-transcodes/tall-night-empty.mp4",
+        "selected_from_ladder": [
+          [
+            28,
+            15,
+            430
+          ],
+          [
+            32,
+            15,
+            430
+          ],
+          [
+            34,
+            12,
+            380
+          ]
+        ]
+      }
+    },
+    {
+      "run": "tall",
+      "name": "night-blocked",
+      "raw_path": "/Users/jirathip/.config/fleet-operations/run/corral/evidence/issue-568/videos/tall/night-blocked.mov",
+      "raw_bytes": 90884527,
+      "raw_sha256": "bf499a88028388ee0d2ad3fc9728d77df6583b24a46d8c1349c57d9be70f17ba",
+      "raw_duration": 68.21,
+      "clip_path": "/tmp/g568-a3-transcodes/tall-night-blocked.mp4",
+      "clip_bytes": 934844,
+      "clip_sha256": "aab5b74c5acac9d584a2169fb997ec5bb7981cc9a2f184382b5a4f1411152c94",
+      "clip_duration": 68.2,
+      "transcode": {
+        "crf": 28,
+        "fps": 15,
+        "width": 430,
+        "command": "ffmpeg -v error -y -i /Users/jirathip/.config/fleet-operations/run/corral/evidence/issue-568/videos/tall/night-blocked.mov -an -vf scale=430:-2,fps=15 -c:v libx264 -preset medium -crf 28 -pix_fmt yuv420p -movflags +faststart /tmp/g568-a3-transcodes/tall-night-blocked.mp4",
+        "selected_from_ladder": [
+          [
+            28,
+            15,
+            430
+          ],
+          [
+            32,
+            15,
+            430
+          ],
+          [
+            34,
+            12,
+            380
+          ]
+        ]
+      }
+    }
+  ]
+}

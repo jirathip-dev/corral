@@ -37,6 +37,7 @@ struct HerdView: View {
     @State private var now = Date()
     @State private var timeRevision = 0
     @State private var dragging = false
+    @AccessibilityFocusState private var focusedHorse: String?
     private let hudSpacing: CGFloat = 6
     init(horses: [HerdHorse], obscured: Bool,
          scopeLabel: String = "Filters", scopeSummary: String = "All repositories",
@@ -71,6 +72,8 @@ struct HerdView: View {
     /// Auto day→night transition can be captured deterministically. nil in
     /// every non-evidence launch; Release never compiles this.
     @State var evidenceClockOffset: TimeInterval?
+    @State private var edgeEvidenceSamples: [String:HerdEdgeSample] = [:]
+    @State private var edgeEvidenceUpdates: [TimeInterval] = []
 #endif
     private var paddocks: [HerdPaddock] { HerdProjection.paddocks(horses) }
     private var rail: [HerdHorse] { horses.filter(\.atRail) }
@@ -198,7 +201,8 @@ struct HerdView: View {
         .task {
             // #456 full-screen evidence supersedes the #459-era sequence in
             // the same launch (one deterministic marker stream).
-            if !CommandLine.arguments.contains("-corral456FullScreenEvidence") {
+            if !CommandLine.arguments.contains("-corral456FullScreenEvidence")
+                && !CommandLine.arguments.contains("-corral568EdgeEvidence") {
                 await runHerdEvidence()
             }
         }
@@ -206,6 +210,21 @@ struct HerdView: View {
         // #526 evidence: the Auto transition + pagination phases (HerdView
         // owns the pager and the lighting instant they drive).
         .task { await runPaletteAutoEvidence() }
+        .task { await runEdgeEvidence() }
+        .onPreferenceChange(HerdEdgeSamples.self) {
+            if CommandLine.arguments.contains("-corral568EdgeEvidence") {
+                edgeEvidenceSamples = $0
+            }
+        }
+        .overlay(alignment:.bottomLeading) {
+            if CommandLine.arguments.contains("-corral568EdgeEvidence") {
+                Color.clear.frame(width:1,height:1).allowsHitTesting(false)
+                    .accessibilityElement(children:.ignore)
+                    .accessibilityLabel("Edge test measurements")
+                    .accessibilityIdentifier("g568-geometry")
+                    .accessibilityValue(HerdEdgeEvidence.value(edgeEvidenceSamples,updates:edgeEvidenceUpdates))
+            }
+        }
         // Record from the current rendered value, not the task's captured
         // View struct (whose environment/immutable horse props may be stale).
         .onChange(of:evidencePhase) { _,phase in
@@ -402,26 +421,40 @@ struct HerdView: View {
     /// The same reserved zone in both paths. Large type scrolls the entire
     /// chip/rail/field column between the pinned HUD and navigation.
     @ViewBuilder private func herdColumn(width:CGFloat) -> some View {
-        let column = VStack(spacing:0) {
-            repositoryChip
-            railZone.layoutPriority(1)
-            pager(width:width)
-        }
         if dynamicType.isAccessibilitySize {
-            ScrollView(.vertical) { column }
+            GeometryReader { visible in
+                ScrollViewReader { reader in
+                    ScrollView(.vertical) { herdContents(width:width,viewport:visible.frame(in:.global)) }
+                        .accessibilityIdentifier("herd-accessibility-column")
+                        .onChange(of:focusedHorse) { _,id in
+                            if let id { reader.scrollTo(id,anchor:.center) }
+                        }
+                }
+            }
         } else {
-            column
+            herdContents(width:width,viewport:.zero)
         }
     }
-    private func pager(width:CGFloat) -> some View {
+    private func herdContents(width:CGFloat,viewport:CGRect) -> some View {
+        VStack(spacing:0) {
+            repositoryChip
+            railZone.layoutPriority(1)
+            pager(width:width,viewport:viewport)
+        }
+    }
+    private func pager(width:CGFloat,viewport:CGRect) -> some View {
         ScrollView(.horizontal) {
             LazyHStack(spacing:0) {
                 ForEach(paddocks) { paddock in
                     Group {
                         if dynamicType.isAccessibilitySize {
-                            paddockField(paddock,width:width)
+                            paddockField(paddock,width:width,viewport:viewport)
                         } else {
-                            ScrollView(.vertical) { paddockField(paddock,width:width) }
+                            HerdPaddockScroll(horses:paddock.field,paddockID:paddock.id,
+                                              focusedHorse:focusedHorse,fingerDown:dragging,
+                                              isActive:paddockID == paddock.id || (paddockID == nil && paddock.id == paddocks.first?.id)) { horse,visible in
+                                boundedHorse(horse,viewport:visible)
+                            }
                         }
                     }.padding(.horizontal,12).frame(width:width).id(paddock.id)
                         .background(GeometryReader { proxy in
@@ -451,12 +484,14 @@ struct HerdView: View {
         let index = paddocks.firstIndex { $0.id == paddockID } ?? 0
         return HStack {
             Button("Previous") { movePage(-1) }.disabled(index == 0).frame(minWidth:44,minHeight:44)
+                .accessibilityIdentifier("herd-previous")
                 .foregroundStyle(index == 0 ? ranchTokens.mutedColor : ranchTokens.inkColor)
                 .accessibilityHint(index == 0 ? "First repository paddock" : "Previous repository paddock")
             Spacer(minLength:4)
             Text("\(index+1) / \(paddocks.count)").font(.caption.monospacedDigit())
             Spacer(minLength:4)
             Button("Next") { movePage(1) }.disabled(index+1 >= paddocks.count).frame(minWidth:44,minHeight:44)
+                .accessibilityIdentifier("herd-next")
                 .foregroundStyle(index+1 >= paddocks.count ? ranchTokens.mutedColor : ranchTokens.inkColor)
                 .accessibilityHint(index+1 >= paddocks.count ? "Last repository paddock" : "Next repository paddock")
         }.font(.caption)
@@ -471,10 +506,26 @@ struct HerdView: View {
         guard paddocks.indices.contains(index) else { return }
         paddockID = paddocks[index].id
     }
-    private func paddockField(_ paddock:HerdPaddock,width:CGFloat) -> some View {
+    private func paddockField(_ paddock:HerdPaddock,width:CGFloat,viewport:CGRect) -> some View {
         LazyVGrid(columns:[GridItem(.adaptive(minimum:dynamicType.isAccessibilitySize ? width-32 : 156),spacing:6)],spacing:8) {
-            ForEach(paddock.field) { horse in horseButton(horse,rail:false) }
+            ForEach(paddock.field) { horse in
+                boundedHorse(horse,viewport:viewport).id(horse.id)
+            }
         }.padding(.vertical,8)
+    }
+
+    private func boundedHorse(_ horse:HerdHorse,viewport:CGRect) -> some View {
+        HerdEdgeGroup(id:horse.id,viewport:viewport,
+                      artBounds:herdArtBounds(horse,elapsed:elapsed,reduced:reduced || !motionEnabled),
+                      allowsOversized:dynamicType.isAccessibilitySize) {
+            horseButton(horse,rail:false)
+        } semantic: {
+            Button(herdHorseAccessibilityLabel(horse)) { select(horse) }
+                .disabled(horse.disconnected)
+                .accessibilityHint(horse.disconnected ? "Source disconnected" : "Opens recent output")
+                .accessibilityIdentifier("herd-horse-"+horse.id)
+                .accessibilityFocused($focusedHorse,equals:horse.id)
+        }
     }
 
     private func horseCaption(name:String,status:String,hostName:String?,rail:Bool,
@@ -550,6 +601,198 @@ func herdHorseAccessibilityLabel(_ horse:HerdHorse) -> String {
 func herdRepositoryCaption(_ paddock:HerdPaddock) -> String {
     let suffix = paddock.blockedCount > 0 ? " · \(paddock.blockedCount) at rail" : ""
     return "\(paddock.title) · \(paddock.field.count) here" + suffix
+}
+
+/// #568: all coordinates are measured, in the same (global) space. A one-point
+/// guard makes a group fully transparent BEFORE its ink can cross either edge.
+/// The seven-point ramp fits inside the existing eight-point row inset.
+enum HerdEdgeGeometry {
+    static let inset: CGFloat = 8
+    static let guardBand: CGFloat = 1
+    static func opacity(group:CGRect,viewport:CGRect,allowsOversized:Bool) -> Double {
+        guard viewport.height > 0,group.height > 0 else { return 0 }
+        if allowsOversized && group.height + 2*inset > viewport.height { return 1 }
+        let clearance = min(group.minY-viewport.minY,viewport.maxY-group.maxY)
+        return Double(max(0,min(1,(clearance-guardBand)/(inset-guardBand))))
+    }
+    static func columns(width:CGFloat) -> Int { max(1,Int((max(0,width)+6)/(156+6))) }
+    static func bottomPadding(lastRowHeight:CGFloat,viewportHeight:CGFloat) -> CGFloat {
+        max(inset,viewportHeight-lastRowHeight)
+    }
+    static func snap(proposed:CGFloat,rows:[CGRect],contentHeight:CGFloat,viewportHeight:CGFloat) -> CGFloat {
+        let end = max(0,contentHeight-viewportHeight)
+        let bounded = min(end,max(0,proposed))
+        let candidates = [CGFloat.zero,end] + rows.map { min(end,max(0,$0.minY)) }
+        return candidates.min { abs($0-bounded) < abs($1-bounded) } ?? bounded
+    }
+}
+
+/// Include the actual stroked, posed/gait-transformed ink and the bob, not only
+/// Canvas's layout box. Caption bounds come from the complete button measurement.
+func herdArtBounds(_ horse:HerdHorse,elapsed:Double,reduced:Bool) -> CGRect {
+    let pose = horse.pose(elapsed:elapsed,reduceMotion:reduced)
+    let gait = horse.gait(elapsed:elapsed,reduceMotion:reduced)
+    let ink = HerdArt().drawing(horse.identity,pose:pose,gait:gait).reduce(CGRect.null) { bounds,part in
+        bounds.union(part.path.boundingRect.insetBy(dx:-part.stroke/2,dy:-part.stroke/2))
+    }
+    return ink.offsetBy(dx:0,dy:8+horse.bob(elapsed:elapsed,reduceMotion:reduced,enabled:!reduced))
+}
+
+struct HerdEdgeSample: Equatable, Codable {
+    let group: CGRect
+    let viewport: CGRect
+    let opacity: Double
+    let oversized: Bool
+}
+struct HerdEdgeSamples: PreferenceKey {
+    static var defaultValue: [String:HerdEdgeSample] { [:] }
+    static func reduce(value:inout [String:HerdEdgeSample],nextValue:() -> [String:HerdEdgeSample]) {
+        value.merge(nextValue(),uniquingKeysWith:{ _,new in new })
+    }
+}
+
+/// A hidden intrinsic-size template lets GeometryReader paint the real button
+/// from THIS layout pass, without a delayed @State opacity or an interpolating
+/// animation that could leave a visible fragment during a fast reversal.
+struct HerdEdgeGroup<Content:View,Semantic:View>: View {
+    let id: String
+    let viewport: CGRect
+    let artBounds: CGRect
+    let allowsOversized: Bool
+    @ViewBuilder var content: () -> Content
+    @ViewBuilder var semantic: () -> Semantic
+    var body: some View {
+        content().hidden()
+            .overlay {
+                GeometryReader { geometry in
+                    let frame = geometry.frame(in:.global)
+                    let group = CGRect(x:frame.minX,y:min(frame.minY,frame.minY+artBounds.minY),
+                                       width:frame.width,height:max(frame.maxY,frame.minY+artBounds.maxY)
+                                        - min(frame.minY,frame.minY+artBounds.minY))
+                    let opacity = HerdEdgeGeometry.opacity(group:group,viewport:viewport,
+                                                          allowsOversized:allowsOversized)
+                    content().compositingGroup().opacity(opacity)
+                        .transaction { $0.animation = nil }
+                        .allowsHitTesting(opacity > 0)
+                        .accessibilityHidden(true)
+                        .preference(key:HerdEdgeSamples.self,value:[id:HerdEdgeSample(
+                            group:group,viewport:viewport,opacity:opacity,
+                            oversized:allowsOversized && group.height+16 > viewport.height)])
+                }
+            }
+            // Semantic content is independent of painted opacity: VoiceOver can
+            // reach the next row; the focus binding scrolls it into complete view.
+            // This representation creates no physical, invisible hit target.
+            .accessibilityRepresentation { semantic() }
+    }
+}
+
+struct HerdRowFrames: PreferenceKey {
+    static var defaultValue: [Int:CGRect] { [:] }
+    static func reduce(value:inout [Int:CGRect],nextValue:() -> [Int:CGRect]) {
+        value.merge(nextValue(),uniquingKeysWith:{ _,new in new })
+    }
+}
+struct HerdRowSnap: ScrollTargetBehavior {
+    let rows: [CGRect]
+    func updateTarget(_ target:inout ScrollTarget,context:TargetContext) {
+        target.rect.origin.y = HerdEdgeGeometry.snap(proposed:target.rect.minY,rows:rows,
+                                                    contentHeight:context.contentSize.height,
+                                                    viewportHeight:context.containerSize.height)
+    }
+}
+
+private struct HerdSettlingContent: Equatable {
+    let offset: CGFloat
+    let rows: [CGRect]
+    let fingerDown: Bool
+    let isActive: Bool
+}
+struct HerdContentOffset: PreferenceKey {
+    static var defaultValue: [Int:CGFloat] { [:] }
+    static func reduce(value:inout [Int:CGFloat],nextValue:()->[Int:CGFloat]) {
+        value.merge(nextValue(),uniquingKeysWith:{ _,new in new })
+    }
+}
+struct HerdPaddockScroll<Content:View>: View {
+    let horses: [HerdHorse]
+    let paddockID: String
+    let focusedHorse: String?
+    let fingerDown: Bool
+    let isActive: Bool
+    @ViewBuilder var horse: (HerdHorse,CGRect) -> Content
+    @State private var frames: [Int:CGRect] = [:]
+    @State private var scrollOffset: CGFloat = 0
+    @State private var needsRemeasurement = false
+
+    var body: some View {
+        GeometryReader { visible in
+            let columns = HerdEdgeGeometry.columns(width:visible.size.width)
+            let starts = Array(stride(from:0,to:horses.count,by:columns))
+            let space = "herd-rows-"+paddockID
+            let viewport = visible.frame(in:.global)
+            ScrollViewReader { reader in
+                ScrollView(.vertical) {
+                    // Eager rows are deliberate: a fast flick's proposed target
+                    // needs measured distant rows, not a lazy grid's estimates.
+                    VStack(spacing:0) {
+                        ForEach(starts,id:\.self) { start in
+                            HStack(spacing:6) {
+                                ForEach(0..<columns,id:\.self) { column in
+                                    if start+column < horses.count {
+                                        horse(horses[start+column],visible.frame(in:.global))
+                                            .frame(maxWidth:.infinity)
+                                    } else {
+                                        Color.clear.frame(maxWidth:.infinity).accessibilityHidden(true)
+                                    }
+                                }
+                            }
+                            .padding(.top,HerdEdgeGeometry.inset)
+                            .id(start)
+                            .background(GeometryReader { row in
+                                Color.clear.preference(key:HerdRowFrames.self,value:[start:row.frame(in:.named(space))])
+                                    .preference(key:HerdContentOffset.self,
+                                        value:start == 0 ? [0:viewport.minY-row.frame(in:.global).minY] : [:])
+                            })
+                        }
+                    }
+                    .padding(.bottom,HerdEdgeGeometry.bottomPadding(
+                        lastRowHeight:frames[starts.last ?? 0]?.height ?? visible.size.height,
+                        viewportHeight:visible.size.height))
+                    .coordinateSpace(name:space)
+                }
+                .accessibilityIdentifier("herd-field-"+paddockID)
+                .scrollTargetBehavior(HerdRowSnap(rows:frames.sorted { $0.key < $1.key }.map(\.value)))
+                .onPreferenceChange(HerdContentOffset.self) { if let first = $0[0] { scrollOffset = first } }
+                .onPreferenceChange(HerdRowFrames.self) { updated in
+                    if !frames.isEmpty && frames != updated { needsRemeasurement = true }
+                    frames = updated
+                }
+                .task(id:HerdSettlingContent(offset:scrollOffset,
+                    rows:frames.sorted { $0.key < $1.key }.map(\.value),fingerDown:fingerDown,isActive:isActive)) {
+                    guard needsRemeasurement, !fingerDown, isActive else { return }
+                    // A caption can reflow AFTER native deceleration ends. Wait
+                    // for measured offset quiescence, never fight a held finger
+                    // or momentum, then restore a complete row without animation.
+                    do { try await Task.sleep(for:.milliseconds(150)) } catch { return }
+                    needsRemeasurement = false
+                    guard !frames.values.contains(where:{
+                        $0.height+HerdEdgeGeometry.inset > visible.size.height
+                    }) else { return }
+                    if let row = frames.min(by:{ abs($0.value.minY-scrollOffset) < abs($1.value.minY-scrollOffset) }) {
+                        reader.scrollTo(row.key,anchor:.top)
+                    }
+                }
+                .onChange(of:focusedHorse) { _,id in
+                    if let index = horses.firstIndex(where:{ $0.id == id }) {
+                        // No withAnimation: Reduce Motion and VoiceOver reveal
+                        // the complete row immediately, without a forced snap.
+                        reader.scrollTo(index/columns*columns,anchor:.top)
+                    }
+                }
+            }
+        }
+    }
 }
 
 #if DEBUG
@@ -653,7 +896,54 @@ struct HerdGearGlyph: View {
 }
 
 #if DEBUG
+/// Opt-in data/measurement only. Gestures belong to the external XCUITest runner.
+@MainActor
+private enum HerdEdgeEvidence {
+    struct Snapshot: Encodable {
+        let samples: [String:HerdEdgeSample]
+        let updates: [TimeInterval]
+    }
+    static func value(_ samples:[String:HerdEdgeSample],updates:[TimeInterval]) -> String {
+        do { return String(decoding:try JSONEncoder().encode(Snapshot(samples:samples,updates:updates)),as:UTF8.self) }
+        catch { return "encoding failed: \(error)" }
+    }
+}
+
 extension HerdView {
+    /// The existing demo entry point owns the model. This opt-in fixture adds a
+    /// dense/partially filled paddock, a single row, and optional blocked rail.
+    /// A delayed name update exercises remeasurement during the runner's drags.
+    func runEdgeEvidence() async {
+        guard CommandLine.arguments.contains("-corral568EdgeEvidence"),!evidenceRan else { return }
+        evidenceRan = true
+        let scenario = ProcessInfo.processInfo.environment["CORRAL568_CASE"] ?? "day-empty"
+        evidenceEnvironment = scenario.hasPrefix("night") ? .night : .day
+        var agents: [String:Agent] = [:]
+        let count = scenario.contains("single") ? 1 : scenario.contains("no-field") ? 0 : 15
+        for index in 0..<count {
+            let id = String(format:"edge-%02d",index)
+            let name = index % 3 == 1 ? id+"-long-wrapped-horse-caption" : id
+            agents[id] = Agent(agentId:id,state:.working,seq:1,ts:1_800_000_000_000,
+                               capabilities:["read_tail"],workspace:Workspace(repo:"edge-meadow"),
+                               displayName:name)
+        }
+        agents["quiet"] = Agent(agentId:"quiet",state:.idle,workspace:Workspace(repo:"quiet-meadow"),displayName:"quiet")
+        if scenario.contains("blocked") || scenario.contains("no-field") {
+            agents["rail"] = Agent(agentId:"rail",state:.blocked,workspace:Workspace(repo:"edge-meadow"),displayName:"rail")
+        }
+        HerdEvidence.model?.fleet.seedDemo(agents:agents,rev:10)
+        do { try await Task.sleep(for:.seconds(12)) }
+        catch { return }
+        for step in 1...4 {
+            agents["edge-07"]?.displayName = step.isMultiple(of:2)
+                ? "edge-07-updated-caption-wraps-during-a-real-drag" : "edge-07-updated"
+            HerdEvidence.model?.fleet.seedDemo(agents:agents,rev:UInt64(10+step))
+            edgeEvidenceUpdates.append(Date().timeIntervalSince1970)
+            do { try await Task.sleep(for:.seconds(4)) }
+            catch { return }
+        }
+    }
+
     /// #456 recorded-evidence driver (launch-arg gated; Release never
     /// compiles it). Phases: Day full screen → Night full screen → next
     /// paddock → floating scope sheet → floating Settings sheet → long

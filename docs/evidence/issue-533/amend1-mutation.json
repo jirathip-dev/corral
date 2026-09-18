@@ -1,0 +1,12 @@
+{
+  "step": "mutation",
+  "head": "e55974d5170d221806a31955dd63bf8c516db8bb",
+  "command": "xcodebuild -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -configuration Debug -destination 'platform=iOS Simulator,name=iPhone 16' -derivedDataPath /tmp/g533-dd CODE_SIGNING_ALLOWED=NO -parallel-testing-enabled NO -only-testing:FleetNotifierTests/ThemeStoreTests/testExternalEnvironmentWriteRefreshesTheResolvedPalette test",
+  "launch": "flock /tmp/corral-heavy-gate.lock hermes-sim-task --device-type com.apple.CoreSimulator.SimDeviceType.iPhone-16 --name 'iPhone 16' -- xcodebuild -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -configuration Debug -destination 'platform=iOS Simulator,name=iPhone 16' -derivedDataPath /tmp/g533-dd CODE_SIGNING_ALLOWED=NO -parallel-testing-enabled NO -only-testing:FleetNotifierTests/ThemeStoreTests/testExternalEnvironmentWriteRefreshesTheResolvedPalette test",
+  "sha256": {
+    "ios/FleetNotifier/UI/AppTheme.swift": "ebd224b569f2af3da090f1cd7f0d8acc866bdb0c9964d05b85c7a21ef0ab3de9",
+    "ios/FleetNotifierTests/ThemeTests.swift": "e3e4a1569b486a2d37714d1aaa6426a5f82909bc67a6a3d1432370eaca8b364d"
+  },
+  "deadline_exceeded": false,
+  "exit": 65
+}

@@ -1,0 +1,19 @@
+# #492 / #560 / #561 evidence suites at head 0f2c457340d31025dea88a731099a94de3c490fc
+# (the probe path is touched, so the brief requires these to still pass)
+#
+# CARGO_TARGET_DIR=/tmp/g572-target, run from the lane worktree.
+
+cargo test --lib -p corrald g492
+EXIT=0
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 323 filtered out; finished in 7.32s
+
+cargo test --lib -p corrald g560
+EXIT=0
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 324 filtered out; finished in 6.09s
+
+cargo test --lib -p corrald g561
+EXIT=0
+test result: ok. 5 passed; 0 failed; 1 ignored; 0 measured; 324 filtered out; finished in 6.48s
+
+# The `g561` filter does not match the two new `probe_accounting_*` witnesses (their names
+# carry no `g561`); those are covered by the witness runs and the full lib suite above.

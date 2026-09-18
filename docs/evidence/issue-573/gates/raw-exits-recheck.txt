@@ -1,0 +1,3 @@
+LIB_DEFAULT_FINAL2_EXIT=0
+LIB_T4_FINAL3_EXIT=0
+10:31  up 1 day, 18:45, 3 users, load averages: 12.00 54.21 65.52

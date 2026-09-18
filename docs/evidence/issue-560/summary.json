@@ -1,0 +1,394 @@
+{
+  "base": "a42b83ab3e50aa9553076971f39176711f20cb76",
+  "receipt_commit": "4e6d185a257ad137c857244d96ce5194cd8c2a34",
+  "code_head": "7696af2a83f64df7ae9841284a9a7eae20df1d45",
+  "gates": {
+    "red-prefixed": {
+      "command": [
+        "flock",
+        "/tmp/n.lock",
+        "cargo",
+        "test",
+        "-p",
+        "corrald",
+        "g560_unchanged_ticks_keep_publication_identity",
+        "--",
+        "--nocapture"
+      ],
+      "raw_exit": 101,
+      "timed_out": false,
+      "head": "4e6d185a257ad137c857244d96ce5194cd8c2a34",
+      "result_groups": 1,
+      "totals": {
+        "passed": 0,
+        "failed": 1,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 313
+      },
+      "observations": [
+        "G560_IDENTITY enabled=false agents=200 republications=0/10",
+        "G560_IDENTITY enabled=true agents=200 republications=10/10"
+      ]
+    },
+    "green-regression": {
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "corrald",
+        "g560_unchanged_ticks_keep_publication_identity",
+        "--",
+        "--nocapture"
+      ],
+      "raw_exit": 0,
+      "timed_out": false,
+      "head": "7696af2a83f64df7ae9841284a9a7eae20df1d45",
+      "result_groups": 18,
+      "totals": {
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 493
+      },
+      "observations": [
+        "G560_IDENTITY enabled=false agents=200 republications=0/10",
+        "G560_IDENTITY enabled=true agents=200 republications=0/10"
+      ]
+    },
+    "green-focused": {
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "corrald",
+        "g560_",
+        "--",
+        "--nocapture"
+      ],
+      "raw_exit": 0,
+      "timed_out": false,
+      "head": "7696af2a83f64df7ae9841284a9a7eae20df1d45",
+      "result_groups": 18,
+      "totals": {
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 488
+      },
+      "observations": [
+        "G560_INVALIDATION upsert/noop/update/remove/reinsert/expiry/stop/recovery verified",
+        "G560_CACHED_BYTES states=64 snapshots=64 sse_frames=64 agent_encodings=0",
+        "G560_CHANGE background_ms=2003",
+        "G560_DEAD_TICK wait_ms=2023 agent_encodings=0 age_ms=12011",
+        "G560_CHANGE foreground_ms=253",
+        "G560_IDENTITY enabled=false agents=200 republications=0/10",
+        "G560_DEAD_TICK wait_ms=2021 agent_encodings=0 age_ms=14035",
+        "G560_IDENTITY enabled=true agents=200 republications=0/10",
+        "G560_DEAD_TICK wait_ms=2010 agent_encodings=0 age_ms=16061",
+        "G560_DEAD agents=200 republications=3/3 agent_encodings=0/3"
+      ]
+    },
+    "oracle": {
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "corrald",
+        "randomized_publications_match_old_snapshot_and_sse_bytes",
+        "--",
+        "--nocapture"
+      ],
+      "raw_exit": 0,
+      "timed_out": false,
+      "head": "7696af2a83f64df7ae9841284a9a7eae20df1d45",
+      "result_groups": 18,
+      "totals": {
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 493
+      },
+      "observations": []
+    },
+    "fmt": {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "raw_exit": 0,
+      "timed_out": false,
+      "head": "7696af2a83f64df7ae9841284a9a7eae20df1d45",
+      "result_groups": 0,
+      "totals": {
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0
+      },
+      "observations": []
+    },
+    "clippy": {
+      "command": [
+        "cargo",
+        "clippy",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "raw_exit": 0,
+      "timed_out": false,
+      "head": "7696af2a83f64df7ae9841284a9a7eae20df1d45",
+      "result_groups": 0,
+      "totals": {
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0
+      },
+      "observations": []
+    },
+    "workspace": {
+      "command": [
+        "cargo",
+        "test",
+        "--workspace"
+      ],
+      "raw_exit": 0,
+      "timed_out": false,
+      "head": "7696af2a83f64df7ae9841284a9a7eae20df1d45",
+      "result_groups": 23,
+      "totals": {
+        "passed": 510,
+        "failed": 0,
+        "ignored": 11,
+        "measured": 0,
+        "filtered": 0
+      },
+      "observations": []
+    },
+    "deny": {
+      "command": [
+        "cargo",
+        "deny",
+        "--locked",
+        "--workspace",
+        "check"
+      ],
+      "raw_exit": 0,
+      "timed_out": false,
+      "head": "7696af2a83f64df7ae9841284a9a7eae20df1d45",
+      "result_groups": 0,
+      "totals": {
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0
+      },
+      "observations": []
+    },
+    "audit": {
+      "command": [
+        "cargo",
+        "audit",
+        "--deny",
+        "warnings"
+      ],
+      "raw_exit": 0,
+      "timed_out": false,
+      "head": "7696af2a83f64df7ae9841284a9a7eae20df1d45",
+      "result_groups": 0,
+      "totals": {
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0
+      },
+      "observations": []
+    },
+    "release": {
+      "command": [
+        "cargo",
+        "build",
+        "--release"
+      ],
+      "raw_exit": 0,
+      "timed_out": false,
+      "head": "7696af2a83f64df7ae9841284a9a7eae20df1d45",
+      "result_groups": 0,
+      "totals": {
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0
+      },
+      "observations": []
+    },
+    "measurement": {
+      "command": [
+        "/Users/jirathip/.local/bin/python3",
+        "docs/evidence/issue-560/measure.py",
+        "/tmp/g560-base-target/release/corrald",
+        "/tmp/g560-target/release/corrald"
+      ],
+      "raw_exit": 0,
+      "timed_out": false,
+      "head": "7696af2a83f64df7ae9841284a9a7eae20df1d45",
+      "result_groups": 0,
+      "totals": {
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0
+      },
+      "observations": [
+        "G560_PAIRED_MEASUREMENT_COMPLETE private processes stopped"
+      ]
+    },
+    "coverage-clean": {
+      "command": [
+        "cargo",
+        "llvm-cov",
+        "clean",
+        "--locked",
+        "--workspace"
+      ],
+      "raw_exit": 0,
+      "timed_out": false,
+      "head": "7696af2a83f64df7ae9841284a9a7eae20df1d45",
+      "result_groups": 0,
+      "totals": {
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0
+      },
+      "observations": []
+    },
+    "coverage": {
+      "command": [
+        "cargo",
+        "llvm-cov",
+        "--locked",
+        "--package",
+        "corrald",
+        "--package",
+        "corrald-client",
+        "--all-targets",
+        "--no-fail-fast",
+        "--quiet",
+        "--fail-under-lines",
+        "85",
+        "--fail-under-functions",
+        "82"
+      ],
+      "raw_exit": 0,
+      "timed_out": false,
+      "head": "7696af2a83f64df7ae9841284a9a7eae20df1d45",
+      "result_groups": 21,
+      "totals": {
+        "passed": 510,
+        "failed": 0,
+        "ignored": 11,
+        "measured": 0,
+        "filtered": 0
+      },
+      "observations": [
+        "TOTAL                                       33768              3078    90.88%        1985               256    87.10%       20595              2006    90.26%           0                 0         -"
+      ]
+    },
+    "client-coverage": {
+      "command": [
+        "cargo",
+        "llvm-cov",
+        "report",
+        "--locked",
+        "--package",
+        "corrald-client",
+        "--fail-under-lines",
+        "40",
+        "--fail-under-functions",
+        "35"
+      ],
+      "raw_exit": 0,
+      "timed_out": false,
+      "head": "7696af2a83f64df7ae9841284a9a7eae20df1d45",
+      "result_groups": 0,
+      "totals": {
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0
+      },
+      "observations": [
+        "TOTAL                            1478               807    45.40%         129                80    37.98%        1021               590    42.21%           0                 0         -"
+      ]
+    }
+  },
+  "report_prefix_bytes": 222774,
+  "report_prefix_sha256": "4b1b7805e30a8ebdc622715e65d3ea56637dbe3c0291b302a0a2ec7747b55a72",
+  "independent_oracle_original_prefix_byte_identical": true,
+  "all_gates_green": true,
+  "measurement": {
+    "before": {
+      "label": "before",
+      "binary_sha256": "20bfd1425baa163ea37afe2041f3bfea93c385988f9bd213c2589c84a69d9ec7",
+      "method": "delta(ps time user+system CPU)/monotonic wall seconds; child CPU excluded; one SSE subscriber; 5s samples",
+      "warmup_seconds": 15,
+      "requested_seconds": 120,
+      "elapsed_seconds": 120.10811679199833,
+      "cpu_seconds_start": 16.57,
+      "cpu_seconds_end": 28.39,
+      "daemon_cpu_seconds": 11.82,
+      "cpu_percent": 9.841133401891332,
+      "publications": 72,
+      "full_agent_encodes": 72,
+      "full_agent_encodes_per_minute": 35.96759415919675,
+      "agent_count_min": 46,
+      "agent_count_max": 47,
+      "initial_agent_set_sha256": "d1fe88adcae51297a235ae60e1069d15787158d72a8312d8b76f284e01f096bb",
+      "final_agent_set_sha256": "d1fe88adcae51297a235ae60e1069d15787158d72a8312d8b76f284e01f096bb",
+      "load_start": "9:30  up 17:44, 3 users, load averages: 5.87 21.59 44.15",
+      "load_end": "9:32  up 17:46, 3 users, load averages: 3.02 15.48 38.76",
+      "encoder_window_log_sha256": "784b176be83498436a7b9ccb3a895ce15bd2248d49a684bfc39d2d183251e965"
+    },
+    "after": {
+      "label": "after",
+      "binary_sha256": "9dcfaa5a653f30e623274b275514513d49b3537a5ae9da57f3ab60f3e8c5c4b1",
+      "method": "delta(ps time user+system CPU)/monotonic wall seconds; child CPU excluded; one SSE subscriber; 5s samples",
+      "warmup_seconds": 15,
+      "requested_seconds": 120,
+      "elapsed_seconds": 120.04317366600299,
+      "cpu_seconds_start": 16.68,
+      "cpu_seconds_end": 24.68,
+      "daemon_cpu_seconds": 8.0,
+      "cpu_percent": 6.664268992303102,
+      "publications": 65,
+      "full_agent_encodes": 10,
+      "full_agent_encodes_per_minute": 4.998201744227327,
+      "agent_count_min": 46,
+      "agent_count_max": 47,
+      "initial_agent_set_sha256": "949915d084fdb43fa29ef87c03ed905adb1a88ca64f979ca8966221b0f15de41",
+      "final_agent_set_sha256": "d1fe88adcae51297a235ae60e1069d15787158d72a8312d8b76f284e01f096bb",
+      "load_start": "9:32  up 17:47, 3 users, load averages: 3.15 14.90 38.15",
+      "load_end": "9:34  up 17:49, 3 users, load averages: 4.17 11.23 33.62",
+      "encoder_window_log_sha256": "9024ec271cc9d66bf887571e15117f3a7fbc832da6a2a0828c9603f63317f3ed"
+    }
+  }
+}

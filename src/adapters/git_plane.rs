@@ -26,7 +26,12 @@
 //!
 //! Every fs event is mapped to the worktree(s) it concerns (most-specific
 //! gitdir prefix, then `refs/heads/<branch>` → the worktree checked out on
-//! that branch). Events for a path under `commondir/worktrees/` that matches
+//! that branch). Only change-carrying events are mapped: the Linux inotify
+//! backend additionally reports `IN_OPEN` for every directory its recursive
+//! watch pass opens (and for every file a git command reads, including this
+//! plane's own probes), and an open is not a change — treating it as one
+//! hydrated known paths at boot and re-triggered itself on every probe
+//! (#573). Events for a path under `commondir/worktrees/` that matches
 //! no known gitdir trigger a registry rescan, so `git worktree add` is
 //! discovered within one event, not one sweep. Debounced 300ms per worktree;
 //! each debounced batch re-reads one `git status --porcelain=v2 --branch`
@@ -117,10 +122,19 @@ use crate::core::workspace::{RepoRoot, WorkspaceAttribution};
 const DEBOUNCE: Duration = Duration::from_millis(300);
 /// Safety-net sweep cadence. FSEvents is the primary signal; this is only a
 /// bounded backstop for events the OS coalesced or missed, so it must not be
-/// a hot poll loop of its own.
+/// a hot poll loop of its own. After a normal generation, known paths get
+/// ZERO eager hydration probes; this paced sweep still re-reads all of them.
+/// At 130 paths its last slot is before 60s (+ startup, scan/permit latency
+/// and the 200ms execution budget). Over-budget/error probes retry next round;
+/// their observation ages are not refreshed by the generation itself.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 const HEARTBEAT: Duration = Duration::from_secs(1);
 const STALL_TIMEOUT: Duration = Duration::from_secs(120);
+// #561 measured envelope (130 seeded paths, three 65s post-generation windows):
+// normal restart transition <= 1.358s; <= 35.539 CPU seconds over <= 66.372 wall
+// seconds including backoff AND steady-state work. This is measured, not a
+// host-independent CPU/deadline guarantee; zero eager probes is the pinned bound.
+// Reproduce with g561_restart_cost_measurement; docs/evidence/issue-561.
 const RESTART_DELAY: Duration = Duration::from_secs(1);
 const WARN_INTERVAL: Duration = Duration::from_secs(5 * 60);
 /// Registry-only safety-net cadence. FSEvents plus a one-shot startup rescan
@@ -375,11 +389,58 @@ static TEST_GIT_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 #[cfg(test)]
 static TEST_GIT_MAX_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 #[cfg(test)]
-static TEST_PROBE_RUNS: AtomicU64 = AtomicU64::new(0);
-#[cfg(test)]
 static TEST_RESCAN_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 #[cfg(test)]
 static TEST_RESCAN_MAX_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+
+/// Probe accounting (#572). The count belongs to the plane under test - one
+/// handle per `GitPlane` - never to the process: a fixture probing one plane
+/// can neither observe nor disturb another test's count, and a fixture that
+/// resets its own baseline cannot zero a concurrent test's delta window. The
+/// process-global `static` this replaced made the git-plane tests fail at low
+/// `--test-threads` budgets in CI. Production builds carry a zero-sized
+/// handle, so the probe path does no bookkeeping.
+#[cfg(test)]
+#[derive(Clone, Debug)]
+struct ProbeRuns(Arc<AtomicU64>);
+
+#[cfg(not(test))]
+#[derive(Clone, Debug)]
+struct ProbeRuns;
+
+impl ProbeRuns {
+    /// A fresh counter for one plane under test.
+    #[cfg(test)]
+    fn new() -> Self {
+        Self(Arc::new(AtomicU64::new(0)))
+    }
+
+    #[cfg(not(test))]
+    fn new() -> Self {
+        Self
+    }
+
+    /// Record one admitted probe against this handle's owner.
+    #[cfg(test)]
+    fn record(&self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+
+    #[cfg(not(test))]
+    fn record(&self) {}
+
+    /// Probes this handle's owner has admitted so far.
+    #[cfg(test)]
+    fn count(&self) -> u64 {
+        self.0.load(Ordering::SeqCst)
+    }
+
+    /// Zero this handle's count for a fixture measuring its own delta.
+    #[cfg(test)]
+    fn reset(&self) {
+        self.0.store(0, Ordering::SeqCst);
+    }
+}
 
 #[cfg(test)]
 struct TestGitLoadGuard;
@@ -476,6 +537,8 @@ struct WorktreeState {
     commit: Option<String>,
     subject: Option<String>,
     status: Option<GitStatus>,
+    /// A cancelled publication must replay even when the next probe is equal.
+    publication_pending: bool,
     /// The last probe exceeded the per-worktree budget. Keep cached facts
     /// until a later round completes instead of publishing a partial result.
     stale: bool,
@@ -596,6 +659,17 @@ pub struct GitPlane {
     progress_ms: [AtomicU64; 3],
     stall_timeout: Duration,
     sweep_intervals: SweepIntervals,
+    /// Probe accounting for the plane under test (#572); zero-sized in
+    /// production builds.
+    probe_runs: ProbeRuns,
+    /// Armed by the #573 witness fixture: the Linux inotify backend reports
+    /// `IN_OPEN` for every directory the recursive watch registration pass
+    /// opens, and treating those as change signals debounced a KNOWN path
+    /// during the watcher's own boot. When armed, the next watcher boot
+    /// injects exactly those events, so the race is deterministic on every
+    /// platform. Test-only: production carries no field at all.
+    #[cfg(test)]
+    registration_open_events: AtomicBool,
 }
 
 fn canonicalize_repo_roots(roots: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
@@ -666,6 +740,9 @@ impl GitPlane {
             progress_ms: std::array::from_fn(|_| AtomicU64::new(0)),
             stall_timeout: STALL_TIMEOUT,
             sweep_intervals: PRODUCTION_SWEEP_INTERVALS,
+            probe_runs: ProbeRuns::new(),
+            #[cfg(test)]
+            registration_open_events: AtomicBool::new(false),
         }
     }
 
@@ -774,6 +851,7 @@ impl GitPlane {
 
     async fn supervise(self: Arc<Self>, sink: PlaneSink) {
         self.health.enabled.store(true, Ordering::Release);
+        let mut recover_after_panic = false;
         loop {
             self.stopped.store(false, Ordering::Relaxed);
             self.retry_scheduled.store(false, Ordering::Relaxed);
@@ -781,24 +859,30 @@ impl GitPlane {
                 let mut state = self.lock_state();
                 state.pending.clear();
                 state.rerun.clear();
-                // Re-emit complete observations after a panic, including a
-                // panic between updating this cache and sending its events.
-                for worktree in state.worktrees.values_mut() {
-                    worktree.branch = None;
-                    worktree.commit = None;
-                    worktree.subject = None;
-                    worktree.status = None;
+                // A normal exit/stall preserves observations and their ages.
+                // Only a panicked child makes the cache untrustworthy: it may
+                // have unwound between updating facts and sending their events.
+                if recover_after_panic {
+                    for worktree in state.worktrees.values_mut() {
+                        worktree.branch = None;
+                        worktree.commit = None;
+                        worktree.subject = None;
+                        worktree.status = None;
+                    }
                 }
             }
-            for observed in self
-                .health
-                .facts
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .values_mut()
-            {
-                *observed = None;
+            if recover_after_panic {
+                for observed in self
+                    .health
+                    .facts
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .values_mut()
+                {
+                    *observed = None;
+                }
             }
+            recover_after_panic = false;
             self.progress(0);
             self.progress(1);
             self.progress(2);
@@ -816,6 +900,7 @@ impl GitPlane {
                         match result {
                             Some(Ok(false)) => continue, // completed debounce/retry
                             Some(Err(ref failure)) => {
+                                recover_after_panic |= failure.is_panic();
                                 self.health.alive.store(false, Ordering::Release);
                                 error!(error = %failure, "git plane child failed; restarting generation");
                             }
@@ -848,7 +933,13 @@ impl GitPlane {
                 .abort_all();
             // Join every old child BEFORE re-arming. No detached probe may
             // publish an old generation's result after replacement starts.
-            while self.next_task().await.is_some() {}
+            while let Some(result) = self.next_task().await {
+                // A concurrent panic can already be queued when another child
+                // exits or the heartbeat fires; aborting does not erase it.
+                if let Err(failure) = result {
+                    recover_after_panic |= failure.is_panic();
+                }
+            }
             if sink.is_closed() {
                 break;
             }
@@ -887,10 +978,19 @@ impl GitPlane {
                 root = %self.worktrees_root.display(),
                 "git plane: fsevents watchers live"
             );
+            #[cfg(test)]
+            self.inject_registration_open_events(&event_tx);
         }
-        // A paced safety sweep is not boot hydration. Re-probe all cached
-        // paths now (also after recovery), using the same four admission slots.
-        let initial: Vec<_> = self.lock_state().worktrees.keys().cloned().collect();
+        // Hydrate only new/unobserved paths (all paths after panic recovery).
+        // Known facts survive a normal generation; the independently paced
+        // status sweep still re-reads EVERY path, including missed changes.
+        let initial: Vec<_> = self
+            .lock_state()
+            .worktrees
+            .iter()
+            .filter(|(_, st)| st.commit.is_none() || st.status.is_none() || st.publication_pending)
+            .map(|(wt, _)| wt.clone())
+            .collect();
         for worktree in initial {
             self.debounce(worktree, sink.clone());
         }
@@ -1053,6 +1153,45 @@ impl GitPlane {
         added
     }
 
+    /// Test-only (#573): deliver the `Access(Open)` events the Linux inotify
+    /// backend produces for the recursive watch pass's own directory opens,
+    /// one per directory under each commondir, exactly as the backend reports
+    /// them. The witness fixture arms `registration_open_events` so the boot
+    /// race is deterministic on every platform.
+    #[cfg(test)]
+    fn inject_registration_open_events(
+        &self,
+        event_tx: &mpsc::UnboundedSender<(PathBuf, notify::Result<Event>)>,
+    ) {
+        if !self.registration_open_events.load(Ordering::Acquire) {
+            return;
+        }
+        let commondirs: Vec<PathBuf> = {
+            let state = self.lock_state();
+            state.commondirs.clone()
+        };
+        for commondir in commondirs {
+            let mut pending = vec![commondir.clone()];
+            while let Some(dir) = pending.pop() {
+                let Ok(entries) = fs::read_dir(&dir) else {
+                    continue;
+                };
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if !path.is_dir() {
+                        continue;
+                    }
+                    let event = Event::new(notify::EventKind::Access(
+                        notify::event::AccessKind::Open(notify::event::AccessMode::Any),
+                    ))
+                    .add_path(path.clone());
+                    let _ = event_tx.send((commondir.clone(), Ok(event)));
+                    pending.push(path);
+                }
+            }
+        }
+    }
+
     /// Resolve a batch of fs events to the worktrees they concern (rescanning
     /// the registry once when any path under `commondir/worktrees/` matches
     /// nothing — a worktree may have appeared).
@@ -1065,6 +1204,15 @@ impl GitPlane {
         let mut affected: Vec<PathBuf> = Vec::new();
         let mut need_rescan = false;
         for event in events {
+            // An access is not a change (#573). inotify reports IN_OPEN for
+            // every directory the recursive watch pass opens under a
+            // commondir (and for every file a git command reads, including our
+            // own probes), so treating access events as change signals
+            // hydrates known paths at boot and re-triggers itself afterwards.
+            // Only create/remove/modify events can move a worktree's facts.
+            if matches!(event.kind, notify::EventKind::Access(_)) {
+                continue;
+            }
             for path in &event.paths {
                 let canon = canonicalize_existing_prefix(path);
                 let (worktrees, maybe_new) = self.map_event_path(&canon);
@@ -1256,6 +1404,7 @@ impl GitPlane {
                     cached_commit.as_deref(),
                     cached_subject.as_deref(),
                     git_command_budget.clone(),
+                    plane.probe_runs.clone(),
                 )
                 .await;
                 plane.apply_probe(&wt, started, probe, &sink).await;
@@ -1404,9 +1553,11 @@ impl GitPlane {
                     };
                     let sweep_started = Instant::now();
                     let git_command_budget = self.git_command_budget.clone();
+                    let probe_runs = self.probe_runs.clone();
                     let mut probes = paced_probes(worktrees, self.sweep_intervals.status,
                         |(wt, cached_commit, cached_subject)| {
                             let git_command_budget = git_command_budget.clone();
+                            let probe_runs = probe_runs.clone();
                             async move {
                                 // Wall time includes queueing; the execution
                                 // budget starts only after permit admission.
@@ -1416,6 +1567,7 @@ impl GitPlane {
                                     cached_commit.as_deref(),
                                     cached_subject.as_deref(),
                                     git_command_budget,
+                                    probe_runs,
                                 )
                                 .await;
                                 (wt, started, probe)
@@ -1512,7 +1664,7 @@ impl GitPlane {
             let commit_changed = st.commit.as_deref() != Some(probe.commit.as_str());
             let branch_changed = st.branch.as_deref() != Some(probe.branch.as_str());
             let head_changed = commit_changed || branch_changed;
-            if head_changed {
+            if head_changed || st.publication_pending {
                 events.push(GitEvent::HeadMoved {
                     worktree: wt.to_path_buf(),
                     branch: probe.branch.clone(),
@@ -1528,12 +1680,13 @@ impl GitPlane {
                     });
                 }
             }
-            if st.status.as_ref() != Some(&probe.status) {
+            if st.status.as_ref() != Some(&probe.status) || st.publication_pending {
                 events.push(GitEvent::DirtyChanged {
                     worktree: wt.to_path_buf(),
                     status: probe.status.clone(),
                 });
             }
+            st.publication_pending = !events.is_empty();
             st.branch = Some(probe.branch.clone());
             st.commit = Some(probe.commit.clone());
             st.subject = probe.subject.clone();
@@ -1557,6 +1710,16 @@ impl GitPlane {
             if sink.send(PlaneEvent::Git(event)).await.is_err() {
                 self.stopped.store(true, Ordering::Relaxed);
                 return;
+            }
+        }
+        {
+            let mut state = self.lock_state();
+            if let Some(st) = state.worktrees.get_mut(wt)
+                && st.commit.as_deref() == Some(&probe.commit)
+                && st.branch.as_deref() == Some(&probe.branch)
+                && st.status.as_ref() == Some(&probe.status)
+            {
+                st.publication_pending = false;
             }
         }
         self.health
@@ -2215,10 +2378,11 @@ async fn probe_worktree_with_budget(
     cached_commit: Option<&str>,
     cached_subject: Option<&str>,
     git_command_budget: Arc<Semaphore>,
+    probe_runs: ProbeRuns,
 ) -> Result<Probe, ProbeError> {
     with_probe_budget(
         git_command_budget,
-        probe_worktree_admitted(wt, cached_commit, cached_subject),
+        probe_worktree_admitted(wt, cached_commit, cached_subject, &probe_runs),
     )
     .await
 }
@@ -2245,12 +2409,13 @@ async fn probe_worktree(
     cached_commit: Option<&str>,
     cached_subject: Option<&str>,
     budget: Arc<Semaphore>,
+    probe_runs: ProbeRuns,
 ) -> Result<Probe, ProbeError> {
     let _permit = budget
         .acquire_owned()
         .await
         .map_err(|_| ProbeError::Git("git command budget closed".into()))?;
-    probe_worktree_admitted(wt, cached_commit, cached_subject).await
+    probe_worktree_admitted(wt, cached_commit, cached_subject, &probe_runs).await
 }
 
 /// One worktree snapshot. One `git status` subprocess; `git log` runs only
@@ -2260,9 +2425,9 @@ async fn probe_worktree_admitted(
     wt: &Path,
     cached_commit: Option<&str>,
     cached_subject: Option<&str>,
+    probe_runs: &ProbeRuns,
 ) -> Result<Probe, ProbeError> {
-    #[cfg(test)]
-    TEST_PROBE_RUNS.fetch_add(1, Ordering::SeqCst);
+    probe_runs.record();
     if !wt.is_dir() {
         return Err(ProbeError::Gone);
     }
@@ -2494,6 +2659,7 @@ impl Plane for GitPlane {
 mod tests {
     use super::*;
     include!("git_plane_issue492_tests.rs");
+    include!("git_plane_issue561_tests.rs");
 
     /// Poll `rx` until a `WorktreeRemoved` for `want` arrives or `timeout`
     /// elapses. Non-matching events (boot-scan `WorktreeAdded`, head facts,
@@ -3564,9 +3730,10 @@ mod tests {
             let previous = TEST_GIT_DELAY_MILLIS.swap(delay_ms, Ordering::SeqCst);
             TEST_GIT_IN_FLIGHT.store(0, Ordering::SeqCst);
             TEST_GIT_MAX_IN_FLIGHT.store(0, Ordering::SeqCst);
-            TEST_PROBE_RUNS.store(0, Ordering::SeqCst);
             TEST_RESCAN_IN_FLIGHT.store(0, Ordering::SeqCst);
             TEST_RESCAN_MAX_IN_FLIGHT.store(0, Ordering::SeqCst);
+            // Probe accounting is per-plane (#572): a fixture that needs a
+            // zeroed baseline resets its own `plane.probe_runs` instead.
             Self(previous)
         }
     }
@@ -3646,6 +3813,8 @@ mod tests {
         plane.rescan(&sink).await;
 
         let _slow_git = TestGitDelayReset::new(20);
+        // Probe accounting is per-plane (#572): zero THIS plane's baseline.
+        plane.probe_runs.reset();
         let held_permits = plane
             .git_command_budget
             .clone()
@@ -3664,7 +3833,7 @@ mod tests {
         drop(held_permits);
 
         let deadline = Instant::now() + Duration::from_secs(3);
-        while TEST_PROBE_RUNS.load(Ordering::SeqCst) < 2 {
+        while plane.probe_runs.count() < 2 {
             assert!(
                 Instant::now() < deadline,
                 "queued probe did not complete its coalesced follow-up"
@@ -3673,9 +3842,114 @@ mod tests {
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
         assert_eq!(
-            TEST_PROBE_RUNS.load(Ordering::SeqCst),
+            plane.probe_runs.count(),
             2,
             "a sustained queued event burst creates at most one follow-up probe"
+        );
+    }
+
+    /// #572: probe accounting is per-plane. Two independent planes under test
+    /// must each record exactly their own admissions - the process-global
+    /// `static` this module used to share charged one plane's probes to
+    /// another test's delta window, which is how a low `--test-threads` budget
+    /// turned into a cross-test failure in CI. Re-globalising the counter (one
+    /// handle shared by every plane) fails this deterministically.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn probe_accounting_is_scoped_to_the_plane_under_test() {
+        let _guard = PROBE_LOCK.lock().await;
+        let (_temp_a, repo_a, _) = scratch_repo("probe-scope-a");
+        let (_temp_b, repo_b, _) = scratch_repo("probe-scope-b");
+        let plane_a = GitPlane::new(repo_a.clone(), repo_a.join("worktrees"));
+        let plane_b = GitPlane::new(repo_b.clone(), repo_b.join("worktrees"));
+
+        probe_worktree(
+            &repo_a,
+            None,
+            None,
+            plane_a.git_command_budget.clone(),
+            plane_a.probe_runs.clone(),
+        )
+        .await
+        .expect("plane A probe");
+        assert_eq!(
+            plane_a.probe_runs.count(),
+            1,
+            "a plane records exactly the probes it admitted"
+        );
+
+        // Plane B probes twice, concurrently: neither admission belongs to A.
+        let (first, second) = tokio::join!(
+            probe_worktree(
+                &repo_b,
+                None,
+                None,
+                plane_b.git_command_budget.clone(),
+                plane_b.probe_runs.clone(),
+            ),
+            probe_worktree(
+                &repo_b,
+                None,
+                None,
+                plane_b.git_command_budget.clone(),
+                plane_b.probe_runs.clone(),
+            ),
+        );
+        first.expect("plane B first probe");
+        second.expect("plane B second probe");
+        assert_eq!(
+            plane_b.probe_runs.count(),
+            2,
+            "the second plane records exactly its own two probes"
+        );
+        assert_eq!(
+            plane_a.probe_runs.count(),
+            1,
+            "another plane's probes must not land in this plane's accounting"
+        );
+    }
+
+    /// #572: the fixture-level reset is scoped as well. Zeroing one plane's
+    /// accounting must not clear another plane's count - the old
+    /// process-global reset (`TestGitDelayReset`) zeroed every concurrent
+    /// test's delta window, not just its own.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn probe_accounting_reset_is_scoped_to_the_plane_under_test() {
+        let _guard = PROBE_LOCK.lock().await;
+        let (_temp_a, repo_a, _) = scratch_repo("probe-reset-a");
+        let (_temp_b, repo_b, _) = scratch_repo("probe-reset-b");
+        let plane_a = GitPlane::new(repo_a.clone(), repo_a.join("worktrees"));
+        let plane_b = GitPlane::new(repo_b.clone(), repo_b.join("worktrees"));
+        probe_worktree(
+            &repo_a,
+            None,
+            None,
+            plane_a.git_command_budget.clone(),
+            plane_a.probe_runs.clone(),
+        )
+        .await
+        .expect("plane A probe");
+        probe_worktree(
+            &repo_b,
+            None,
+            None,
+            plane_b.git_command_budget.clone(),
+            plane_b.probe_runs.clone(),
+        )
+        .await
+        .expect("plane B probe");
+        assert_eq!(plane_a.probe_runs.count(), 1);
+        assert_eq!(plane_b.probe_runs.count(), 1);
+
+        plane_b.probe_runs.reset();
+        assert_eq!(
+            plane_b.probe_runs.count(),
+            0,
+            "the reset zeroes its own plane"
+        );
+        assert_eq!(
+            plane_a.probe_runs.count(),
+            1,
+            "a reset on another plane must not clear this plane's count"
         );
     }
 
@@ -3810,6 +4084,7 @@ mod tests {
             None,
             None,
             Arc::new(Semaphore::new(MAX_CONCURRENT_GIT_COMMANDS)),
+            ProbeRuns::new(),
         )
         .await
         .expect("probe succeeds");
@@ -3835,7 +4110,8 @@ mod tests {
         let _guard = PROBE_LOCK.lock().await;
         let (_temp, root, _) = scratch_repo("head-cache");
         let budget = Arc::new(Semaphore::new(MAX_CONCURRENT_GIT_COMMANDS));
-        let first = probe_worktree(&root, None, None, budget.clone())
+        let probe_runs = ProbeRuns::new();
+        let first = probe_worktree(&root, None, None, budget.clone(), probe_runs.clone())
             .await
             .expect("first probe");
         let before = GIT_CALLS.load(Ordering::Relaxed);
@@ -3844,6 +4120,7 @@ mod tests {
             Some(first.commit.as_str()),
             first.subject.as_deref(),
             budget,
+            probe_runs,
         )
         .await
         .expect("cached probe");
@@ -3941,6 +4218,7 @@ mod tests {
                 None,
                 None,
                 Arc::new(Semaphore::new(MAX_CONCURRENT_GIT_COMMANDS)),
+                ProbeRuns::new(),
             )
             .await
             .is_err(),

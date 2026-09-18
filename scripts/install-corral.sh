@@ -329,30 +329,76 @@ sha256_of() {
   esac
 }
 
-resolve_release_urls() {
-  local tag="$RELEASE_TAG"
-  local asset_tag
-  local endpoint
-  if [[ -z "$tag" || "$tag" == "latest" ]]; then
-    endpoint="releases/latest"
-  else
-    endpoint="releases/tags/$tag"
-  fi
-  tag="$(gh api "repos/$RELEASE_REPO/$endpoint" --jq '.tag_name')"
-  [[ -n "$tag" ]] || { echo "!! could not resolve release from $RELEASE_REPO" >&2; return 1; }
+# Public resolution needs only bash, curl and awk (already used for SHA-256).
+# No API/JSON parser, credentials, checkout, or source-build fallback.
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/corral-install.XXXXXX")"
+trap 'rm -rf -- "$WORK_DIR"' EXIT
 
-  asset_tag="${tag//\//_}"
-  local bundle_name="corral-$asset_tag-$PLATFORM.tar.gz"
-  local asset_list
-  asset_list="$(gh api "repos/$RELEASE_REPO/releases/tags/$tag" --jq '.assets[] | [.name, .browser_download_url] | @tsv')"
-  ASSET_URL="$(awk -F '\t' -v name="$bundle_name" '$1 == name {print $2; exit}' <<<"$asset_list")"
-  CHECKSUM_URL="$(awk -F '\t' -v name="$bundle_name.sha256" '$1 == name {print $2; exit}' <<<"$asset_list")"
-  [[ -n "$ASSET_URL" && -n "$CHECKSUM_URL" ]] || {
-    echo "!! release $tag is missing $bundle_name or $bundle_name.sha256" >&2
-    return 1
-  }
-  ASSET_NAME="$bundle_name"
-  printf 'Using release %s (%s)\n' "$tag" "$bundle_name"
+response_header() {
+  # Reset at each response (proxy CONNECT / download redirects); header names
+  # are case-insensitive and HTTP uses CRLF. Only the final response counts.
+  awk -v name="$1" '
+    /^HTTP\// { value = "" }
+    { sub(/\r$/, "") }
+    tolower($1) == name ":" { sub(/^[^:]*:[ \t]*/, ""); value = $0 }
+    END { print value }
+  ' "$WORK_DIR/http.headers"
+}
+
+fetch_release() { # URL, output, curl mode (--head or --location)
+  local url="$1" output="$2" mode="$3" status rc retry_after reset
+  # -q ignores ~/.curlrc (including credentials/retries). Never automatically
+  # retry a refusal: leave Retry-After / reset intact for the caller to obey.
+  if status="$(curl -q -sS --connect-timeout 15 --max-time 300 --max-redirs 10 \
+    "$mode" --dump-header "$WORK_DIR/http.headers" --output "$output" \
+    --write-out '%{http_code}' "$url")"; then
+    :
+  else
+    rc=$?
+    echo "!! release network/TLS failure (curl exit $rc): $url — no install attempted" >&2
+    return 4
+  fi
+  case "$status" in
+    403|429)
+      echo "!! release rate limit/access refusal (HTTP $status): $url" >&2
+      retry_after="$(response_header retry-after)"
+      reset="$(response_header x-ratelimit-reset)"
+      [[ -z "$retry_after" ]] || echo "   Retry-After: $retry_after (wait until this delay/date before retrying)" >&2
+      [[ -z "$reset" ]] || echo "   X-RateLimit-Reset: $reset (Unix seconds; do not retry before reset)" >&2
+      echo "   Stopping without retry or fallback; no install attempted." >&2
+      return 3
+      ;;
+    404|410)
+      echo "!! release/tag or asset missing (HTTP $status): $url — no install attempted" >&2
+      return 5
+      ;;
+    2??) return 0 ;;
+    301|302|303|307|308) [[ "$mode" == "--head" ]] && return 0 ;;
+    000) [[ "$url" == file://* ]] && return 0 ;;
+  esac
+  echo "!! unexpected release HTTP status $status: $url — no install attempted" >&2
+  return 6
+}
+
+resolve_release_urls() {
+  local tag="$RELEASE_TAG" location prefix
+  if [[ -z "$tag" || "$tag" == "latest" ]]; then
+    # The public website redirects to a tag, without the API's anonymous quota.
+    fetch_release "https://github.com/$RELEASE_REPO/releases/latest" /dev/null --head || return $?
+    location="$(response_header location)"
+    prefix="https://github.com/$RELEASE_REPO/releases/tag/"
+    case "$location" in
+      "$prefix"*) tag="${location#"$prefix"}" ;;
+      "/$RELEASE_REPO/releases/tag/"*) tag="${location#"/$RELEASE_REPO/releases/tag/"}" ;;
+      *) echo "!! missing release tag redirect from $RELEASE_REPO" >&2; return 5 ;;
+    esac
+  fi
+  [[ -n "$tag" ]] || { echo "!! missing release tag from $RELEASE_REPO" >&2; return 5; }
+  local asset_tag="${tag//\//_}"
+  ASSET_NAME="corral-$asset_tag-$PLATFORM.tar.gz"
+  ASSET_URL="https://github.com/$RELEASE_REPO/releases/download/$tag/$ASSET_NAME"
+  CHECKSUM_URL="$ASSET_URL.sha256"
+  printf 'Using release %s (%s)\n' "$tag" "$ASSET_NAME"
 }
 
 if [[ -n "$RELEASE_URL" ]]; then
@@ -360,18 +406,14 @@ if [[ -n "$RELEASE_URL" ]]; then
   ASSET_NAME="$(basename "$RELEASE_URL")"
   CHECKSUM_URL="$RELEASE_URL.sha256"
 else
-  require_command gh
   resolve_release_urls
 fi
-
-WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/corral-install.XXXXXX")"
-trap 'rm -rf -- "$WORK_DIR"' EXIT
 
 BUNDLE_FILE="$WORK_DIR/$ASSET_NAME"
 CHECKSUM_FILE="$WORK_DIR/$ASSET_NAME.sha256"
 echo ">> Downloading $ASSET_NAME"
-curl -fsSL "$ASSET_URL" -o "$BUNDLE_FILE"
-curl -fsSL "$CHECKSUM_URL" -o "$CHECKSUM_FILE"
+fetch_release "$ASSET_URL" "$BUNDLE_FILE" --location
+fetch_release "$CHECKSUM_URL" "$CHECKSUM_FILE" --location
 [[ -s "$BUNDLE_FILE" ]] || { echo "!! downloaded bundle is empty" >&2; exit 1; }
 
 expected="$(tr -d '\r\n' < "$CHECKSUM_FILE")"

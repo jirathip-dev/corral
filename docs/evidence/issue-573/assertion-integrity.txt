@@ -1,0 +1,28 @@
+# #573 assertion integrity — the protected #561 assertion is untouched
+
+base: 21ada0a719491cda8a3764ee32c31574689a144e
+head: 21ada0a719491cda8a3764ee32c31574689a144e + the #573 worktree diff (commit sha in the final lane report)
+
+## 1. The protected assertion, base vs head (byte-identical; diff must be empty)
+    assert_eq!(
+        hydration_probes, 0,
+        "unchanged restart must not eagerly hydrate known paths"
+    );
+ASSERTION_DIFF=EMPTY (byte-identical)
+
+## 2. Test file: additions only
+numstat (added / removed): 77 0 src/adapters/git_plane_issue561_tests.rs
+removed or modified lines: 0
+
+## 3. No removed/modified line anywhere in the diff mentions an assertion, tolerance, window or ignore
+NONE (every such line in the diff is an addition: the two new #573 fixtures)
+
+## 4. Production probe call sites unchanged
+probe_worktree_with_budget( at base: 3
+probe_worktree_with_budget( at head: 3
+probe_runs.record() at base: 1
+probe_runs.record() at head: 1
+
+## 5. sha256 of the changed files (head)
+5ac3c4c1e7d1f35ee71ddd52f1782bd14dcaf99bb47c84fc32c107a34c4d967f  src/adapters/git_plane.rs
+21530c6c4a4b932d5030be40c2d431d4b30f8279a5d3c1f3d47a0fe94bd2b3df  src/adapters/git_plane_issue561_tests.rs

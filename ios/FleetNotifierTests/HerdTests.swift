@@ -3,6 +3,241 @@ import SwiftUI
 @testable import FleetNotifier
 
 final class HerdTests: XCTestCase {
+    private final class EdgeProbe {
+        var samples: [String:HerdEdgeSample] = [:]
+        var rows: [Int:CGRect] = [:]
+        var selections = 0
+    }
+
+    @MainActor private func edgeFixture(size:CGSize,type:DynamicTypeSize = .large,
+                                        count:Int = 9) async throws -> (UIWindow,EdgeProbe) {
+        let probe = EdgeProbe()
+        let horses = (0..<count).map { index in
+            HerdHorse(agent:Agent(agentId:"edge-test-\(index)",state:.working,
+                                  workspace:Workspace(repo:"measured"),
+                                  displayName:index % 2 == 0 ? "horse-\(index)" : "long-wrapped-horse-caption-\(index)"),
+                      hostProfileID:nil,hostName:nil,disconnected:false)
+        }
+        let view = HerdView(horses:horses,obscured:false,select:{ _ in probe.selections += 1 })
+            .environmentObject(ThemeStore(reduceMotionProvider:{ true }))
+            .environment(\.dynamicTypeSize,type)
+            .onPreferenceChange(HerdEdgeSamples.self) { probe.samples = $0 }
+            .onPreferenceChange(HerdRowFrames.self) { probe.rows = $0 }
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene:scene)
+        window.frame = CGRect(origin:.zero,size:size)
+        window.rootViewController = UIHostingController(rootView:view)
+        window.makeKeyAndVisible()
+        for _ in 0..<30 {
+            if !probe.samples.isEmpty { break }
+            try await Task.sleep(for:.milliseconds(50))
+        }
+        try await Task.sleep(for:.milliseconds(200))
+        return (window,probe)
+    }
+
+    private func edgeScrolls(_ view:UIView) -> [UIScrollView] {
+        ((view as? UIScrollView).map { [$0] } ?? []) + view.subviews.flatMap { edgeScrolls($0) }
+    }
+
+    @MainActor private final class FocusProbe: ObservableObject {
+        @Published var focused: String?
+        @Published var expanded = false
+        @Published var extraGrowth = false
+        @Published var dragging = false
+        @Published var active = true
+        var samples: [String:HerdEdgeSample] = [:]
+        var offset: CGFloat = 0
+    }
+    private struct FocusFixture: View {
+        @ObservedObject var probe: FocusProbe
+        let horses: [HerdHorse]
+        var body: some View {
+            HerdPaddockScroll(horses:horses,paddockID:"focus",focusedHorse:probe.focused,fingerDown:probe.dragging,isActive:probe.active) { horse,viewport in
+                HerdEdgeGroup(id:horse.id,viewport:viewport,artBounds:.zero,allowsOversized:false) {
+                    Text(horse.id).frame(height:horse.id == "::focus-2"
+                        ? (probe.expanded ? 200 : 140)+(probe.extraGrowth ? 60 : 0) : 140)
+                } semantic: { Button(horse.id) {} }
+            }
+            .frame(height:280)
+            .onPreferenceChange(HerdEdgeSamples.self) { probe.samples = $0 }
+            .onPreferenceChange(HerdContentOffset.self) { if let first = $0[0] { probe.offset = first } }
+        }
+    }
+
+    @MainActor func testEdgeFocusChangeRevealsPreviouslyFadedRowWithoutAnimation() async throws {
+        let horses = (0..<9).map { herdHorse("focus-\($0)",repo:"focus",state:.working) }
+        let probe = FocusProbe()
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene:scene)
+        window.frame = CGRect(x:0,y:0,width:390,height:844)
+        window.rootViewController = UIHostingController(rootView:FocusFixture(probe:probe,horses:horses))
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        for _ in 0..<30 {
+            if probe.samples.count == horses.count { break }
+            try await Task.sleep(for:.milliseconds(50))
+        }
+        let target = try XCTUnwrap(horses.last).id
+        XCTAssertEqual(try XCTUnwrap(probe.samples[target]).opacity,0)
+        // This is the value passed by the production AccessibilityFocusState
+        // binding. Exercise its real ScrollViewReader path, not a scroll offset.
+        probe.focused = target
+        for _ in 0..<30 {
+            if probe.samples[target]?.opacity == 1 { break }
+            try await Task.sleep(for:.milliseconds(50))
+        }
+        let revealed = try XCTUnwrap(probe.samples[target])
+        XCTAssertEqual(revealed.opacity,1,"focus must reveal a previously fully faded row")
+        XCTAssertEqual(revealed.group.minY-revealed.viewport.minY,8,accuracy:0.5)
+        XCTAssertLessThan(revealed.group.maxY,revealed.viewport.maxY-1)
+        print("G568_FOCUS_REVEAL target=\(target) sample=\(revealed)")
+        XCTAssertGreaterThan(probe.offset,0,"the observed content offset follows the native scroll")
+        print("G568_CONTENT_OFFSET \(probe.offset)")
+        // A real caption update can change an earlier row just AFTER the last
+        // flick ends. Preserve the settled row's identity, not its old offset.
+        let settledOffset = probe.offset
+        probe.dragging = true
+        probe.expanded = true
+        try await Task.sleep(for:.milliseconds(250))
+        let held = try XCTUnwrap(probe.samples[target])
+        // An earlier row grew by 60 pt, so every later group shifts down 60 pt
+        // IN CONTENT SPACE while the finger is down; only the scroll offset
+        // itself must stay put (no settle may fight a held finger).
+        XCTAssertEqual(held.group.minY-held.viewport.minY,68,accuracy:0.5,
+                       "a held drag must not be fought by remeasure-settling")
+        XCTAssertEqual(probe.offset,settledOffset,accuracy:0.5,
+                       "the scroll offset must not change during an active drag")
+        probe.dragging = false
+        try await Task.sleep(for:.milliseconds(250))
+        let remeasured = try XCTUnwrap(probe.samples[target])
+        XCTAssertEqual(remeasured.group.minY-remeasured.viewport.minY,8,accuracy:0.5,
+                       "live remeasurement must preserve the settled complete-row anchor")
+        print("G568_LIVE_ROW_ANCHOR target=\(target) sample=\(remeasured)")
+        let activeOffset = probe.offset
+        probe.active = false
+        probe.extraGrowth = true
+        try await Task.sleep(for:.milliseconds(250))
+        XCTAssertEqual(probe.offset,activeOffset,accuracy:0.5,
+                       "an offscreen repository must not scroll itself back into view")
+        probe.active = true
+        try await Task.sleep(for:.milliseconds(250))
+        let returned = try XCTUnwrap(probe.samples[target])
+        XCTAssertEqual(returned.group.minY-returned.viewport.minY,8,accuracy:0.5)
+    }
+
+    @MainActor func testEdgeOpacityBoundariesUseMeasuredCaptionAndViewport() async throws {
+        for size in [CGSize(width:375,height:667),CGSize(width:430,height:932)] {
+            let (window,probe) = try await edgeFixture(size:size)
+            defer { window.isHidden = true }
+            XCTAssertEqual(probe.samples.count,9,"all rows must be measured before a fast flick")
+            let measured = try XCTUnwrap(probe.samples.values.first)
+            let viewport = measured.viewport
+            XCTAssertGreaterThan(viewport.minY,window.safeAreaInsets.top,"chrome is outside the field viewport")
+            XCTAssertLessThan(viewport.maxY,window.bounds.maxY-window.safeAreaInsets.bottom,"navigation is outside it too")
+            XCTAssertGreaterThan(Set(probe.samples.values.map { $0.group.height }).count,1,"long names really wrap")
+            for sample in probe.samples.values {
+                XCTAssertLessThan(sample.group.height+16,viewport.height)
+                for clearance in [CGFloat(-20),0,0.5,1,4.5,8] {
+                    let expected = clearance <= 1 ? 0.0 : clearance >= 8 ? 1.0 : 0.5
+                    for top in [viewport.minY+clearance,viewport.maxY-sample.group.height-clearance] {
+                        let group = CGRect(x:sample.group.minX,y:top,width:sample.group.width,height:sample.group.height)
+                        XCTAssertEqual(HerdEdgeGeometry.opacity(group:group,viewport:viewport,allowsOversized:false),
+                                       expected,accuracy:0.0001,"whole group must be zero BEFORE crossing either edge")
+                    }
+                }
+            }
+            let scroll = try XCTUnwrap(edgeScrolls(window).filter { $0.contentSize.height > $0.bounds.height+10 }.first)
+            for offset in [CGFloat(-45),0,65,170,scroll.contentSize.height-scroll.bounds.height,scroll.contentSize.height] {
+                scroll.setContentOffset(CGPoint(x:0,y:offset),animated:false)
+                try await Task.sleep(for:.milliseconds(100))
+                for sample in probe.samples.values where sample.opacity > 0 {
+                    XCTAssertGreaterThan(sample.group.minY,sample.viewport.minY+1)
+                    XCTAssertLessThan(sample.group.maxY,sample.viewport.maxY-1)
+                }
+            }
+            print("G568_MEASURE size=\(size) viewport=\(viewport) groups=\(probe.samples.count)")
+        }
+    }
+
+    @MainActor func testEdgeRowAndEndSnapsUseMeasuredRowsAndAreIdempotent() async throws {
+        for count in [1,9] {
+            let (window,probe) = try await edgeFixture(size:CGSize(width:390,height:844),count:count)
+            defer { window.isHidden = true }
+            let rows = probe.rows.sorted { $0.key < $1.key }.map(\.value)
+            XCTAssertEqual(rows.count,count == 1 ? 1 : 5,"partial last row keeps its measured target")
+            let scroll = try XCTUnwrap(edgeScrolls(window).last { $0.contentSize.height >= $0.bounds.height-1 && $0.bounds.height > 100 })
+            let last = try XCTUnwrap(rows.last)
+            let end = max(0,scroll.contentSize.height-scroll.bounds.height)
+            XCTAssertEqual(end,last.minY,accuracy:0.5,"end padding must let the LAST complete row reach the top inset")
+            func snap(_ value:CGFloat) -> CGFloat {
+                HerdEdgeGeometry.snap(proposed:value,rows:rows,contentHeight:scroll.contentSize.height,
+                                      viewportHeight:scroll.bounds.height)
+            }
+            XCTAssertEqual(snap(-100),0)
+            XCTAssertEqual(snap(end+100),end)
+            for row in rows {
+                XCTAssertEqual(snap(row.minY+1),row.minY,accuracy:0.5)
+                XCTAssertEqual(snap(snap(row.minY+1)),snap(row.minY+1),accuracy:0.001,"no end-of-content snap loop")
+            }
+            print("G568_ROWS count=\(count) measured=\(rows) end=\(end)")
+        }
+        XCTAssertEqual(HerdEdgeGeometry.snap(proposed:20,rows:[],contentHeight:0,viewportHeight:300),0)
+        XCTAssertEqual(HerdEdgeGeometry.columns(width:310),1)
+        XCTAssertEqual(HerdEdgeGeometry.columns(width:351),2)
+    }
+
+    @MainActor func testEdgeOversizedAccessibilityFallbackKeepsGroupReadable() async throws {
+        let (window,probe) = try await edgeFixture(size:CGSize(width:375,height:667),type:.accessibility5,count:3)
+        defer { window.isHidden = true }
+        let oversized = try XCTUnwrap(probe.samples.values.first { $0.oversized })
+        XCTAssertGreaterThan(oversized.group.height+16,oversized.viewport.height)
+        XCTAssertEqual(oversized.opacity,1,"oversized AX groups must never be permanently hidden")
+        XCTAssertEqual(HerdEdgeGeometry.opacity(group:oversized.group,viewport:oversized.viewport,allowsOversized:false),0)
+        let scroll = try XCTUnwrap(edgeScrolls(window).max { $0.contentSize.height < $1.contentSize.height })
+        XCTAssertGreaterThan(scroll.contentSize.height,scroll.bounds.height)
+        scroll.setContentOffset(CGPoint(x:0,y:150),animated:false)
+        try await Task.sleep(for:.milliseconds(200))
+        XCTAssertTrue(probe.samples.values.contains { $0.oversized && $0.opacity == 1 })
+        print("G568_AX_EXCEPTION viewport=\(oversized.viewport) group=\(oversized.group) opacity=1 nativeColumnScroll=true")
+    }
+
+    func testEdgeAnimatedInkBoundsIncludeStrokesAndBob() {
+        for state in AgentState.allCases {
+            let horse = herdHorse("animated-edge",repo:"measured",state:state)
+            for tick in 0...120 {
+                let elapsed = Double(tick)/4
+                let bounds = herdArtBounds(horse,elapsed:elapsed,reduced:false)
+                for ink in HerdArt().drawing(horse.identity,pose:horse.pose(elapsed:elapsed,reduceMotion:false),
+                                             gait:horse.gait(elapsed:elapsed,reduceMotion:false)) {
+                    let actual = ink.path.boundingRect.insetBy(dx:-ink.stroke/2,dy:-ink.stroke/2)
+                        .offsetBy(dx:0,dy:8+horse.bob(elapsed:elapsed,reduceMotion:false,enabled:true))
+                    // CGRect union/offset reassociation can differ by a few ulps.
+                    // This tolerance is far below the one-point visibility guard.
+                    XCTAssertLessThanOrEqual(bounds.minY,actual.minY+1e-9)
+                    XCTAssertGreaterThanOrEqual(bounds.maxY,actual.maxY-1e-9)
+                }
+            }
+        }
+    }
+
+    func testEdgeProductionWiresUniformOpacityTouchExclusionAndFocusReveal() throws {
+        let url = try XCTUnwrap(Bundle(for:Self.self).url(forResource:"HerdView.swift",withExtension:"txt"))
+        let source = try String(contentsOf:url,encoding:.utf8).filter { !$0.isWhitespace }
+        let start = try XCTUnwrap(source.range(of:"structHerdEdgeGroup<"))
+        let end = try XCTUnwrap(source.range(of:"structHerdRowFrames:",range:start.upperBound..<source.endIndex))
+        let group = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(group.contains("content().compositingGroup().opacity(opacity)"))
+        XCTAssertTrue(group.contains(".allowsHitTesting(opacity>0)"),"fully faded paint cannot intercept a touch")
+        XCTAssertTrue(group.contains(".accessibilityRepresentation{semantic()}"),"semantic rows survive paint fading")
+        XCTAssertTrue(group.contains(".transaction{$0.animation=nil}"),"opacity must never lag behind the scroll")
+        XCTAssertFalse(group.contains(".mask("))
+        XCTAssertTrue(source.contains(".accessibilityFocused($focusedHorse,equals:horse.id)"))
+        XCTAssertTrue(source.contains("HerdPaddockScroll(horses:paddock.field,paddockID:paddock.id,focusedHorse:focusedHorse,fingerDown:dragging,isActive:paddockID==paddock.id||(paddockID==nil&&paddock.id==paddocks.first?.id))"))
+        XCTAssertTrue(source.contains("reader.scrollTo(index/columns*columns,anchor:.top)"))
+        XCTAssertTrue(source.contains(".scrollTargetBehavior(HerdRowSnap(rows:"))
+    }
+
     func testHorseCaptionLabelWiresPositiveGitMarkers() throws {
         let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "HerdView.swift", withExtension: "txt"))
         let source = try String(contentsOf: url, encoding: .utf8).filter { !$0.isWhitespace }
@@ -542,8 +777,8 @@ final class HerdRailZoneTests: XCTestCase {
         XCTAssertTrue(button.contains(".disabled(horse.disconnected)"))
         let chip = String(source[end.lowerBound..<buttonStart.lowerBound])
         XCTAssertTrue(chip.contains("Text(herdRepositoryCaption(paddock).dropFirst(paddock.title.count))"))
-        XCTAssertTrue(chip.contains("VStack(spacing:0){repositoryChiprailZone.layoutPriority(1)pager(width:width)}"))
-        XCTAssertTrue(chip.contains("ScrollView(.vertical){column}"))
+        XCTAssertTrue(chip.contains("VStack(spacing:0){repositoryChiprailZone.layoutPriority(1)pager(width:width,viewport:viewport)}"))
+        XCTAssertTrue(chip.contains("ScrollView(.vertical){herdContents(width:width,viewport:visible.frame(in:.global))}"))
     }
 }
 

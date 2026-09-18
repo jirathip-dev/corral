@@ -1,0 +1,16 @@
+{
+  "command": [
+    "cargo",
+    "clippy",
+    "--all-targets",
+    "--all-features",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl561-hydrate",
+  "raw_exit": 0,
+  "timed_out": false,
+  "elapsed_s": 8.731237874999351,
+  "log": "final-clippy.log"
+}

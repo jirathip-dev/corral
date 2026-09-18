@@ -1,0 +1,12 @@
+# #573 production hook absence
+
+RELEASE_BUILD_EXIT=0
+binary: /tmp/corral-573/target/release/corrald
+-rwxr-xr-x@ 1 jirathip  wheel  14004352 Sep 18 10:33 /tmp/corral-573/target/release/corrald
+
+strings | grep -c inject_registration_open_events = 0
+strings | grep -c registration_open_events        = 0
+nm -C  | grep -c registration_open_events        = 0
+
+The field, the arm and the injection are #[cfg(test)]; production carries none of them.
+Production probe call sites (unchanged): 3 / 1

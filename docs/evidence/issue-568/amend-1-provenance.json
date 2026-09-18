@@ -1,0 +1,36 @@
+{
+  "base": "4cc316599b0ca1d69039aceb7dbb44193be48e52",
+  "preserved_receipt": "644db78c5a6a2e6c4436372f6708b8cb1a7400c4",
+  "old_pins": {
+    "APPROVED_RELEASE_SOURCE_DIGEST": "b4f8a24d91e1b267ad7a5a77767a0acc419539a05fa1033a16453d62b7f7c785",
+    "APPROVED_TEST_SOURCE_DIGEST": "5c27ace68bd25d7ab958303ccac5f38a1518b7cc4877072b8e764bca8d1b4da8"
+  },
+  "current_pins": {
+    "APPROVED_RELEASE_SOURCE_DIGEST": "d22cdaf7396eb0bd8e50677a736c81ea864d011118110397080f0820d82bbd09",
+    "APPROVED_TEST_SOURCE_DIGEST": "5c27ace68bd25d7ab958303ccac5f38a1518b7cc4877072b8e764bca8d1b4da8"
+  },
+  "current_release_digest": "d22cdaf7396eb0bd8e50677a736c81ea864d011118110397080f0820d82bbd09",
+  "archived_base_release_digest": "b4f8a24d91e1b267ad7a5a77767a0acc419539a05fa1033a16453d62b7f7c785",
+  "test_source_sha256": "5c27ace68bd25d7ab958303ccac5f38a1518b7cc4877072b8e764bca8d1b4da8",
+  "preserved_sections": {
+    "railZone": {
+      "bytes": 1047,
+      "sha256": "1c7b005fd130f1937eb06c1f7807537de77268c235c25058a7bd5f41e43bdd85"
+    },
+    "repositoryChip": {
+      "bytes": 1782,
+      "sha256": "fe9c8fb9d36031ccccc8e22a43be44ea852f07bf5420cd84cf43601b2ffaa229"
+    }
+  },
+  "changed_app_sources": [
+    "ios/FleetNotifier/UI/Herd/HerdView.swift"
+  ],
+  "report_prefix": {
+    "bytes": 263718,
+    "lines": 3806,
+    "sha256": "639be8c2afba3f044bb75da62ab1e79256be744972f2786a7be0db5c26dad7d0",
+    "current_prefix_sha256": "639be8c2afba3f044bb75da62ab1e79256be744972f2786a7be0db5c26dad7d0"
+  },
+  "candidate_view_sha256": "00dce6d033921b7a9cfe77919c13f5a8e827a90246365d38a5550d1455ceb8d2",
+  "candidate_herd_tests_sha256": "9c1a39aa0e6e9abec76a7ef2e4f1b196c442a8f4111ebeaac0c5837afe3407b1"
+}

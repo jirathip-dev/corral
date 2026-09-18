@@ -15,7 +15,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, Notify, broadcast, watch};
 
 use super::model::{Agent, Change, Delta, GitFactAge, Resume, SCHEMA_VERSION, Snapshot};
+use super::workspace::paths_match;
 use crate::history::{HistoryEvent, HistoryRing, RotationPolicy};
 
 #[cfg(test)]
@@ -165,9 +166,10 @@ impl Default for Store {
         };
         let (published, _) = watch::channel(Arc::new(PublishedSnapshot::new(
             &epoch,
-            &initial,
+            initial,
             Instant::now(),
             VecDeque::new(),
+            None,
         )));
         Self {
             epoch,
@@ -358,13 +360,16 @@ impl Store {
     /// Coalesce and publish. Abort the owning task to stop. The idle timer
     /// also observes backlog-atomic changes that do not emit agent changes.
     pub async fn run_coalescer(&self) {
+        let mut refresh_deadline = tokio::time::Instant::now() + BACKGROUND_TICK;
         loop {
             let notified = tokio::select! {
                 _ = self.notify.notified() => true,
-                _ = tokio::time::sleep(BACKGROUND_TICK) => false,
+                _ = tokio::time::sleep_until(refresh_deadline) => false,
             };
             if notified {
-                let mut deadline = tokio::time::Instant::now() + BACKGROUND_TICK;
+                // A late notification must not postpone the idle age refresh
+                // by another background window, even if no agent changed.
+                let mut deadline = refresh_deadline;
                 loop {
                     if self.subscriber_count() > 0 {
                         // Joining SSE shortens an already-running background
@@ -378,6 +383,7 @@ impl Store {
                 }
             }
             self.flush().await;
+            refresh_deadline = tokio::time::Instant::now() + BACKGROUND_TICK;
         }
     }
 
@@ -386,15 +392,14 @@ impl Store {
         let publication_guard = self.publish_lock.clone().lock_owned().await;
         let mut inner = self.inner.lock().await;
         let previous = self.published();
-        if !inner.pending_any
-            // Once wired, publish ages/health even for an idle or dead plane.
-            // This uses the same <=2s coalescer, never the HTTP request path.
-            && !self.git_plane_health.enabled.load(Ordering::Acquire)
-            && previous.git_plane_backlog == self.git_plane_backlog.load(Ordering::Acquire)
-        {
+        let mut snapshot = self.snapshot_locked(&inner);
+        // Compare the projected map, not only pending writes: expiry/stop and
+        // recovery can change visible bindings without an adapter event.
+        let same_agents = snapshot.agents == previous.agents.state;
+        if !inner.pending_any && same_agents && previous.same_health(&snapshot) {
             return None;
         }
-        let mut snapshot = self.snapshot_locked(&inner);
+        let cached_agents = same_agents.then(|| previous.agents.clone());
         let stale_bindings: BTreeSet<String> = snapshot
             .agents
             .iter()
@@ -459,7 +464,8 @@ impl Store {
                     history.pop_front();
                 }
             }
-            let next = PublishedSnapshot::new(&epoch, &snapshot, captured_at, history);
+            let next =
+                PublishedSnapshot::new(&epoch, snapshot, captured_at, history, cached_agents);
             // Publish BEFORE broadcasting: initial snapshot + subscribed
             // deltas always share a boundary, including lag recovery.
             published.send_replace(Arc::new(next));
@@ -608,9 +614,10 @@ impl Store {
             })
             .collect();
         for agent in inner.agents.values() {
-            if let Some(path) = &agent.workspace.worktree_path {
-                ages.entry(path.clone())
-                    .or_insert_with(|| GitFactAge::at(None, alive));
+            if let Some(path) = &agent.workspace.worktree_path
+                && worktree_age(&ages, path).is_none()
+            {
+                ages.insert(path.clone(), GitFactAge::at(None, alive));
             }
         }
         let mut agents = inner.agents.clone();
@@ -623,7 +630,7 @@ impl Store {
                 let fresh = ws
                     .worktree_path
                     .as_ref()
-                    .and_then(|path| ages.get(path))
+                    .and_then(|path| worktree_age(&ages, path))
                     .is_some_and(|age| !age.stale);
                 if !fresh || (ws.head_sha.is_none() && ws.branch.is_none()) {
                     ws.pr_number = None;
@@ -656,6 +663,16 @@ impl Store {
         self.notify.notify_one();
         rx
     }
+}
+
+// Keep canonical-path hits cheap; only aliases/missing facts scan the keys.
+// Both fallback insertion and binding projection must use the same identity.
+fn worktree_age<'a>(ages: &'a BTreeMap<String, GitFactAge>, path: &str) -> Option<&'a GitFactAge> {
+    ages.get(path).or_else(|| {
+        ages.iter()
+            .find(|(key, _)| paths_match(Path::new(key), Path::new(path)))
+            .map(|(_, age)| age)
+    })
 }
 
 fn now_millis() -> u64 {

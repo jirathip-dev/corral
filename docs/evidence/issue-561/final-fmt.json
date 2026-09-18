@@ -1,0 +1,14 @@
+{
+  "command": [
+    "cargo",
+    "fmt",
+    "--all",
+    "--",
+    "--check"
+  ],
+  "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl561-hydrate",
+  "raw_exit": 0,
+  "timed_out": false,
+  "elapsed_s": 0.5483699169999454,
+  "log": "final-fmt.log"
+}

@@ -1,0 +1,186 @@
+[
+  {
+    "tool": "search_files",
+    "arguments": {
+      "path": "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/scripts",
+      "pattern": "src/core/store\\.rs|src/main\\.rs|sha256|sha512|digest",
+      "limit": 200
+    },
+    "result": {
+      "total_count": 88,
+      "matches_format": "path-grouped: each file path on its own line, followed by indented '<line>: <content>' rows for matches in that file",
+      "matches_text": "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/scripts/design-gate-evidence.sh\n  1246: png_content_digest() {\n  1251:   elif command -v sha256sum >/dev/null 2>&1; then\n  1252:     sha256sum \"$path\" | awk '{ print $1 }'\n  1254:     # sha256_file is defined below before any capture path invokes this\n  1256:     sha256_file \"$path\"\n  1265:   local content_digest=\"\"\n  1275:   content_digest=\"$(png_content_digest \"$path\" 2>/dev/null)\" || return 1\n  1276:   [[ \"$content_digest\" =~ ^[0-9a-fA-F]{64}$ ]] || return 1\n  1277:   printf '%s:%s:%s:%s\\n' \"$metadata\" \"$content_digest\" \"$head_bytes\" \"$tail_bytes\"\n  1311:         # The content digest in the signature is required while a writer is\n  1369: sha256_file() {\n  1375: digest = hashlib.sha256()\n  1378:         digest.update(block)\n  1379: print(digest.hexdigest())\n  1384: GENERATOR_SHA=\"$(sha256_file \"$SCRIPT_PATH\")\"\n  2162: print(f\"{width} {height} {hashlib.sha256(source_bytes).hexdigest()}\")\n  2655: [[ \"$IMPLEMENTATION_CONTENT_DIGEST\" == sha256:* ]] \\\n  2656:   || die \"implementation identity did not return a sha256 digest\"\n  2751: PROTOTYPE_SOURCE_SHA_CHECK=\"$(sha256_file \"$PROTOTYPE\")\"\n  2765:   LIVE_SOURCE_SHA=\"$(sha256_file \"$STAGE/live-after.png\")\"\n  2779: PROTOTYPE_SHA=\"$(sha256_file \"$STAGE/prototype.png\")\"\n  2780: LIVE_SHA=\"$(sha256_file \"$STAGE/live-after.png\")\"\n  2787: COMPARISON_SHA=\"$(sha256_file \"$STAGE/comparison.png\")\"\n  2794:   IOS_BEFORE_SHA=\"$(sha256_file \"$STAGE/ios-before-detail.png\")\"\n  2803:   LIVE_BINARY_SHA=\"$(sha256_file \"$EGUI_BINARY\")\"\n  2808:   DAEMON_BINARY_SHA=\"$(sha256_file \"$DAEMON_BINARY\")\"\n  2813:   FIXTURE_REGISTRY_SHA=\"$(sha256_file \"$FIXTURE_REGISTRY\")\"\n  2817: CAPTURE_LOG_SHA=\"$(sha256_file \"$STAGE/capture.log\")\"\n  2926:   printf -- '- Implementation content digest: '\n/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/scripts/update-corral.sh\n  49: file_hash() {  # sha256 of a file; empty when missing/unreadable\n  53:   elif command -v sha256sum >/dev/null 2>&1; then\n  54:     sha256sum \"$1\" 2>/dev/null | awk '{print $1; exit}'\n  56:     openssl dgst -sha256 \"$1\" 2>/dev/null | awk '{print $NF; exit}'\n/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/scripts/verify-design-gate-egui-evidence.py\n  34:     return hashlib.sha256(path.read_bytes()).hexdigest()\n  112:             name, dimensions, digest = match.groups()\n  113:             rows[name] = (dimensions, digest)\n  127:         recorded_dimensions, recorded_digest = rows[name]\n  128:         if not SHA256.fullmatch(recorded_digest):\n  130:         actual_digest = sha(path)\n  131:         if actual_digest != recorded_digest:\n  225:     if not identity or not identity[0].startswith(\"sha256:\"):\n  226:         raise SystemExit(\"implementation identity helper returned no digest\")\n  245:         digest_match = re.search(\n  246:             r\"- Implementation content digest: `(sha256:[0-9a-f]+)`\", conformance\n  248:         if not digest_match or digest_match.group(1) != expected_identity:\n  249:             raise SystemExit(f\"{tab} implementation content digest does not match the current tree\")\n/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/scripts/install-corral.sh\n  5: # against its published .sha256, then installs corrald as a per-user service:\n  316: elif command -v sha256sum >/dev/null 2>&1; then\n  317:   CHECKSUM_CMD=\"sha256sum\"\n  319:   CHECKSUM_CMD=\"openssl dgst -sha256\"\n  321:   echo \"!! no SHA-256 tool found (need shasum, sha256sum, or openssl)\" >&2\n  325: sha256_of() {\n  400:   CHECKSUM_URL=\"$ASSET_URL.sha256\"\n  407:   CHECKSUM_URL=\"$RELEASE_URL.sha256\"\n  413: CHECKSUM_FILE=\"$WORK_DIR/$ASSET_NAME.sha256\"\n  424: actual=\"$(sha256_of \"$BUNDLE_FILE\")\"\n  491:   old_hash=\"$(sha256_of \"$RELEASE_DIR/corrald\")\"\n  492:   new_hash=\"$(sha256_of \"$STAGE_DIR/corrald\")\"\n/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/scripts/check-demo-privacy.py\n  41:     \"demo:p01:impl:sha256:d8c352324ee1db57df692113c2337e19ebcee80df9c517a0968bde65dcc48150\",\n  42:     \"demo:p02:impl:sha256:cf704d14dae066f74aeedc7fbf804bc23a44858b87eb3046ce1114ae6528b9e8\",\n  43:     \"demo:p04:fleet:sha256:1f32ae77f3d73e246350da19a055006c1be3e97c70411337d375e6b70a11acbf\",\n/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/scripts/test-design-gate-evidence.sh\n  1009: def digest(path):\n  1010:     return hashlib.sha256(path.read_bytes()).hexdigest()\n  1016:             f\"| `prototype.png` | `1160x631` | `{digest(bundle / 'prototype.png')}` |\",\n  1017:             f\"| `live-after.png` | `{live_dimensions}` | `{digest(bundle / 'live-after.png')}` |\",\n  1018:             f\"| `comparison.png` | `2400x960` | `{digest(bundle / 'comparison.png')}` |\",\n  1019:             f\"| `capture.log` | `n/a` | `{digest(bundle / 'capture.log')}` |\",\n/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/scripts/test-install-corral-linux.sh\n  102:   https://github.com/*/releases/download/*.sha256) stage=checksum ;;\n  128:   if [[ \"$stage\" == checksum ]]; then source_file=\"$source_file.sha256\"; fi\n  160: sha256_hex() {\n  163:   elif command -v sha256sum >/dev/null 2>&1; then\n  164:     sha256sum \"$1\" | awk '{print $1}'\n  166:     fail \"no sha256 tool for fixtures\"\n  188:   sha256_hex \"$bundle\" > \"$bundle.sha256\"\n  292: V1_HASH=\"$(sha256_hex \"$BUNDLE.bin\")\"\n  411: [[ \"$(sha256_hex \"$INSTALL_ROOT/release/corrald\")\" == \"$V1_HASH\" ]] \\\n  564: [[ \"$(sha256_hex \"$INSTALL_ROOT/release/corrald\")\" == \"$V1_HASH\" ]] \\\n  578: V2_HASH=\"$(sha256_hex \"$BUNDLE.v2.bin\")\"\n  582: [[ \"$(sha256_hex \"$INSTALL_ROOT/release/corrald\")\" == \"$V2_HASH\" ]] \\\n  597: check test \"$(sha256_hex \"$INSTALL_ROOT/release/corrald\")\" = \"$V2_HASH\"\n  608: printf '0000000000000000000000000000000000000000000000000000000000000000\\n' > \"$BAD_BUNDLE.sha256\"\n/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/scripts/design-gate-content-identity.py\n  60:         digest = hashlib.sha256(path.read_bytes()).hexdigest()\n  61:         entries.append((relative, digest))\n  62:     manifest = \"\".join(f\"{relative}\\0{digest}\\n\" for relative, digest in entries)\n  63:     content_digest = hashlib.sha256(manifest.encode(\"utf-8\")).hexdigest()\n  64:     print(f\"sha256:{content_digest}\")\n  66:     for relative, digest in entries:\n  67:         print(f\"- `{relative}` \u2014 `{digest}`\")"
+    }
+  },
+  {
+    "tool": "search_files",
+    "arguments": {
+      "path": "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/.github",
+      "pattern": "src/core/store\\.rs|src/main\\.rs|sha256|sha512|digest",
+      "limit": 100
+    },
+    "result": {
+      "total_count": 17,
+      "matches_format": "path-grouped: each file path on its own line, followed by indented '<line>: <content>' rows for matches in that file",
+      "matches_text": "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/.github/workflows/ios-testflight.yml\n  202:           require \"digest\"\n  219:             Digest::SHA1.hexdigest(Base64.decode64(cert.certificate_content.to_s)).upcase\n/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/.github/workflows/secret-scan.yml\n  32:           echo \"551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  /tmp/gitleaks.tar.gz\" | sha256sum -c -\n/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/.github/workflows/ios-art.yml\n  35:       # Release boundary + source digest, and (via subprocess) the\n  37:       - name: Release boundary, digest and native-art source checks\n/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/.github/workflows/release.yml\n  76:           rm -f \"$bundle\" \"$bundle.sha256\"\n  84:           shasum -a 256 \"$bundle\" | awk '{print $1}' > \"$bundle.sha256\"\n  86:           echo \"Checksum: $(cat \"$bundle.sha256\")\"\n  95:           expected=\"$(cat \"$bundle.sha256\")\"\n  237:           rm -f \"$bundle\" \"$bundle.sha256\"\n  245:           sha256sum \"$bundle\" | awk '{print $1}' > \"$bundle.sha256\"\n  247:           echo \"Checksum: $(cat \"$bundle.sha256\")\"\n  256:           expected=\"$(cat \"$bundle.sha256\")\"\n  257:           actual=\"$(sha256sum \"$bundle\" | awk '{print $1}')\"\n  292:           macos_sha=\"$RUNNER_TEMP/macos-assets/corral-$tag_sanitized-macos.tar.gz.sha256\"\n  294:           linux_sha=\"$RUNNER_TEMP/linux-assets/corral-$tag_sanitized-linux-x86_64.tar.gz.sha256\"\n  313:             \"adjacent \\`.sha256\\` asset, which scripts/install-corral.sh verifies\" \\"
+    }
+  },
+  {
+    "tool": "search_files",
+    "arguments": {
+      "path": "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/tests",
+      "pattern": "src/core/store\\.rs|src/main\\.rs|sha256|sha512|digest",
+      "limit": 100
+    },
+    "result": {
+      "total_count": 28,
+      "matches_format": "path-grouped: each file path on its own line, followed by indented '<line>: <content>' rows for matches in that file",
+      "matches_text": "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/tests/model.rs\n  19:             prompt_hash: \"sha256:abc\".to_string(),\n  20:             approval_id: \"herdr:2d5e5911-b103-4a92-adc3-a8bdc03fd784:sha256:abc\".to_string(),\n  283:         \"waiting_on\": {\"kind\": \"approve_tool\", \"prompt\": \"Approve this change?\", \"prompt_hash\": \"sha256:abc\", \"choices\": [\"Approve\", \"Reject\"]},\n/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/tests/readonly_cut.rs\n  245:                 \"approval_id\": \"herdr:agent-a:sha256:x\",\n  246:                 \"prompt_hash\": \"sha256:x\",\n/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/tests/enrollment.rs\n  4: //! Frozen contract: `.proposal-485-owner-resolved.md` (sha256 bfa5e392\u2026).\n/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/tests/provenance.rs\n  728:             \"herdr:abc:sha256:q\",\n  856:         \"herdr:abc:sha256:q\",\n/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/tests/history.rs\n  2: //! torn lines), the store choke point, GET /history, the digest CLI, a\n  4: //! fake herdr + real digest binary, `--ignored`).\n  427: fn digest_cli_offline_against_ring() {\n  447:         .args([\"digest\", \"--config-dir\"])\n  452:         .expect(\"run corrald digest\");\n  453:     assert!(output.status.success(), \"digest exit: {:?}\", output.status);\n  536: // Live smoke (ignored): real daemon + fake herdr + real digest binary\n  740: /// sequence in order, and the real `corrald digest` binary reports the\n  744: async fn live_smoke_daemon_herdr_digest() {\n  780:     // The real digest CLI (offline, same config dir) reflects the events.\n  782:         .args([\"digest\", \"--config-dir\"])\n  787:         .expect(\"run corrald digest\");\n  788:     assert!(output.status.success(), \"digest exit: {:?}\", output.status);\n  792:         \"digest has the agent: {text}\"\n  796:         \"digest sequence: {text}\"\n/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/tests/push.rs\n  159:             \"sha256:e2e\",\n  177:     assert_eq!(payload[\"prompt_hash\"], \"sha256:e2e\");\n  178:     assert_eq!(payload[\"approval_id\"], \"herdr:ses-e2e:sha256:e2e\");\n  184:     let mut done = blocked_agent(\"herdr:ses-e2e\", \"sha256:e2e\", \"ship it? [y/n]\");\n  228:             \"sha256:r\","
+    }
+  },
+  {
+    "tool": "search_files",
+    "arguments": {
+      "path": "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/tools",
+      "pattern": "src/core/store\\.rs|src/main\\.rs|sha256|sha512|digest",
+      "limit": 100
+    },
+    "result": {
+      "total_count": 3,
+      "matches": [
+        {
+          "path": "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/tools/icon/check-assets.py",
+          "line": 190,
+          "content": "        actual = hashlib.sha256(path.read_bytes()).hexdigest()"
+        },
+        {
+          "path": "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/tools/icon/check-assets.py",
+          "line": 480,
+          "content": "            APPROVED_SHA256[relative] = hashlib.sha256(path.read_bytes()).hexdigest()"
+        },
+        {
+          "path": "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/tools/icon/from-user-png.py",
+          "line": 132,
+          "content": "    actual_hash = hashlib.sha256(font_path.read_bytes()).hexdigest()"
+        }
+      ]
+    }
+  },
+  {
+    "tool": "search_files",
+    "arguments": {
+      "path": "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/ios",
+      "pattern": "(?i)(src/core/store\\.rs|src/main\\.rs|rust.{0,20}(source|digest|hash)|daemon.{0,20}(source|digest|hash))",
+      "limit": 100
+    },
+    "result": {
+      "total_count": 4,
+      "matches": [
+        {
+          "path": "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/ios/README.md",
+          "line": 423,
+          "content": "Daemon audit log (hash-chained, `valid: true`) grew by exactly two entries"
+        },
+        {
+          "path": "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/ios/FleetNotifier.xcodeproj/project.pbxproj",
+          "line": 37,
+          "content": "\t\t8A383B00475214943A25B4B7 /* HostKeyTrust.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50F26DAD993D41DCB89F3342 /* HostKeyTrust.swift */; };"
+        },
+        {
+          "path": "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/ios/FleetNotifier.xcodeproj/project.pbxproj",
+          "line": 92,
+          "content": "\t\t50F26DAD993D41DCB89F3342 /* HostKeyTrust.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostKeyTrust.swift; sourceTree = \"<group>\"; };"
+        },
+        {
+          "path": "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/ios/FleetNotifier.xcodeproj/project.pbxproj",
+          "line": 555,
+          "content": "\t\t\t\t8A383B00475214943A25B4B7 /* HostKeyTrust.swift in Sources */,"
+        }
+      ]
+    }
+  },
+  {
+    "tool": "search_files",
+    "arguments": {
+      "path": "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip",
+      "pattern": "(?i)(source.{0,20}(digest|hash)|(digest|hash).{0,20}(source|rust)|src/core/store\\.rs|src/main\\.rs)",
+      "output_mode": "files_only",
+      "limit": 200
+    },
+    "result": {
+      "total_count": 70,
+      "files": [
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/scripts/design-gate-evidence.sh",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/scripts/test-design-gate-evidence.sh",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/crates/corrald-client/src/approval.rs",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/ios/check-release-demo.py",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/ios/release_source_manifest.py",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/ios/README.md",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/ios/FleetNotifier.xcodeproj/project.pbxproj",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/ios/project.yml",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/ios/embed-release-source-digest.py",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/tools/icon/check-assets.py",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/ios/evidence/issue-457-context-controls/capture.log",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/src/adapters/git_plane.rs",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/ios/evidence/issue-454-network-path/README.md",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/src/core/model.rs",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/corral/public-review-r2.md",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/ARCHITECTURE.md",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/audits/lean-488-490/audit-489-git-github-fields.md",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/corral/public-review-r2-brief.md",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/audits/lean-488-490/audit-488-read-diff-and-issues.md",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/corral/public-review.md",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/DEVELOPING.md",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/ios/tools/herd-art/app-icons.py",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/audits/lean-488-490/audit-490-history-and-digest.md",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/ios/tools/herd-art/probe-gait.py",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/design/evidence/issue-340/README.md",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/ios/tools/herd-art/gait-video-evidence.py",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/ios/tools/herd-art/probe-native.py",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/evidence/issue-556/regression-evidence.py",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/design/evidence/issue-386/implementation/capture.log",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/design/evidence/issue-201/conformance.md",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/design/evidence/issue-270/README.md",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/evidence/issue-556/mutations.json",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/design/evidence/issue-385/implementation/capture.log",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/design/evidence/issue-206/issues/conformance.md",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/design/evidence/issue-270/capture.log",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/design/evidence/issue-354/README.md",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/design/evidence/issue-384/implementation/capture.log",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/design/evidence/issue-206/registry/conformance.md",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/design/evidence/issue-387/implementation/capture.log",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/design/evidence/issue-206/board/conformance.md",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/design/evidence/issue-206/settings/conformance.md",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/evidence/issue-558/captures.json",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/evidence/issue-558/verify.py",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/evidence/issue-500/compatibility-decision.md",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/design/evidence/issue-205/capture.log",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/evidence/issue-558/README.md",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/evidence/issue-551/lane-report.md",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/evidence/issue-539/run-proof.py",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/evidence/issue-554/lane-report.md",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/evidence/issue-548/lane-report.md",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/design/evidence/issue-455/README.md",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/design/evidence/issue-455/tools/gather.py",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/design/evidence/issue-455/tools/package.py",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/design/evidence/issue-455/package-verification/reconcile.py",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/evidence/issue-492/scope-blocker.md",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/evidence/issue-492/logs/g492-after-mutations-hashes.log",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/design/evidence/issue-455/package-verification/README.md",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/evidence/issue-492/logs/g492-mutation-battery.log",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/evidence/issue-492/logs/g492-final-outline.log",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/evidence/issue-492/logs/g492-mutations.json",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/evidence/issue-492/logs/g492-final-method-sites.log",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/evidence/issue-492/logs/g492-verified-workspace.log",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/evidence/issue-492/logs/g492-logger.log",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/evidence/issue-555/round2/g555-r2-inspection-final.json",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/evidence/issue-492/mutations.py",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/evidence/issue-492/logs/g492-bazzite-r3-logger.log",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/evidence/issue-555/round2-report.md",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/evidence/issue-555/round2/g555-r2-inspection.json",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/evidence/issue-555/daemon-mutations.py",
+        "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/evidence/issue-555/round2-build.py"
+      ]
+    }
+  }
+]

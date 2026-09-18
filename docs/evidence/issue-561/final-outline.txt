@@ -1,0 +1,62 @@
+src/adapters/git_plane.rs
+ 125: const SWEEP_INTERVAL: Duration
+ 133: const RESTART_DELAY: Duration
+ 155: const PRODUCTION_SWEEP_INTERVALS: SweepIntervals
+ 575: pub struct GitPlane
+ 579:   repo_roots: RwLock<Vec<PathBuf>>
+ 580:   fallback_repo_roots: Vec<PathBuf>
+ 581:   source_discovery: Option<Arc<dyn RepoSourceDiscovery>>
+ 584:   worktrees_root: PathBuf
+ 585:   state: Mutex<PlaneState>
+ 588:   git_command_budget: Arc<Semaphore>
+ 592:   rescan_lock: AsyncMutex<()>
+ 594:   last_rescan: AtomicU64
+ 596:   retry_scheduled: AtomicBool
+ 600:   stopped: AtomicBool
+ 601:   backlog: Arc<AtomicBool>
+ 602:   health: Arc<GitPlaneHealth>
+ 604:   tasks: Mutex<JoinSet<bool>>
+ 605:   supervising: AtomicBool
+ 606:   generation: AtomicU64
+ 607:   progress_ms: [AtomicU64; 3]
+ 608:   stall_timeout: Duration
+ 609:   sweep_intervals: SweepIntervals
+ 623: impl GitPlane
+ 626:   pub fn new(repo_root: PathBuf, worktrees_root: PathBuf) -> Self
+ 634:   pub fn with_repo_roots(repo_roots: Vec<PathBuf>, worktrees_root: PathBuf) -> Self
+ 641:   pub fn with_repo_roots_and_discovery(
+ 649:   fn build(
+ 683:   fn repo_roots_snapshot(&self) -> Vec<PathBuf>
+ 690:   fn refresh_repo_sources(&self)
+ 710:   fn with_sweep_intervals(mut self, sweep_intervals: SweepIntervals) -> Self
+ 715:   pub fn with_health(mut self, health: Arc<GitPlaneHealth>) -> Self
+ 723:   fn lock_state(&self) -> MutexGuard<'_, PlaneState>
+ 727:   fn progress(&self, task: usize)
+ 732:   fn spawn(&self, critical: bool, future: impl Future<Output = ()> + Send + 'static)
+ 742:   pub fn with_backlog_flag(mut self, backlog: Arc<AtomicBool>) -> Self
+ 769:   fn watches(&self, path: &Path) -> bool
+ 776:   async fn next_task(&self) -> Option<Result<bool, tokio::task::JoinError>>
+ 786:   async fn supervise(self: Arc<Self>, sink: PlaneSink)
+ 890:   async fn run_watcher(
+1028:   fn new_commondir_watcher(
+1055:   fn register_new_commondir_watchers<W, E, F>(
+1091:   async fn handle_fs_event_batch(
+1143:   async fn handle_fs_event(
+1157:   fn map_event_path(&self, path: &Path) -> (Vec<PathBuf>, bool)
+1239:   async fn maybe_rescan(&self, sink: &PlaneSink) -> Vec<PathBuf>
+1251:   fn debounce(self: &Arc<Self>, wt: PathBuf, sink: PlaneSink)
+1331:   async fn run_sweep(
+1403:   async fn run_status_sweep(
+1476:   async fn apply_probe(
+1621:   async fn rescan(&self, sink: &PlaneSink) -> Vec<PathBuf>
+1629:   async fn rediscover(&self, sink: &PlaneSink) -> Vec<PathBuf>
+1634:   async fn rescan_with_mode(&self, sink: &PlaneSink, mode: ScanMode) -> Vec<PathBuf>
+1862: impl GitPlane
+1863:   fn source_scan_allowed(&self, source: &Path, mode: ScanMode) -> SourceScanDecision
+1893:   fn note_source_failure(&self, source: &Path, source_is_dir: bool) -> SourceFailureNotice
+1911:   fn log_source_failure(&self, source: &Path, source_is_dir: bool)
+1934:   fn clear_source_failure(&self, source: &Path) -> bool
+1951:   async fn scan_all_worktrees_with_mode(&self, mode: ScanMode) -> ScanResult
+2520: impl Plane for GitPlane
+2521:   fn source(&self) -> &'static str
+2529:   fn start(self: Arc<Self>, sink: PlaneSink)

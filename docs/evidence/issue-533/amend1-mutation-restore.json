@@ -1,0 +1,9 @@
+{
+  "mutation": "replace only refreshFromDefaults() with a no-op",
+  "before_sha256": "a57550b713d092bdc84fec4187716a3772b0d8ae70d700d48f59464bedb4dc24",
+  "mutated_sha256": "ebd224b569f2af3da090f1cd7f0d8acc866bdb0c9964d05b85c7a21ef0ab3de9",
+  "mutation_exit": 65,
+  "restored_sha256": "a57550b713d092bdc84fec4187716a3772b0d8ae70d700d48f59464bedb4dc24",
+  "restore_exit": 0,
+  "after_green_sha256": "a57550b713d092bdc84fec4187716a3772b0d8ae70d700d48f59464bedb4dc24"
+}

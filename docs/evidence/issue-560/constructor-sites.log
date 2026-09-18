@@ -1,0 +1,7 @@
+src/core/store.rs:166:        let (published, _) = watch::channel(Arc::new(PublishedSnapshot::new(
+src/core/store.rs:167:            &epoch,
+src/core/store.rs:168:            &initial,
+src/core/store.rs:169:            Instant::now(),
+src/core/store.rs:170:            VecDeque::new(),
+src/core/store.rs:171:        )));
+src/core/store.rs:462:            let next = PublishedSnapshot::new(&epoch, &snapshot, captured_at, history);

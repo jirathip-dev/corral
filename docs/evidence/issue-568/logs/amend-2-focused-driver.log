@@ -1,0 +1,9 @@
+COMMAND ["xcrun", "simctl", "boot", "89ABB542-766E-40C9-8A17-E851B9CA8DFA"]
+RAW_EXIT=0 LOG=/tmp/g568-a2-final-focused/boot.log
+COMMAND ["xcrun", "simctl", "bootstatus", "89ABB542-766E-40C9-8A17-E851B9CA8DFA", "-b"]
+RAW_EXIT=0 LOG=/tmp/g568-a2-final-focused/bootstatus.log
+COMMAND ["xcodebuild", "-project", "ios/FleetNotifier.xcodeproj", "-scheme", "FleetNotifier", "-configuration", "Debug", "-destination", "platform=iOS Simulator,id=89ABB542-766E-40C9-8A17-E851B9CA8DFA", "-derivedDataPath", "/tmp/g568-dd", "CODE_SIGNING_ALLOWED=NO", "-parallel-testing-enabled", "NO", "-resultBundlePath", "/tmp/g568-a2-final-focused/result.xcresult", "-only-testing:FleetNotifierTests/HerdTests", "test"]
+RAW_EXIT=0 LOG=/tmp/g568-a2-final-focused/test.log
+COMMAND ["xcrun", "simctl", "shutdown", "89ABB542-766E-40C9-8A17-E851B9CA8DFA"]
+RAW_EXIT=0 LOG=/tmp/g568-a2-final-focused/shutdown.log
+RECEIPT /tmp/g568-a2-final-focused/receipt.json

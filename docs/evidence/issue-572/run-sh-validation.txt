@@ -1,0 +1,45 @@
+# run.sh end-to-end validation — executed at head e10a3e57e8508e0a613fa3f4853e64a92e867fd9
+#
+#   cd <worktree>
+#   OUT=/tmp/g572-run bash docs/evidence/issue-572/run.sh <worktree>
+#
+# Every leg below is from that single run of the COMMITTED driver. Raw exits
+# are the driver's own `EXIT=<code>` lines appended to each log.
+
+## base 2e8ce2c, throwaway detached worktree (git worktree add --detach), own target dir
+base-default.log     EXIT=0   test result: ok. 5 passed; 0 failed; 1 ignored; 0 measured; 322 filtered out; finished in 7.17s
+base-t2.log          EXIT=0   test result: ok. 5 passed; 0 failed; 1 ignored; 0 measured; 322 filtered out; finished in 7.09s
+base-t4.log          EXIT=0   test result: ok. 5 passed; 0 failed; 1 ignored; 0 measured; 322 filtered out; finished in 6.25s
+base-lib-default.log EXIT=0   test result: ok. 327 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 23.99s
+base-lib-t2.log      EXIT=0   test result: ok. 327 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 39.05s
+
+## deterministic witness, GREEN at the fix head
+witness-green.log    EXIT=0   test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 328 filtered out; finished in 0.30s
+
+## deterministic witness, RED with the counter re-globalised (red_witness.py)
+sha256_before=882c2bb58242539262e6e3eefa9406a941d2f5b540e3f37409a3c278a349a8e1
+sha256_mutated=6bf7ab529b6048cd7cc1b02d687ee7fa58947c72c8522db744da213f5afbc338
+RED_EXIT=101
+sha256_after=882c2bb58242539262e6e3eefa9406a941d2f5b540e3f37409a3c278a349a8e1
+RESTORED_IDENTICAL=True
+git_status_after_restore='?? .amend-1.md'
+quoted verbatim (only the long thread-name prefixes are elided with `…`):
+thread '…probe_accounting_reset_is_scoped_to_the_plane_under_test' panicked at src/adapters/git_plane.rs:3878:9:
+assertion `left == right` failed
+  left: 2
+ right: 1
+thread '…probe_accounting_is_scoped_to_the_plane_under_test' panicked at src/adapters/git_plane.rs:3812:9:
+assertion `left == right` failed: a plane records exactly the probes it admitted
+  left: 3
+ right: 1
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 328 filtered out; finished in 0.29s
+
+## fix head acceptance legs (same driver run, same head)
+after-default.log    EXIT=0   test result: ok. 5 passed; 0 failed; 1 ignored; 0 measured; 324 filtered out; finished in 6.24s
+after-t2.log         EXIT=0   test result: ok. 5 passed; 0 failed; 1 ignored; 0 measured; 324 filtered out; finished in 7.11s
+after-t4.log         EXIT=0   test result: ok. 5 passed; 0 failed; 1 ignored; 0 measured; 324 filtered out; finished in 7.08s
+after-module-t2.log  EXIT=0   test result: ok. 48 passed; 0 failed; 1 ignored; 0 measured; 281 filtered out; finished in 18.38s
+after-lib-default.log EXIT=0  test result: ok. 329 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 23.52s
+after-lib-t2.log     EXIT=0   test result: ok. 329 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 38.18s
+
+No leg aborted: the driver records each raw exit before moving on.

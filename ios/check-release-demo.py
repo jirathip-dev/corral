@@ -570,7 +570,19 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # creation happens inside Foundation's own async machinery one await hop
     # after any caller-side guard; re-pinned over the round-3 source set
     # (recomputed from the tree, never hand-edited).
-    "d58dd8adf1b70f72049678b0da464d65ab7fe3c064c93d57a7f38d5c4cb4027d"
+    # 2026-09-17 #533: ThemeStore observes only its injected defaults;
+    # re-pinned with release_source_digest over the scoped-observer sources.
+    # #568: measured complete-row settlement and whole-group edge visibility;
+    # recomputed with release_source_digest (the test-source pin is unchanged).
+    # #568 amendment 2: remove renderer filesystem recording; recomputed from sources.
+    # #569: sheet polish — the repo rides RepoLabelChip's Board hue in the
+    # recents sheet (flat muted label removed; the repo chip rides the
+    # COMPACT variant so the caption row keeps its pre-#569 height and the
+    # #558 worktree block's render position is unchanged; fixed-size pane
+    # capsule and state label), state panels scroll inside the content area
+    # and paint no #428 backing on the header's 16/10 grid; computed with
+    # release_source_digest over the #569 set.
+    "baa735b0a83d876e4e3a6ce23fc8bcc867eec04dd553f139577fd962bbc78527"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

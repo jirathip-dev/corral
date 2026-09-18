@@ -1,0 +1,2 @@
+native-art FAIL: forbidden renderer reference FileManager: /Users/jirathip/.herdr/worktrees/corral/impl568-herd-edge/ios/FleetNotifier/UI/Herd/HerdView.swift
+release-demo check: FAIL: Command '['/Users/jirathip/.local/bin/python3', '/Users/jirathip/.herdr/worktrees/corral/impl568-herd-edge/ios/tools/herd-art/check-native-art.py']' returned non-zero exit status 1.

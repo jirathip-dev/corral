@@ -1,0 +1,36 @@
+# #572 assertion / tolerance integrity at head f0a108b8bf0a22134fce65e5507e038bf23f3dcb (base 2e8ce2cedeb627bcff168a13cf2b41ee2fe79fbb)
+
+## 1. every REMOVED line in the diff (base..head)
+
+-static TEST_PROBE_RUNS: AtomicU64 = AtomicU64::new(0);
+-#[cfg(test)]
+-        probe_worktree_admitted(wt, cached_commit, cached_subject),
+-    probe_worktree_admitted(wt, cached_commit, cached_subject).await
+-    #[cfg(test)]
+-    TEST_PROBE_RUNS.fetch_add(1, Ordering::SeqCst);
+-            TEST_PROBE_RUNS.store(0, Ordering::SeqCst);
+-        while TEST_PROBE_RUNS.load(Ordering::SeqCst) < 2 {
+-            TEST_PROBE_RUNS.load(Ordering::SeqCst),
+-        let first = probe_worktree(&root, None, None, budget.clone())
+-    let probe = probe_worktree(&repo, None, None, plane.git_command_budget.clone()).await;
+-    let calls = TEST_PROBE_RUNS.load(Ordering::SeqCst);
+-    let hydration_probes = TEST_PROBE_RUNS.load(Ordering::SeqCst) - calls;
+
+## 2. removed lines matching assertion/tolerance/ignore tokens (must be empty)
+
+NONE
+
+## 3. the protected #561 assertion in the head tree
+
+387-    plane.tasks.lock().unwrap().abort_all();
+388-    while plane.next_task().await.is_some() {}
+389-    assert_eq!(
+390-        hydration_probes, 0,
+391:        "unchanged restart must not eagerly hydrate known paths"
+392-    );
+393-}
+
+## 4. diff of the assertion's own lines (base vs head, empty = byte-identical)
+
+-    let hydration_probes = TEST_PROBE_RUNS.load(Ordering::SeqCst) - calls;
++    let hydration_probes = plane.probe_runs.count() - calls;

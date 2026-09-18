@@ -1,0 +1,29 @@
+{
+  "command": [
+    "flock",
+    "/tmp/n.lock",
+    "env",
+    "CARGO_TARGET_DIR=/tmp/g560-base-target",
+    "cargo",
+    "build",
+    "--release",
+    "--manifest-path",
+    "/tmp/g560-base-source/Cargo.toml",
+    "--bin",
+    "corrald"
+  ],
+  "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip",
+  "raw_exit": 0,
+  "timed_out": false,
+  "elapsed_seconds": 433.9550963750007,
+  "log": "/Users/jirathip/.herdr/worktrees/corral/impl560-publishskip/docs/evidence/issue-560/runs/base-release.log",
+  "head": "4e6d185a257ad137c857244d96ce5194cd8c2a34",
+  "environment": {
+    "CARGO_TARGET_DIR": "/tmp/g560-target",
+    "CARGO_BUILD_JOBS": "2",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_TERM_COLOR": "never"
+  }
+}

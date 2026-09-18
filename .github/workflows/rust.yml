@@ -113,6 +113,16 @@ jobs:
       - name: test
         run: cargo test
 
+      # #572: the git-plane fixtures own the module's process-global test
+      # state (GIT_CALLS / TEST_GIT_*). Cross-test interference there used to
+      # surface only at a low test-thread budget on a small runner, so the
+      # module's tests are exercised at `--test-threads=2` IN ADDITION to the
+      # default-parallelism `cargo test` above (additive, never a
+      # replacement) and cannot regress silently. ~18s locally; the probe
+      # accounting itself is per-plane since #572.
+      - name: test (git plane, low parallelism)
+        run: cargo test --lib -p corrald adapters::git_plane::tests -- --test-threads=2
+
       # Keep coverage in this job so it reuses the pinned toolchain, Linux
       # dependencies, cache, and supply-chain gates above. The instrumented
       # build is necessarily separate from the ordinary test build, but the

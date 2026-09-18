@@ -1,0 +1,17 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "-p",
+    "corrald",
+    "g561_restart_cost_measurement",
+    "--",
+    "--ignored",
+    "--nocapture"
+  ],
+  "cwd": "/Users/jirathip/.herdr/worktrees/corral/impl561-hydrate",
+  "raw_exit": 0,
+  "timed_out": false,
+  "elapsed_s": 214.75905745800264,
+  "log": "before-cost.log"
+}

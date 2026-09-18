@@ -233,17 +233,30 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.corral.fleetnotifier.tests
         GENERATE_INFOPLIST_FILE: YES
+  FleetNotifierUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - FleetNotifierUITests
+    dependencies:
+      - target: FleetNotifier
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.corral.fleetnotifier.uitests
+        GENERATE_INFOPLIST_FILE: YES
 schemes:
   FleetNotifier:
     build:
       targets:
         FleetNotifier: all
         FleetNotifierTests: [test]
+        FleetNotifierUITests: [test]
     run:
       config: Debug
     test:
       config: Debug
       targets:
         - FleetNotifierTests
+        - FleetNotifierUITests
     archive:
       config: Release

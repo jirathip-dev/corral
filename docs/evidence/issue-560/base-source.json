@@ -1,0 +1,8 @@
+{
+  "base": "a42b83ab3e50aa9553076971f39176711f20cb76",
+  "source": "/tmp/g560-base-source",
+  "instrumentation_file": "src/core/store/published.rs",
+  "original_sha256": "0a5848c3a8b9eb1e5b945a0b0afb78c391ae499a3bffaf228ad8bb5358cce78c",
+  "instrumented_sha256": "d79865ccb0932bd7c312fbf7d25839a06c5a859a60e4e529a110b65135693e9d",
+  "change": "Only debug observations around the existing full-snapshot encoder; no control-flow change."
+}

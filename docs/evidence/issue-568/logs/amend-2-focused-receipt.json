@@ -1,0 +1,37 @@
+{
+  "device": "89ABB542-766E-40C9-8A17-E851B9CA8DFA",
+  "device_type": "com.apple.CoreSimulator.SimDeviceType.iPhone-SE-3rd-generation",
+  "runtime": "com.apple.CoreSimulator.SimRuntime.iOS-26-5",
+  "label": "final-focused",
+  "head": "d6a533a9c6c09fafc73de108e802e82a7769cda9",
+  "status": "?? .amend-1.md\n?? .amend-2.md\n",
+  "source_blobs": {
+    "ios/FleetNotifier/UI/Herd/HerdView.swift": "51ec1b68cec6a6f6bcc0ef1b4bf42cd798bf7e04",
+    "ios/FleetNotifierTests/HerdTests.swift": "7a494ec9a25ad38f8f38c438f8ec76816e567d1c",
+    "ios/FleetNotifierUITests/HerdEdgeGestureTests.swift": "49bedf80ff16db77a9cc5806d902aa9efdc824dc"
+  },
+  "command": [
+    "xcodebuild",
+    "-project",
+    "ios/FleetNotifier.xcodeproj",
+    "-scheme",
+    "FleetNotifier",
+    "-configuration",
+    "Debug",
+    "-destination",
+    "platform=iOS Simulator,id=89ABB542-766E-40C9-8A17-E851B9CA8DFA",
+    "-derivedDataPath",
+    "/tmp/g568-dd",
+    "CODE_SIGNING_ALLOWED=NO",
+    "-parallel-testing-enabled",
+    "NO",
+    "-resultBundlePath",
+    "/tmp/g568-a2-final-focused/result.xcresult",
+    "-only-testing:FleetNotifierTests/HerdTests",
+    "test"
+  ],
+  "start_epoch": 1789623325.9208589,
+  "exit": 0,
+  "end_epoch": 1789623394.25087,
+  "shutdown_exit": 0
+}

@@ -1,0 +1,117 @@
+{
+  "before": {
+    "rows": [
+      {
+        "trial": 1.0,
+        "inventory": 130.0,
+        "window_after_generation_s": 65.0,
+        "restart_ms": 1015.0,
+        "wall_s": 66.021472,
+        "cpu_self_plus_reaped_children_s": 21.18971,
+        "one_core_percent": 32.09518,
+        "git_calls": 1005.0,
+        "emitted": 260.0,
+        "skipped": 44.0
+      },
+      {
+        "trial": 2.0,
+        "inventory": 130.0,
+        "window_after_generation_s": 65.0,
+        "restart_ms": 1012.0,
+        "wall_s": 66.015815,
+        "cpu_self_plus_reaped_children_s": 38.998872,
+        "one_core_percent": 59.075045,
+        "git_calls": 1281.0,
+        "emitted": 260.0,
+        "skipped": 44.0
+      },
+      {
+        "trial": 3.0,
+        "inventory": 130.0,
+        "window_after_generation_s": 65.0,
+        "restart_ms": 1005.0,
+        "wall_s": 66.009084,
+        "cpu_self_plus_reaped_children_s": 36.600589,
+        "one_core_percent": 55.447806,
+        "git_calls": 1409.0,
+        "emitted": 260.0,
+        "skipped": 44.0
+      }
+    ],
+    "means": {
+      "wall_s": 66.015457,
+      "cpu_self_plus_reaped_children_s": 32.263057,
+      "one_core_percent": 48.872677,
+      "git_calls": 1231.6666666666667,
+      "restart_ms": 1010.6666666666666
+    },
+    "maxima": {
+      "wall_s": 66.021472,
+      "cpu_self_plus_reaped_children_s": 38.998872,
+      "one_core_percent": 59.075045,
+      "git_calls": 1409.0,
+      "restart_ms": 1015.0
+    }
+  },
+  "after": {
+    "rows": [
+      {
+        "trial": 1.0,
+        "inventory": 130.0,
+        "window_after_generation_s": 65.0,
+        "restart_ms": 1014.0,
+        "wall_s": 66.291344,
+        "cpu_self_plus_reaped_children_s": 12.671548,
+        "one_core_percent": 19.114936,
+        "git_calls": 204.0,
+        "emitted": 0.0,
+        "skipped": 0.0
+      },
+      {
+        "trial": 2.0,
+        "inventory": 130.0,
+        "window_after_generation_s": 65.0,
+        "restart_ms": 1358.0,
+        "wall_s": 66.371274,
+        "cpu_self_plus_reaped_children_s": 28.020863,
+        "one_core_percent": 42.218359,
+        "git_calls": 504.0,
+        "emitted": 0.0,
+        "skipped": 5.0
+      },
+      {
+        "trial": 3.0,
+        "inventory": 130.0,
+        "window_after_generation_s": 65.0,
+        "restart_ms": 1012.0,
+        "wall_s": 66.013386,
+        "cpu_self_plus_reaped_children_s": 35.538879,
+        "one_core_percent": 53.835867,
+        "git_calls": 1003.0,
+        "emitted": 0.0,
+        "skipped": 6.0
+      }
+    ],
+    "means": {
+      "wall_s": 66.22533466666667,
+      "cpu_self_plus_reaped_children_s": 25.410429999999998,
+      "one_core_percent": 38.38972066666667,
+      "git_calls": 570.3333333333334,
+      "restart_ms": 1128.0
+    },
+    "maxima": {
+      "wall_s": 66.371274,
+      "cpu_self_plus_reaped_children_s": 35.538879,
+      "one_core_percent": 53.835867,
+      "git_calls": 1003.0,
+      "restart_ms": 1358.0
+    }
+  },
+  "cpu_reduction_percent": 21.239856471133546,
+  "limitations": [
+    "Debug test binary, temporary seeded 130-path inventory in one repo; not live daemon CPU.",
+    "getrusage SELF+CHILDREN deltas include ordinary topology/FSEvents/sweep work and 1s backoff plus the fixed 65s post-generation window.",
+    "Shared host was not load-isolated. No pre-run load readings were captured; mid-after-run load averages were 73.32,49.09,38.50. Raw sample variation is not a universal speedup guarantee.",
+    "skipped is cumulative and includes initial hydration; not a per-window count."
+  ]
+}

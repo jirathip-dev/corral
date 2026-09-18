@@ -1,0 +1,31 @@
+   Compiling corrald v0.1.0 (/Users/jirathip/.herdr/worktrees/corral/impl563-hashedid)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.04s
+     Running tests/gh_plane.rs (target/debug/deps/gh_plane-dac870d069710de0)
+
+running 2 tests
+test g563_credential_shaped_refs_never_reach_the_wire ... FAILED
+test g563_credential_shaped_refs_still_bind_and_never_egress ... FAILED
+
+failures:
+
+---- g563_credential_shaped_refs_never_reach_the_wire stdout ----
+
+thread 'g563_credential_shaped_refs_never_reach_the_wire' (15761096) panicked at tests/gh_plane.rs:1219:9:
+assertion `left == right` failed: wire headRefName for sendmeter
+  left: "[REDACTED]"
+ right: "[REDACTED:sha256:2bf52de77c710de3c622965953d93edb455b29d1ed2eec468b2d3089ce2a1c68]"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- g563_credential_shaped_refs_still_bind_and_never_egress stdout ----
+
+thread 'g563_credential_shaped_refs_still_bind_and_never_egress' (15761097) panicked at tests/gh_plane.rs:1427:5:
+branch-leg never bound PR 563: observed pr_number=None pr_match_source=None branch=Some("[REDACTED:sha256:2bf52de77c710de3c622965953d93edb455b29d1ed2eec468b2d3089ce2a1c68]")
+
+
+failures:
+    g563_credential_shaped_refs_never_reach_the_wire
+    g563_credential_shaped_refs_still_bind_and_never_egress
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 15 filtered out; finished in 7.62s
+
+error: test failed, to rerun pass `-p corrald --test gh_plane`

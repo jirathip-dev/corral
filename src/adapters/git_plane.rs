@@ -26,7 +26,12 @@
 //!
 //! Every fs event is mapped to the worktree(s) it concerns (most-specific
 //! gitdir prefix, then `refs/heads/<branch>` → the worktree checked out on
-//! that branch). Events for a path under `commondir/worktrees/` that matches
+//! that branch). Only change-carrying events are mapped: the Linux inotify
+//! backend additionally reports `IN_OPEN` for every directory its recursive
+//! watch pass opens (and for every file a git command reads, including this
+//! plane's own probes), and an open is not a change — treating it as one
+//! hydrated known paths at boot and re-triggered itself on every probe
+//! (#573). Events for a path under `commondir/worktrees/` that matches
 //! no known gitdir trigger a registry rescan, so `git worktree add` is
 //! discovered within one event, not one sweep. Debounced 300ms per worktree;
 //! each debounced batch re-reads one `git status --porcelain=v2 --branch`
@@ -657,6 +662,14 @@ pub struct GitPlane {
     /// Probe accounting for the plane under test (#572); zero-sized in
     /// production builds.
     probe_runs: ProbeRuns,
+    /// Armed by the #573 witness fixture: the Linux inotify backend reports
+    /// `IN_OPEN` for every directory the recursive watch registration pass
+    /// opens, and treating those as change signals debounced a KNOWN path
+    /// during the watcher's own boot. When armed, the next watcher boot
+    /// injects exactly those events, so the race is deterministic on every
+    /// platform. Test-only: production carries no field at all.
+    #[cfg(test)]
+    registration_open_events: AtomicBool,
 }
 
 fn canonicalize_repo_roots(roots: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
@@ -728,6 +741,8 @@ impl GitPlane {
             stall_timeout: STALL_TIMEOUT,
             sweep_intervals: PRODUCTION_SWEEP_INTERVALS,
             probe_runs: ProbeRuns::new(),
+            #[cfg(test)]
+            registration_open_events: AtomicBool::new(false),
         }
     }
 
@@ -963,6 +978,8 @@ impl GitPlane {
                 root = %self.worktrees_root.display(),
                 "git plane: fsevents watchers live"
             );
+            #[cfg(test)]
+            self.inject_registration_open_events(&event_tx);
         }
         // Hydrate only new/unobserved paths (all paths after panic recovery).
         // Known facts survive a normal generation; the independently paced
@@ -1136,6 +1153,45 @@ impl GitPlane {
         added
     }
 
+    /// Test-only (#573): deliver the `Access(Open)` events the Linux inotify
+    /// backend produces for the recursive watch pass's own directory opens,
+    /// one per directory under each commondir, exactly as the backend reports
+    /// them. The witness fixture arms `registration_open_events` so the boot
+    /// race is deterministic on every platform.
+    #[cfg(test)]
+    fn inject_registration_open_events(
+        &self,
+        event_tx: &mpsc::UnboundedSender<(PathBuf, notify::Result<Event>)>,
+    ) {
+        if !self.registration_open_events.load(Ordering::Acquire) {
+            return;
+        }
+        let commondirs: Vec<PathBuf> = {
+            let state = self.lock_state();
+            state.commondirs.clone()
+        };
+        for commondir in commondirs {
+            let mut pending = vec![commondir.clone()];
+            while let Some(dir) = pending.pop() {
+                let Ok(entries) = fs::read_dir(&dir) else {
+                    continue;
+                };
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if !path.is_dir() {
+                        continue;
+                    }
+                    let event = Event::new(notify::EventKind::Access(
+                        notify::event::AccessKind::Open(notify::event::AccessMode::Any),
+                    ))
+                    .add_path(path.clone());
+                    let _ = event_tx.send((commondir.clone(), Ok(event)));
+                    pending.push(path);
+                }
+            }
+        }
+    }
+
     /// Resolve a batch of fs events to the worktrees they concern (rescanning
     /// the registry once when any path under `commondir/worktrees/` matches
     /// nothing — a worktree may have appeared).
@@ -1148,6 +1204,15 @@ impl GitPlane {
         let mut affected: Vec<PathBuf> = Vec::new();
         let mut need_rescan = false;
         for event in events {
+            // An access is not a change (#573). inotify reports IN_OPEN for
+            // every directory the recursive watch pass opens under a
+            // commondir (and for every file a git command reads, including our
+            // own probes), so treating access events as change signals
+            // hydrates known paths at boot and re-triggers itself afterwards.
+            // Only create/remove/modify events can move a worktree's facts.
+            if matches!(event.kind, notify::EventKind::Access(_)) {
+                continue;
+            }
             for path in &event.paths {
                 let canon = canonicalize_existing_prefix(path);
                 let (worktrees, maybe_new) = self.map_event_path(&canon);

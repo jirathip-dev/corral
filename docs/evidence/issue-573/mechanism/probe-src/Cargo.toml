@@ -1,0 +1,9 @@
+[package]
+name = "g573probe"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+notify = "8"
+
+[workspace]

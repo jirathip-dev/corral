@@ -1,0 +1,16 @@
+REGISTERED_AT_MS=0 watcher_kind=Inotify
+EVENT t_ms=0 kind=Access(Open(Any)) paths=["/home/jirathip/g573-repo/.git/hooks"]
+EVENT t_ms=0 kind=Access(Open(Any)) paths=["/home/jirathip/g573-repo/.git/info"]
+EVENT t_ms=0 kind=Access(Open(Any)) paths=["/home/jirathip/g573-repo/.git/refs"]
+EVENT t_ms=0 kind=Access(Open(Any)) paths=["/home/jirathip/g573-repo/.git/refs/heads"]
+EVENT t_ms=0 kind=Access(Open(Any)) paths=["/home/jirathip/g573-repo/.git/refs/tags"]
+EVENT t_ms=0 kind=Access(Open(Any)) paths=["/home/jirathip/g573-repo/.git/objects"]
+EVENT t_ms=0 kind=Access(Open(Any)) paths=["/home/jirathip/g573-repo/.git/objects/pack"]
+EVENT t_ms=0 kind=Access(Open(Any)) paths=["/home/jirathip/g573-repo/.git/objects/info"]
+EVENT t_ms=0 kind=Access(Open(Any)) paths=["/home/jirathip/g573-repo/.git/objects/ce"]
+EVENT t_ms=0 kind=Access(Open(Any)) paths=["/home/jirathip/g573-repo/.git/objects/85"]
+EVENT t_ms=0 kind=Access(Open(Any)) paths=["/home/jirathip/g573-repo/.git/objects/0c"]
+EVENT t_ms=0 kind=Access(Open(Any)) paths=["/home/jirathip/g573-repo/.git/logs"]
+EVENT t_ms=0 kind=Access(Open(Any)) paths=["/home/jirathip/g573-repo/.git/logs/refs"]
+EVENT t_ms=0 kind=Access(Open(Any)) paths=["/home/jirathip/g573-repo/.git/logs/refs/heads"]
+TOTAL_EVENTS=14

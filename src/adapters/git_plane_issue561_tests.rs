@@ -361,16 +361,23 @@ async fn g561_watcher_boot_has_zero_hydration_for_known_facts() {
     let plane = Arc::new(GitPlane::new(repo.clone(), repo.join("worktrees")));
     let (sink, rx) = crate::core::plane_channel();
     plane.rescan(&sink).await;
-    let probe = probe_worktree(&repo, None, None, plane.git_command_budget.clone()).await;
+    let probe = probe_worktree(
+        &repo,
+        None,
+        None,
+        plane.git_command_budget.clone(),
+        plane.probe_runs.clone(),
+    )
+    .await;
     plane.apply_probe(&repo, Instant::now(), probe, &sink).await;
-    let calls = TEST_PROBE_RUNS.load(Ordering::SeqCst);
+    let calls = plane.probe_runs.count();
     // Run the real watcher bootstrap separately from the paced safety net.
     // Neither a supervisor nor a status sweep can hide an eager watcher burst.
     let (tx, cmd_rx) = mpsc::channel(1);
     let watcher = tokio::spawn(plane.clone().run_watcher(sink, cmd_rx, tx));
     until(|| plane.progress_ms[0].load(Ordering::Acquire) > 0).await;
     tokio::time::sleep(DEBOUNCE + Duration::from_millis(200)).await;
-    let hydration_probes = TEST_PROBE_RUNS.load(Ordering::SeqCst) - calls;
+    let hydration_probes = plane.probe_runs.count() - calls;
     plane.stopped.store(true, Ordering::Relaxed);
     drop(rx);
     tokio::time::timeout(Duration::from_secs(3), watcher)

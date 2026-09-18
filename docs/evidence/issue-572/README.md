@@ -240,6 +240,9 @@ artifacts). **PIN: none.**
 
 `run.sh` re-runs everything in this bundle; `red-witness/red_witness.py` applies/restores the
 re-globalising mutation (it prints the sha256s and never leaves the tree modified).
+`run-sh-validation.txt` is the receipt of one full execution of the committed driver at head
+`e10a3e5` (base legs 0/0/0/0/0, witness green 0, RED 101 with a byte-identical restore, and
+every fix-head acceptance leg 0).
 
 ## 11. Fence
 

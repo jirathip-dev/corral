@@ -384,11 +384,58 @@ static TEST_GIT_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 #[cfg(test)]
 static TEST_GIT_MAX_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 #[cfg(test)]
-static TEST_PROBE_RUNS: AtomicU64 = AtomicU64::new(0);
-#[cfg(test)]
 static TEST_RESCAN_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 #[cfg(test)]
 static TEST_RESCAN_MAX_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+
+/// Probe accounting (#572). The count belongs to the plane under test - one
+/// handle per `GitPlane` - never to the process: a fixture probing one plane
+/// can neither observe nor disturb another test's count, and a fixture that
+/// resets its own baseline cannot zero a concurrent test's delta window. The
+/// process-global `static` this replaced made the git-plane tests fail at low
+/// `--test-threads` budgets in CI. Production builds carry a zero-sized
+/// handle, so the probe path does no bookkeeping.
+#[cfg(test)]
+#[derive(Clone, Debug)]
+struct ProbeRuns(Arc<AtomicU64>);
+
+#[cfg(not(test))]
+#[derive(Clone, Debug)]
+struct ProbeRuns;
+
+impl ProbeRuns {
+    /// A fresh counter for one plane under test.
+    #[cfg(test)]
+    fn new() -> Self {
+        Self(Arc::new(AtomicU64::new(0)))
+    }
+
+    #[cfg(not(test))]
+    fn new() -> Self {
+        Self
+    }
+
+    /// Record one admitted probe against this handle's owner.
+    #[cfg(test)]
+    fn record(&self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+
+    #[cfg(not(test))]
+    fn record(&self) {}
+
+    /// Probes this handle's owner has admitted so far.
+    #[cfg(test)]
+    fn count(&self) -> u64 {
+        self.0.load(Ordering::SeqCst)
+    }
+
+    /// Zero this handle's count for a fixture measuring its own delta.
+    #[cfg(test)]
+    fn reset(&self) {
+        self.0.store(0, Ordering::SeqCst);
+    }
+}
 
 #[cfg(test)]
 struct TestGitLoadGuard;
@@ -607,6 +654,9 @@ pub struct GitPlane {
     progress_ms: [AtomicU64; 3],
     stall_timeout: Duration,
     sweep_intervals: SweepIntervals,
+    /// Probe accounting for the plane under test (#572); zero-sized in
+    /// production builds.
+    probe_runs: ProbeRuns,
 }
 
 fn canonicalize_repo_roots(roots: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
@@ -677,6 +727,7 @@ impl GitPlane {
             progress_ms: std::array::from_fn(|_| AtomicU64::new(0)),
             stall_timeout: STALL_TIMEOUT,
             sweep_intervals: PRODUCTION_SWEEP_INTERVALS,
+            probe_runs: ProbeRuns::new(),
         }
     }
 
@@ -1288,6 +1339,7 @@ impl GitPlane {
                     cached_commit.as_deref(),
                     cached_subject.as_deref(),
                     git_command_budget.clone(),
+                    plane.probe_runs.clone(),
                 )
                 .await;
                 plane.apply_probe(&wt, started, probe, &sink).await;
@@ -1436,9 +1488,11 @@ impl GitPlane {
                     };
                     let sweep_started = Instant::now();
                     let git_command_budget = self.git_command_budget.clone();
+                    let probe_runs = self.probe_runs.clone();
                     let mut probes = paced_probes(worktrees, self.sweep_intervals.status,
                         |(wt, cached_commit, cached_subject)| {
                             let git_command_budget = git_command_budget.clone();
+                            let probe_runs = probe_runs.clone();
                             async move {
                                 // Wall time includes queueing; the execution
                                 // budget starts only after permit admission.
@@ -1448,6 +1502,7 @@ impl GitPlane {
                                     cached_commit.as_deref(),
                                     cached_subject.as_deref(),
                                     git_command_budget,
+                                    probe_runs,
                                 )
                                 .await;
                                 (wt, started, probe)
@@ -2258,10 +2313,11 @@ async fn probe_worktree_with_budget(
     cached_commit: Option<&str>,
     cached_subject: Option<&str>,
     git_command_budget: Arc<Semaphore>,
+    probe_runs: ProbeRuns,
 ) -> Result<Probe, ProbeError> {
     with_probe_budget(
         git_command_budget,
-        probe_worktree_admitted(wt, cached_commit, cached_subject),
+        probe_worktree_admitted(wt, cached_commit, cached_subject, &probe_runs),
     )
     .await
 }
@@ -2288,12 +2344,13 @@ async fn probe_worktree(
     cached_commit: Option<&str>,
     cached_subject: Option<&str>,
     budget: Arc<Semaphore>,
+    probe_runs: ProbeRuns,
 ) -> Result<Probe, ProbeError> {
     let _permit = budget
         .acquire_owned()
         .await
         .map_err(|_| ProbeError::Git("git command budget closed".into()))?;
-    probe_worktree_admitted(wt, cached_commit, cached_subject).await
+    probe_worktree_admitted(wt, cached_commit, cached_subject, &probe_runs).await
 }
 
 /// One worktree snapshot. One `git status` subprocess; `git log` runs only
@@ -2303,9 +2360,9 @@ async fn probe_worktree_admitted(
     wt: &Path,
     cached_commit: Option<&str>,
     cached_subject: Option<&str>,
+    probe_runs: &ProbeRuns,
 ) -> Result<Probe, ProbeError> {
-    #[cfg(test)]
-    TEST_PROBE_RUNS.fetch_add(1, Ordering::SeqCst);
+    probe_runs.record();
     if !wt.is_dir() {
         return Err(ProbeError::Gone);
     }
@@ -3608,9 +3665,10 @@ mod tests {
             let previous = TEST_GIT_DELAY_MILLIS.swap(delay_ms, Ordering::SeqCst);
             TEST_GIT_IN_FLIGHT.store(0, Ordering::SeqCst);
             TEST_GIT_MAX_IN_FLIGHT.store(0, Ordering::SeqCst);
-            TEST_PROBE_RUNS.store(0, Ordering::SeqCst);
             TEST_RESCAN_IN_FLIGHT.store(0, Ordering::SeqCst);
             TEST_RESCAN_MAX_IN_FLIGHT.store(0, Ordering::SeqCst);
+            // Probe accounting is per-plane (#572): a fixture that needs a
+            // zeroed baseline resets its own `plane.probe_runs` instead.
             Self(previous)
         }
     }
@@ -3690,6 +3748,8 @@ mod tests {
         plane.rescan(&sink).await;
 
         let _slow_git = TestGitDelayReset::new(20);
+        // Probe accounting is per-plane (#572): zero THIS plane's baseline.
+        plane.probe_runs.reset();
         let held_permits = plane
             .git_command_budget
             .clone()
@@ -3708,7 +3768,7 @@ mod tests {
         drop(held_permits);
 
         let deadline = Instant::now() + Duration::from_secs(3);
-        while TEST_PROBE_RUNS.load(Ordering::SeqCst) < 2 {
+        while plane.probe_runs.count() < 2 {
             assert!(
                 Instant::now() < deadline,
                 "queued probe did not complete its coalesced follow-up"
@@ -3717,9 +3777,114 @@ mod tests {
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
         assert_eq!(
-            TEST_PROBE_RUNS.load(Ordering::SeqCst),
+            plane.probe_runs.count(),
             2,
             "a sustained queued event burst creates at most one follow-up probe"
+        );
+    }
+
+    /// #572: probe accounting is per-plane. Two independent planes under test
+    /// must each record exactly their own admissions - the process-global
+    /// `static` this module used to share charged one plane's probes to
+    /// another test's delta window, which is how a low `--test-threads` budget
+    /// turned into a cross-test failure in CI. Re-globalising the counter (one
+    /// handle shared by every plane) fails this deterministically.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn probe_accounting_is_scoped_to_the_plane_under_test() {
+        let _guard = PROBE_LOCK.lock().await;
+        let (_temp_a, repo_a, _) = scratch_repo("probe-scope-a");
+        let (_temp_b, repo_b, _) = scratch_repo("probe-scope-b");
+        let plane_a = GitPlane::new(repo_a.clone(), repo_a.join("worktrees"));
+        let plane_b = GitPlane::new(repo_b.clone(), repo_b.join("worktrees"));
+
+        probe_worktree(
+            &repo_a,
+            None,
+            None,
+            plane_a.git_command_budget.clone(),
+            plane_a.probe_runs.clone(),
+        )
+        .await
+        .expect("plane A probe");
+        assert_eq!(
+            plane_a.probe_runs.count(),
+            1,
+            "a plane records exactly the probes it admitted"
+        );
+
+        // Plane B probes twice, concurrently: neither admission belongs to A.
+        let (first, second) = tokio::join!(
+            probe_worktree(
+                &repo_b,
+                None,
+                None,
+                plane_b.git_command_budget.clone(),
+                plane_b.probe_runs.clone(),
+            ),
+            probe_worktree(
+                &repo_b,
+                None,
+                None,
+                plane_b.git_command_budget.clone(),
+                plane_b.probe_runs.clone(),
+            ),
+        );
+        first.expect("plane B first probe");
+        second.expect("plane B second probe");
+        assert_eq!(
+            plane_b.probe_runs.count(),
+            2,
+            "the second plane records exactly its own two probes"
+        );
+        assert_eq!(
+            plane_a.probe_runs.count(),
+            1,
+            "another plane's probes must not land in this plane's accounting"
+        );
+    }
+
+    /// #572: the fixture-level reset is scoped as well. Zeroing one plane's
+    /// accounting must not clear another plane's count - the old
+    /// process-global reset (`TestGitDelayReset`) zeroed every concurrent
+    /// test's delta window, not just its own.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn probe_accounting_reset_is_scoped_to_the_plane_under_test() {
+        let _guard = PROBE_LOCK.lock().await;
+        let (_temp_a, repo_a, _) = scratch_repo("probe-reset-a");
+        let (_temp_b, repo_b, _) = scratch_repo("probe-reset-b");
+        let plane_a = GitPlane::new(repo_a.clone(), repo_a.join("worktrees"));
+        let plane_b = GitPlane::new(repo_b.clone(), repo_b.join("worktrees"));
+        probe_worktree(
+            &repo_a,
+            None,
+            None,
+            plane_a.git_command_budget.clone(),
+            plane_a.probe_runs.clone(),
+        )
+        .await
+        .expect("plane A probe");
+        probe_worktree(
+            &repo_b,
+            None,
+            None,
+            plane_b.git_command_budget.clone(),
+            plane_b.probe_runs.clone(),
+        )
+        .await
+        .expect("plane B probe");
+        assert_eq!(plane_a.probe_runs.count(), 1);
+        assert_eq!(plane_b.probe_runs.count(), 1);
+
+        plane_b.probe_runs.reset();
+        assert_eq!(
+            plane_b.probe_runs.count(),
+            0,
+            "the reset zeroes its own plane"
+        );
+        assert_eq!(
+            plane_a.probe_runs.count(),
+            1,
+            "a reset on another plane must not clear this plane's count"
         );
     }
 
@@ -3854,6 +4019,7 @@ mod tests {
             None,
             None,
             Arc::new(Semaphore::new(MAX_CONCURRENT_GIT_COMMANDS)),
+            ProbeRuns::new(),
         )
         .await
         .expect("probe succeeds");
@@ -3879,7 +4045,8 @@ mod tests {
         let _guard = PROBE_LOCK.lock().await;
         let (_temp, root, _) = scratch_repo("head-cache");
         let budget = Arc::new(Semaphore::new(MAX_CONCURRENT_GIT_COMMANDS));
-        let first = probe_worktree(&root, None, None, budget.clone())
+        let probe_runs = ProbeRuns::new();
+        let first = probe_worktree(&root, None, None, budget.clone(), probe_runs.clone())
             .await
             .expect("first probe");
         let before = GIT_CALLS.load(Ordering::Relaxed);
@@ -3888,6 +4055,7 @@ mod tests {
             Some(first.commit.as_str()),
             first.subject.as_deref(),
             budget,
+            probe_runs,
         )
         .await
         .expect("cached probe");
@@ -3985,6 +4153,7 @@ mod tests {
                 None,
                 None,
                 Arc::new(Semaphore::new(MAX_CONCURRENT_GIT_COMMANDS)),
+                ProbeRuns::new(),
             )
             .await
             .is_err(),

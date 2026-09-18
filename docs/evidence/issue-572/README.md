@@ -191,6 +191,9 @@ before the mutation the same two tests were green at default parallelism
 | `cargo test --lib -p corrald adapters::git_plane::tests -- --test-threads=2` (new CI leg) | 0 | `ok. 48 passed; 0 failed; 1 ignored; 281 filtered out; finished in 18.39s` |
 | `cargo test --lib -p corrald` (full, default) | 0 | `ok. 329 passed; 0 failed; 1 ignored; 0 filtered out; finished in 23.04s` |
 | `cargo test --lib -p corrald -- --test-threads=2` (full) | 0 | `ok. 329 passed; 0 failed; 1 ignored; 0 filtered out; finished in 38.81s` |
+| `cargo test --lib -p corrald g492` (probe path touched) | 0 | `ok. 7 passed; 0 failed` (`evidence-suites.txt`) |
+| `cargo test --lib -p corrald g560` (probe path touched) | 0 | `ok. 6 passed; 0 failed` (`evidence-suites.txt`) |
+| `cargo test --lib -p corrald g561` (probe path touched) | 0 | `ok. 5 passed; 0 failed; 1 ignored` (`evidence-suites.txt`) |
 
 The low-arity runs are green BEFORE and AFTER this change on this host — stated plainly: the
 CI race did not reproduce here in either state, and the deterministic witness in §5 is what

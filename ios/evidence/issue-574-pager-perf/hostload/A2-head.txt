@@ -1,0 +1,24 @@
+arm=A2-head root=/Users/jirathip/.herdr/worktrees/corral/g574-pager-perf derived=/tmp/fn574-dd udid=E8A93355-D7A7-4727-87B9-11E3D0FC1E08
+--- host BEFORE 2026-09-19T09:23:45Z ---
+16:23  up 3 days, 38 mins, 3 users, load averages: 11.57 11.74 17.80
+ncpu=10
+top cpu consumers:
+ %CPU COMM
+ 77.2 grep
+ 38.0 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+ 19.7 /Applications/Telegram.app/Contents/MacOS/Telegram
+--- host at build start 2026-09-19T09:24:15Z (calm-wait 30s) ---
+16:24  up 3 days, 38 mins, 3 users, load averages: 7.95 10.84 17.26
+--- host at gesture start 2026-09-19T09:24:26Z ---
+16:24  up 3 days, 39 mins, 3 users, load averages: 9.10 10.98 17.24
+ %CPU COMM
+499.5 /Users/jirathip/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc
+ 46.1 /Users/jirathip/.hermes/hermes-agent/venv/bin/python3
+ 40.6 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+--- host AFTER 2026-09-19T09:27:10Z ---
+16:27  up 3 days, 41 mins, 3 users, load averages: 27.50 18.89 19.49
+ %CPU COMM
+194.9 rg
+ 72.3 /Users/jirathip/.hermes/hermes-agent/venv/bin/python3
+ 46.4 /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld
+GESTURES_EXIT=0

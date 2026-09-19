@@ -1,0 +1,25 @@
+arm=A1-head root=/Users/jirathip/.herdr/worktrees/corral/g574-pager-perf derived=/tmp/fn574-dd udid=E8A93355-D7A7-4727-87B9-11E3D0FC1E08
+--- host BEFORE 2026-09-19T09:01:29Z ---
+16:01  up 3 days, 16 mins, 3 users, load averages: 33.02 59.86 42.26
+ncpu=10
+top cpu consumers:
+ %CPU COMM
+100.1 node
+ 40.1 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+ 24.3 /Users/jirathip/.hermes/hermes-agent/venv/bin/python3
+calm-window cap 300s reached at load1=12.78; proceeding (mark contended)
+--- host at build start 2026-09-19T09:06:33Z (calm-wait 300s) ---
+16:06  up 3 days, 21 mins, 3 users, load averages: 12.78 34.68 35.84
+--- host at gesture start 2026-09-19T09:06:40Z ---
+16:06  up 3 days, 21 mins, 3 users, load averages: 12.16 34.19 35.66
+ %CPU COMM
+ 99.3 node
+ 40.2 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+ 13.1 /Applications/Telegram.app/Contents/MacOS/Telegram
+--- host AFTER 2026-09-19T09:09:01Z ---
+16:09  up 3 days, 23 mins, 3 users, load averages: 11.11 26.84 32.56
+ %CPU COMM
+ 98.3 /private/tmp/ct-r1/scratch/rust/target/debug/ct-engine
+ 38.0 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+ 16.5 /Applications/Telegram.app/Contents/MacOS/Telegram
+GESTURES_EXIT=0

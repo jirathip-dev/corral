@@ -310,8 +310,10 @@ final class HerdWindTests: XCTestCase {
         // (active/visible/connected => clock runs and motion is allowed)
         // still feeds both the clock and the wind.
         let herd = try pinnedSource("HerdView")
-        XCTAssertTrue(herd.contains("RanchEnvironment(night:lighting.night"),
+        XCTAssertTrue(herd.contains("HerdRanchLayer(channel:pagerScroll,night:lighting.night"),
             "HerdView must keep constructing the production scene")
+        XCTAssertTrue(herd.contains("RanchEnvironment(night:night,scroll:channel.offset"),
+            "#574: the ranch layer must keep constructing the production scene from the pager channel")
         XCTAssertTrue(herd.contains("elapsed:elapsed"))
         XCTAssertTrue(herd.contains("reduceMotion:!motionEnabled"),
             "the ambient freeze must stay tied to the scene gate")

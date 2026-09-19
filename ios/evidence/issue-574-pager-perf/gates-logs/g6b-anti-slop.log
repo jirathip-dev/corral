@@ -1,0 +1,31 @@
+[0/1] Planning build
+Building for debugging...
+[0/3] Write swift-version--58304C5D6DBC2206.txt
+Build of product 'anti-slop' complete! (0.57s)
+ios/FleetNotifier/App/AppModel.swift:638:74: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+ios/FleetNotifier/App/AppModel.swift:2604:15: error: [no-swallowed-errors] Empty catch block swallows the error entirely; failures become invisible. Bind the error, log it, recover deliberately, or rethrow.
+ios/FleetNotifierTests/EnrollmentClientTests.swift:117:10: error: [no-shape-in-symbol-names] Rename "testStatusDecodesTheApprovedShapeWithGrantsVerbatim" for its domain role; "shape" describes structure rather than ownership.
+ios/FleetNotifierTests/FleetNotifierTests.swift:287:10: error: [no-shape-in-symbol-names] Rename "testReadTailEnvelopeBytesMatchRustShape" for its domain role; "shape" describes structure rather than ownership.
+ios/FleetNotifierTests/FleetNotifierTests.swift:337:10: error: [no-shape-in-symbol-names] Rename "testRegisterBodyShape" for its domain role; "shape" describes structure rather than ownership.
+ios/FleetNotifierTests/FleetNotifierTests.swift:354:10: error: [no-shape-in-symbol-names] Rename "testGrantsReadBodyCanonicalShape" for its domain role; "shape" describes structure rather than ownership.
+ios/FleetNotifierTests/FleetNotifierTests.swift:1549:65: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+ios/FleetNotifierTests/FleetNotifierTests.swift:1624:73: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+ios/FleetNotifierTests/FleetNotifierTests.swift:1697:73: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+ios/FleetNotifierTests/FleetNotifierTests.swift:1845:83: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+ios/FleetNotifierTests/FleetNotifierTests.swift:1904:65: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+ios/FleetNotifierTests/FleetNotifierTests.swift:1956:73: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+ios/FleetNotifierTests/FleetNotifierTests.swift:2003:73: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+ios/FleetNotifierTests/FleetNotifierTests.swift:2052:73: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+ios/FleetNotifierTests/FleetNotifierTests.swift:2168:65: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+ios/FleetNotifierTests/FleetNotifierTests.swift:2193:73: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+ios/FleetNotifierTests/FleetNotifierTests.swift:2215:58: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+ios/FleetNotifierTests/FleetNotifierTests.swift:2251:58: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+ios/FleetNotifierTests/FleetNotifierTests.swift:2371:61: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+ios/FleetNotifierTests/FleetNotifierTests.swift:2394:35: error: [no-force-try] `try!` discards the error channel without stating why it cannot fire. Add a // SAFETY: comment documenting the invariant, or propagate/handle the error.
+ios/FleetNotifierTests/FleetNotifierTests.swift:2412:65: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+ios/FleetNotifierTests/FleetNotifierTests.swift:2415:77: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+ios/FleetNotifierTests/FleetNotifierTests.swift:2672:41: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+ios/FleetNotifierTests/FleetNotifierTests.swift:2902:70: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+
+[anti-slop] 24 violations across 56 files (17 rules).
+ANTISLOP_EXIT=1

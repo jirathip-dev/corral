@@ -33,7 +33,16 @@ struct HerdView: View {
     @StateObject private var location = HerdLocation()
     @State var sceneID = UUID()
     @State var paddockID: String?
-    @State var scroll: CGFloat = 0
+    /// #574: the horizontal pager offset is published through a channel that
+    /// ONLY the ranch layer observes (`HerdRanchLayer`). Held in plain @State
+    /// (no objectWillChange subscription up here), so a scroll tick stops
+    /// re-running this body — and with it every realized paddock's rows, the
+    /// edge geometry and every art-bound evaluation. The offset previously
+    /// lived in `@State var scroll`, which made each horizontal tick rebuild
+    /// the whole herd; `scroll` remains the read-only accessor for the
+    /// evidence recorders.
+    @State private var pagerScroll = HerdScrollChannel()
+    var scroll: CGFloat { pagerScroll.offset }
     @State private var now = Date()
     @State private var timeRevision = 0
     @State private var dragging = false
@@ -153,10 +162,13 @@ struct HerdView: View {
         // both axes — no per-axis stretch, cropped by the screen.
         ZStack {
             GeometryReader { screen in
+                // #574: only the ranch layer below observes the pager offset,
+                // so a horizontal tick re-renders the ranch alone — never the
+                // herd body above it.
                 HerdRanchCover {
-                    RanchEnvironment(night:lighting.night,scroll:scroll,
-                                     maxScroll:CGFloat(max(0,paddocks.count-1))*screen.size.width,
-                                     elapsed:elapsed,reduceMotion:!motionEnabled)
+                    HerdRanchLayer(channel:pagerScroll,night:lighting.night,
+                                   maxScroll:CGFloat(max(0,paddocks.count-1))*screen.size.width,
+                                   elapsed:elapsed,reduceMotion:!motionEnabled)
                 }
             }
             .ignoresSafeArea()
@@ -489,7 +501,12 @@ struct HerdView: View {
     private func pager(width:CGFloat,viewport:CGRect) -> some View {
         ScrollView(.horizontal) {
             LazyHStack(spacing:0) {
-                ForEach(paddocks) { paddock in
+                // #574: the page index is carried by the enumeration, so the
+                // per-page background never re-derives the projection (the old
+                // `paddocks.firstIndex` re-ran the whole grouping/sort for
+                // every page on every geometry update — a horizontal scroll
+                // evaluates this background per frame).
+                ForEach(Array(paddocks.enumerated()), id:\.element.id) { index,paddock in
                     Group {
                         if dynamicType.isAccessibilitySize {
                             paddockField(paddock,width:width,viewport:viewport)
@@ -505,7 +522,6 @@ struct HerdView: View {
 #if DEBUG
                             let _ = HerdPerf574.tick(.pagerPageGeometry)
 #endif
-                            let index = paddocks.firstIndex { $0.id == paddock.id } ?? 0
                             Color.clear.preference(key:HerdScrollOffset.self,
                                 value:CGFloat(index)*width-proxy.frame(in:.named("herdPager")).minX)
                         })
@@ -518,7 +534,7 @@ struct HerdView: View {
         .scrollTargetBehavior(.paging)
         .scrollPosition(id:$paddockID)
         .scrollIndicators(.hidden)
-        .modifier(HerdScrollTracking(offset: $scroll))
+        .modifier(HerdScrollTracking(offset: $pagerScroll.offset))
         .simultaneousGesture(DragGesture().onChanged { _ in dragging = true }.onEnded { _ in dragging = false })
     }
     /// #456: compact floating paddock navigation above the home indicator —
@@ -793,38 +809,21 @@ struct HerdPaddockScroll<Content:View>: View {
     var body: some View {
         GeometryReader { visible in
             let columns = HerdEdgeGeometry.columns(width:visible.size.width)
-            let starts = Array(stride(from:0,to:horses.count,by:columns))
             let space = "herd-rows-"+paddockID
-            let viewport = visible.frame(in:.global)
+            // #574: canonical viewport (the unused x pinned to 0), so a
+            // horizontal pager slide does not change the value the rows
+            // receive — the row stack below is then frame-stable and the
+            // per-frame reader pass stops rebuilding it. Edge opacity only
+            // reads minY/maxY/height, so the pinned x is not observable.
+            let viewport = CGRect(x:0,y:visible.frame(in:.global).minY,
+                                  width:visible.size.width,height:visible.size.height)
             ScrollViewReader { reader in
                 ScrollView(.vertical) {
                     // Eager rows are deliberate: a fast flick's proposed target
                     // needs measured distant rows, not a lazy grid's estimates.
-                    VStack(spacing:0) {
-                        ForEach(starts,id:\.self) { start in
-                            HStack(spacing:6) {
-                                ForEach(0..<columns,id:\.self) { column in
-                                    if start+column < horses.count {
-                                        horse(horses[start+column],visible.frame(in:.global))
-                                            .frame(maxWidth:.infinity)
-                                    } else {
-                                        Color.clear.frame(maxWidth:.infinity).accessibilityHidden(true)
-                                    }
-                                }
-                            }
-                            .padding(.top,HerdEdgeGeometry.inset)
-                            .id(start)
-                            .background(GeometryReader { row in
-                                Color.clear.preference(key:HerdRowFrames.self,value:[start:row.frame(in:.named(space))])
-                                    .preference(key:HerdContentOffset.self,
-                                        value:start == 0 ? [0:viewport.minY-row.frame(in:.global).minY] : [:])
-                            })
-                        }
-                    }
-                    .padding(.bottom,HerdEdgeGeometry.bottomPadding(
-                        lastRowHeight:frames[starts.last ?? 0]?.height ?? visible.size.height,
-                        viewportHeight:visible.size.height))
-                    .coordinateSpace(name:space)
+                    HerdFieldRowStack(horses:horses,columns:columns,space:space,
+                                      viewport:viewport,viewportHeight:visible.size.height,
+                                      frames:frames,content:horse)
                 }
                 .accessibilityIdentifier("herd-field-"+paddockID)
                 .scrollTargetBehavior(HerdRowSnap(rows:frames.sorted { $0.key < $1.key }.map(\.value)))
@@ -857,6 +856,55 @@ struct HerdPaddockScroll<Content:View>: View {
                 }
             }
         }
+    }
+}
+
+/// #574: the field's eager row stack, hoisted out of `HerdPaddockScroll`'s
+/// GeometryReader body. A GeometryReader re-evaluates its content whenever the
+/// geometry it provides changes, and inside the pager every page's field
+/// geometry changes on every frame of a horizontal slide — which used to
+/// rebuild every row (art bounds, edge groups, two content passes per row) per
+/// frame even though nothing the rows draw had changed. With the rows here,
+/// whose inputs are frame-stable (the viewport's unused x is pinned), the
+/// per-frame reader pass no longer re-renders them. Vertical scrolling still
+/// updates rows through the measured row frames, exactly as before.
+private struct HerdFieldRowStack<Content: View>: View {
+    let horses: [HerdHorse]
+    let columns: Int
+    let space: String
+    let viewport: CGRect
+    let viewportHeight: CGFloat
+    let frames: [Int: CGRect]
+    let content: (HerdHorse, CGRect) -> Content
+
+    private var starts: [Int] { Array(stride(from:0,to:horses.count,by:columns)) }
+
+    var body: some View {
+        VStack(spacing:0) {
+            ForEach(starts,id:\.self) { start in
+                HStack(spacing:6) {
+                    ForEach(0..<columns,id:\.self) { column in
+                        if start+column < horses.count {
+                            content(horses[start+column],viewport)
+                                .frame(maxWidth:.infinity)
+                        } else {
+                            Color.clear.frame(maxWidth:.infinity).accessibilityHidden(true)
+                        }
+                    }
+                }
+                .padding(.top,HerdEdgeGeometry.inset)
+                .id(start)
+                .background(GeometryReader { row in
+                    Color.clear.preference(key:HerdRowFrames.self,value:[start:row.frame(in:.named(space))])
+                        .preference(key:HerdContentOffset.self,
+                            value:start == 0 ? [0:viewport.minY-row.frame(in:.global).minY] : [:])
+                })
+            }
+        }
+        .padding(.bottom,HerdEdgeGeometry.bottomPadding(
+            lastRowHeight:frames[starts.last ?? 0]?.height ?? viewportHeight,
+            viewportHeight:viewportHeight))
+        .coordinateSpace(name:space)
     }
 }
 
@@ -1136,6 +1184,31 @@ extension HerdView {
     }
 }
 #endif
+
+/// #574: the pager scroll-offset channel. Writes come from
+/// `HerdScrollTracking` on the pager; the only observer is `HerdRanchLayer`
+/// below, which keeps the parallax behaviour while a scroll tick leaves the
+/// herd body (rows, projections, edge geometry) untouched.
+@MainActor final class HerdScrollChannel: ObservableObject {
+    @Published var offset: CGFloat = 0
+}
+
+/// #574: the scroll-offset observation boundary for the ranch parallax. This
+/// view (and the six `RanchEnvironment` planes it owns) is the entire
+/// re-render cost of a horizontal tick; the painted scene, per-plane parallax
+/// offsets and the #530/#459 ambient behaviour are unchanged because the same
+/// `RanchEnvironment` inputs are passed through.
+private struct HerdRanchLayer: View {
+    @ObservedObject var channel: HerdScrollChannel
+    let night: Bool
+    let maxScroll: CGFloat
+    let elapsed: Double
+    let reduceMotion: Bool
+    var body: some View {
+        RanchEnvironment(night:night,scroll:channel.offset,maxScroll:maxScroll,
+                         elapsed:elapsed,reduceMotion:reduceMotion)
+    }
+}
 
 struct HerdScrollOffset: PreferenceKey {
     static var defaultValue: CGFloat = 0

@@ -1,0 +1,22 @@
+{
+  "counters" : {
+    "artBounds" : 185,
+    "captionResolutions" : 36,
+    "edgeGroupBodies" : 170,
+    "edgeOpacity" : 170,
+    "herdViewBody" : 16,
+    "paddockProjectionRepos" : 12,
+    "paddockProjections" : 197,
+    "pagerPageGeometry" : 15,
+    "ranchBody" : 9,
+    "ranchPlanePaints" : 18,
+    "rowBuilds" : 393,
+    "rowSnapTargets" : 1,
+    "scrollChanges" : 1
+  },
+  "fixture" : "build-32 fleet size: 40 agents, 12 repositories, 155-worktree-fact frame shape, 3 blocked at rail (-corral574Perf)",
+  "monotonic" : 252757.45194004168,
+  "reason" : "on-demand",
+  "seq" : 2,
+  "wall" : 1789810542.4796882
+}

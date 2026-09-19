@@ -1,0 +1,3 @@
+A: /tmp/fn574-logs/parity/before-page1.png size=(1206, 2622)
+B: /tmp/fn574-logs/parity/after-page1.png size=(1206, 2622)
+PIXELS IDENTICAL (byte-compare of RGB buffers)

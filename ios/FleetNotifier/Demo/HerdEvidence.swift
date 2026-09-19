@@ -193,7 +193,7 @@ extension HerdEvidence {
     /// atlas-vector, birch-daemon, cedar-tools, maple-client, willow-core,
     /// aspen-fixtures, elder-docs, hawthorn-ops, hazel-wire, juniper-ui,
     /// rowan-crates, sumac-ios. Same shape is seeded in BOTH A/B arms.
-    static let pagerRepoShape: [(String, Int)] = [
+    static let pagerRepoSizes: [(String, Int)] = [
         ("atlas-vector", 12), ("birch-daemon", 5), ("cedar-tools", 5), ("maple-client", 4),
         ("willow-core", 3), ("aspen-fixtures", 2), ("elder-docs", 2), ("hawthorn-ops", 3),
         ("hazel-wire", 1), ("juniper-ui", 1), ("rowan-crates", 1), ("sumac-ios", 1)]
@@ -211,14 +211,14 @@ extension HerdEvidence {
         .unknown,
         .idle]
     static var pagerFixtureDescription: String {
-        let agents = pagerRepoShape.reduce(0) { $0 + $1.1 }
-        return "build-32 fleet size: \(agents) agents, \(pagerRepoShape.count) repositories, "
+        let agents = pagerRepoSizes.reduce(0) { $0 + $1.1 }
+        return "build-32 fleet size: \(agents) agents, \(pagerRepoSizes.count) repositories, "
             + "155-worktree-fact frame shape, 3 blocked at rail (-corral574Perf)"
     }
     static func pagerFixture() -> [String: Agent] {
         var agents: [String: Agent] = [:]
         var index = 0
-        for (repo, count) in pagerRepoShape {
+        for (repo, count) in pagerRepoSizes {
             for n in 0..<count {
                 let id = "herdr:pager-fixture-\(index)"
                 agents[id] = Agent(agentId: id, state: pagerStates[index], seq: UInt64(index + 1),

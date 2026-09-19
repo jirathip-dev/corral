@@ -1,0 +1,25 @@
+arm=F3-fixed root=/Users/jirathip/.herdr/worktrees/corral/g574-pager-perf derived=/tmp/fn574-dd udid=E8A93355-D7A7-4727-87B9-11E3D0FC1E08
+--- host BEFORE 2026-09-19T09:42:35Z ---
+16:42  up 3 days, 57 mins, 3 users, load averages: 124.64 74.39 43.03
+ncpu=10
+top cpu consumers:
+ %CPU COMM
+ 70.1 node
+ 62.2 /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift-frontend
+ 61.6 /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift-frontend
+calm-window cap 300s reached at load1=243.79; proceeding (mark contended)
+--- host at build start 2026-09-19T09:47:55Z (calm-wait 300s) ---
+16:47  up 3 days,  1:02, 3 users, load averages: 243.79 161.76 89.40
+--- host at gesture start 2026-09-19T09:50:19Z ---
+16:50  up 3 days,  1:04, 3 users, load averages: 106.55 148.87 96.00
+ %CPU COMM
+ 56.4 /Users/jirathip/.local/state/canter/accept/target-r13/debug/canter
+ 39.6 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+ 20.7 /Applications/Telegram.app/Contents/MacOS/Telegram
+--- host AFTER 2026-09-19T09:52:47Z ---
+16:52  up 3 days,  1:07, 3 users, load averages: 20.39 95.36 82.65
+ %CPU COMM
+ 93.9 node
+ 74.1 /Library/Developer/CoreSimulator/Volumes/iOS_23F77/Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 26.5.simruntime/Contents/Resources/RuntimeRoot/System/Library/Frameworks/Metal.framework/XPCServices/MTLCompilerService.xpc/MTLCompilerService
+ 60.3 /Users/jirathip/.local/state/canter/accept/target-r13/debug/canter
+GESTURES_EXIT=0

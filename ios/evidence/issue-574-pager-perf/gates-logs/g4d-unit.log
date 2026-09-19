@@ -2890,7 +2890,7 @@ FN-DIAG SecItemCopyMatching status=0
 FN-DIAG SecItemAdd probe status=0
 Test Case '-[FleetNotifierTests.KeychainStorageTests testKeychainStatus]' passed (0.006 seconds).
 Test Case '-[FleetNotifierTests.KeychainStorageTests testLoadOrCreateProducesSigner]' started.
-FN-DIAG storage=keychain pub=wmBZXMm4LlVFKlsvWokWtVm6ihmRzLVfv2701cC1/zI=
+FN-DIAG storage=keychain pub=<redacted-by-orch-574-evidence-hygiene>
 Test Case '-[FleetNotifierTests.KeychainStorageTests testLoadOrCreateProducesSigner]' passed (0.003 seconds).
 Test Suite 'KeychainStorageTests' passed at 2569-09-19 5:47:25.102 PM.
 	 Executed 2 tests, with 0 failures (0 unexpected) in 0.008 (0.009) seconds

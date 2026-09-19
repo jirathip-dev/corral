@@ -50,10 +50,10 @@ da376411507806bb89432a343c1b166ef2e3657bed2fe2c113390e81bcad2a18  ./gates-logs/g
 da376411507806bb89432a343c1b166ef2e3657bed2fe2c113390e81bcad2a18  ./gates-logs/g2c-release-demo.log
 37bba5f9533e9b924fa295d23481aa98b5aa8965a0222080aaebce3940a446d3  ./gates-logs/g3-perf-skip.log
 a1656921b0bd6796b2fdb3b7d66a241aa34468eedcb02bd9e5620611863f876e  ./gates-logs/g3b-perf-skip.log
-f57899ececaf621b88237398dfb253a9859e2301946e10452391d6e238593e8a  ./gates-logs/g4-unit.log
-175b8c183338b89afab4d0d445ee46c058e5e6e9eae8828d6cec80adfae159d2  ./gates-logs/g4b-unit.log
+39ee97b1eaa5f580d2d5b195952e0cc2cdd1d53d05b7406dee6aecde78faaed7  ./gates-logs/g4-unit.log
+815126eccf48c0eede92897538fc35d25b572dd0290982b15e0793150597e9db  ./gates-logs/g4b-unit.log
 c83d8c98b8bd084cd4bf0e39743b88a4e7b2b6d1b50410325a31ec8b74d6f744  ./gates-logs/g4c-wiring.log
-2fa81defae6b63a4d2b55661613da52469380f9cf0dad0c60605162aebd4cfc9  ./gates-logs/g4d-unit.log
+4bbc5da5bad97d73fc88a946a98116377be3b148d0fe47292912b37e27de6fbf  ./gates-logs/g4d-unit.log
 b8581acf9ed11d579dc8d82736566739e13dc1681c5ace7a5019421539d5e2bb  ./gates-logs/g5-edge-gestures.log
 7a9f214982416f0675a2f185e515c630a99e76cf9eb10a8404baddad54ba1f35  ./gates-logs/g6-anti-slop.log
 983db37a3a631068a0955d38a0f0385226e375c31198cfd8fecd02487975182e  ./gates-logs/g6b-anti-slop.log

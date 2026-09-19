@@ -1,6 +1,6 @@
 a8c69ce248a3f654db127daa4266ea5d26956dd4fdc69696fecb91cbf1aa895d  ./README.md
 f0fc39eee4fb28d977c217ebdbc0fdb780194b867d6cde9e236f4b7ad918bd1e  ./REPORT-tables.md
-20fc9c7121153cffbba6c9e401a80462fcac23cdac8f8f3d21f5cf85b40ac541  ./REPORT.md
+39fdde9d69e58be5a28af52072b890ca89ee3ae3f357b418658eabd95e0f5e69  ./REPORT.md
 8e5e83fc8459b800d26db8d79247a35c43f6a99bfb2501f2b3eebf9a5544b857  ./dumps/A1-head/574-001-launch.json
 cff0403d87c6f2b7693abf8a36d9a85c7a365fcc9bcc58eb859e9288adf64f22  ./dumps/A1-head/574-002-on-demand.json
 93144af27a52dc8f0091b528cbe21ed244626a2bdae05a7d22f2205783c200ea  ./dumps/A1-head/574-003-on-demand.json
@@ -44,6 +44,7 @@ f3c1c00fc6049f2ff45aab9f12032a484646c9cc2d4a690841d74a2136499281  ./dumps/F3-fix
 efd6188894a5c16fb2ff498ce49a4b7158c42bb9f9af83aa1a70a4a8253eae65  ./dumps/F3-fixed/574-006-on-demand.json
 7ff82a1dcb00e3e253dedf0248d6a164d2f41938062e229c56cec370ab8cb046  ./dumps/F3-fixed/574-007-on-demand.json
 a62ff32d015ae869c3d9c8f77a107b173fc36bbeb4b1388122b89254b9fb73e4  ./gates-logs/g1-xcodegen.log
+b5f56b463abdb44025f476f681dae882ce6e2b34d7d689b62e2872b7cd06c076  ./gates-logs/g1b-xcodegen.log
 da376411507806bb89432a343c1b166ef2e3657bed2fe2c113390e81bcad2a18  ./gates-logs/g2-release-demo.log
 da376411507806bb89432a343c1b166ef2e3657bed2fe2c113390e81bcad2a18  ./gates-logs/g2b-release-demo.log
 da376411507806bb89432a343c1b166ef2e3657bed2fe2c113390e81bcad2a18  ./gates-logs/g2c-release-demo.log
@@ -52,14 +53,17 @@ a1656921b0bd6796b2fdb3b7d66a241aa34468eedcb02bd9e5620611863f876e  ./gates-logs/g
 f57899ececaf621b88237398dfb253a9859e2301946e10452391d6e238593e8a  ./gates-logs/g4-unit.log
 175b8c183338b89afab4d0d445ee46c058e5e6e9eae8828d6cec80adfae159d2  ./gates-logs/g4b-unit.log
 c83d8c98b8bd084cd4bf0e39743b88a4e7b2b6d1b50410325a31ec8b74d6f744  ./gates-logs/g4c-wiring.log
+2fa81defae6b63a4d2b55661613da52469380f9cf0dad0c60605162aebd4cfc9  ./gates-logs/g4d-unit.log
 b8581acf9ed11d579dc8d82736566739e13dc1681c5ace7a5019421539d5e2bb  ./gates-logs/g5-edge-gestures.log
 7a9f214982416f0675a2f185e515c630a99e76cf9eb10a8404baddad54ba1f35  ./gates-logs/g6-anti-slop.log
 983db37a3a631068a0955d38a0f0385226e375c31198cfd8fecd02487975182e  ./gates-logs/g6b-anti-slop.log
+dffb66689661ce6c8555ccdc1f928a4d9bcb5f52e6f48cc3bd2ecb5eadfbe29f  ./gates-logs/g6c-anti-slop.log
 c0c2f75bb9a8793cce1b1ebfbe5d7bd1f9fe0b9ace8d7368787b733eb8d36b24  ./gates-logs/g7-diff-check-committed.log
 aa5455ad06cb0149b4a94a0f1a0d4b5c61bf403b54d7c5fe7049f0c5847e5763  ./gates-logs/g7-diff-check-worktree.log
 59e66da301e856c358bf46f19f988f0543f9aee19ae3a1614594026361d95d86  ./gates-logs/run-gates.out
 ba86373218e82deeea4f73724a3022f50a6b1fe221da33b19258c0cdd66815ca  ./gates-logs/run-gates2.out
 a810b5503d49cdfb21363179997b0515213d711bfd1803c42ba833a4fe345ec5  ./gates-logs/run-gates3.out
+17ded86294782a2fd3fdc5fc9956bf15106f76078fb77c1b7b15ca3b806e8f75  ./gates-logs/run-gates4.out
 ea68095c1d2af2a636b2cf42e91bec8942efd2cdcb884d801bb9c4e9b51856c2  ./gestures/A1-head.log
 4d6b18eac948ca744f6dd8f3bb8ec30405ebfdbcd7ad4e1f481ee3c4c9d1bc8c  ./gestures/A2-head.log
 b6278923c30611c9d020d53e21b4280d69ec40d11a1a36d167136a3122bdb107  ./gestures/B-base.log

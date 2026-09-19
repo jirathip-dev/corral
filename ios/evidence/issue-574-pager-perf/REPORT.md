@@ -143,13 +143,13 @@ bundle (originals also at `/tmp/fn574-logs/gates/`).
 
 | # | command (canonical, from `.brief.md` §7) | raw exit | notes |
 | --- | --- | --- | --- |
-| 1 | `cd ios && xcodegen generate --spec project.yml && git -C .. diff --exit-code -- ios/` | `XCODEGEN_EXIT=0`; `DIFF_EXIT=0` post-commit | regeneration changed no tracked file (the pre-commit `DIFF_EXIT=1` was the lane's own uncommitted edits) |
-| 2 | `python3 ios/check-release-demo.py` | `RELEASE_DEMO_EXIT=0` | "release-demo check: PASS" — digest re-pinned over the measured-pager sources |
-| 3 | `xcodebuild test … -only-testing:FleetNotifierUITests/HerdPagerPerfTests` (no marker) | `PERF_SKIP_EXIT=0` | the battery skips on CI's bare `xcodebuild test` |
-| 4 | `xcodebuild test … -only-testing:FleetNotifierTests` | `UNIT_EXIT=0` | `Executed 684 tests, with 1 test skipped and 0 failures`. First run at the pre-pin head failed 3 source-wiring pins that quoted the old ranch mount; the pins were updated to the new mount and strengthened (not weakened) — see `HerdTests.swift` / `HerdWindTests.swift` in the diff |
-| 5 | `xcodebuild test … -only-testing:FleetNotifierUITests/HerdEdgeGestureTests` | `EDGE_UI_EXIT=0` | 7 tests, 0 failures — the #568 edge/settle suite stays green at the fixed head |
-| 6 | `swift run --package-path ios/tools/anti-slop-swift anti-slop ios/FleetNotifier ios/FleetNotifierTests` | advisory (`ANTISLOP_EXIT=1`, 24 violations across 56 files) | zero violations in the lane's changed files: the branch's only new violation (`HerdEvidence.pagerRepoShape`, `no-shape-in-symbol-names`) was renamed to `pagerRepoSizes`; the remaining set is pre-existing (`FleetNotifierTests.swift` etc.) |
-| 7 | `git diff --check origin/integration..HEAD` | `DIFFCHECK_COMMITTED_EXIT=0` | no whitespace errors |
+| 1 | `cd ios && xcodegen generate --spec project.yml && git -C .. diff --exit-code -- ios/` | `XCODEGEN_EXIT=0`; `DIFF_EXIT=0` (post-commit, `g1b-xcodegen.log`) | regeneration changed no tracked file (the pre-commit `DIFF_EXIT=1` was the lane's own uncommitted edits) |
+| 2 | `python3 ios/check-release-demo.py` | `RELEASE_DEMO_EXIT=0` (`g2c`) | "release-demo check: PASS" — digest re-pinned over the measured-pager sources |
+| 3 | `xcodebuild test … -only-testing:FleetNotifierUITests/HerdPagerPerfTests` (no marker) | `PERF_SKIP_EXIT=0` (`g3b`) | the battery skips on CI's bare `xcodebuild test` |
+| 4 | `xcodebuild test … -only-testing:FleetNotifierTests` | `UNIT_EXIT=0` (`g4d`, committed head) | `Executed 684 tests, with 1 test skipped and 0 failures`. First run at the pre-pin head failed 3 source-wiring pins that quoted the old ranch mount; the pins were updated to the new mount and strengthened (not weakened) — `g4-unit.log` preserves the first run, `g4b/g4c` the fixed ones |
+| 5 | `xcodebuild test … -only-testing:FleetNotifierUITests/HerdEdgeGestureTests` | `EDGE_UI_EXIT=0` (`g5`) | 7 tests, 0 failures — the #568 edge/settle suite stays green at the fixed head |
+| 6 | `swift run --package-path ios/tools/anti-slop-swift anti-slop ios/FleetNotifier ios/FleetNotifierTests` | advisory (`ANTISLOP_EXIT=1`, 24 violations across 56 files, `g6c`) | **0 violations in the lane's changed files**; the branch's only new violation (`HerdEvidence.pagerRepoShape`, `no-shape-in-symbol-names`) was renamed to `pagerRepoSizes`; the remaining set is pre-existing (`FleetNotifierTests.swift` etc.) |
+| 7 | `git diff --check origin/integration..HEAD` | `DIFFCHECK_COMMITTED_EXIT=0` (`g7`) | no whitespace errors |
 
 ## Video (fixed head)
 

@@ -1,0 +1,702 @@
+Command line invocation:
+    /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild test-without-building -project ios/FleetNotifier.xcodeproj -scheme FleetNotifier -destination "platform=iOS Simulator,id=E8A93355-D7A7-4727-87B9-11E3D0FC1E08" -derivedDataPath /tmp/fn574-base-dd "-only-testing:FleetNotifierUITests/HerdPagerPerfTests"
+
+2026-09-19 16:21:14.272702+0700 FleetNotifierUITests-Runner[95892:43603355] [Default] Running tests...
+    t =      nans Interface orientation changed to Portrait
+Test Suite 'Selected tests' started at 2569-09-19 4:21:14.706 PM.
+Test Suite 'FleetNotifierUITests.xctest' started at 2569-09-19 4:21:14.706 PM.
+Test Suite 'HerdPagerPerfTests' started at 2569-09-19 4:21:14.706 PM.
+Test Case '-[FleetNotifierUITests.HerdPagerPerfTests testPagerPerfBattery]' started.
+    t =     0.00s Start Test at 2569-09-19 4:21:14.707 PM
+    t =     0.02s Set Up
+    t =     0.02s Open com.corral.fleetnotifier
+    t =     0.02s     Launch com.corral.fleetnotifier
+2026-09-19 16:21:14.767 xcodebuild[95846:43603052] [MT] IDELaunchParametersSnapshot: The operation couldn’t be completed. (DebuggerLLDB.DebuggerVersionStore.StoreError error 0.)
+2026-09-19 16:21:14.767 xcodebuild[95846:43603052] [MT] IDELaunchParametersSnapshot: no debugger version
+objc[95892]: Class UIAccessibilityLoaderWebShared is implemented in both /Library/Developer/CoreSimulator/Volumes/iOS_23F77/Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 26.5.simruntime/Contents/Resources/RuntimeRoot/System/Library/AccessibilityBundles/WebCore.axbundle/WebCore (0x108aa8310) and /Library/Developer/CoreSimulator/Volumes/iOS_23F77/Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 26.5.simruntime/Contents/Resources/RuntimeRoot/System/Library/AccessibilityBundles/WebKit.axbundle/WebKit (0x1087e4398). This may cause spurious casting failures and mysterious crashes. One of the duplicates must be removed or renamed.
+    t =     0.67s         Setting up automation session
+    t =     1.18s         Wait for com.corral.fleetnotifier to idle
+    t =     3.39s Waiting 60.0s for "g574-perf-state" Other to exist
+    t =     4.46s     Checking `Expect predicate `existsNoRetry == 1` for object "g574-perf-state" Other`
+    t =     4.46s         Checking existence of `"g574-perf-state" Other`
+    t =     4.57s Waiting 60.0s for "g574-perf-dump" Button to exist
+    t =     5.64s     Checking `Expect predicate `existsNoRetry == 1` for object "g574-perf-dump" Button`
+    t =     5.65s         Checking existence of `"g574-perf-dump" Button`
+    t =     5.70s Waiting 30.0s for "herd-previous" Button to exist
+    t =     6.77s     Checking `Expect predicate `existsNoRetry == 1` for object "herd-previous" Button`
+    t =     6.77s         Checking existence of `"herd-previous" Button`
+    t =     6.82s Find the "herd-previous" Button
+    t =     6.85s Checking existence of `"herd-field-repo:atlas-vector" ScrollView`
+    t =     6.88s Find the "herd-field-repo:atlas-vector" ScrollView
+    t =     6.91s Find the "herd-field-repo:atlas-vector" ScrollView
+    t =     6.94s Find the "herd-field-repo:atlas-vector" ScrollView
+    t =     6.97s Find the Target Application 'com.corral.fleetnotifier'
+    t =     8.99s Find the "g574-perf-state" Other
+    t =     9.05s Find the "g574-perf-dump" Button
+    t =     9.09s Tap "g574-perf-dump" Button
+    t =     9.09s     Wait for com.corral.fleetnotifier to idle
+    t =     9.09s     Find the "g574-perf-dump" Button
+    t =     9.12s     Check for interrupting elements affecting "g574-perf-dump" Button
+    t =     9.14s     Synthesize event
+    t =     9.44s     Wait for com.corral.fleetnotifier to idle
+    t =     9.44s Find the "g574-perf-state" Other
+    t =     9.49s Find the "g574-perf-state" Other
+G574_DUMP_BEGIN phase=t0-settle epoch=1789809684.223459
+{
+  "counters" : {
+    "artBounds" : 0,
+    "captionResolutions" : 22,
+    "edgeGroupBodies" : 0,
+    "edgeOpacity" : 0,
+    "herdViewBody" : 8,
+    "paddockProjectionRepos" : 12,
+    "paddockProjections" : 119,
+    "pagerPageGeometry" : 10,
+    "ranchBody" : 5,
+    "ranchPlanePaints" : 12,
+    "rowBuilds" : 172,
+    "rowSnapTargets" : 0,
+    "scrollChanges" : 1
+  },
+  "fixture" : "build-32 fleet size: 40 agents, 12 repositories, 155-worktree-fact frame shape, 3 blocked at rail (-corral574Perf)",
+  "monotonic" : 251898.90081787502,
+  "reason" : "on-demand",
+  "seq" : 2,
+  "wall" : 1789809683.943737
+}
+G574_DUMP_END phase=t0-settle seq=2
+    t =     9.52s Added attachment named '574-dump-t0-settle'
+    t =     9.52s Press Target Application 'com.corral.fleetnotifier'[0.85, 0.50] for 0.1 seconds, then drag to Target Application 'com.corral.fleetnotifier'[0.15, 0.50] with velocity of 250.00 pixels per second, and then hold for 0.1 seconds 
+    t =     9.52s     Wait for com.corral.fleetnotifier to idle
+    t =     9.52s     Find the Target Application 'com.corral.fleetnotifier'
+    t =     9.54s     Check for interrupting elements affecting "Corral" Application
+    t =     9.56s     Synthesize event
+    t =     9.56s         Find the Target Application 'com.corral.fleetnotifier'
+    t =     9.58s         Find the Target Application 'com.corral.fleetnotifier'
+    t =     9.60s         Find the Target Application 'com.corral.fleetnotifier'
+    t =     9.62s         Find the Target Application 'com.corral.fleetnotifier'
+    t =     9.64s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    11.27s     Wait for com.corral.fleetnotifier to idle
+    t =    11.49s Checking existence of `"herd-field-repo:birch-daemon" ScrollView`
+    t =    11.54s Find the "herd-field-repo:birch-daemon" ScrollView
+    t =    11.62s Find the "herd-field-repo:birch-daemon" ScrollView
+    t =    11.68s Find the "herd-field-repo:birch-daemon" ScrollView
+    t =    11.75s Find the Target Application 'com.corral.fleetnotifier'
+    t =    11.79s Press Target Application 'com.corral.fleetnotifier'[0.85, 0.50] for 0.1 seconds, then drag to Target Application 'com.corral.fleetnotifier'[0.15, 0.50] with velocity of 250.00 pixels per second, and then hold for 0.1 seconds 
+    t =    11.79s     Wait for com.corral.fleetnotifier to idle
+    t =    11.79s     Find the Target Application 'com.corral.fleetnotifier'
+    t =    11.84s     Check for interrupting elements affecting "Corral" Application
+    t =    11.90s     Synthesize event
+    t =    11.90s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    11.95s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    12.00s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    12.04s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    12.10s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    13.78s     Wait for com.corral.fleetnotifier to idle
+    t =    14.62s Checking existence of `"herd-field-repo:cedar-tools" ScrollView`
+    t =    15.50s Find the "herd-field-repo:cedar-tools" ScrollView
+    t =    15.85s Find the "herd-field-repo:cedar-tools" ScrollView
+    t =    16.19s Find the "herd-field-repo:cedar-tools" ScrollView
+    t =    16.39s Find the Target Application 'com.corral.fleetnotifier'
+    t =    16.48s Press Target Application 'com.corral.fleetnotifier'[0.85, 0.50] for 0.1 seconds, then drag to Target Application 'com.corral.fleetnotifier'[0.15, 0.50] with velocity of 250.00 pixels per second, and then hold for 0.1 seconds 
+    t =    16.48s     Wait for com.corral.fleetnotifier to idle
+    t =    16.49s     Find the Target Application 'com.corral.fleetnotifier'
+    t =    16.59s     Check for interrupting elements affecting "Corral" Application
+    t =    16.73s     Synthesize event
+    t =    16.74s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    16.86s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    16.95s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    17.04s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    17.14s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    18.81s     Wait for com.corral.fleetnotifier to idle
+    t =    19.13s Checking existence of `"herd-field-repo:maple-client" ScrollView`
+    t =    19.26s Find the "herd-field-repo:maple-client" ScrollView
+    t =    19.39s Find the "herd-field-repo:maple-client" ScrollView
+    t =    19.53s Find the "herd-field-repo:maple-client" ScrollView
+    t =    19.66s Find the Target Application 'com.corral.fleetnotifier'
+    t =    19.76s Press Target Application 'com.corral.fleetnotifier'[0.85, 0.50] for 0.1 seconds, then drag to Target Application 'com.corral.fleetnotifier'[0.15, 0.50] with velocity of 250.00 pixels per second, and then hold for 0.1 seconds 
+    t =    19.76s     Wait for com.corral.fleetnotifier to idle
+    t =    19.76s     Find the Target Application 'com.corral.fleetnotifier'
+    t =    19.88s     Check for interrupting elements affecting "Corral" Application
+    t =    20.14s     Synthesize event
+    t =    20.15s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    20.24s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    20.34s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    20.44s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    20.55s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    22.29s     Wait for com.corral.fleetnotifier to idle
+    t =    22.61s Checking existence of `"herd-field-repo:willow-core" ScrollView`
+    t =    22.73s Find the "herd-field-repo:willow-core" ScrollView
+    t =    22.89s Find the "herd-field-repo:willow-core" ScrollView
+    t =    23.00s Find the "herd-field-repo:willow-core" ScrollView
+    t =    23.20s Find the Target Application 'com.corral.fleetnotifier'
+    t =    23.29s Press Target Application 'com.corral.fleetnotifier'[0.85, 0.50] for 0.1 seconds, then drag to Target Application 'com.corral.fleetnotifier'[0.15, 0.50] with velocity of 250.00 pixels per second, and then hold for 0.1 seconds 
+    t =    23.29s     Wait for com.corral.fleetnotifier to idle
+    t =    23.30s     Find the Target Application 'com.corral.fleetnotifier'
+    t =    23.43s     Check for interrupting elements affecting "Corral" Application
+    t =    23.64s     Synthesize event
+    t =    23.65s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    23.78s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    23.85s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    23.91s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    24.00s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    25.74s     Wait for com.corral.fleetnotifier to idle
+    t =    26.09s Checking existence of `"herd-field-repo:aspen-fixtures" ScrollView`
+    t =    26.21s Find the "herd-field-repo:aspen-fixtures" ScrollView
+    t =    26.39s Find the "herd-field-repo:aspen-fixtures" ScrollView
+    t =    26.52s Find the "herd-field-repo:aspen-fixtures" ScrollView
+    t =    26.63s Find the Target Application 'com.corral.fleetnotifier'
+    t =    26.73s Press Target Application 'com.corral.fleetnotifier'[0.85, 0.50] for 0.1 seconds, then drag to Target Application 'com.corral.fleetnotifier'[0.15, 0.50] with velocity of 250.00 pixels per second, and then hold for 0.1 seconds 
+    t =    26.73s     Wait for com.corral.fleetnotifier to idle
+    t =    26.74s     Find the Target Application 'com.corral.fleetnotifier'
+    t =    26.87s     Check for interrupting elements affecting "Corral" Application
+    t =    26.96s     Synthesize event
+    t =    26.96s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    27.03s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    27.12s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    27.20s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    27.30s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    29.01s     Wait for com.corral.fleetnotifier to idle
+    t =    29.31s Checking existence of `"herd-field-repo:elder-docs" ScrollView`
+    t =    29.48s Find the "herd-field-repo:elder-docs" ScrollView
+    t =    29.76s Find the "herd-field-repo:elder-docs" ScrollView
+    t =    29.99s Find the "herd-field-repo:elder-docs" ScrollView
+    t =    30.27s Find the Target Application 'com.corral.fleetnotifier'
+    t =    31.93s Checking existence of `"herd-field-repo:elder-docs" ScrollView`
+    t =    31.99s Find the "g574-perf-state" Other
+    t =    32.04s Find the "g574-perf-dump" Button
+    t =    32.10s Tap "g574-perf-dump" Button
+    t =    32.10s     Wait for com.corral.fleetnotifier to idle
+    t =    32.10s     Find the "g574-perf-dump" Button
+    t =    32.15s     Check for interrupting elements affecting "g574-perf-dump" Button
+    t =    32.20s     Synthesize event
+    t =    32.50s     Wait for com.corral.fleetnotifier to idle
+    t =    32.50s Find the "g574-perf-state" Other
+    t =    32.55s Find the "g574-perf-state" Other
+G574_DUMP_BEGIN phase=t1-swipe-right epoch=1789809707.299323
+{
+  "counters" : {
+    "artBounds" : 0,
+    "captionResolutions" : 240,
+    "edgeGroupBodies" : 0,
+    "edgeOpacity" : 0,
+    "herdViewBody" : 117,
+    "paddockProjectionRepos" : 12,
+    "paddockProjections" : 1942,
+    "pagerPageGeometry" : 743,
+    "ranchBody" : 95,
+    "ranchPlanePaints" : 552,
+    "rowBuilds" : 2220,
+    "rowSnapTargets" : 0,
+    "scrollChanges" : 91
+  },
+  "fixture" : "build-32 fleet size: 40 agents, 12 repositories, 155-worktree-fact frame shape, 3 blocked at rail (-corral574Perf)",
+  "monotonic" : 251921.95110754168,
+  "reason" : "on-demand",
+  "seq" : 3,
+  "wall" : 1789809706.994118
+}
+G574_DUMP_END phase=t1-swipe-right seq=3
+    t =    32.59s Added attachment named '574-dump-t1-swipe-right'
+    t =    32.59s Press Target Application 'com.corral.fleetnotifier'[0.15, 0.50] for 0.1 seconds, then drag to Target Application 'com.corral.fleetnotifier'[0.85, 0.50] with velocity of 250.00 pixels per second, and then hold for 0.1 seconds 
+    t =    32.59s     Wait for com.corral.fleetnotifier to idle
+    t =    32.60s     Find the Target Application 'com.corral.fleetnotifier'
+    t =    32.63s     Check for interrupting elements affecting "Corral" Application
+    t =    32.66s     Synthesize event
+    t =    32.67s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    32.69s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    32.72s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    32.74s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    32.77s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    34.42s     Wait for com.corral.fleetnotifier to idle
+    t =    35.01s Checking existence of `"herd-field-repo:aspen-fixtures" ScrollView`
+    t =    35.56s Find the "herd-field-repo:aspen-fixtures" ScrollView
+    t =    36.53s Find the "herd-field-repo:aspen-fixtures" ScrollView
+    t =    36.84s Find the "herd-field-repo:aspen-fixtures" ScrollView
+    t =    37.09s Find the Target Application 'com.corral.fleetnotifier'
+    t =    37.20s Press Target Application 'com.corral.fleetnotifier'[0.15, 0.50] for 0.1 seconds, then drag to Target Application 'com.corral.fleetnotifier'[0.85, 0.50] with velocity of 250.00 pixels per second, and then hold for 0.1 seconds 
+    t =    37.20s     Wait for com.corral.fleetnotifier to idle
+    t =    37.21s     Find the Target Application 'com.corral.fleetnotifier'
+    t =    37.34s     Check for interrupting elements affecting "Corral" Application
+    t =    37.52s     Synthesize event
+    t =    37.53s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    37.61s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    37.68s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    37.73s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    37.79s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    39.48s     Wait for com.corral.fleetnotifier to idle
+    t =    39.91s Checking existence of `"herd-field-repo:willow-core" ScrollView`
+    t =    40.11s Find the "herd-field-repo:willow-core" ScrollView
+    t =    40.33s Find the "herd-field-repo:willow-core" ScrollView
+    t =    40.46s Find the "herd-field-repo:willow-core" ScrollView
+    t =    42.72s Find the Target Application 'com.corral.fleetnotifier'
+    t =    42.98s Press Target Application 'com.corral.fleetnotifier'[0.15, 0.50] for 0.1 seconds, then drag to Target Application 'com.corral.fleetnotifier'[0.85, 0.50] with velocity of 250.00 pixels per second, and then hold for 0.1 seconds 
+    t =    42.98s     Wait for com.corral.fleetnotifier to idle
+    t =    43.01s     Find the Target Application 'com.corral.fleetnotifier'
+    t =    43.13s     Check for interrupting elements affecting "Corral" Application
+    t =    43.24s     Synthesize event
+    t =    43.25s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    43.32s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    43.40s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    43.46s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    43.53s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    45.23s     Wait for com.corral.fleetnotifier to idle
+    t =    45.57s Checking existence of `"herd-field-repo:maple-client" ScrollView`
+    t =    48.46s Find the "herd-field-repo:maple-client" ScrollView
+    t =    48.66s Find the "herd-field-repo:maple-client" ScrollView
+    t =    48.85s Find the "herd-field-repo:maple-client" ScrollView
+    t =    49.09s Find the Target Application 'com.corral.fleetnotifier'
+    t =    49.15s Press Target Application 'com.corral.fleetnotifier'[0.15, 0.50] for 0.1 seconds, then drag to Target Application 'com.corral.fleetnotifier'[0.85, 0.50] with velocity of 250.00 pixels per second, and then hold for 0.1 seconds 
+    t =    49.15s     Wait for com.corral.fleetnotifier to idle
+    t =    49.16s     Find the Target Application 'com.corral.fleetnotifier'
+    t =    49.23s     Check for interrupting elements affecting "Corral" Application
+    t =    49.30s     Synthesize event
+    t =    49.30s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    49.36s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    49.41s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    49.47s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    49.52s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    51.20s     Wait for com.corral.fleetnotifier to idle
+    t =    51.76s Checking existence of `"herd-field-repo:cedar-tools" ScrollView`
+    t =    52.03s Find the "herd-field-repo:cedar-tools" ScrollView
+    t =    52.60s Find the "herd-field-repo:cedar-tools" ScrollView
+    t =    52.85s Find the "herd-field-repo:cedar-tools" ScrollView
+    t =    53.08s Find the Target Application 'com.corral.fleetnotifier'
+    t =    53.24s Press Target Application 'com.corral.fleetnotifier'[0.15, 0.50] for 0.1 seconds, then drag to Target Application 'com.corral.fleetnotifier'[0.85, 0.50] with velocity of 250.00 pixels per second, and then hold for 0.1 seconds 
+    t =    53.24s     Wait for com.corral.fleetnotifier to idle
+    t =    53.25s     Find the Target Application 'com.corral.fleetnotifier'
+    t =    53.44s     Check for interrupting elements affecting "Corral" Application
+    t =    53.67s     Synthesize event
+    t =    53.68s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    53.84s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    54.05s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    54.17s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    54.30s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    56.03s     Wait for com.corral.fleetnotifier to idle
+    t =    56.61s Checking existence of `"herd-field-repo:birch-daemon" ScrollView`
+    t =    56.79s Find the "herd-field-repo:birch-daemon" ScrollView
+    t =    56.97s Find the "herd-field-repo:birch-daemon" ScrollView
+    t =    57.17s Find the "herd-field-repo:birch-daemon" ScrollView
+    t =    57.43s Find the Target Application 'com.corral.fleetnotifier'
+    t =    57.55s Press Target Application 'com.corral.fleetnotifier'[0.15, 0.50] for 0.1 seconds, then drag to Target Application 'com.corral.fleetnotifier'[0.85, 0.50] with velocity of 250.00 pixels per second, and then hold for 0.1 seconds 
+    t =    57.56s     Wait for com.corral.fleetnotifier to idle
+    t =    57.56s     Find the Target Application 'com.corral.fleetnotifier'
+    t =    57.72s     Check for interrupting elements affecting "Corral" Application
+    t =    58.93s     Synthesize event
+    t =    58.95s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    59.27s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    59.77s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    59.98s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    60.20s         Find the Target Application 'com.corral.fleetnotifier'
+    t =    62.03s     Wait for com.corral.fleetnotifier to idle
+    t =    62.49s Checking existence of `"herd-field-repo:atlas-vector" ScrollView`
+    t =    63.65s Find the "herd-field-repo:atlas-vector" ScrollView
+    t =    64.03s Find the "herd-field-repo:atlas-vector" ScrollView
+    t =    64.35s Find the "herd-field-repo:atlas-vector" ScrollView
+    t =    64.55s Find the Target Application 'com.corral.fleetnotifier'
+    t =    66.20s Waiting 30.0s for "herd-previous" Button to exist
+    t =    67.25s     Checking `Expect predicate `existsNoRetry == 1` for object "herd-previous" Button`
+    t =    67.26s         Checking existence of `"herd-previous" Button`
+    t =    67.32s Find the "herd-previous" Button
+    t =    67.37s Find the "g574-perf-state" Other
+    t =    67.42s Find the "g574-perf-dump" Button
+    t =    67.47s Tap "g574-perf-dump" Button
+    t =    67.47s     Wait for com.corral.fleetnotifier to idle
+    t =    67.48s     Find the "g574-perf-dump" Button
+    t =    67.52s     Check for interrupting elements affecting "g574-perf-dump" Button
+    t =    67.57s     Synthesize event
+    t =    67.86s     Wait for com.corral.fleetnotifier to idle
+    t =    67.86s Find the "g574-perf-state" Other
+    t =    67.91s Find the "g574-perf-state" Other
+G574_DUMP_BEGIN phase=t2-swipe-left epoch=1789809742.66399
+{
+  "counters" : {
+    "artBounds" : 0,
+    "captionResolutions" : 434,
+    "edgeGroupBodies" : 0,
+    "edgeOpacity" : 0,
+    "herdViewBody" : 214,
+    "paddockProjectionRepos" : 12,
+    "paddockProjections" : 3589,
+    "pagerPageGeometry" : 1420,
+    "ranchBody" : 173,
+    "ranchPlanePaints" : 1020,
+    "rowBuilds" : 3915,
+    "rowSnapTargets" : 0,
+    "scrollChanges" : 169
+  },
+  "fixture" : "build-32 fleet size: 40 agents, 12 repositories, 155-worktree-fact frame shape, 3 blocked at rail (-corral574Perf)",
+  "monotonic" : 251957.31757075002,
+  "reason" : "on-demand",
+  "seq" : 4,
+  "wall" : 1789809742.360722
+}
+G574_DUMP_END phase=t2-swipe-left seq=4
+    t =    67.96s Added attachment named '574-dump-t2-swipe-left'
+    t =    67.96s Waiting 30.0s for "herd-next" Button to exist
+    t =    69.02s     Checking `Expect predicate `existsNoRetry == 1` for object "herd-next" Button`
+    t =    69.02s         Checking existence of `"herd-next" Button`
+    t =    69.08s Tap "herd-next" Button
+    t =    69.08s     Wait for com.corral.fleetnotifier to idle
+    t =    69.08s     Find the "herd-next" Button
+    t =    69.12s     Check for interrupting elements affecting "herd-next" Button
+    t =    69.15s     Synthesize event
+    t =    69.44s     Wait for com.corral.fleetnotifier to idle
+    t =    69.45s Checking existence of `"herd-field-repo:birch-daemon" ScrollView`
+    t =    69.50s Find the "herd-field-repo:birch-daemon" ScrollView
+    t =    69.55s Find the "herd-field-repo:birch-daemon" ScrollView
+    t =    69.61s Find the "herd-field-repo:birch-daemon" ScrollView
+    t =    69.68s Find the Target Application 'com.corral.fleetnotifier'
+    t =    69.73s Tap "herd-next" Button
+    t =    69.73s     Wait for com.corral.fleetnotifier to idle
+    t =    69.73s     Find the "herd-next" Button
+    t =    69.79s     Check for interrupting elements affecting "herd-next" Button
+    t =    69.84s     Synthesize event
+    t =    70.14s     Wait for com.corral.fleetnotifier to idle
+    t =    70.15s Checking existence of `"herd-field-repo:cedar-tools" ScrollView`
+    t =    70.22s Find the "herd-field-repo:cedar-tools" ScrollView
+    t =    70.31s Find the "herd-field-repo:cedar-tools" ScrollView
+    t =    70.52s Find the "herd-field-repo:cedar-tools" ScrollView
+    t =    70.76s Find the Target Application 'com.corral.fleetnotifier'
+    t =    70.89s Tap "herd-next" Button
+    t =    70.89s     Wait for com.corral.fleetnotifier to idle
+    t =    70.90s     Find the "herd-next" Button
+    t =    71.17s     Check for interrupting elements affecting "herd-next" Button
+    t =    71.56s     Synthesize event
+    t =    71.93s     Wait for com.corral.fleetnotifier to idle
+    t =    72.35s Checking existence of `"herd-field-repo:maple-client" ScrollView`
+    t =    72.66s Find the "herd-field-repo:maple-client" ScrollView
+    t =    73.12s Find the "herd-field-repo:maple-client" ScrollView
+    t =    73.41s Find the "herd-field-repo:maple-client" ScrollView
+    t =    73.57s Find the Target Application 'com.corral.fleetnotifier'
+    t =    73.78s Tap "herd-next" Button
+    t =    73.78s     Wait for com.corral.fleetnotifier to idle
+    t =    73.80s     Find the "herd-next" Button
+    t =    73.96s     Check for interrupting elements affecting "herd-next" Button
+    t =    74.16s     Synthesize event
+    t =    74.50s     Wait for com.corral.fleetnotifier to idle
+    t =    74.79s Checking existence of `"herd-field-repo:willow-core" ScrollView`
+    t =    74.96s Find the "herd-field-repo:willow-core" ScrollView
+    t =    75.27s Find the "herd-field-repo:willow-core" ScrollView
+    t =    75.50s Find the "herd-field-repo:willow-core" ScrollView
+    t =    75.67s Find the Target Application 'com.corral.fleetnotifier'
+    t =    75.77s Tap "herd-next" Button
+    t =    75.77s     Wait for com.corral.fleetnotifier to idle
+    t =    75.79s     Find the "herd-next" Button
+    t =    75.94s     Check for interrupting elements affecting "herd-next" Button
+    t =    76.08s     Synthesize event
+    t =    76.43s     Wait for com.corral.fleetnotifier to idle
+    t =    76.59s Checking existence of `"herd-field-repo:aspen-fixtures" ScrollView`
+    t =    76.71s Find the "herd-field-repo:aspen-fixtures" ScrollView
+    t =    76.89s Find the "herd-field-repo:aspen-fixtures" ScrollView
+    t =    77.07s Find the "herd-field-repo:aspen-fixtures" ScrollView
+    t =    77.18s Find the Target Application 'com.corral.fleetnotifier'
+    t =    77.25s Tap "herd-next" Button
+    t =    77.25s     Wait for com.corral.fleetnotifier to idle
+    t =    77.27s     Find the "herd-next" Button
+    t =    77.51s     Check for interrupting elements affecting "herd-next" Button
+    t =    77.60s     Synthesize event
+    t =    77.94s     Wait for com.corral.fleetnotifier to idle
+    t =    78.04s Checking existence of `"herd-field-repo:elder-docs" ScrollView`
+    t =    78.15s Find the "herd-field-repo:elder-docs" ScrollView
+    t =    78.34s Find the "herd-field-repo:elder-docs" ScrollView
+    t =    78.52s Find the "herd-field-repo:elder-docs" ScrollView
+    t =    78.76s Find the Target Application 'com.corral.fleetnotifier'
+    t =    80.47s Find the "herd-previous" Button
+    t =    80.54s Tap "herd-previous" Button
+    t =    80.54s     Wait for com.corral.fleetnotifier to idle
+    t =    80.54s     Find the "herd-previous" Button
+    t =    80.60s     Check for interrupting elements affecting "herd-previous" Button
+    t =    80.66s     Synthesize event
+    t =    80.97s     Wait for com.corral.fleetnotifier to idle
+    t =    80.97s Checking existence of `"herd-field-repo:aspen-fixtures" ScrollView`
+    t =    81.09s Find the "herd-field-repo:aspen-fixtures" ScrollView
+    t =    81.18s Find the "herd-field-repo:aspen-fixtures" ScrollView
+    t =    81.27s Find the "herd-field-repo:aspen-fixtures" ScrollView
+    t =    81.34s Find the Target Application 'com.corral.fleetnotifier'
+    t =    81.39s Tap "herd-previous" Button
+    t =    81.39s     Wait for com.corral.fleetnotifier to idle
+    t =    81.40s     Find the "herd-previous" Button
+    t =    81.49s     Check for interrupting elements affecting "herd-previous" Button
+    t =    81.61s     Synthesize event
+    t =    81.92s     Wait for com.corral.fleetnotifier to idle
+    t =    81.92s Checking existence of `"herd-field-repo:willow-core" ScrollView`
+    t =    82.07s Find the "herd-field-repo:willow-core" ScrollView
+    t =    82.25s Find the "herd-field-repo:willow-core" ScrollView
+    t =    82.44s Find the "herd-field-repo:willow-core" ScrollView
+    t =    82.61s Find the Target Application 'com.corral.fleetnotifier'
+    t =    82.69s Tap "herd-previous" Button
+    t =    82.69s     Wait for com.corral.fleetnotifier to idle
+    t =    82.70s     Find the "herd-previous" Button
+    t =    82.85s     Check for interrupting elements affecting "herd-previous" Button
+    t =    82.96s     Synthesize event
+    t =    83.28s     Wait for com.corral.fleetnotifier to idle
+    t =    83.38s Checking existence of `"herd-field-repo:maple-client" ScrollView`
+    t =    83.61s Find the "herd-field-repo:maple-client" ScrollView
+    t =    83.90s Find the "herd-field-repo:maple-client" ScrollView
+    t =    84.17s Find the "herd-field-repo:maple-client" ScrollView
+    t =    84.33s Find the Target Application 'com.corral.fleetnotifier'
+    t =    84.43s Tap "herd-previous" Button
+    t =    84.44s     Wait for com.corral.fleetnotifier to idle
+    t =    84.44s     Find the "herd-previous" Button
+    t =    84.64s     Check for interrupting elements affecting "herd-previous" Button
+    t =    84.81s     Synthesize event
+    t =    85.14s     Wait for com.corral.fleetnotifier to idle
+    t =    85.24s Checking existence of `"herd-field-repo:cedar-tools" ScrollView`
+    t =    85.39s Find the "herd-field-repo:cedar-tools" ScrollView
+    t =    85.65s Find the "herd-field-repo:cedar-tools" ScrollView
+    t =    85.78s Find the "herd-field-repo:cedar-tools" ScrollView
+    t =    85.91s Find the Target Application 'com.corral.fleetnotifier'
+    t =    85.99s Tap "herd-previous" Button
+    t =    85.99s     Wait for com.corral.fleetnotifier to idle
+    t =    86.01s     Find the "herd-previous" Button
+    t =    86.15s     Check for interrupting elements affecting "herd-previous" Button
+    t =    86.28s     Synthesize event
+    t =    86.60s     Wait for com.corral.fleetnotifier to idle
+    t =    86.78s Checking existence of `"herd-field-repo:birch-daemon" ScrollView`
+    t =    86.94s Find the "herd-field-repo:birch-daemon" ScrollView
+    t =    87.27s Find the "herd-field-repo:birch-daemon" ScrollView
+    t =    87.42s Find the "herd-field-repo:birch-daemon" ScrollView
+    t =    87.60s Find the Target Application 'com.corral.fleetnotifier'
+    t =    87.70s Tap "herd-previous" Button
+    t =    87.70s     Wait for com.corral.fleetnotifier to idle
+    t =    87.70s     Find the "herd-previous" Button
+    t =    87.89s     Check for interrupting elements affecting "herd-previous" Button
+    t =    88.05s     Synthesize event
+    t =    88.37s     Wait for com.corral.fleetnotifier to idle
+    t =    88.53s Checking existence of `"herd-field-repo:atlas-vector" ScrollView`
+    t =    88.65s Find the "herd-field-repo:atlas-vector" ScrollView
+    t =    88.87s Find the "herd-field-repo:atlas-vector" ScrollView
+    t =    89.18s Find the "herd-field-repo:atlas-vector" ScrollView
+    t =    89.36s Find the Target Application 'com.corral.fleetnotifier'
+    t =    90.98s Waiting 30.0s for "herd-previous" Button to exist
+    t =    92.04s     Checking `Expect predicate `existsNoRetry == 1` for object "herd-previous" Button`
+    t =    92.04s         Checking existence of `"herd-previous" Button`
+    t =    92.10s Find the "herd-previous" Button
+    t =    92.14s Find the "g574-perf-state" Other
+    t =    92.18s Find the "g574-perf-dump" Button
+    t =    92.22s Tap "g574-perf-dump" Button
+    t =    92.22s     Wait for com.corral.fleetnotifier to idle
+    t =    92.23s     Find the "g574-perf-dump" Button
+    t =    92.27s     Check for interrupting elements affecting "g574-perf-dump" Button
+    t =    92.30s     Synthesize event
+    t =    92.60s     Wait for com.corral.fleetnotifier to idle
+    t =    92.61s Find the "g574-perf-state" Other
+    t =    92.68s Find the "g574-perf-state" Other
+G574_DUMP_BEGIN phase=t3-buttons epoch=1789809767.454125
+{
+  "counters" : {
+    "artBounds" : 0,
+    "captionResolutions" : 484,
+    "edgeGroupBodies" : 0,
+    "edgeOpacity" : 0,
+    "herdViewBody" : 239,
+    "paddockProjectionRepos" : 12,
+    "paddockProjections" : 4044,
+    "pagerPageGeometry" : 1589,
+    "ranchBody" : 185,
+    "ranchPlanePaints" : 1092,
+    "rowBuilds" : 4543,
+    "rowSnapTargets" : 0,
+    "scrollChanges" : 181
+  },
+  "fixture" : "build-32 fleet size: 40 agents, 12 repositories, 155-worktree-fact frame shape, 3 blocked at rail (-corral574Perf)",
+  "monotonic" : 251982.06752133335,
+  "reason" : "on-demand",
+  "seq" : 5,
+  "wall" : 1789809767.110771
+}
+G574_DUMP_END phase=t3-buttons seq=5
+    t =    92.75s Added attachment named '574-dump-t3-buttons'
+    t =    92.75s Swipe up "herd-field-repo:atlas-vector" ScrollView
+    t =    92.75s     Wait for com.corral.fleetnotifier to idle
+    t =    92.75s     Find the "herd-field-repo:atlas-vector" ScrollView
+    t =    92.83s     Check for interrupting elements affecting "herd-field-repo:atlas-vector" ScrollView
+    t =    92.90s     Synthesize event
+    t =    93.46s     Wait for com.corral.fleetnotifier to idle
+    t =    94.83s Swipe up "herd-field-repo:atlas-vector" ScrollView
+    t =    94.83s     Wait for com.corral.fleetnotifier to idle
+    t =    94.83s     Find the "herd-field-repo:atlas-vector" ScrollView
+    t =    94.99s     Check for interrupting elements affecting "herd-field-repo:atlas-vector" ScrollView
+    t =    95.13s     Synthesize event
+    t =    96.43s     Wait for com.corral.fleetnotifier to idle
+    t =    97.11s Swipe up "herd-field-repo:atlas-vector" ScrollView
+    t =    97.11s     Wait for com.corral.fleetnotifier to idle
+    t =    97.12s     Find the "herd-field-repo:atlas-vector" ScrollView
+    t =    97.44s     Check for interrupting elements affecting "herd-field-repo:atlas-vector" ScrollView
+    t =    97.73s     Synthesize event
+    t =    98.69s     Wait for com.corral.fleetnotifier to idle
+    t =    99.30s Swipe down "herd-field-repo:atlas-vector" ScrollView
+    t =    99.30s     Wait for com.corral.fleetnotifier to idle
+    t =    99.41s     Find the "herd-field-repo:atlas-vector" ScrollView
+    t =   101.69s     Check for interrupting elements affecting "herd-field-repo:atlas-vector" ScrollView
+    t =   102.39s     Synthesize event
+    t =   103.52s     Wait for com.corral.fleetnotifier to idle
+    t =   105.57s Swipe down "herd-field-repo:atlas-vector" ScrollView
+    t =   105.57s     Wait for com.corral.fleetnotifier to idle
+    t =   105.57s     Find the "herd-field-repo:atlas-vector" ScrollView
+    t =   105.79s     Check for interrupting elements affecting "herd-field-repo:atlas-vector" ScrollView
+    t =   105.99s     Synthesize event
+    t =   106.70s     Wait for com.corral.fleetnotifier to idle
+    t =   107.23s Swipe down "herd-field-repo:atlas-vector" ScrollView
+    t =   107.23s     Wait for com.corral.fleetnotifier to idle
+    t =   107.24s     Find the "herd-field-repo:atlas-vector" ScrollView
+    t =   107.49s     Check for interrupting elements affecting "herd-field-repo:atlas-vector" ScrollView
+    t =   107.77s     Synthesize event
+    t =   108.49s     Wait for com.corral.fleetnotifier to idle
+    t =   110.57s Find the "g574-perf-state" Other
+    t =   110.75s Find the "g574-perf-dump" Button
+    t =   110.95s Tap "g574-perf-dump" Button
+    t =   110.95s     Wait for com.corral.fleetnotifier to idle
+    t =   110.95s     Find the "g574-perf-dump" Button
+    t =   111.13s     Check for interrupting elements affecting "g574-perf-dump" Button
+    t =   111.27s     Synthesize event
+    t =   111.60s     Wait for com.corral.fleetnotifier to idle
+    t =   111.61s Find the "g574-perf-state" Other
+    t =   111.78s Find the "g574-perf-state" Other
+G574_DUMP_BEGIN phase=t4-vertical-control epoch=1789809786.627894
+{
+  "counters" : {
+    "artBounds" : 0,
+    "captionResolutions" : 510,
+    "edgeGroupBodies" : 0,
+    "edgeOpacity" : 0,
+    "herdViewBody" : 252,
+    "paddockProjectionRepos" : 12,
+    "paddockProjections" : 4210,
+    "pagerPageGeometry" : 1625,
+    "ranchBody" : 185,
+    "ranchPlanePaints" : 1092,
+    "rowBuilds" : 4819,
+    "rowSnapTargets" : 0,
+    "scrollChanges" : 181
+  },
+  "fixture" : "build-32 fleet size: 40 agents, 12 repositories, 155-worktree-fact frame shape, 3 blocked at rail (-corral574Perf)",
+  "monotonic" : 252001.068883875,
+  "reason" : "on-demand",
+  "seq" : 6,
+  "wall" : 1789809786.11221
+}
+G574_DUMP_END phase=t4-vertical-control seq=6
+    t =   111.92s Added attachment named '574-dump-t4-vertical-control'
+    t =   111.92s Checking existence of `"herd-horse-::herdr:pager-fixture-0" Any`
+    t =   112.26s Find the "herd-horse-::herdr:pager-fixture-0" Any
+    t =   112.65s Checking existence of `"herd-horse-::herdr:pager-fixture-0" Other`
+    t =   113.03s Find the "herd-horse-::herdr:pager-fixture-0" Other
+    t =   113.46s Checking existence of `"herd-horse-::herdr:pager-fixture-0" Other`
+    t =   113.90s Find the "herd-horse-::herdr:pager-fixture-0" Other
+    t =   114.38s Checking existence of `"herd-horse-::herdr:pager-fixture-0" Other`
+    t =   114.74s Find the "herd-horse-::herdr:pager-fixture-0" Other
+    t =   115.06s Checking existence of `"herd-horse-::herdr:pager-fixture-0" Other`
+    t =   115.35s Find the "herd-horse-::herdr:pager-fixture-0" Other
+    t =   115.65s Checking existence of `"herd-horse-::herdr:pager-fixture-0" Other`
+    t =   115.93s Find the "herd-horse-::herdr:pager-fixture-0" Other
+    t =   116.13s Waiting 30.0s for "herd-horse-::herdr:pager-fixture-0" Other to exist
+    t =   117.17s     Checking `Expect predicate `existsNoRetry == 1` for object "herd-horse-::herdr:pager-fixture-0" Other`
+    t =   117.17s         Checking existence of `"herd-horse-::herdr:pager-fixture-0" Other`
+    t =   117.29s Tap "herd-horse-::herdr:pager-fixture-0" Other
+    t =   117.29s     Wait for com.corral.fleetnotifier to idle
+    t =   117.29s     Find the "herd-horse-::herdr:pager-fixture-0" Other
+    t =   117.42s     Check for interrupting elements affecting "herd-horse-::herdr:pager-fixture-0" Other
+    t =   117.50s     Synthesize event
+    t =   117.80s     Wait for com.corral.fleetnotifier to idle
+    t =   118.23s Waiting 30.0s for "Done" Button to exist
+    t =   119.24s     Checking `Expect predicate `existsNoRetry == 1` for object "Done" Button`
+    t =   119.24s         Checking existence of `"Done" Button`
+    t =   119.55s Swipe up Target Application 'com.corral.fleetnotifier'
+    t =   119.55s     Wait for com.corral.fleetnotifier to idle
+    t =   119.56s     Find the Target Application 'com.corral.fleetnotifier'
+    t =   119.76s     Check for interrupting elements affecting "Corral" Application
+    t =   119.92s     Synthesize event
+    t =   120.36s     Wait for com.corral.fleetnotifier to idle
+    t =   121.14s Swipe up Target Application 'com.corral.fleetnotifier'
+    t =   121.14s     Wait for com.corral.fleetnotifier to idle
+    t =   121.14s     Find the Target Application 'com.corral.fleetnotifier'
+    t =   121.41s     Check for interrupting elements affecting "Corral" Application
+    t =   121.67s     Synthesize event
+    t =   122.12s     Wait for com.corral.fleetnotifier to idle
+    t =   122.60s Swipe up Target Application 'com.corral.fleetnotifier'
+    t =   122.60s     Wait for com.corral.fleetnotifier to idle
+    t =   122.61s     Find the Target Application 'com.corral.fleetnotifier'
+    t =   122.76s     Check for interrupting elements affecting "Corral" Application
+    t =   122.97s     Synthesize event
+    t =   123.46s     Wait for com.corral.fleetnotifier to idle
+    t =   123.93s Swipe down Target Application 'com.corral.fleetnotifier'
+    t =   123.93s     Wait for com.corral.fleetnotifier to idle
+    t =   123.94s     Find the Target Application 'com.corral.fleetnotifier'
+    t =   124.07s     Check for interrupting elements affecting "Corral" Application
+    t =   124.21s     Synthesize event
+    t =   124.65s     Wait for com.corral.fleetnotifier to idle
+    t =   126.87s Swipe down Target Application 'com.corral.fleetnotifier'
+    t =   126.87s     Wait for com.corral.fleetnotifier to idle
+    t =   126.88s     Find the Target Application 'com.corral.fleetnotifier'
+    t =   127.00s     Check for interrupting elements affecting "Corral" Application
+    t =   127.13s     Synthesize event
+    t =   127.56s     Wait for com.corral.fleetnotifier to idle
+    t =   128.68s Swipe down Target Application 'com.corral.fleetnotifier'
+    t =   128.68s     Wait for com.corral.fleetnotifier to idle
+    t =   128.69s     Find the Target Application 'com.corral.fleetnotifier'
+    t =   128.79s     Check for interrupting elements affecting "Corral" Application
+    t =   128.91s     Synthesize event
+    t =   129.34s     Wait for com.corral.fleetnotifier to idle
+    t =   130.71s Tap "Done" Button
+    t =   130.72s     Wait for com.corral.fleetnotifier to idle
+    t =   130.72s     Find the "Done" Button
+    t =   130.86s     Check for interrupting elements affecting "Done" Button
+    t =   130.97s     Synthesize event
+    t =   131.28s     Wait for com.corral.fleetnotifier to idle
+    t =   133.15s Find the "g574-perf-state" Other
+    t =   133.31s Find the "g574-perf-dump" Button
+    t =   133.53s Tap "g574-perf-dump" Button
+    t =   133.53s     Wait for com.corral.fleetnotifier to idle
+    t =   133.54s     Find the "g574-perf-dump" Button
+    t =   133.78s     Check for interrupting elements affecting "g574-perf-dump" Button
+    t =   133.95s     Synthesize event
+    t =   134.28s     Wait for com.corral.fleetnotifier to idle
+    t =   134.29s Find the "g574-perf-state" Other
+    t =   134.45s Find the "g574-perf-state" Other
+G574_DUMP_BEGIN phase=t5-sheet epoch=1789809809.299067
+{
+  "counters" : {
+    "artBounds" : 0,
+    "captionResolutions" : 526,
+    "edgeGroupBodies" : 0,
+    "edgeOpacity" : 0,
+    "herdViewBody" : 260,
+    "paddockProjectionRepos" : 12,
+    "paddockProjections" : 4306,
+    "pagerPageGeometry" : 1641,
+    "ranchBody" : 187,
+    "ranchPlanePaints" : 1116,
+    "rowBuilds" : 4963,
+    "rowSnapTargets" : 0,
+    "scrollChanges" : 181
+  },
+  "fixture" : "build-32 fleet size: 40 agents, 12 repositories, 155-worktree-fact frame shape, 3 blocked at rail (-corral574Perf)",
+  "monotonic" : 252023.73563475002,
+  "reason" : "on-demand",
+  "seq" : 7,
+  "wall" : 1789809808.779052
+}
+G574_DUMP_END phase=t5-sheet seq=7
+    t =   134.59s Added attachment named '574-dump-t5-sheet'
+G574_BATTERY_END epoch=1789809809.300655
+    t =   134.61s Tear Down
+Test Case '-[FleetNotifierUITests.HerdPagerPerfTests testPagerPerfBattery]' passed (135.059 seconds).
+Test Suite 'HerdPagerPerfTests' passed at 2569-09-19 4:23:29.767 PM.
+	 Executed 1 test, with 0 failures (0 unexpected) in 135.059 (135.061) seconds
+Test Suite 'FleetNotifierUITests.xctest' passed at 2569-09-19 4:23:29.768 PM.
+	 Executed 1 test, with 0 failures (0 unexpected) in 135.059 (135.062) seconds
+Test Suite 'Selected tests' passed at 2569-09-19 4:23:29.769 PM.
+	 Executed 1 test, with 0 failures (0 unexpected) in 135.059 (135.063) seconds
+2026-09-19 16:23:30.294 xcodebuild[95846:43603052] [MT] IDETestOperationsObserverDebug: 136.979 elapsed -- Testing started completed.
+2026-09-19 16:23:30.294 xcodebuild[95846:43603052] [MT] IDETestOperationsObserverDebug: 0.000 sec, +0.000 sec -- start
+2026-09-19 16:23:30.294 xcodebuild[95846:43603052] [MT] IDETestOperationsObserverDebug: 136.979 sec, +136.979 sec -- end
+
+Test session results, code coverage, and logs:
+	/tmp/fn574-base-dd/Logs/Test/Test-FleetNotifier-2569.09.19_4-21-13-+0700.xcresult
+
+** TEST EXECUTE SUCCEEDED **
+
+Testing started
+GESTURES_EXIT=0

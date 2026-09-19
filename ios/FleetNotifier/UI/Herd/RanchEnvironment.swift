@@ -19,9 +19,15 @@ struct RanchEnvironment: View {
         reduceMotion || !HerdAmbientPolicy.ambientMotionAllowed(lowPower:lowPower,thermal:thermalState)
     }
     var body: some View {
+#if DEBUG
+        let _ = HerdPerf574.tick(.ranchBody)
+#endif
         ZStack {
             ForEach(Self.planes) { plane in
                 Canvas { context, size in
+#if DEBUG
+                    let _ = HerdPerf574.tick(.ranchPlanePaints)
+#endif
                     let offset = plane.offset(scroll:scroll,coverage:maxScroll,reduceMotion:reduceMotion)
                     let painter = RanchPainter(night:night,elapsed:ambientFrozen ? 0 : elapsed)
                     context.scaleBy(x:size.width/390,y:size.height/640)

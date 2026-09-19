@@ -829,7 +829,9 @@ final class FullScreenHerdShellWiringTests: XCTestCase {
         // content) and ignores the safe area, so Day/Night paint behind the
         // top scope/Settings row, the rail and the bottom navigation.
         let bodyStart = try XCTUnwrap(herd.range(of: "var body: some View {".filter { !$0.isWhitespace }))
-        let ranch = try XCTUnwrap(herd.range(of: "RanchEnvironment(", range: bodyStart.upperBound..<herd.endIndex),
+        // #574: the ranch is mounted through the scroll-offset observing layer
+        // (`HerdRanchLayer`), which constructs the same production scene.
+        let ranch = try XCTUnwrap(herd.range(of: "HerdRanchLayer(", range: bodyStart.upperBound..<herd.endIndex),
                                   "the full-screen ranch must render from HerdView's root")
         let zstack = try XCTUnwrap(herd.range(of: "ZStack{", range: bodyStart.upperBound..<ranch.lowerBound),
                                    "the ranch must sit inside the root ZStack")
@@ -845,6 +847,8 @@ final class FullScreenHerdShellWiringTests: XCTestCase {
                           "ignoresSafeArea must apply to the ranch, not the content")
         XCTAssertTrue(herd.contains("maxScroll:CGFloat(max(0,paddocks.count-1))*screen.size.width"),
                       "the full-screen ranch keeps the shared pager coverage input")
+        XCTAssertTrue(herd.contains("RanchEnvironment(night:night,scroll:channel.offset"),
+                      "#574: the ranch layer must keep constructing the production scene from the pager channel")
     }
 
     func testFloatingTopScopeAndSettingsReplaceTheBoardHeaderAndToolbar() throws {
@@ -1012,8 +1016,10 @@ final class FullScreenHerdShellWiringTests: XCTestCase {
         XCTAssertTrue(rail.contains(".allowsHitTesting(false)"),
                       "the rail art must never intercept taps")
         let herd = try compact(source("HerdView"))
-        XCTAssertTrue(herd.contains("HerdRanchCover{RanchEnvironment("),
+        XCTAssertTrue(herd.contains("HerdRanchCover{HerdRanchLayer("),
                       "the ranch must ride the uniform cover container")
+        XCTAssertTrue(herd.contains("RanchEnvironment(night:night,scroll:channel.offset"),
+                      "#574: the ranch layer must keep constructing the production scene")
         XCTAssertTrue(herd.contains("HerdRanchViewport.scale(for:geometry.size)"),
                       "the cover derives ONE uniform scale for both axes")
         XCTAssertTrue(herd.contains(".frame(width:HerdRanchViewport.world.width*scale,height:HerdRanchViewport.world.height*scale)"),

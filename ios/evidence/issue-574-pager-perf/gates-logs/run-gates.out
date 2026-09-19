@@ -1,0 +1,31 @@
+=== G1: xcodegen generate must be a no-op ===
+XCODEGEN_EXIT=0
+DIFF_EXIT=1
+=== G2: release-source gate ===
+RELEASE_DEMO_EXIT=0
+source PASS: 7 native Swift renderer files; 8 unchanged approved icon inputs
+release-demo check: PASS (Debug source preserved; Release boundary verified)
+RELEASE_DEMO_EXIT=0
+=== G3: perf battery must SKIP without the on-demand marker (CI parity) ===
+PERF_SKIP_EXIT=0
+5
+=== G4: unit tests (all pre-existing suites) ===
+UNIT_EXIT=65
+	 Executed 9 tests, with 0 failures (0 unexpected) in 0.014 (0.020) seconds
+	 Executed 684 tests, with 1 test skipped and 3 failures (0 unexpected) in 450.868 (451.566) seconds
+	 Executed 684 tests, with 1 test skipped and 3 failures (0 unexpected) in 450.868 (451.569) seconds
+=== G5: #568 UI gesture suite ===
+EDGE_UI_EXIT=0
+	 Executed 7 tests, with 0 failures (0 unexpected) in 896.376 (896.389) seconds
+	 Executed 7 tests, with 0 failures (0 unexpected) in 896.376 (896.391) seconds
+	 Executed 7 tests, with 0 failures (0 unexpected) in 896.376 (896.393) seconds
+=== G6: advisory anti-slop ===
+ANTISLOP_EXIT=1
+ios/FleetNotifierTests/FleetNotifierTests.swift:2902:70: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+
+[anti-slop] 25 violations across 56 files (17 rules).
+ANTISLOP_EXIT=1
+=== G7: whitespace/diff hygiene ===
+DIFFCHECK_COMMITTED_EXIT=0
+DIFFCHECK_WORKTREE_EXIT=0
+GATES DONE 2026-09-19T10:23:00Z

@@ -582,7 +582,14 @@ APPROVED_RELEASE_SOURCE_DIGEST = (
     # capsule and state label), state panels scroll inside the content area
     # and paint no #428 backing on the header's 16/10 grid; computed with
     # release_source_digest over the #569 set.
-    "baa735b0a83d876e4e3a6ce23fc8bcc867eec04dd553f139577fd962bbc78527"
+    # #574: pager-perf instrumentation (Demo/HerdEvidence counters + fixture,
+    # HerdView/RanchEnvironment increment sites) and the measured-pager fix
+    # (the horizontal scroll offset moves off HerdView's @State into a channel
+    # only the ranch layer observes; the pager page index is enumerated rather
+    # than re-projecting per page; the field's eager row stack is hoisted out of
+    # the per-frame GeometryReader body) — re-pinned over the measured-pager
+    # sources.
+    "edf774c79bf28d94bc58e5c74e5a527e0e243159db40a765bbe444d615b1cba1"
 )
 APPROVED_TEST_SOURCE_DIGEST = (
     # #401: MultiHostHostFilterModelTests (D1 defaults/session-only, filter reconcile, reorder/rename, N2 removed-host probes), MultiHostBoardProjectionTests (D2-D7 pure projections), MultiHostSurfaceWiringTests (host-row guard, stale markers, Settings D7/F2, B3 prefill) — re-pinned.

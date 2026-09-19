@@ -1,0 +1,8 @@
+=== G2c: release-source gate ===
+RELEASE_DEMO_EXIT=0
+RELEASE_DEMO_EXIT=0
+=== G4c: wiring test classes ===
+WIRING_EXIT=0
+	 Executed 25 tests, with 0 failures (0 unexpected) in 12.545 (12.568) seconds
+	 Executed 25 tests, with 0 failures (0 unexpected) in 12.545 (12.570) seconds
+GATES-C DONE 2026-09-19T10:39:01Z

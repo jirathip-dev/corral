@@ -1,0 +1,201 @@
+Fetching https://github.com/swiftlang/swift-syntax.git from cache
+Fetched https://github.com/swiftlang/swift-syntax.git from cache (1.63s)
+Computing version for https://github.com/swiftlang/swift-syntax.git
+Computed https://github.com/swiftlang/swift-syntax.git at 600.0.1 (4.33s)
+Computed https://github.com/swiftlang/swift-syntax.git at 600.0.1 (0.00s)
+Creating working copy for https://github.com/swiftlang/swift-syntax.git
+Working copy of https://github.com/swiftlang/swift-syntax.git resolved at 600.0.1
+Building for debugging...
+[0/15] Write anti-slop-entitlement.plist
+[0/15] Write sources
+[10/15] Compiling _SwiftSyntaxCShims dummy.c
+[11/15] Write swift-version--58304C5D6DBC2206.txt
+[13/21] Emitting module SwiftSyntax600
+[14/21] Compiling SwiftSyntax600 Empty.swift
+[15/21] Compiling SwiftSyntax509 Empty.swift
+[16/21] Emitting module SwiftSyntax509
+[17/21] Emitting module SwiftSyntax510
+[18/21] Compiling SwiftSyntax510 Empty.swift
+[19/86] Compiling SwiftSyntax AbsolutePosition.swift
+[20/86] Compiling SwiftSyntax AbsoluteRawSyntax.swift
+[21/86] Compiling SwiftSyntax AbsoluteSyntaxInfo.swift
+[22/86] Compiling SwiftSyntax Assert.swift
+[23/86] Compiling SwiftSyntax BumpPtrAllocator.swift
+[24/86] Compiling SwiftSyntax CommonAncestor.swift
+[25/86] Compiling SwiftSyntax Convenience.swift
+[26/86] Compiling SwiftSyntax CustomTraits.swift
+[27/93] Compiling SwiftSyntax SourceEdit.swift
+[28/93] Compiling SwiftSyntax SourceLength.swift
+[29/93] Compiling SwiftSyntax SourceLocation.swift
+[30/93] Compiling SwiftSyntax SourcePresence.swift
+[31/93] Compiling SwiftSyntax SwiftSyntaxCompatibility.swift
+[32/93] Compiling SwiftSyntax Syntax.swift
+[33/93] Compiling SwiftSyntax SyntaxArena.swift
+[34/93] Compiling SwiftSyntax SyntaxProtocol.swift
+[35/93] Compiling SwiftSyntax SyntaxText.swift
+[36/93] Compiling SwiftSyntax SyntaxTreeViewMode.swift
+[37/93] Compiling SwiftSyntax TokenDiagnostic.swift
+[38/93] Compiling SwiftSyntax TokenSequence.swift
+[39/93] Compiling SwiftSyntax TokenSyntax.swift
+[40/93] Compiling SwiftSyntax Trivia.swift
+[41/93] Emitting module SwiftSyntax
+[42/93] Compiling SwiftSyntax SyntaxArenaAllocatedBuffer.swift
+[43/93] Compiling SwiftSyntax SyntaxChildren.swift
+[44/93] Compiling SwiftSyntax SyntaxCollection.swift
+[45/93] Compiling SwiftSyntax SyntaxHashable.swift
+[46/93] Compiling SwiftSyntax SyntaxIdentifier.swift
+[47/93] Compiling SwiftSyntax SyntaxNodeFactory.swift
+[48/93] Compiling SwiftSyntax SyntaxNodeStructure.swift
+[49/93] Compiling SwiftSyntax Tokens.swift
+[50/93] Compiling SwiftSyntax TriviaPieces.swift
+[51/93] Compiling SwiftSyntax RawSyntaxNodesAB.swift
+[52/93] Compiling SwiftSyntax RawSyntaxNodesC.swift
+[53/93] Compiling SwiftSyntax RawSyntaxNodesD.swift
+[54/93] Compiling SwiftSyntax RawSyntaxNodesEF.swift
+[55/93] Compiling SwiftSyntax RawSyntaxNodesGHI.swift
+[56/93] Compiling SwiftSyntax SyntaxCollections.swift
+[57/93] Compiling SwiftSyntax SyntaxEnum.swift
+[58/93] Compiling SwiftSyntax SyntaxKind.swift
+[59/93] Compiling SwiftSyntax SyntaxRewriter.swift
+[60/93] Compiling SwiftSyntax SyntaxTraits.swift
+[61/93] Compiling SwiftSyntax SyntaxVisitor.swift
+[62/93] Compiling SwiftSyntax TokenKind.swift
+[63/93] Compiling SwiftSyntax RawSyntaxNodesJKLMN.swift
+[64/93] Compiling SwiftSyntax RawSyntaxNodesOP.swift
+[65/93] Compiling SwiftSyntax RawSyntaxNodesQRS.swift
+[66/93] Compiling SwiftSyntax RawSyntaxNodesTUVWXYZ.swift
+[67/93] Compiling SwiftSyntax RawSyntaxValidation.swift
+[68/93] Compiling SwiftSyntax SyntaxNodesAB.swift
+[69/93] Compiling SwiftSyntax SyntaxNodesC.swift
+[70/93] Compiling SwiftSyntax Identifier.swift
+[71/93] Compiling SwiftSyntax MemoryLayout.swift
+[72/93] Compiling SwiftSyntax MissingNodeInitializers.swift
+[73/93] Compiling SwiftSyntax RawSyntax.swift
+[74/93] Compiling SwiftSyntax RawSyntaxLayoutView.swift
+[75/93] Compiling SwiftSyntax RawSyntaxNodeProtocol.swift
+[76/93] Compiling SwiftSyntax RawSyntaxTokenView.swift
+[77/93] Compiling SwiftSyntax Utils.swift
+[78/93] Compiling SwiftSyntax ChildNameForKeyPath.swift
+[79/93] Compiling SwiftSyntax Keyword.swift
+[80/93] Compiling SwiftSyntax RenamedChildrenCompatibility.swift
+[81/93] Compiling SwiftSyntax RenamedNodesCompatibility.swift
+[82/93] Compiling SwiftSyntax SyntaxAnyVisitor.swift
+[83/93] Compiling SwiftSyntax SyntaxBaseNodes.swift
+[84/93] Compiling SwiftSyntax SyntaxNodesD.swift
+[85/93] Compiling SwiftSyntax SyntaxNodesEF.swift
+[86/93] Compiling SwiftSyntax SyntaxNodesGHI.swift
+[87/93] Compiling SwiftSyntax SyntaxNodesJKLMN.swift
+[88/93] Compiling SwiftSyntax SyntaxNodesOP.swift
+[89/93] Compiling SwiftSyntax SyntaxNodesQRS.swift
+[90/93] Compiling SwiftSyntax SyntaxNodesTUVWXYZ.swift
+[91/145] Compiling SwiftDiagnostics Message.swift
+[92/146] Emitting module SwiftDiagnostics
+[93/146] Compiling SwiftDiagnostics Note.swift
+[94/146] Compiling SwiftDiagnostics FixIt.swift
+[95/146] Compiling SwiftDiagnostics GroupedDiagnostics.swift
+[96/146] Compiling SwiftDiagnostics DiagnosticDecorator.swift
+[97/146] Compiling SwiftDiagnostics ANSIDiagnosticDecorator.swift
+[98/146] Compiling SwiftDiagnostics BasicDiagnosticDecorator.swift
+[99/146] Compiling SwiftDiagnostics Diagnostic.swift
+[100/146] Compiling SwiftDiagnostics Convenience.swift
+[101/146] Compiling SwiftDiagnostics DiagnosticsFormatter.swift
+[102/146] Compiling SwiftParser TopLevel.swift
+[103/146] Compiling SwiftParser TriviaParser.swift
+[104/146] Compiling SwiftParser Types.swift
+[105/146] Compiling SwiftParser ExperimentalFeatures.swift
+[106/146] Compiling SwiftParser UnicodeScalarExtensions.swift
+[107/146] Compiling SwiftParser Lookahead.swift
+[108/146] Compiling SwiftParser LoopProgressCondition.swift
+[109/146] Compiling SwiftParser Modifiers.swift
+[110/146] Compiling SwiftParser Names.swift
+[111/150] Compiling SwiftParser Nominals.swift
+[112/150] Compiling SwiftParser Parameters.swift
+[113/150] Compiling SwiftParser ParseSourceFile.swift
+[114/150] Compiling SwiftParser Parser.swift
+[115/150] Compiling SwiftParser Patterns.swift
+[116/150] Compiling SwiftParser TokenConsumer.swift
+[117/150] Compiling SwiftParser TokenPrecedence.swift
+[118/150] Compiling SwiftParser TokenSpec.swift
+[119/150] Compiling SwiftParser TokenSpecSet.swift
+[120/150] Compiling SwiftParser Recovery.swift
+[121/150] Compiling SwiftParser Specifiers.swift
+[122/150] Compiling SwiftParser Statements.swift
+[123/150] Compiling SwiftParser StringLiteralRepresentedLiteralValue.swift
+[124/150] Emitting module SwiftParser
+[125/150] Compiling SwiftParser Directives.swift
+[126/150] Compiling SwiftParser ExpressionInterpretedAsVersionTuple.swift
+[127/150] Compiling SwiftParser Expressions.swift
+[128/150] Compiling SwiftParser IncrementalParseTransition.swift
+[129/150] Compiling SwiftParser IsValidIdentifier.swift
+[130/150] Compiling SwiftParser Attributes.swift
+[131/150] Compiling SwiftParser Availability.swift
+[132/150] Compiling SwiftParser CharacterInfo.swift
+[133/150] Compiling SwiftParser CollectionNodes+Parsable.swift
+[134/150] Compiling SwiftParser Declarations.swift
+[135/150] Compiling SwiftParser StringLiterals.swift
+[136/150] Compiling SwiftParser SwiftParserCompatibility.swift
+[137/150] Compiling SwiftParser SwiftVersion.swift
+[138/150] Compiling SwiftParser SyntaxUtils.swift
+[139/150] Compiling SwiftParser Cursor.swift
+[140/150] Compiling SwiftParser Lexeme.swift
+[141/150] Compiling SwiftParser LexemeSequence.swift
+[142/150] Compiling SwiftParser Lexer.swift
+[143/150] Compiling SwiftParser RegexLiteralLexer.swift
+[144/150] Compiling SwiftParser IsLexerClassified.swift
+[145/150] Compiling SwiftParser LayoutNodes+Parsable.swift
+[146/150] Compiling SwiftParser Parser+TokenSpecSet.swift
+[147/150] Compiling SwiftParser TokenSpecStaticMembers.swift
+[148/160] Compiling SwiftOperators PrecedenceGroup.swift
+[149/161] Compiling SwiftOperators PrecedenceGraph.swift
+[150/161] Compiling SwiftOperators OperatorTable.swift
+[151/161] Compiling SwiftOperators OperatorError+Diagnostics.swift
+[152/161] Compiling SwiftOperators OperatorTable+Semantics.swift
+[153/161] Compiling SwiftOperators OperatorTable+Defaults.swift
+[154/161] Compiling SwiftOperators OperatorError.swift
+[155/161] Emitting module SwiftOperators
+[156/161] Compiling SwiftOperators Operator.swift
+[157/161] Compiling SwiftOperators OperatorTable+Folding.swift
+[158/161] Compiling SwiftOperators SyntaxSynthesis.swift
+[159/170] Compiling AntiSlopCore AnyLeakageRules.swift
+[160/170] Compiling AntiSlopCore WideningRules.swift
+[161/170] Compiling AntiSlopCore SimplifiedType.swift
+[162/170] Compiling AntiSlopCore SwiftSlopRules.swift
+[163/170] Compiling AntiSlopCore CastRules.swift
+[164/170] Compiling AntiSlopCore SymbolAndRuntimeRules.swift
+[165/170] Compiling AntiSlopCore AntiSlopConfig.swift
+[166/170] Compiling AntiSlopCore Rule.swift
+[167/170] Emitting module AntiSlopCore
+[168/172] Compiling AntiSlop main.swift
+[169/172] Emitting module AntiSlop
+[169/172] Write Objects.LinkFileList
+[170/172] Linking anti-slop
+[171/172] Applying anti-slop
+Build of product 'anti-slop' complete! (68.56s)
+ios/FleetNotifier/App/AppModel.swift:638:74: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+ios/FleetNotifier/App/AppModel.swift:2604:15: error: [no-swallowed-errors] Empty catch block swallows the error entirely; failures become invisible. Bind the error, log it, recover deliberately, or rethrow.
+ios/FleetNotifier/Demo/HerdEvidence.swift:196:16: error: [no-shape-in-symbol-names] Rename "pagerRepoShape" for its domain role; "shape" describes structure rather than ownership.
+ios/FleetNotifierTests/EnrollmentClientTests.swift:117:10: error: [no-shape-in-symbol-names] Rename "testStatusDecodesTheApprovedShapeWithGrantsVerbatim" for its domain role; "shape" describes structure rather than ownership.
+ios/FleetNotifierTests/FleetNotifierTests.swift:287:10: error: [no-shape-in-symbol-names] Rename "testReadTailEnvelopeBytesMatchRustShape" for its domain role; "shape" describes structure rather than ownership.
+ios/FleetNotifierTests/FleetNotifierTests.swift:337:10: error: [no-shape-in-symbol-names] Rename "testRegisterBodyShape" for its domain role; "shape" describes structure rather than ownership.
+ios/FleetNotifierTests/FleetNotifierTests.swift:354:10: error: [no-shape-in-symbol-names] Rename "testGrantsReadBodyCanonicalShape" for its domain role; "shape" describes structure rather than ownership.
+ios/FleetNotifierTests/FleetNotifierTests.swift:1549:65: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+ios/FleetNotifierTests/FleetNotifierTests.swift:1624:73: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+ios/FleetNotifierTests/FleetNotifierTests.swift:1697:73: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+ios/FleetNotifierTests/FleetNotifierTests.swift:1845:83: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+ios/FleetNotifierTests/FleetNotifierTests.swift:1904:65: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+ios/FleetNotifierTests/FleetNotifierTests.swift:1956:73: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+ios/FleetNotifierTests/FleetNotifierTests.swift:2003:73: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+ios/FleetNotifierTests/FleetNotifierTests.swift:2052:73: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+ios/FleetNotifierTests/FleetNotifierTests.swift:2168:65: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+ios/FleetNotifierTests/FleetNotifierTests.swift:2193:73: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+ios/FleetNotifierTests/FleetNotifierTests.swift:2215:58: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+ios/FleetNotifierTests/FleetNotifierTests.swift:2251:58: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+ios/FleetNotifierTests/FleetNotifierTests.swift:2371:61: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+ios/FleetNotifierTests/FleetNotifierTests.swift:2394:35: error: [no-force-try] `try!` discards the error channel without stating why it cannot fire. Add a // SAFETY: comment documenting the invariant, or propagate/handle the error.
+ios/FleetNotifierTests/FleetNotifierTests.swift:2412:65: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+ios/FleetNotifierTests/FleetNotifierTests.swift:2415:77: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+ios/FleetNotifierTests/FleetNotifierTests.swift:2672:41: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+ios/FleetNotifierTests/FleetNotifierTests.swift:2902:70: error: [no-force-unwrap] Force unwrap crashes on the first unexpected nil. Add a // SAFETY: comment stating why the optional is known non-nil, or unwrap with `guard let`.
+
+[anti-slop] 25 violations across 56 files (17 rules).
+ANTISLOP_EXIT=1

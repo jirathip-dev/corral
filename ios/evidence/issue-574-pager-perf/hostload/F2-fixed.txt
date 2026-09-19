@@ -1,0 +1,24 @@
+arm=F2-fixed root=/Users/jirathip/.herdr/worktrees/corral/g574-pager-perf derived=/tmp/fn574-dd udid=E8A93355-D7A7-4727-87B9-11E3D0FC1E08
+--- host BEFORE 2026-09-19T09:33:59Z ---
+16:33  up 3 days, 48 mins, 3 users, load averages: 4.83 9.38 14.46
+ncpu=10
+top cpu consumers:
+ %CPU COMM
+ 97.8 /Applications/Xcode.app/Contents/SharedFrameworks/SwiftBuild.framework/Versions/A/PlugIns/SWBBuildService.bundle/Contents/MacOS/SWBBuildService
+ 41.6 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mdbulkimport
+ 37.3 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+--- host at build start 2026-09-19T09:33:59Z (calm-wait 0s) ---
+16:33  up 3 days, 48 mins, 3 users, load averages: 4.83 9.38 14.46
+--- host at gesture start 2026-09-19T09:34:57Z ---
+16:34  up 3 days, 49 mins, 3 users, load averages: 21.31 13.21 15.56
+ %CPU COMM
+ 39.8 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+ 35.8 /Users/jirathip/.local/state/canter/accept/target/release/canter
+ 35.4 /Users/jirathip/.hermes/hermes-agent/venv/bin/python3
+--- host AFTER 2026-09-19T09:38:07Z ---
+16:38  up 3 days, 52 mins, 3 users, load averages: 33.89 25.55 20.54
+ %CPU COMM
+ 51.3 /Users/jirathip/.hermes/hermes-agent/venv/bin/python
+ 40.9 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+ 25.7 /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift-frontend
+GESTURES_EXIT=0

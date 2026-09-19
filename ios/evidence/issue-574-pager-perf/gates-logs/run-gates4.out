@@ -1,0 +1,11 @@
+=== G1b: xcodegen no-op on the COMMITTED head ===
+DIFF_EXIT=0
+=== G4d: full unit suite at the committed head ===
+UNIT_EXIT=0
+	 Executed 684 tests, with 1 test skipped and 0 failures (0 unexpected) in 374.254 (374.740) seconds
+=== G6c: anti-slop at the committed head ===
+ANTISLOP_EXIT=1
+ANTISLOP_EXIT=1
+violations=24
+lane-file-violations=0
+POSTCOMMIT DONE 2026-09-19T10:51:29Z

@@ -1,0 +1,15 @@
+=== G2b: release-source gate ===
+RELEASE_DEMO_EXIT=0
+release-demo check: PASS (Debug source preserved; Release boundary verified)
+RELEASE_DEMO_EXIT=0
+=== G3b: perf battery must SKIP without the on-demand marker ===
+PERF_SKIP_EXIT=0
+=== G4b: unit tests (all pre-existing suites, updated wiring pins) ===
+UNIT_EXIT=65
+	 Executed 684 tests, with 1 test skipped and 1 failure (0 unexpected) in 466.639 (468.948) seconds
+	 Executed 684 tests, with 1 test skipped and 1 failure (0 unexpected) in 466.639 (468.951) seconds
+=== G6b: advisory anti-slop (new-code violations) ===
+ANTISLOP_EXIT=1
+[anti-slop] 24 violations across 56 files (17 rules).
+ANTISLOP_EXIT=1
+GATES-B DONE 2026-09-19T10:35:15Z

@@ -26,6 +26,7 @@
 		5ABC2CBB85C1CA772779D79E /* RanchEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23C9A0FFFF8D2072716C41AF /* RanchEnvironment.swift */; };
 		63EE02B9EB9EDE2CF1A7D086 /* HostProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49B690693FFABE1900E59374 /* HostProfile.swift */; };
 		64377CAEAACBB25D4F79BC24 /* RanchWind.swift in Sources */ = {isa = PBXBuildFile; fileRef = 943C844EB2836A1AC2E77659 /* RanchWind.swift */; };
+		645CFCF7083D9A440234B436 /* HerdPagerPerfTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8728B34328B25B46A9DA35D /* HerdPagerPerfTests.swift */; };
 		695F86362C9F62AA692D3671 /* FleetNotifierApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B51578ED349E70B121FA432 /* FleetNotifierApp.swift */; };
 		6B4EFEE1A903FB1D0587883D /* HerdView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB5C19509398D4E45B76831E /* HerdView.swift */; };
 		726FB867E4B7463E3FC0E700 /* EnrollmentClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6388C598A8531778678F57FA /* EnrollmentClientTests.swift */; };
@@ -122,6 +123,7 @@
 		997C189FA66F170A57AFA158 /* EnrollmentPairingFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnrollmentPairingFlowTests.swift; sourceTree = "<group>"; };
 		A3B71810DA086A9B4A1F4DDA /* HostProfileStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostProfileStore.swift; sourceTree = "<group>"; };
 		A568381FE0489171C5D7AFF7 /* HostStreamCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStreamCoordinator.swift; sourceTree = "<group>"; };
+		A8728B34328B25B46A9DA35D /* HerdPagerPerfTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HerdPagerPerfTests.swift; sourceTree = "<group>"; };
 		AA140E666807BDE06A8CFAB6 /* KeyContinuityGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyContinuityGate.swift; sourceTree = "<group>"; };
 		AA1B824D203FC54632815108 /* PushPayload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushPayload.swift; sourceTree = "<group>"; };
 		ABB1CB88EB0D99E040AD1E73 /* FleetNotifier.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FleetNotifier.entitlements; sourceTree = "<group>"; };
@@ -270,6 +272,7 @@
 			isa = PBXGroup;
 			children = (
 				BA62178D9460CF2B4CD3134C /* HerdEdgeGestureTests.swift */,
+				A8728B34328B25B46A9DA35D /* HerdPagerPerfTests.swift */,
 			);
 			path = FleetNotifierUITests;
 			sourceTree = "<group>";
@@ -651,6 +654,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				9E7B6727B6D78544B63D4BDA /* HerdEdgeGestureTests.swift in Sources */,
+				645CFCF7083D9A440234B436 /* HerdPagerPerfTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

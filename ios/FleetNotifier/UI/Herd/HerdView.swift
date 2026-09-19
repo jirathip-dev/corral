@@ -74,8 +74,17 @@ struct HerdView: View {
     @State var evidenceClockOffset: TimeInterval?
     @State private var edgeEvidenceSamples: [String:HerdEdgeSample] = [:]
     @State private var edgeEvidenceUpdates: [TimeInterval] = []
+    /// #574: perf-run state (perf fixture + latest counter dump JSON).
+    @State var perfRan = false
+    @State var perfJSON = ""
 #endif
-    private var paddocks: [HerdPaddock] { HerdProjection.paddocks(horses) }
+    private var paddocks: [HerdPaddock] {
+        let projected = HerdProjection.paddocks(horses)
+#if DEBUG
+        HerdPerf574.noteProjection(repos:projected.count)
+#endif
+        return projected
+    }
     private var rail: [HerdHorse] { horses.filter(\.atRail) }
     var reduced: Bool {
 #if DEBUG
@@ -119,10 +128,23 @@ struct HerdView: View {
     var motionEnabled: Bool {
         scenePhase == .active && !obscured && !reduced && horses.contains { !$0.disconnected }
     }
+    /// #574: true while the perf fixture parks the presentation clock, so the
+    /// measured deltas are gesture-attributable. The ambient 10 Hz cadence is
+    /// identical in both A/B arms and is excluded from the per-tick metric;
+    /// with the flag off this is always false (production behaviour unchanged).
+    var perfClockParked: Bool {
+#if DEBUG
+        if HerdPerf574.enabled && perfRan { return true }
+#endif
+        return false
+    }
     private var solarKey: String {
         "\(effectiveEnvironment.rawValue)-\(location.revision)-\(timeRevision)-\(scenePhase == .active)"
     }
     var body: some View {
+#if DEBUG
+        let _ = HerdPerf574.tick(.herdViewBody)
+#endif
         // #456: the procedural ranch is the full-screen ROOT layer, painted
         // behind every safe area; the floating chrome + content render above
         // it (the ranch already refuses hit testing), so Day/Night covers the
@@ -162,7 +184,7 @@ struct HerdView: View {
                 }
             }
         }
-        .onAppear { if motionEnabled { clock.start() } }
+        .onAppear { if motionEnabled && !perfClockParked { clock.start() } }
         // #457/#526: report the resolved lighting up to FleetView — the
         // shared filter sheet's Herd context styles itself from this value,
         // and the ROOT pushes it into the ThemeStore (so the resolved
@@ -173,7 +195,7 @@ struct HerdView: View {
             onLightingNight(night)
         }
         .onChange(of:motionEnabled) { _,enabled in
-            if enabled { clock.start() } else { clock.stop() }
+            if enabled && !perfClockParked { clock.start() } else if !enabled { clock.stop() }
         }
         .onDisappear {
             clock.stop()
@@ -201,8 +223,10 @@ struct HerdView: View {
         .task {
             // #456 full-screen evidence supersedes the #459-era sequence in
             // the same launch (one deterministic marker stream).
+            // #574: the perf fixture supersedes the #459-era sequence too.
             if !CommandLine.arguments.contains("-corral456FullScreenEvidence")
-                && !CommandLine.arguments.contains("-corral568EdgeEvidence") {
+                && !CommandLine.arguments.contains("-corral568EdgeEvidence")
+                && !HerdPerf574.enabled {
                 await runHerdEvidence()
             }
         }
@@ -229,6 +253,26 @@ struct HerdView: View {
         // View struct (whose environment/immutable horse props may be stale).
         .onChange(of:evidencePhase) { _,phase in
             if let phase { HerdEvidence.record(phase,scene:self) }
+        }
+        // #574: perf fixture + on-demand counter dumps (`-corral574Perf`).
+        // Off: one guard check, no timer, no state.
+        .task { await runPagerPerf() }
+        .overlay(alignment:.topLeading) {
+            if HerdPerf574.enabled {
+                VStack(alignment:.leading,spacing:2) {
+                    Button { perfJSON = HerdPerf574.dump(reason:"on-demand") } label: {
+                        Color.clear.frame(width:44,height:44).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("g574-perf-dump")
+                    .accessibilityLabel("Pager perf dump")
+                    Color.clear.frame(width:1,height:1).allowsHitTesting(false)
+                        .accessibilityElement(children:.ignore)
+                        .accessibilityLabel("Pager perf counters")
+                        .accessibilityIdentifier("g574-perf-state")
+                        .accessibilityValue(perfJSON)
+                }
+            }
         }
 #endif
     }
@@ -458,6 +502,9 @@ struct HerdView: View {
                         }
                     }.padding(.horizontal,12).frame(width:width).id(paddock.id)
                         .background(GeometryReader { proxy in
+#if DEBUG
+                            let _ = HerdPerf574.tick(.pagerPageGeometry)
+#endif
                             let index = paddocks.firstIndex { $0.id == paddock.id } ?? 0
                             Color.clear.preference(key:HerdScrollOffset.self,
                                 value:CGFloat(index)*width-proxy.frame(in:.named("herdPager")).minX)
@@ -553,7 +600,10 @@ struct HerdView: View {
     }
 
     private func horseButton(_ horse:HerdHorse,rail:Bool) -> some View {
-        Button { select(horse) } label: {
+#if DEBUG
+        let _ = HerdPerf574.tick(.rowBuilds)
+#endif
+        return Button { select(horse) } label: {
             VStack(spacing:2) {
                 ZStack(alignment:.bottom) {
                     Canvas { context,_ in
@@ -599,6 +649,9 @@ func herdHorseAccessibilityLabel(_ horse:HerdHorse) -> String {
 }
 
 func herdRepositoryCaption(_ paddock:HerdPaddock) -> String {
+#if DEBUG
+    let _ = HerdPerf574.tick(.captionResolutions)
+#endif
     let suffix = paddock.blockedCount > 0 ? " · \(paddock.blockedCount) at rail" : ""
     return "\(paddock.title) · \(paddock.field.count) here" + suffix
 }
@@ -610,6 +663,9 @@ enum HerdEdgeGeometry {
     static let inset: CGFloat = 8
     static let guardBand: CGFloat = 1
     static func opacity(group:CGRect,viewport:CGRect,allowsOversized:Bool) -> Double {
+#if DEBUG
+        let _ = HerdPerf574.tick(.edgeOpacity)
+#endif
         guard viewport.height > 0,group.height > 0 else { return 0 }
         if allowsOversized && group.height + 2*inset > viewport.height { return 1 }
         let clearance = min(group.minY-viewport.minY,viewport.maxY-group.maxY)
@@ -630,6 +686,9 @@ enum HerdEdgeGeometry {
 /// Include the actual stroked, posed/gait-transformed ink and the bob, not only
 /// Canvas's layout box. Caption bounds come from the complete button measurement.
 func herdArtBounds(_ horse:HerdHorse,elapsed:Double,reduced:Bool) -> CGRect {
+#if DEBUG
+    let _ = HerdPerf574.tick(.artBounds)
+#endif
     let pose = horse.pose(elapsed:elapsed,reduceMotion:reduced)
     let gait = horse.gait(elapsed:elapsed,reduceMotion:reduced)
     let ink = HerdArt().drawing(horse.identity,pose:pose,gait:gait).reduce(CGRect.null) { bounds,part in
@@ -662,6 +721,9 @@ struct HerdEdgeGroup<Content:View,Semantic:View>: View {
     @ViewBuilder var content: () -> Content
     @ViewBuilder var semantic: () -> Semantic
     var body: some View {
+#if DEBUG
+        let _ = HerdPerf574.tick(.edgeGroupBodies)
+#endif
         content().hidden()
             .overlay {
                 GeometryReader { geometry in
@@ -696,6 +758,9 @@ struct HerdRowFrames: PreferenceKey {
 struct HerdRowSnap: ScrollTargetBehavior {
     let rows: [CGRect]
     func updateTarget(_ target:inout ScrollTarget,context:TargetContext) {
+#if DEBUG
+        let _ = HerdPerf574.tick(.rowSnapTargets)
+#endif
         target.rect.origin.y = HerdEdgeGeometry.snap(proposed:target.rect.minY,rows:rows,
                                                     contentHeight:context.contentSize.height,
                                                     viewportHeight:context.containerSize.height)
@@ -944,6 +1009,28 @@ extension HerdView {
         }
     }
 
+    /// #574: perf fixture driver (`-corral574Perf`, with `-corralHerdEvidence`
+    /// entering the Herd presentation). Seeds the build-32-sized pager
+    /// fixture, parks the presentation clock and writes the launch dump.
+    /// Counter dumps happen on demand: the runner taps `g574-perf-dump`, the
+    /// app writes `Documents/herd-perf/574-<seq>-on-demand.json` and mirrors
+    /// the JSON into the `g574-perf-state` accessibility value.
+    func runPagerPerf() async {
+        guard HerdPerf574.enabled, !perfRan else { return }
+        perfRan = true
+        HerdEvidence.seedPagerPerf()
+        evidenceEnvironment = .day
+        evidenceReduceMotion = false
+        clock.stop()
+        evidenceElapsed = 12
+        // Park the pager on its first page: the demo seed that entered the
+        // Herd presentation picks the promo-first repo (cedar-tools), and the
+        // sized fixture must start from a deterministic page 1.
+        paddockID = paddocks.first?.id
+        do { try await Task.sleep(for:.seconds(2)) } catch { return }
+        perfJSON = HerdPerf574.dump(reason:"launch")
+    }
+
     /// #456 recorded-evidence driver (launch-arg gated; Release never
     /// compiles it). Phases: Day full screen → Night full screen → next
     /// paddock → floating scope sheet → floating Settings sheet → long
@@ -1059,10 +1146,18 @@ struct HerdScrollTracking: ViewModifier {
     func body(content: Content) -> some View {
         if #available(iOS 18.0, *) {
             content.onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.x } action: { _, x in
+#if DEBUG
+                let _ = HerdPerf574.tick(.scrollChanges)
+#endif
                 offset = max(0, x)
             }
         } else {
-            content.onPreferenceChange(HerdScrollOffset.self) { offset = max(0, $0) }
+            content.onPreferenceChange(HerdScrollOffset.self) { value in
+#if DEBUG
+                let _ = HerdPerf574.tick(.scrollChanges)
+#endif
+                offset = max(0, value)
+            }
         }
     }
 }

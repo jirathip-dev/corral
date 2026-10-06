@@ -212,4 +212,95 @@ for pair in "daemon:$PLIST" "update:$UPDATE_PLIST" "rotate:$ROTATE_PLIST"; do
     || fail "a second run over the migrated $name plist changed the file"
 done
 
-echo "OK: daemon launchd plist (shared PATH, ~/.local/bin, gh resolution, XML escaping, no token, idempotence, #555 Interactive tier + migration)"
+# ---- #578: launchd never execs from the disposable target/ -----------------
+# Host disk reclamation runs `cargo clean` on checkouts; a plist pointing into
+# target/ then exits 78 (EX_CONFIG) at every start. The source-checkout path
+# (no flags) must install a copy outside target/ and point the plist at it.
+# $WORK is stripped first so an exotic TMPDIR cannot trip the component check.
+assert_program_stable() { # $1=plist -> ProgramArguments[0] outside target/, executable
+  local prog
+  prog="$(plutil -extract ProgramArguments.0 raw -o - "$1")" \
+    || fail "$(basename "$1") has no ProgramArguments[0]"
+  case "/${prog#"$WORK"}/" in
+    */target/*) fail "$(basename "$1") ProgramArguments[0] is inside a target/ dir: $prog" ;;
+  esac
+  [[ -f "$prog" && -x "$prog" ]] \
+    || fail "$(basename "$1") ProgramArguments[0] is not an executable file: $prog"
+}
+
+SRC="$WORK/src"
+SRC_HOME="$WORK/src-home"
+INSTALL_DIR="$WORK/install"
+SRC_PLIST="$SRC_HOME/Library/LaunchAgents/com.corral.corrald.plist"
+mkdir -p "$SRC/scripts" "$SRC_HOME/Library/LaunchAgents"
+for f in setup-corrald.sh lib-corral-update-path.sh update-corral.sh rotate-corral-logs.sh; do
+  cp "$SCRIPT_DIR/$f" "$SRC/scripts/$f"
+done
+# cargo stub: "builds" a deterministic corrald into <manifest dir>/target/release.
+cat > "$STUB_BIN/cargo" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+manifest=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--manifest-path" ]]; then manifest="$2"; shift; fi
+  shift
+done
+out="$(dirname "${manifest:?}")/target/release"
+mkdir -p "$out"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$out/corrald"
+chmod +x "$out/corrald"
+STUB
+chmod +x "$STUB_BIN/cargo"
+
+run_source_setup() { # $1=HOME, $2=extra PATH prefix (may be empty)
+  HOME="$1" \
+    CORRAL_CONFIG_DIR="$CONFIG_DIR" \
+    CORRAL_INSTALL_DIR="$INSTALL_DIR" \
+    CORRAL_TEST_LAUNCHCTL_LOG="$LAUNCHCTL_LOG" \
+    GITHUB_TOKEN="must-not-appear-in-plist" \
+    PATH="${2:+$2:}$BREW_BIN:$STUB_BIN:/usr/bin:/bin" \
+    bash "$SRC/scripts/setup-corrald.sh" > "$WORK/setup-source.log" 2>&1
+}
+
+run_source_setup "$SRC_HOME" "" || fail "source setup exited non-zero: $(cat "$WORK/setup-source.log")"
+[[ -f "$SRC_PLIST" ]] || fail "source setup did not emit the daemon plist"
+plutil -lint "$SRC_PLIST" >/dev/null || fail "source daemon plist is not valid XML"
+assert_program_stable "$SRC_PLIST"
+src_prog="$(plutil -extract ProgramArguments.0 raw -o - "$SRC_PLIST")"
+[[ "$src_prog" == "$INSTALL_DIR/release/corrald" ]] \
+  || fail "source plist ProgramArguments[0] is '$src_prog' (want $INSTALL_DIR/release/corrald)"
+cmp -s "$SRC/target/release/corrald" "$src_prog" \
+  || fail "installed corrald differs from the freshly built target/release/corrald"
+assert_process_type "$SRC_PLIST" Interactive
+! grep -Fq 'must-not-appear-in-plist' "$SRC_PLIST" \
+  || fail "source daemon plist serialized the token value"
+
+# Idempotent: a re-run leaves the plist byte-identical.
+cp "$SRC_PLIST" "$WORK/src-daemon-first.plist"
+run_source_setup "$SRC_HOME" "" || fail "source setup re-run exited non-zero"
+cmp -s "$WORK/src-daemon-first.plist" "$SRC_PLIST" \
+  || fail "rerunning source setup changed the daemon plist"
+
+# The issue's outage: cargo clean deletes target/; launchd's program survives.
+rm -rf -- "$SRC/target"
+assert_program_stable "$SRC_PLIST"
+# The --from-release shape is unchanged and also outside target/.
+assert_program_stable "$PLIST"
+
+# Fail loudly: an install step that leaves no binary must exit non-zero
+# before any plist is written.
+NOINSTALL_BIN="$WORK/noinstall-bin"
+NOINSTALL_HOME="$WORK/noinstall-home"
+mkdir -p "$NOINSTALL_BIN" "$NOINSTALL_HOME/Library/LaunchAgents"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$NOINSTALL_BIN/install"
+chmod +x "$NOINSTALL_BIN/install"
+INSTALL_DIR="$WORK/install-missing"
+if run_source_setup "$NOINSTALL_HOME" "$NOINSTALL_BIN"; then
+  fail "source setup exited 0 although the installed corrald is missing"
+fi
+grep -Fq "corrald binary is missing or not executable: $INSTALL_DIR/release/corrald" "$WORK/setup-source.log" \
+  || fail "missing installed corrald was not reported: $(cat "$WORK/setup-source.log")"
+[[ ! -e "$NOINSTALL_HOME/Library/LaunchAgents/com.corral.corrald.plist" ]] \
+  || fail "source setup wrote a plist for a missing installed corrald"
+
+echo "OK: daemon launchd plist (shared PATH, ~/.local/bin, gh resolution, XML escaping, no token, idempotence, #555 Interactive tier + migration, #578 program outside target/)"

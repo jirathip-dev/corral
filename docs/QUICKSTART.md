@@ -360,7 +360,8 @@ Default config dir: daemon `$HOME/.config/corral` — override with
 `CORRAL_CONFIG_DIR`.
 
 To install a source build as the managed launchd service (no release
-bundle involved), `scripts/setup-corrald.sh` builds and installs the
+bundle involved), `scripts/setup-corrald.sh` builds, copies the daemon to
+`~/.local/share/corral/release/corrald` (outside `target/`), installs the
 `com.corral.corrald` agent (KeepAlive, port 8474) and is idempotent:
 
 ```sh

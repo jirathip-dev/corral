@@ -60,7 +60,7 @@ cargo build --release -p corrald
 ./target/release/corrald --socket ~/.config/herdr/herdr.sock
 ```
 
-To keep a source build running at login, `scripts/setup-corrald.sh` builds, installs the `com.corral.corrald` agent (KeepAlive, port 8474), and is idempotent:
+To keep a source build running at login, `scripts/setup-corrald.sh` builds, copies the daemon to `~/.local/share/corral/release/corrald` (outside the disposable `target/`; override the root with `CORRAL_INSTALL_DIR`), installs the `com.corral.corrald` agent (KeepAlive, port 8474) pointing at that copy, and is idempotent:
 
 ```sh
 bash scripts/setup-corrald.sh

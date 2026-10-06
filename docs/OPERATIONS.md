@@ -11,9 +11,13 @@ For a new machine / public install, two scripts make the daemon turnkey:
 
 ### `scripts/setup-corrald.sh`
 
-Builds the release binary, creates `~/.config/corral` (keys, tokens), and
-installs a **launchd agent** (`com.corral.corrald`) so the daemon runs at
-login and stays up (KeepAlive). Idempotent; safe to re-run. (The pre-#376
+Builds the release binary, copies it to
+`~/.local/share/corral/release/corrald` (root overridable with
+`CORRAL_INSTALL_DIR`), creates `~/.config/corral` (keys, tokens), and
+installs a **launchd agent** (`com.corral.corrald`) that runs that copy, so
+the daemon runs at login and stays up (KeepAlive). launchd never executes
+from `target/`: a `cargo clean` cannot leave the agent unstartable (#578).
+Idempotent; safe to re-run. (The pre-#376
 desktop client install is gone: Corral is an iOS-only product.)
 
 ```sh

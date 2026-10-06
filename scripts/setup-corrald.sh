@@ -2,8 +2,9 @@
 # setup-corrald.sh — one-shot corrald daemon setup (build + launchd + first run)
 #
 # Idempotent: safe to re-run. Works for any user (uses $HOME, no hardcoded paths).
-# Does NOT modify source; only builds, creates the config dir, and installs the
-# launchd agents.
+# Does NOT modify source; only builds, copies the daemon to a stable path outside
+# target/ ($CORRAL_INSTALL_DIR/release/corrald, default ~/.local/share/corral),
+# creates the config dir, and installs the launchd agents.
 #
 # Usage:
 #   scripts/setup-corrald.sh            # build + run under launchd on 127.0.0.1:8474
@@ -65,6 +66,7 @@ done
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FROM_RELEASE_DIR=""
 BIN="$REPO_DIR/target/release/corrald"
+INSTALL_ROOT="${CORRAL_INSTALL_DIR:-$HOME/.local/share/corral}"
 CONFIG_DIR="${CORRAL_CONFIG_DIR:-$HOME/.config/corral}"
 PLIST="$HOME/Library/LaunchAgents/com.corral.corrald.plist"
 UPDATE_PLIST="$HOME/Library/LaunchAgents/com.corral.corrald-update.plist"
@@ -106,7 +108,19 @@ if [[ -n "$FROM_RELEASE" ]]; then
 else
   echo ">> Building corrald (release)..."
   cargo build --release --manifest-path "$REPO_DIR/Cargo.toml"
+  # #578: launchd must never exec from target/ — disk reclamation (cargo clean)
+  # deletes it and the agent then exits 78 at every start. Install a copy at
+  # the same stable path install-corral.sh uses; install(1) swaps in a new
+  # inode, so a running daemon keeps its mapped binary.
+  installed_bin="$INSTALL_ROOT/release/corrald"
+  mkdir -p "$(dirname "$installed_bin")"
+  install -m 755 "$BIN" "$installed_bin"
+  BIN="$installed_bin"
 fi
+[[ -f "$BIN" && -x "$BIN" ]] || {
+  echo "!! corrald binary is missing or not executable: $BIN" >&2
+  exit 1
+}
 
 mkdir -p "$CONFIG_DIR"
 
